@@ -5,10 +5,10 @@ import pytest
 
 from quickcode.core.agent import AgentInstance, PermissionOutcome
 from quickcode.core.compact import _select_tail, run_compaction, should_compact
+from quickcode.core.events import TextDelta, TurnDone, Usage
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.providers.base import ChatMessage, ChatRequest
-from quickcode.core.events import TextDelta, TurnDone, Usage
 
 
 class StubProvider:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from quickcode.providers.base import ToolSchema
+from quickcode.tools.agent import AgentTool
 from quickcode.tools.base import Tool
 from quickcode.tools.bash import BashTool
 from quickcode.tools.edit import EditTool
@@ -27,17 +28,52 @@ class ToolRegistry:
         return [t.schema() for t in self.tools.values()]
 
 
-def default_registry() -> ToolRegistry:
-    """The standard core tools: six file/shell tools, the task board, and plan."""
-    return ToolRegistry(
-        [
-            ReadTool(),
-            WriteTool(),
-            EditTool(),
-            GlobTool(),
-            GrepTool(),
-            BashTool(),
-            *task_tools(),
-            PlanTool(),
-        ]
-    )
+# Factories for the single-instance core tools, keyed by the name a definition
+# would use in its ``tools:`` allowlist. ``task`` expands to the whole board set.
+def _core_tool_factories() -> dict[str, list[Tool]]:
+    return {
+        "read": [ReadTool()],
+        "write": [WriteTool()],
+        "edit": [EditTool()],
+        "glob": [GlobTool()],
+        "grep": [GrepTool()],
+        "bash": [BashTool()],
+        "task": list(task_tools()),
+    }
+
+
+def default_registry(*, include_agent: bool = True) -> ToolRegistry:
+    """The standard core tools: file/shell tools, the task board, plan, and
+    (for the main agent) the ``agent`` delegation tool."""
+    tools: list[Tool] = [
+        ReadTool(),
+        WriteTool(),
+        EditTool(),
+        GlobTool(),
+        GrepTool(),
+        BashTool(),
+        *task_tools(),
+        PlanTool(),
+    ]
+    if include_agent:
+        tools.append(AgentTool())
+    return ToolRegistry(tools)
+
+
+def build_registry(
+    tool_names: list[str] | None, *, include_agent: bool = False
+) -> ToolRegistry:
+    """Build a bounded registry from an allowlist of core tool names.
+
+    ``tool_names=None`` inherits the full core toolset. ``plan`` is never
+    included (subagents don't do interactive plan review). ``include_agent``
+    grants the delegation tool when the child is still above the depth floor.
+    """
+    factories = _core_tool_factories()
+    names = list(factories) if tool_names is None else tool_names
+    tools: list[Tool] = []
+    for n in names:
+        tools.extend(factories.get(n, []))
+    if include_agent:
+        tools.append(AgentTool())
+    return ToolRegistry(tools)

@@ -124,6 +124,7 @@ def render_system_prompt(
     provider: str = "the configured provider",
     headless: bool = False,
     plan: bool = False,
+    orchestration: bool = False,
 ) -> str:
     """Pure function: env → the frozen system prompt for the session.
 
@@ -145,6 +146,10 @@ def render_system_prompt(
         instructions_file=env.instructions_file or "none",
         project_instructions=env.project_instructions.strip(),
     )
+    if orchestration:
+        from quickcode.prompts.subagent import ORCHESTRATION
+
+        body += ORCHESTRATION
     if plan:
         body += _PLAN_MODE
     if headless:

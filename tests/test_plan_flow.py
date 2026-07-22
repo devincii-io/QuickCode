@@ -25,7 +25,7 @@ class OneCallProvider:
     async def stream_chat(self, req) -> AsyncIterator:
         if not self._sent:
             self._sent = True
-            from quickcode.core.events import ToolCallStart, ToolCallEnd
+            from quickcode.core.events import ToolCallEnd, ToolCallStart
 
             yield ToolCallStart(self.call.id, self.call.name)
             yield ToolCallEnd(self.call.id, self.call.name, self.call.arguments)

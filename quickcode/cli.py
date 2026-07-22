@@ -95,6 +95,19 @@ def _build_agent(args: argparse.Namespace):
         yolo_accepted=bool(args.yolo),
     )
 
+    # Subagent delegation: give the main agent (depth 0) everything the `agent`
+    # tool needs to spawn workers on the catalog's worker model.
+    from quickcode.subagents.runner import SubagentDeps
+
+    ctx.extra["subagent"] = SubagentDeps(
+        provider=provider,
+        profile=profile,
+        env=env,
+        mode_getter=lambda: permissions.mode,
+        cwd=cwd,
+        depth=0,
+    )
+
     model = args.model or profile.orchestrator_model
     provider_name = "OpenRouter" if "openrouter.ai" in profile.base_url else profile.base_url
 
@@ -105,6 +118,7 @@ def _build_agent(args: argparse.Namespace):
             provider=provider_name,
             headless=args.print_mode,
             plan=(mode == Mode.plan),
+            orchestration=True,
         )
     )
     if conv_id:
