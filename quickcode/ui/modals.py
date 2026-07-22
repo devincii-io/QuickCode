@@ -304,8 +304,10 @@ QuickCode — keybindings (keyboard-only friendly)
 
   Enter          submit message
   Ctrl+J         newline in input
-  Tab            move focus between widgets
-  Shift+Tab      cycle permission mode (plan -> ask -> auto-edit [-> yolo])
+  Tab            focus into the transcript (thinking / tool blocks); again to advance
+  Shift+Tab      in the input: cycle permission mode · in the transcript: focus back
+  Enter (block)  expand / collapse a focused Thinking or tool block
+  Esc            return focus to the input (or interrupt a running turn)
   PageUp/Down    scroll the transcript
   Ctrl+Home/End  jump to top / bottom of transcript
   Ctrl+B         toggle the task board sidebar

@@ -141,6 +141,13 @@ class ChatInput(TextArea):
             event.stop()
             self.insert("\n")
             return
+        if event.key == "tab":
+            # Move focus out of the input into the transcript (collapsibles,
+            # scroll) rather than inserting an indent. Shift+Tab / Esc come back.
+            event.prevent_default()
+            event.stop()
+            self.screen.focus_next()
+            return
         await super()._on_key(event)
 
 
@@ -450,6 +457,12 @@ class QuickCodeApp(App[None]):
     # ------------------------------------------------------------------
 
     def action_cycle_mode(self) -> None:
+        # Shift+Tab is overloaded: when you've tabbed into the transcript it
+        # walks focus backward; only in the input does it cycle permission mode.
+        chat = self.query_one("#chat-input", ChatInput)
+        if self.focused is not chat:
+            self.screen.focus_previous()
+            return
         new_mode = next_mode(self.agent.mode, self.allow_yolo)
         self.agent.set_mode(new_mode)
         status = self.query_one("#status-bar", StatusBar)
@@ -527,6 +540,11 @@ class QuickCodeApp(App[None]):
         if self.agent.busy:
             self.agent.cancel()
             self.query_one(Transcript).add_system_note("(interrupted)")
+            return
+        # Idle: Esc pulls focus back to the input from anywhere in the transcript.
+        chat = self.query_one("#chat-input", ChatInput)
+        if self.focused is not chat:
+            chat.focus()
 
     def action_scroll_transcript(self, where: str) -> None:
         t = self.query_one(Transcript)
