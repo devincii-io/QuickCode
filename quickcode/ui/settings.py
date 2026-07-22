@@ -51,7 +51,7 @@ class _ModelRow(Vertical):
     DEFAULT_CSS = """
     _ModelRow {
         height: auto;
-        padding: 0 1;
+        padding: 1 1 0 1;
         border-bottom: solid $panel-lighten-1;
     }
 
@@ -59,13 +59,37 @@ class _ModelRow(Vertical):
         background: $accent 10%;
     }
 
-    _ModelRow .model-id {
+    /* Container rows must be auto-height, else they default to 1fr and the
+       single row balloons to fill the whole scroll area. */
+    _ModelRow .row-controls,
+    _ModelRow .row-meta {
+        height: auto;
         width: 1fr;
     }
 
+    _ModelRow Checkbox {
+        width: auto;
+        height: auto;
+        border: none;
+        padding: 0 1 0 0;
+        background: transparent;
+    }
+
+    _ModelRow .model-id {
+        width: 1fr;
+        height: 3;
+        content-align: left middle;
+        text-style: bold;
+    }
+
+    _ModelRow Select {
+        width: 15;
+    }
+
     _ModelRow .model-row-info {
+        width: 1fr;
         color: $text-muted;
-        padding-left: 4;
+        height: auto;
     }
     """
 
@@ -85,19 +109,20 @@ class _ModelRow(Vertical):
         self._worker = bool(entry and "worker" in entry.roles) if entry else True
 
     def compose(self) -> ComposeResult:
-        with Horizontal():
-            yield Checkbox(value=self._curated, id="curate")
+        # Line 1: curate toggle · model id (fills) · tier select
+        with Horizontal(classes="row-controls"):
+            yield Checkbox("use", value=self._curated, id="curate")
             yield Label(self.model_id, classes="model-id")
             yield Select(
                 [(t, t) for t in _TIERS], value=self._tier, id="tier", allow_blank=False
             )
-            yield Checkbox(value=self._orch, id="role-orch")
-            yield Label("orch", classes="msg-reasoning")
-            yield Checkbox(value=self._worker, id="role-worker")
-            yield Label("worker", classes="msg-reasoning")
+        # Line 2: role toggles · context/price info (dim)
         ctx = format_context(self.model.context_length)
         price = format_price(self.model.prompt_price, self.model.completion_price)
-        yield Static(f"{ctx} ctx   {price}", classes="model-row-info")
+        with Horizontal(classes="row-meta"):
+            yield Checkbox("orch", value=self._orch, id="role-orch")
+            yield Checkbox("worker", value=self._worker, id="role-worker")
+            yield Static(f"{ctx} ctx · {price}", classes="model-row-info")
 
     def to_entry(self) -> CatalogEntry | None:
         curated = self.query_one("#curate", Checkbox).value
