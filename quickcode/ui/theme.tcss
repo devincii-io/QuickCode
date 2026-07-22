@@ -1,0 +1,133 @@
+/* QuickCode dark theme */
+
+Screen {
+    background: $surface;
+}
+
+#transcript {
+    height: 1fr;
+    background: $surface;
+    padding: 0 1;
+    scrollbar-gutter: stable;
+}
+
+#input-area {
+    height: auto;
+    max-height: 10;
+    dock: bottom;
+    border: solid $primary-darken-2;
+    background: $panel;
+    margin: 0 0 1 0;
+}
+
+StatusBar {
+    dock: bottom;
+    height: 1;
+    background: $panel-darken-1;
+    color: $text;
+    padding: 0 1;
+}
+
+StatusBar .mode-plan {
+    color: $text;
+    background: #1e3a8a;
+}
+
+StatusBar .mode-ask {
+    color: $text;
+}
+
+StatusBar .mode-auto-edit {
+    color: black;
+    background: #eab308;
+}
+
+StatusBar .mode-yolo {
+    color: white;
+    background: #b91c1c;
+}
+
+.banner-notice {
+    background: #7c2d12;
+    color: white;
+    padding: 0 1;
+}
+
+.msg-user {
+    color: $accent;
+    padding: 0 0 0 0;
+}
+
+.msg-assistant {
+    color: $text;
+}
+
+.msg-reasoning {
+    color: $text-muted;
+    text-style: italic;
+}
+
+.tool-header {
+    color: $secondary;
+    text-style: bold;
+}
+
+.tool-result-ok {
+    color: $text-muted;
+}
+
+.tool-result-error {
+    color: $error;
+    text-style: bold;
+}
+
+PermissionModal {
+    align: center middle;
+}
+
+PermissionModal > Vertical {
+    width: 70%;
+    max-width: 90;
+    height: auto;
+    border: thick $primary;
+    background: $panel;
+    padding: 1 2;
+}
+
+ModelPicker {
+    align: center middle;
+}
+
+ModelPicker > Vertical {
+    width: 70%;
+    max-width: 100;
+    height: 80%;
+    border: thick $primary;
+    background: $panel;
+    padding: 1 2;
+}
+
+HelpScreen {
+    align: center middle;
+}
+
+HelpScreen > Vertical {
+    width: 60%;
+    max-width: 90;
+    height: auto;
+    border: thick $primary;
+    background: $panel;
+    padding: 1 2;
+}
+
+SettingsScreen {
+    align: center middle;
+}
+
+SettingsScreen > Vertical {
+    width: 90%;
+    height: 90%;
+    border: thick $primary;
+    background: $panel;
+    padding: 1 2;
+}

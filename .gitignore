@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.env
+.quickcode/sessions/
+.quickcode/settings.local.json
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

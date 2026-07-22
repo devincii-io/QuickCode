@@ -1,0 +1,41 @@
+[project]
+name = "quickcode"
+version = "0.1.0"
+description = "A terminal coding agent — an interactive TUI in the spirit of Claude Code and Codex CLI."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Fichtel Systems", email = "kontakt@fichtelsystems.de" }]
+dependencies = [
+    "textual>=0.80",
+    "openai>=1.40",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+pty = ["pywinpty>=2.0; sys_platform == 'win32'"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+quickcode = "quickcode.cli:main"
+qc = "quickcode.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quickcode"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "UP042", "UP046", "UP047"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
