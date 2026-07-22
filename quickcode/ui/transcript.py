@@ -59,13 +59,19 @@ class Transcript(VerticalScroll):
         # Flush accumulated stream text at ~12Hz rather than re-rendering the
         # whole Markdown/Static on every token (which was O(n²) and janky).
         self.set_interval(0.08, self._flush_streams)
+        # Stick to the bottom as content streams in. Textual releases the anchor
+        # the moment the user scrolls up (so they can read) and re-engages it
+        # automatically once they scroll back to the bottom.
+        self.anchor()
 
     # ---- lifecycle helpers ----
 
+    # Only add_user forces the view to the bottom (a deliberate user action,
+    # re-engaging the anchor). Everything else just mounts: the anchor keeps the
+    # view pinned when at the bottom and leaves it alone when scrolled up.
     def add_banner(self, text: str) -> None:
         self._reset_streams()
         self.mount(Static(text, classes="banner-notice", markup=False))
-        self.scroll_end(animate=False)
 
     def add_user(self, text: str) -> None:
         self._reset_streams()
@@ -74,11 +80,9 @@ class Transcript(VerticalScroll):
 
     def add_system_note(self, text: str) -> None:
         self.mount(Static(text, classes="msg-reasoning", markup=False))
-        self.scroll_end(animate=False)
 
     def add_error(self, text: str) -> None:
         self.mount(Static(f"⚠ {text}", classes="tool-result-error", markup=False))
-        self.scroll_end(animate=False)
 
     def _reset_streams(self) -> None:
         self._current_assistant = None

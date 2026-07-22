@@ -411,14 +411,12 @@ class QuickCodeApp(App[None]):
         except Exception:
             return
         # Coalesce so a burst of N token deltas becomes ~one DOM write per tick.
-        # Anchor-aware scroll: only snap to bottom if the user was already there,
-        # so scrolling up to read mid-stream sticks.
-        was_at_end = transcript.is_vertical_scroll_end
+        # Scrolling is handled by the transcript's anchor (Transcript.on_mount):
+        # it sticks to the bottom until the user scrolls up and re-engages when
+        # they scroll back down.
         with self.batch_update():
             for ev in _coalesce(events_batch):
                 self._apply_event(ev, transcript, status)
-        if was_at_end:
-            transcript.scroll_end(animate=False)
 
     def _apply_event(self, ev, transcript: Transcript, status: StatusBar) -> None:
         if isinstance(ev, TextDelta):
