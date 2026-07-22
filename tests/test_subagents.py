@@ -46,6 +46,22 @@ def _deps(provider, mode=Mode.ask, depth=0, cwd=None):
     )
 
 
+def test_agent_tool_is_read_only_for_concurrent_fanout():
+    from quickcode.tools.agent import AgentTool
+
+    # Read-only classification lets the loop run multiple spawns concurrently.
+    assert AgentTool().is_read_only is True
+
+
+def test_agent_spawn_auto_allowed_in_ask_mode():
+    from quickcode.core.permissions import Decision, PermissionEngine, Rules
+
+    eng = PermissionEngine(Mode.ask, Rules(), Path.cwd())
+    # No per-spawn modal in ask mode (delegation is parent-read-only; child
+    # actions are separately capped), so concurrent fan-out can't stack prompts.
+    assert eng.evaluate("agent", "") == Decision.allow
+
+
 def test_cap_mode_takes_the_less_privileged_and_collapses_plan():
     assert cap_mode(Mode.yolo, Mode.ask) == Mode.ask
     assert cap_mode(Mode.ask, Mode.auto_edit) == Mode.ask

@@ -43,9 +43,13 @@ class AgentTool(Tool[AgentInput]):
         "doing simple things yourself; delegate for context isolation or genuine "
         "parallelism. Give each subagent a distinct, non-overlapping scope."
     )
-    # Mutating classification → the loop runs multiple agent calls sequentially,
-    # preserving the single-writer principle for write-capable subagents.
-    is_read_only = False
+    # Classified read-only so multiple spawns in one turn fan out CONCURRENTLY
+    # (the loop batches read-only calls with asyncio.gather). Delegation is
+    # read-only from the parent's view: the parent doesn't touch the filesystem
+    # here — each child's own writes are gated by its capped permission mode and
+    # deny-callback. Single-writer safety is the orchestrator's job (it's
+    # prompted to give each subagent a distinct, non-overlapping file scope).
+    is_read_only = True
     Input = AgentInput
 
     def render_call(self, input: AgentInput) -> str:  # noqa: A002
