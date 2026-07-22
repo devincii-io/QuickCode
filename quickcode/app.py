@@ -340,6 +340,10 @@ class QuickCodeApp(App[None]):
         try:
             await self.agent.run_turn(text)
         finally:
+            # Drain any events still queued from the last stream chunk BEFORE
+            # finalizing, so the whole answer is present when the streaming
+            # Static is swapped for its final Markdown render.
+            self._drain_bus()
             transcript = self.query_one(Transcript)
             transcript.finish_turn()
             status.agent_state = "idle"

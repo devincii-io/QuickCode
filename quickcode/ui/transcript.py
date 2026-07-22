@@ -18,6 +18,14 @@ def _preview(args: str, limit: int = 60) -> str:
     return args
 
 
+def _tidy(text: str) -> str:
+    """Trim and collapse 3+ blank lines to one, so stray model newlines don't
+    render as huge vertical gaps between wrapped lines."""
+    import re
+
+    return re.sub(r"\n{3,}", "\n\n", text.strip())
+
+
 def _clip(content: str, max_lines: int = 100) -> str:
     """Cap a tool-result body for display (the model still saw the full text)."""
     lines = content.splitlines()
@@ -32,7 +40,11 @@ class Transcript(VerticalScroll):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(id="transcript", **kwargs)
-        self._current_assistant: Markdown | None = None
+        # During a turn the answer streams into a plain Static (cheap, correct
+        # wrapping). At finish_turn it's swapped for one Markdown render — this
+        # avoids re-parsing/rebuilding Markdown on every token, which under real
+        # terminal latency left stale blocks and phantom line gaps.
+        self._current_assistant: Static | None = None
         self._assistant_text: str = ""
         self._assistant_dirty: bool = False
         self._current_reasoning: Static | None = None
@@ -86,11 +98,10 @@ class Transcript(VerticalScroll):
 
     def _flush_streams(self) -> None:
         """Render whatever text accumulated since the last tick, once the target
-        widget is actually mounted (its own _on_mount resets content, so writing
-        before that lands would be wiped)."""
-        md = self._current_assistant
-        if self._assistant_dirty and md is not None and md.is_mounted:
-            md.update(self._assistant_text)
+        widget is actually mounted."""
+        st = self._current_assistant
+        if self._assistant_dirty and st is not None and st.is_mounted:
+            st.update(self._assistant_text)
             self._assistant_dirty = False
         rs = self._current_reasoning
         if self._reasoning_dirty and rs is not None and rs.is_mounted:
@@ -111,7 +122,7 @@ class Transcript(VerticalScroll):
             self._current_reasoning_box = None
         self._current_reasoning = None
         if self._current_assistant is None:
-            self._current_assistant = Markdown(classes="msg-assistant")
+            self._current_assistant = Static("", classes="msg-assistant", markup=False)
             self.mount(self._current_assistant)
             self._assistant_text = ""
         self._assistant_text += text
@@ -136,21 +147,41 @@ class Transcript(VerticalScroll):
         self._reasoning_text += text
         self._reasoning_dirty = True
 
+    def _finalize_assistant(self) -> None:
+        """Swap the plain streaming Static for one final Markdown render (nice
+        code blocks / emphasis) built in a single parse — no mid-stream churn.
+        Deferred so it also works when the Static mounted late (replay / very
+        short turns)."""
+        st, txt = self._current_assistant, self._assistant_text
+        if st is not None:
+
+            def _swap(st: Static = st, txt: str = txt) -> None:
+                if not st.is_mounted:
+                    return
+                if txt.strip():
+                    self.mount(Markdown(_tidy(txt), classes="msg-assistant"), after=st)
+                st.remove()
+
+            self.call_after_refresh(_swap)
+        self._current_assistant = None
+        self._assistant_text = ""
+        self._assistant_dirty = False
+
     def finish_turn(self) -> None:
-        # Guarantee a final authoritative render even for a turn so short the
-        # flush timer never fired or the widget mounted late.
-        md, txt = self._current_assistant, self._assistant_text
+        self._finalize_assistant()
         rs, rtxt = self._current_reasoning, self._reasoning_text
-        if md is not None:
-            self.call_after_refresh(lambda: md.update(txt))
         if rs is not None:
-            self.call_after_refresh(lambda: rs.update(rtxt))
+            self.call_after_refresh(
+                lambda rs=rs, rtxt=rtxt: rs.update(rtxt) if rs.is_mounted else None
+            )
         self._reset_streams()
 
     # ---- tool calls ----
 
     def tool_call_start(self, tool_id: str, name: str) -> None:
-        self._current_assistant = None
+        # Any assistant text that preceded this tool call is a complete block
+        # now — render it as Markdown before the tool header.
+        self._finalize_assistant()
         self._current_reasoning = None
         header = Static(f"⏺ {name}(…)", classes="tool-header", markup=False)
         self._tool_headers[tool_id] = header
