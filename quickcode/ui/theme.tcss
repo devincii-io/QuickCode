@@ -120,31 +120,19 @@ StatusBar Static {
     margin: 0 0 1 0;
 }
 
-/* User messages: right-aligned chat bubble (iMessage style). */
-.user-row {
-    height: auto;
-    width: 1fr;
-    align-horizontal: right;
+/* Plain messages, left-aligned. User lines get a "› " accent prefix; the
+   assistant renders as flush-left Markdown. padding:0 overrides Textual
+   Markdown's built-in 0 2 so there's no phantom indent. */
+.msg-user {
+    color: $accent;
+    text-style: bold;
     margin: 1 0 0 0;
 }
 
-.user-bubble {
-    width: auto;
-    max-width: 80%;
-    height: auto;
-    background: $accent 25%;
-    color: $text;
-    border: round $accent;
-    padding: 0 1;
-}
-
-/* Assistant: left-aligned, NO built-in Markdown indent, a thin accent gutter
-   to distinguish it from tool output; margin below separates turns. */
 .msg-assistant {
     color: $text;
-    padding: 0 0 0 1;
+    padding: 0;
     margin: 0 0 1 0;
-    border-left: solid $secondary;
 }
 
 .msg-reasoning {

@@ -1,5 +1,5 @@
-"""Transcript message presentation: right-aligned user bubbles, un-indented
-assistant Markdown, and collapsible Thinking."""
+"""Transcript message presentation: plain "› " user lines, flush-left
+un-indented assistant Markdown, and collapsible Thinking."""
 
 from pathlib import Path
 
@@ -41,7 +41,7 @@ def _agent():
     )
 
 
-async def test_user_bubble_right_aligned_and_thinking_collapses():
+async def test_plain_messages_and_thinking_collapses():
     app = QuickCodeApp(_agent(), Config())
     async with app.run_test(size=(100, 40)) as pilot:
         transcript = app.query_one(Transcript)
@@ -51,14 +51,13 @@ async def test_user_bubble_right_aligned_and_thinking_collapses():
         for _ in range(10):
             await pilot.pause()
 
-        bubble = next(iter(transcript.query(".user-bubble")))
-        # Pushed to the right half of the transcript.
-        assert bubble.region.x > transcript.region.x + transcript.region.width // 2
+        user = next(iter(transcript.query(".msg-user")))
+        assert str(user.render()).startswith("› hey")
 
         md = next(iter(transcript.walk_children(Markdown)))
         assert "Hey! what are you on?" in md.source
-        # Markdown's built-in left padding of 2 is overridden.
-        assert md.styles.padding.left == 1
+        # Markdown's built-in left padding of 2 is removed (no phantom indent).
+        assert md.styles.padding.left == 0
 
         boxes = [b for b in transcript.query(Collapsible) if "reasoning-box" in b.classes]
         assert boxes and boxes[0].collapsed is True

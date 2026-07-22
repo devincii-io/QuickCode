@@ -7,7 +7,7 @@ result bodies (auto-collapsed on success, expanded + red on error).
 
 from __future__ import annotations
 
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.widgets import Collapsible, Markdown, Static
 
 
@@ -68,15 +68,8 @@ class Transcript(VerticalScroll):
         self.scroll_end(animate=False)
 
     def add_user(self, text: str) -> None:
-        # Right-aligned bubble (iMessage style): a row that pushes an auto-width
-        # bubble to the right edge.
         self._reset_streams()
-        self.mount(
-            Horizontal(
-                Static(text, classes="user-bubble", markup=False),
-                classes="user-row",
-            )
-        )
+        self.mount(Static(f"› {text}", classes="msg-user", markup=False))
         self.scroll_end(animate=False)
 
     def add_system_note(self, text: str) -> None:
@@ -122,6 +115,8 @@ class Transcript(VerticalScroll):
             self._current_reasoning_box = None
         self._current_reasoning = None
         if self._current_assistant is None:
+            # Content streams into a plain Static (cheap, correct wrapping),
+            # swapped for a single Markdown render at block end.
             self._current_assistant = Static("", classes="msg-assistant", markup=False)
             self.mount(self._current_assistant)
             self._assistant_text = ""
