@@ -125,6 +125,8 @@ class Config:
     active_profile: str = "default"
     profiles: dict[str, Profile] = field(default_factory=lambda: {"default": Profile()})
     default_mode: str = "ask"
+    # Last model picked via F2; used as the session default so a switch persists.
+    last_model: str = ""
     theme: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME_COLORS))
 
     @property
@@ -161,6 +163,7 @@ class Config:
             active_profile=raw.get("active_profile", next(iter(profiles))),
             profiles=profiles,
             default_mode=raw.get("default_mode", "ask"),
+            last_model=raw.get("last_model", ""),
             theme=theme,
         )
 
@@ -169,6 +172,7 @@ class Config:
         data = {
             "active_profile": self.active_profile,
             "default_mode": self.default_mode,
+            "last_model": self.last_model,
             "theme": self.theme,
             "profiles": {
                 name: {

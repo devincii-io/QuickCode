@@ -47,7 +47,10 @@ class ChatRequest:
     tools: list[ToolSchema] = field(default_factory=list)
     reasoning_effort: str | None = None  # "low" | "medium" | "high" | None
     temperature: float | None = None
-    max_tokens: int | None = None
+    # Cap the response budget so we don't reserve the model's full output window
+    # (e.g. 65536) up front — OpenRouter charges the credit check against
+    # max_tokens, which 402s low-balance accounts. Plenty for one agent turn.
+    max_tokens: int | None = 16384
 
 
 @dataclass

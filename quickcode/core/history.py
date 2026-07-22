@@ -16,6 +16,11 @@ class History:
         self._system = ChatMessage(role="system", content=system_prompt, cache_control=True)
         self.messages: list[ChatMessage] = []
 
+    def set_system_prompt(self, system_prompt: str) -> None:
+        """Replace the system prompt (e.g. to refresh the model identity after a
+        mid-conversation model switch, which already invalidates the cache)."""
+        self._system = ChatMessage(role="system", content=system_prompt, cache_control=True)
+
     # ---- appenders ----
     def push_user(self, text: str, reminders: list[str] | None = None) -> None:
         content = text

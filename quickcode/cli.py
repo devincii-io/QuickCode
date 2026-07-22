@@ -108,9 +108,9 @@ def _build_agent(args: argparse.Namespace):
         depth=0,
     )
 
-    # The default session model is the catalog's orchestrator (Models tab role),
-    # falling back to the profile default when nothing is tagged.
-    model = args.model or profile.resolve("orchestrator")
+    # Model precedence: explicit --model, then the last model picked via F2
+    # (persisted), then the catalog's orchestrator role, then the profile default.
+    model = args.model or config.last_model or profile.resolve("orchestrator")
     provider_name = "OpenRouter" if "openrouter.ai" in profile.base_url else profile.base_url
 
     history = History(
@@ -193,6 +193,7 @@ def main(argv: list[str] | None = None) -> None:
         startup_notice=no_key_notice,
         initial_prompt=args.prompt,
         session_store=store,
+        env=env,
     )
     app.run()
 

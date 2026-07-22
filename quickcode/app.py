@@ -78,21 +78,32 @@ def _coalesce(events: list) -> list:
 
 
 def _explain_error(error: str, agent: AgentInstance, api_key_env: str = "") -> str:
-    """Turn a raw provider error into a one-line message with a next step."""
+    """Turn a raw provider error into a one-line message with a next step.
+
+    Raw provider payloads can be huge (OpenRouter nests a repeated
+    ``previous_errors`` array), so the fallback is always truncated.
+    """
     low = error.lower()
+    short = error if len(error) <= 160 else error[:157].rstrip() + "…"
     if "401" in error or "authentication" in low or "api key" in low or "unauthorized" in low:
         var = api_key_env or "your provider API key env var"
         return (
             f"Auth failed (401). No valid API key. Set {var} and restart, "
             f"or change the provider in Settings (F3 -> Profile)."
         )
-    if "404" in error or "model" in low and "not" in low:
-        return f"Model '{agent.model}' was rejected (404). Pick another with F2. ({error})"
+    if "402" in error or "requires more credits" in low or "insufficient" in low:
+        return (
+            "Out of credits (402): this turn's token budget exceeds your OpenRouter "
+            "balance. Add credits at openrouter.ai/credits (or switch to a cheaper "
+            "model with F2), then retry."
+        )
+    if "404" in error or ("model" in low and "not" in low):
+        return f"Model '{agent.model}' was rejected (404). Pick another with F2. ({short})"
     if "429" in error or "rate" in low:
-        return f"Rate limited (429). Wait a moment and retry. ({error})"
+        return "Rate limited (429). Wait a moment and retry."
     if "connect" in low or "timeout" in low or "network" in low:
-        return f"Network error reaching the provider. Check your connection. ({error})"
-    return f"Request failed: {error}"
+        return "Network error reaching the provider. Check your connection."
+    return f"Request failed: {short}"
 
 
 class ChatInput(TextArea):
@@ -183,13 +194,14 @@ class QuickCodeApp(App[None]):
 
     def __init__(self, agent: AgentInstance, config: Config, *, allow_yolo: bool = False,
                  startup_notice: str | None = None, initial_prompt: str | None = None,
-                 session_store=None) -> None:
+                 session_store=None, env=None) -> None:
         super().__init__()
         self.agent = agent
         self.config = config
         self.allow_yolo = allow_yolo
         self._startup_notice = startup_notice
         self._initial_prompt = initial_prompt
+        self._env = env  # for re-rendering the system-prompt identity on model switch
         self._ctrl_c_armed = False
         self._bus_queue = None
         self._tool_names: dict[str, str] = {}
@@ -509,14 +521,42 @@ class QuickCodeApp(App[None]):
             had_history = any(m.role != "system" for m in self.agent.history.messages)
             self.agent.model = picked
             self.query_one("#status-bar", StatusBar).model = picked
+            # Refresh the identity in the system prompt so the model reports what
+            # it actually is now (the switch already invalidated the cache).
+            self._refresh_identity(picked)
+            # Persist the choice so the next session starts on this model.
+            self.config.last_model = picked
+            try:
+                self.config.save()
+            except Exception:
+                pass
             transcript = self.query_one(Transcript)
-            transcript.add_system_note(f"model -> {picked}")
+            transcript.add_system_note(f"model -> {picked} (saved as default)")
             if had_history:
                 transcript.add_system_note(
                     "Note: switching model mid-conversation re-reads the entire history "
                     "with the new model and gets no prompt-cache benefit — the next turn "
                     "will be slower and cost more input tokens."
                 )
+
+    def _refresh_identity(self, model: str) -> None:
+        if self._env is None:
+            return
+        from quickcode.prompts.system import render_system_prompt
+
+        base = self.config.profile.base_url
+        provider_name = "OpenRouter" if "openrouter.ai" in base else base
+        try:
+            self.agent.history.set_system_prompt(
+                render_system_prompt(
+                    self._env,
+                    model=model,
+                    provider=provider_name,
+                    plan=(self.agent.mode == Mode.plan),
+                )
+            )
+        except Exception:
+            pass
 
     def action_show_agents(self) -> None:
         deps = self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
