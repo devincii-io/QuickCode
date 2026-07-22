@@ -136,6 +136,12 @@ StatusBar Static {
     text-style: italic;
 }
 
+.msg-reasoning-head {
+    color: $text-muted;
+    text-style: bold;
+    margin: 1 0 0 0;
+}
+
 .tool-header {
     color: $secondary;
     text-style: bold;

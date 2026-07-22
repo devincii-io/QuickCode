@@ -45,6 +45,34 @@ from quickcode.ui.transcript import Transcript
 _THEME_PATH = Path(__file__).parent / "ui" / "theme.tcss"
 
 
+def _coalesce(events: list) -> list:
+    """Merge a drained batch so one frame does minimal DOM work.
+
+    Consecutive text/reasoning deltas fold into one; per-id tool-arg deltas fold
+    per id; only the last Usage in the batch survives (they're cumulative).
+    """
+    out: list = []
+    for ev in events:
+        if isinstance(ev, TextDelta) and out and isinstance(out[-1], TextDelta):
+            out[-1] = TextDelta(out[-1].text + ev.text)
+        elif isinstance(ev, ReasoningDelta) and out and isinstance(out[-1], ReasoningDelta):
+            out[-1] = ReasoningDelta(out[-1].text + ev.text)
+        elif (
+            isinstance(ev, ToolCallDelta)
+            and out
+            and isinstance(out[-1], ToolCallDelta)
+            and out[-1].id == ev.id
+        ):
+            out[-1] = ToolCallDelta(ev.id, out[-1].arguments + ev.arguments)
+        else:
+            out.append(ev)
+    last_usage = next((e for e in reversed(out) if isinstance(e, Usage)), None)
+    if last_usage is not None:
+        out = [e for e in out if not isinstance(e, Usage)]
+        out.append(last_usage)
+    return out
+
+
 def _explain_error(error: str, agent: AgentInstance, api_key_env: str = "") -> str:
     """Turn a raw provider error into a one-line message with a next step."""
     low = error.lower()
@@ -139,7 +167,7 @@ class QuickCodeApp(App[None]):
         self.theme = THEME_NAME
         self.agent.permission_cb = self._permission_cb
         self.agent.plan_cb = self._plan_cb
-        self._bus_queue = self.agent.bus.subscribe()
+        self._bus_queue = self.agent.bus.subscribe(maxsize=0)  # unbounded UI queue
         status = self.query_one("#status-bar", StatusBar)
         status.model = self.agent.model
         status.mode = self.agent.mode
@@ -157,14 +185,18 @@ class QuickCodeApp(App[None]):
             self._initial_prompt = None
 
     def _replay_history(self, transcript: Transcript) -> None:
-        """Render resumed messages (from --continue/--resume) into the view."""
+        """Render resumed messages (from --continue/--resume) into the view.
+
+        Batched so a long session doesn't repaint per message on startup.
+        """
         msgs = self.agent.history.messages
-        for m in msgs:
-            if m.role == "user" and m.content:
-                transcript.add_user(m.content.split("\n<system-reminder>")[0])
-            elif m.role == "assistant" and m.content:
-                transcript.append_text_delta(m.content)
-                transcript.finish_turn()
+        with self.batch_update():
+            for m in msgs:
+                if m.role == "user" and m.content:
+                    transcript.add_user(m.content.split("\n<system-reminder>")[0])
+                elif m.role == "assistant" and m.content:
+                    transcript.append_text_delta(m.content)
+                    transcript.finish_turn()
         self._persisted = len(msgs)  # already on disk; don't re-append
 
     # ------------------------------------------------------------------
@@ -295,9 +327,9 @@ class QuickCodeApp(App[None]):
     def _drain_bus(self) -> None:
         if self._bus_queue is None:
             return
-        # Pull events first; if there's nothing to render, don't touch the DOM.
+        # Pull the whole pending batch first; if there's nothing, don't touch DOM.
         events_batch = []
-        while len(events_batch) < 200:
+        while True:
             try:
                 events_batch.append(self._bus_queue.get_nowait())
             except Exception:
@@ -311,8 +343,15 @@ class QuickCodeApp(App[None]):
             status = self.query_one("#status-bar", StatusBar)
         except Exception:
             return
-        for ev in events_batch:
-            self._apply_event(ev, transcript, status)
+        # Coalesce so a burst of N token deltas becomes ~one DOM write per tick.
+        # Anchor-aware scroll: only snap to bottom if the user was already there,
+        # so scrolling up to read mid-stream sticks.
+        was_at_end = transcript.is_vertical_scroll_end
+        with self.batch_update():
+            for ev in _coalesce(events_batch):
+                self._apply_event(ev, transcript, status)
+        if was_at_end:
+            transcript.scroll_end(animate=False)
 
     def _apply_event(self, ev, transcript: Transcript, status: StatusBar) -> None:
         if isinstance(ev, TextDelta):
@@ -445,9 +484,11 @@ class QuickCodeApp(App[None]):
             t.scroll_end(animate=False)
 
     def on_resize(self, event: events.Resize) -> None:
-        # After a terminal resize the layout reflows via CSS; keep the newest
-        # transcript content in view rather than stranding the viewport.
+        # After a terminal resize the layout reflows via CSS. Only re-pin to the
+        # bottom if the user was already there — don't yank them out of scrollback.
         try:
-            self.query_one(Transcript).scroll_end(animate=False)
+            transcript = self.query_one(Transcript)
         except Exception:
-            pass
+            return
+        if transcript.is_vertical_scroll_end:
+            transcript.scroll_end(animate=False)

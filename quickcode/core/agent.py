@@ -63,8 +63,12 @@ class EventBus:
         self._maxsize = maxsize
         self.overflowed: set[int] = set()
 
-    def subscribe(self) -> asyncio.Queue[AgentEvent]:
-        q: asyncio.Queue[AgentEvent] = asyncio.Queue(self._maxsize)
+    def subscribe(self, maxsize: int | None = None) -> asyncio.Queue[AgentEvent]:
+        # maxsize=0 (unbounded) for the sole UI consumer so a fast provider can't
+        # overflow it and drop deltas (which render as garbled/missing text).
+        # Per-frame work is capped by the drain loop's coalescing, not the queue.
+        size = self._maxsize if maxsize is None else maxsize
+        q: asyncio.Queue[AgentEvent] = asyncio.Queue(size)
         self._subs.append(q)
         return q
 

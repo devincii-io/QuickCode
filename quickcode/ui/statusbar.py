@@ -48,6 +48,13 @@ class StatusBar(Horizontal):
     mode: reactive[Mode] = reactive(Mode.ask)
     agent_state: reactive[str] = reactive("idle")
 
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        # Cached segment refs (filled in on_mount) so watchers don't re-query the
+        # DOM, and last-rendered strings so we skip no-op repaints.
+        self._segs: dict[str, Static] = {}
+        self._last: dict[str, str] = {}
+
     def compose(self):
         yield Static("", id="seg-model", markup=False)
         yield Static("", id="seg-ctx", markup=False)
@@ -56,48 +63,55 @@ class StatusBar(Horizontal):
         yield Static("", id="seg-state", markup=False)
 
     def on_mount(self) -> None:
-        self._refresh()
+        for key in ("model", "ctx", "cost", "mode", "state"):
+            try:
+                self._segs[key] = self.query_one(f"#seg-{key}", Static)
+            except Exception:
+                pass
+        self._set("model", f" {self.model or '(no model)'} ")
+        self._set("ctx", self._ctx_text())
+        self._set("cost", f" ${self.cost_usd:.4f} ")
+        self._set_mode()
+        self._set("state", self._state_text())
 
-    def _seg(self, sel: str) -> Static | None:
-        try:
-            return self.query_one(sel, Static)
-        except Exception:
-            return None
+    def _set(self, key: str, text: str) -> None:
+        seg = self._segs.get(key)
+        if seg is None or self._last.get(key) == text:
+            return  # skip: not mounted, or the rendered string is unchanged
+        self._last[key] = text
+        seg.update(text)
 
-    def _refresh(self) -> None:
-        if not self.is_mounted:
+    def _ctx_text(self) -> str:
+        ctx = f"{self.ctx_pct:.0f}%" if self.ctx_pct is not None else "--"
+        return f" ctx {ctx} "
+
+    def _state_text(self) -> str:
+        return f" {_STATE_GLYPH.get(self.agent_state, '●')} {self.agent_state} "
+
+    def _set_mode(self) -> None:
+        seg = self._segs.get("mode")
+        if seg is None:
             return
-        if (s := self._seg("#seg-model")) is not None:
-            s.update(f" {self.model or '(no model)'} ")
-        if (s := self._seg("#seg-ctx")) is not None:
-            ctx = f"{self.ctx_pct:.0f}%" if self.ctx_pct is not None else "--"
-            s.update(f" ctx {ctx} ")
-        if (s := self._seg("#seg-cost")) is not None:
-            s.update(f" ${self.cost_usd:.4f} ")
-        if (s := self._seg("#seg-mode")) is not None:
-            for cls in _MODE_CLASS.values():
-                s.remove_class(cls)
-            s.add_class(_MODE_CLASS.get(self.mode, "mode-ask"))
-            s.update(f" {_MODE_LABEL.get(self.mode, str(self.mode))} ")
-        if (s := self._seg("#seg-state")) is not None:
-            glyph = _STATE_GLYPH.get(self.agent_state, "●")
-            s.update(f" {glyph} {self.agent_state} ")
+        for cls in _MODE_CLASS.values():
+            seg.remove_class(cls)
+        seg.add_class(_MODE_CLASS.get(self.mode, "mode-ask"))
+        self._set("mode", f" {_MODE_LABEL.get(self.mode, str(self.mode))} ")
 
-    # reactive watchers -> re-render the affected segments
+    # reactive watchers -> update only the affected segment
     def watch_model(self, _v: str) -> None:
-        self._refresh()
+        self._set("model", f" {self.model or '(no model)'} ")
 
     def watch_ctx_pct(self, _v: float | None) -> None:
-        self._refresh()
+        self._set("ctx", self._ctx_text())
 
     def watch_cost_usd(self, _v: float) -> None:
-        self._refresh()
+        self._set("cost", f" ${self.cost_usd:.4f} ")
 
     def watch_mode(self, _v: Mode) -> None:
-        self._refresh()
+        self._set_mode()
 
     def watch_agent_state(self, _v: str) -> None:
-        self._refresh()
+        self._set("state", self._state_text())
 
     def update_usage(self, ctx_pct: float | None, cost_usd: float) -> None:
         self.ctx_pct = ctx_pct
