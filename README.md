@@ -18,7 +18,26 @@ A terminal coding agent — an interactive TUI in the spirit of Claude Code and 
 
 ## Status
 
-**Design phase.** The plan lives in `docs/`:
+**M0 + M1 core implemented.** A runnable TUI that streams model chat and acts as
+a coding agent (six tools, permission-gated). See the roadmap for what's next.
+
+### Quickstart
+
+```bash
+uv venv --python 3.12
+uv pip install -e ".[dev,pty]"
+export OPENROUTER_API_KEY=sk-...        # or edit the Profile tab in Settings
+uv run quickcode                        # launch the TUI  (qc also works)
+uv run quickcode -p "explain this repo" # headless / print mode
+```
+
+Keys: `Enter` send · `Ctrl+J` newline · `Shift+Tab` cycle permission mode ·
+`F1` help · `F2` model picker · `F3` settings (curate OpenRouter models by
+tier/role, view usage) · `Esc` interrupt. Tests: `uv run pytest -q`.
+
+### Design docs
+
+The full plan lives in `docs/`:
 
 | Doc | Contents |
 |---|---|
