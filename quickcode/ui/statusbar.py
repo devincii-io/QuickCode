@@ -27,6 +27,10 @@ _MODE_CLASS = {
 class StatusBar(Static):
     """A single-line footer showing live agent state."""
 
+    def __init__(self, **kwargs) -> None:
+        # Content is plain text with [MODE] brackets; never parse it as markup.
+        super().__init__(markup=False, **kwargs)
+
     model: reactive[str] = reactive("")
     ctx_pct: reactive[float | None] = reactive(None)
     cost_usd: reactive[float] = reactive(0.0)

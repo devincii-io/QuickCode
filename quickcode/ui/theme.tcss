@@ -13,11 +13,17 @@ Screen {
 
 #input-area {
     height: auto;
-    max-height: 10;
     dock: bottom;
     border: solid $primary-darken-2;
     background: $panel;
     margin: 0 0 1 0;
+}
+
+#chat-input {
+    height: auto;
+    min-height: 1;
+    max-height: 8;
+    background: $panel;
 }
 
 StatusBar {

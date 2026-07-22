@@ -32,17 +32,21 @@ class Transcript(VerticalScroll):
     # ---- lifecycle helpers ----
 
     def add_banner(self, text: str) -> None:
-        self.mount(Static(text, classes="banner-notice"))
+        self.mount(Static(text, classes="banner-notice", markup=False))
         self.scroll_end(animate=False)
 
     def add_user(self, text: str) -> None:
         self._current_assistant = None
         self._assistant_text = ""
-        self.mount(Static(f"› {text}", classes="msg-user"))
+        self.mount(Static(f"› {text}", classes="msg-user", markup=False))
         self.scroll_end(animate=False)
 
     def add_system_note(self, text: str) -> None:
-        self.mount(Static(text, classes="msg-reasoning"))
+        self.mount(Static(text, classes="msg-reasoning", markup=False))
+        self.scroll_end(animate=False)
+
+    def add_error(self, text: str) -> None:
+        self.mount(Static(f"⚠ {text}", classes="tool-result-error", markup=False))
         self.scroll_end(animate=False)
 
     # ---- streaming assistant text ----
@@ -60,7 +64,7 @@ class Transcript(VerticalScroll):
         # New reasoning chunk closes any in-flight assistant text block so
         # reasoning always renders as its own dim line, in order.
         self._current_assistant = None
-        self.mount(Static(text, classes="msg-reasoning"))
+        self.mount(Static(text, classes="msg-reasoning", markup=False))
         self.scroll_end(animate=False)
 
     def finish_turn(self) -> None:
@@ -71,7 +75,7 @@ class Transcript(VerticalScroll):
 
     def tool_call_start(self, tool_id: str, name: str) -> None:
         self._current_assistant = None
-        header = Static(f"⏺ {name}(…)", classes="tool-header")
+        header = Static(f"⏺ {name}(…)", classes="tool-header", markup=False)
         self._tool_headers[tool_id] = header
         self._tool_names[tool_id] = name
         self._tool_args[tool_id] = ""
@@ -96,7 +100,7 @@ class Transcript(VerticalScroll):
         display_name = self._tool_names.get(tool_id, name)
         title = f"{'✗' if is_error else '✓'} {display_name} result"
         body_cls = "tool-result-error" if is_error else "tool-result-ok"
-        body = Static(content, classes=body_cls)
+        body = Static(content, classes=body_cls, markup=False)
         collapsible = Collapsible(
             body,
             title=title,

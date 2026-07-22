@@ -33,12 +33,16 @@ class PermissionModal(ModalScreen[PermissionOutcome]):
     def compose(self) -> ComposeResult:
         req = self.request
         with Vertical():
-            yield Label(f"Permission requested by [{req.agent_name}]", classes="tool-header")
-            yield Static(f"tool: {req.tool}")
-            yield Static(f"arg:  {req.arg}")
+            yield Label(f"Permission requested by {req.agent_name}", classes="tool-header")
+            yield Static(f"tool: {req.tool}", markup=False)
+            yield Static(f"arg:  {req.arg}", markup=False)
             if req.preview:
-                yield Static(req.preview, classes="msg-reasoning")
-            yield Static(f"always-allow rule: {req.rule_suggestion}", classes="msg-reasoning")
+                yield Static(req.preview, classes="msg-reasoning", markup=False)
+            yield Static(
+                f"always-allow rule: {req.rule_suggestion}",
+                classes="msg-reasoning",
+                markup=False,
+            )
             with Horizontal():
                 yield Button("Allow once (y)", id="allow-once", variant="success")
                 yield Button("Always allow (a)", id="allow-always", variant="warning")

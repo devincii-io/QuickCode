@@ -115,8 +115,10 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
                 if ev.error:
                     agent.bus.emit(TurnDone("error", ev.error))
     except ProviderError as e:
+        # Emit the error once (TurnDone carries the text); AgentStatus only
+        # flips the state indicator so it is not rendered a second time.
         agent.bus.emit(TurnDone("error", str(e)))
-        agent.bus.emit(AgentStatus("error", str(e)))
+        agent.bus.emit(AgentStatus("error"))
         return None
 
     tool_calls = [

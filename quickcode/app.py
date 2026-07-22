@@ -28,13 +28,31 @@ from quickcode.core.events import (
     TurnDone,
     Usage,
 )
-from quickcode.core.permissions import next_mode
+from quickcode.core.permissions import Mode, next_mode
 from quickcode.ui.modals import HelpScreen, ModelPicker, PermissionModal
 from quickcode.ui.settings import SettingsScreen
 from quickcode.ui.statusbar import StatusBar
 from quickcode.ui.transcript import Transcript
 
 _THEME_PATH = Path(__file__).parent / "ui" / "theme.tcss"
+
+
+def _explain_error(error: str, agent: AgentInstance, api_key_env: str = "") -> str:
+    """Turn a raw provider error into a one-line message with a next step."""
+    low = error.lower()
+    if "401" in error or "authentication" in low or "api key" in low or "unauthorized" in low:
+        var = api_key_env or "your provider API key env var"
+        return (
+            f"Auth failed (401). No valid API key. Set {var} and restart, "
+            f"or change the provider in Settings (F3 -> Profile)."
+        )
+    if "404" in error or "model" in low and "not" in low:
+        return f"Model '{agent.model}' was rejected (404). Pick another with F2. ({error})"
+    if "429" in error or "rate" in low:
+        return f"Rate limited (429). Wait a moment and retry. ({error})"
+    if "connect" in low or "timeout" in low or "network" in low:
+        return f"Network error reaching the provider. Check your connection. ({error})"
+    return f"Request failed: {error}"
 
 
 class ChatInput(TextArea):
@@ -119,13 +137,63 @@ class QuickCodeApp(App[None]):
     def on_chat_input_submitted(self, message: ChatInput.Submitted) -> None:
         self._submit(message.text)
 
+    _COMMANDS = {
+        "/help": "show this help / keybindings",
+        "/model": "open the model picker",
+        "/settings": "open settings (models, usage, permissions, profile)",
+        "/mode": "/mode <plan|ask|auto-edit|yolo> — set permission mode",
+        "/clear": "clear the conversation and start fresh",
+        "/quit": "exit QuickCode",
+    }
+
     def _submit(self, text: str) -> None:
         text = text.strip()
         if not text or self.agent.busy:
             return
+        if text.startswith("/"):
+            self._handle_command(text)
+            return
         transcript = self.query_one(Transcript)
         transcript.add_user(text)
         self.run_worker(self._run_turn(text), exclusive=False, group="turn")
+
+    def _handle_command(self, text: str) -> None:
+        transcript = self.query_one(Transcript)
+        parts = text.split()
+        cmd, args = parts[0].lower(), parts[1:]
+        if cmd in ("/help", "/"):
+            lines = "\n".join(f"  {c:<10} {d}" for c, d in self._COMMANDS.items())
+            transcript.add_system_note("Commands:\n" + lines)
+        elif cmd == "/model":
+            self.action_show_model_picker()
+        elif cmd == "/settings":
+            self.action_show_settings()
+        elif cmd == "/clear":
+            self.agent.history.messages.clear()
+            transcript.remove_children()
+            transcript.add_system_note("(conversation cleared)")
+        elif cmd == "/quit":
+            self.exit()
+        elif cmd == "/mode":
+            self._set_mode_by_name(args[0] if args else "")
+        else:
+            transcript.add_system_note(f"Unknown command: {cmd}. Type /help.")
+
+    def _set_mode_by_name(self, name: str) -> None:
+        transcript = self.query_one(Transcript)
+        try:
+            mode = Mode(name)
+        except ValueError:
+            transcript.add_system_note(
+                f"Usage: /mode <plan|ask|auto-edit|yolo>. Got '{name}'."
+            )
+            return
+        if mode == Mode.yolo and not self.allow_yolo:
+            transcript.add_system_note("yolo mode requires launching with --yolo.")
+            return
+        self.agent.set_mode(mode)
+        self.query_one("#status-bar", StatusBar).mode = mode
+        transcript.add_system_note(f"mode -> {mode.value}")
 
     async def _run_turn(self, text: str) -> None:
         status = self.query_one("#status-bar", StatusBar)
@@ -173,12 +241,14 @@ class QuickCodeApp(App[None]):
             status.update_usage(self.agent.context_pct(), self.agent.ledger.cost_usd)
         elif isinstance(ev, TurnDone):
             if ev.error:
-                transcript.add_system_note(f"[error] {ev.error}")
+                transcript.add_error(
+                    _explain_error(ev.error, self.agent, self.config.profile.api_key_env)
+                )
             status.update_usage(self.agent.context_pct(), self.agent.ledger.cost_usd)
         elif isinstance(ev, AgentStatus):
             status.agent_state = ev.state
-            if ev.detail:
-                transcript.add_system_note(ev.detail)
+            # detail is only used for errors, which TurnDone already renders;
+            # do not add a second note here.
 
     # ------------------------------------------------------------------
     # Permission bridge
