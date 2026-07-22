@@ -51,7 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_agent(args: argparse.Namespace) -> tuple[AgentInstance, Config, Environment]:
+def _build_agent(args: argparse.Namespace):
     config = Config.load()
     cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
     env = Environment.detect(cwd)
@@ -60,11 +60,26 @@ def _build_agent(args: argparse.Namespace) -> tuple[AgentInstance, Config, Envir
     provider = OpenAICompatProvider(profile.base_url, profile.api_key)
 
     registry = default_registry()
+
+    # Session store + optional resume of the most recent conversation.
+    from quickcode.core.tasks import TaskBoard
+    from quickcode.session.store import SessionStore
+
+    conv_id = None
+    if args.continue_session:
+        conv_id = SessionStore.most_recent(cwd)
+    store = SessionStore(cwd, conv_id)
+
+    # Task board persisted per conversation.
+    board_path = cwd / ".quickcode" / "tasks" / store.conv_id / "board.json"
+    board = TaskBoard.load(board_path)
+
     ctx = ToolCtx(
         cwd=cwd,
         read_registry=ReadRegistry(),
         shell_name=env.shell_name,
         platform=env.platform,
+        extra={"task_board": board},
     )
 
     mode_str = args.mode or config.default_mode
@@ -80,9 +95,20 @@ def _build_agent(args: argparse.Namespace) -> tuple[AgentInstance, Config, Envir
         yolo_accepted=bool(args.yolo),
     )
 
-    history = History(render_system_prompt(env, headless=args.print_mode, plan=(mode == Mode.plan)))
-
     model = args.model or profile.orchestrator_model
+    provider_name = "OpenRouter" if "openrouter.ai" in profile.base_url else profile.base_url
+
+    history = History(
+        render_system_prompt(
+            env,
+            model=model,
+            provider=provider_name,
+            headless=args.print_mode,
+            plan=(mode == Mode.plan),
+        )
+    )
+    if conv_id:
+        history.messages = store.load_messages()
 
     agent = AgentInstance(
         name="main",
@@ -95,7 +121,9 @@ def _build_agent(args: argparse.Namespace) -> tuple[AgentInstance, Config, Envir
         permission_cb=_headless_permission_cb,
         context_length=None,
     )
-    return agent, config, env
+    if not conv_id:
+        store.append_meta(title="", model=model, cwd=str(cwd))
+    return agent, config, env, store
 
 
 async def _run_headless(agent: AgentInstance, prompt: str) -> str:
@@ -110,15 +138,14 @@ def main(argv: list[str] | None = None) -> None:
         print(f"quickcode {__version__}")
         return
 
-    agent, config, env = _build_agent(args)
+    agent, config, env, store = _build_agent(args)
     profile = config.profile
 
     no_key_notice = None
     if not profile.api_key:
         no_key_notice = (
-            f"No API key found in ${profile.api_key_env}. Set it before sending a message, "
-            f"e.g.: export {profile.api_key_env}=sk-... "
-            f"(edit the Profile tab in Settings to change the provider/env var)."
+            f"No API key set. Set ${profile.api_key_env} or add one in "
+            f"Settings (F3 -> Profile) — it is saved encrypted at rest."
         )
 
     if args.print_mode:
@@ -142,6 +169,7 @@ def main(argv: list[str] | None = None) -> None:
         allow_yolo=args.yolo,
         startup_notice=no_key_notice,
         initial_prompt=args.prompt,
+        session_store=store,
     )
     app.run()
 

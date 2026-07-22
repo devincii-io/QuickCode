@@ -6,12 +6,17 @@ managers, etc. Prefers Git Bash on Windows (falls back to PowerShell if Git
 Bash isn't installed); on other platforms uses ``/bin/bash``. The working
 directory persists across calls within a session (a bare ``cd <dir>`` updates
 it without spawning a subprocess). Output is capped at 30000 characters
-(head+tail kept, middle elided). This milestone runs commands via a plain
-subprocess (no PTY) and background execution is not yet supported.
+(head+tail kept, middle elided).
+
+Commands run inside a real pseudo-terminal (ConPTY on Windows via ``pywinpty``,
+``pty`` on POSIX) so programs see a tty — colors, tty semantics, and correct
+process-tree kill on timeout. If the PTY backend is unavailable the tool falls
+back to a plain subprocess. Background execution is not yet supported.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import subprocess
 from pathlib import Path
@@ -19,6 +24,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from quickcode.pty.session import PtySession
 from quickcode.tools.base import Tool, ToolCtx, ToolResult
 
 DEFAULT_TIMEOUT_MS = 120_000
@@ -87,36 +93,28 @@ class BashTool(Tool[BashInput]):
 
         argv = _build_argv(input.command, ctx)
 
+        # Preferred path: a real pseudo-terminal. Fall back to a plain
+        # subprocess on any PTY error (backend missing, spawn failure, ...).
         try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=str(cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+            session = PtySession(argv, cwd=str(cwd))
+            raw_out, returncode, timed_out = await asyncio.to_thread(session.run, timeout_s)
+            text = _clean_pty_output(raw_out)
+        except Exception:  # noqa: BLE001 - any PTY failure -> subprocess fallback
+            return await asyncio.to_thread(
+                _run_subprocess, argv, str(cwd), timeout_s, timeout_ms, ctx
             )
-        except OSError as exc:
-            return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
 
-        try:
-            raw_out, _ = proc.communicate(timeout=timeout_s)
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc.pid, ctx)
-            try:
-                raw_out, _ = proc.communicate(timeout=5)
-            except Exception:
-                raw_out = b""
-            text = raw_out.decode("utf-8", errors="surrogateescape") if raw_out else ""
-            text = _cap(text)
+        text = _cap(text)
+
+        if timed_out:
             msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
             return ToolResult(content=msg, is_error=True)
 
-        text = raw_out.decode("utf-8", errors="surrogateescape") if raw_out else ""
-        text = _cap(text)
-
         if returncode != 0:
-            content = f"Command exited with code {returncode}.\n{text}" if text else (
-                f"Command exited with code {returncode}."
+            content = (
+                f"Command exited with code {returncode}.\n{text}"
+                if text
+                else f"Command exited with code {returncode}."
             )
             return ToolResult(content=content, is_error=True)
 
@@ -146,8 +144,70 @@ def _handle_cd(raw_target: str, cwd: Path, ctx: ToolCtx) -> ToolResult:
     return ToolResult(content=f"Changed working directory to {new_path}")
 
 
+# CSI/OSC/other ANSI escape sequences and the ConPTY init handshake
+# (\x1b[1t \x1b[c \x1b[?...h/l ...). Stripped so the model sees clean text; the
+# PTY still makes programs emit colors / take their tty code paths.
+_ANSI_RE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC ... BEL/ST
+    r"|\x1b[@-Z\\-_]"  # 2-char escapes (excluding CSI '[')
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"  # CSI sequences
+)
+
+
+def _clean_pty_output(raw: bytes) -> str:
+    """Decode PTY bytes once and strip terminal control noise for the model."""
+    text = raw.decode("utf-8", errors="surrogateescape")
+    text = _ANSI_RE.sub("", text)
+    # ConPTY uses CRLF line endings; normalize (and lone CR from carriage
+    # returns used for in-place redraws).
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
+
+
+def _run_subprocess(
+    argv: list[str], cwd: str, timeout_s: float, timeout_ms: int, ctx: ToolCtx
+) -> ToolResult:
+    """Fallback path when the PTY backend is unavailable. Plain pipes."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError as exc:
+        return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
+
+    try:
+        raw_out, _ = proc.communicate(timeout=timeout_s)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc.pid, ctx)
+        try:
+            raw_out, _ = proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            raw_out = b""
+        text = raw_out.decode("utf-8", errors="surrogateescape") if raw_out else ""
+        text = _cap(text)
+        msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
+        return ToolResult(content=msg, is_error=True)
+
+    text = raw_out.decode("utf-8", errors="surrogateescape") if raw_out else ""
+    text = _cap(text)
+
+    if returncode != 0:
+        content = (
+            f"Command exited with code {returncode}.\n{text}"
+            if text
+            else f"Command exited with code {returncode}."
+        )
+        return ToolResult(content=content, is_error=True)
+
+    return ToolResult(content=text or "(no output)")
+
+
 def _build_argv(command: str, ctx: ToolCtx) -> list[str]:
-    is_windows = ctx.platform.startswith("win")
+    is_windows = ctx.platform.lower().startswith("win")
     if is_windows:
         bash_path = _find_git_bash()
         if bash_path:
@@ -169,7 +229,7 @@ def _find_git_bash() -> str | None:
 
 
 def _kill_tree(pid: int, ctx: ToolCtx) -> None:
-    if ctx.platform.startswith("win"):
+    if ctx.platform.lower().startswith("win"):
         try:
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(pid)],

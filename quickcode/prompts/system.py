@@ -14,6 +14,12 @@ _TEMPLATE = """\
 You are QuickCode, a coding agent running in a terminal. You help the user
 with software engineering: fixing bugs, implementing features, refactoring,
 explaining code, and running project commands.
+
+You are powered by the model "{model}" served through {provider} (an
+OpenAI-compatible endpoint). When asked which model or agent you are, answer
+plainly with that: you are QuickCode running on {model}. QuickCode can drive
+different underlying models, so do not assume any capability or vendor beyond
+what "{model}" implies.
 </identity>
 
 <tone_and_style>
@@ -111,9 +117,24 @@ the plan tool with the plan as markdown. Do not attempt to implement yet.
 </plan_mode>"""
 
 
-def render_system_prompt(env: Environment, *, headless: bool = False, plan: bool = False) -> str:
-    """Pure function: env → the frozen system prompt for the session."""
+def render_system_prompt(
+    env: Environment,
+    *,
+    model: str = "an unknown model",
+    provider: str = "the configured provider",
+    headless: bool = False,
+    plan: bool = False,
+) -> str:
+    """Pure function: env → the frozen system prompt for the session.
+
+    ``model``/``provider`` name the running backend so the agent can answer
+    "what are you?" accurately. Both are stable within a session, so the cache
+    prefix stays byte-identical across turns (switching model mid-session
+    rebuilds history anyway).
+    """
     body = _TEMPLATE.format(
+        model=model,
+        provider=provider,
         cwd=env.cwd,
         platform=env.platform,
         os_version=env.os_version,
@@ -134,3 +155,37 @@ def render_system_prompt(env: Environment, *, headless: bool = False, plan: bool
 def system_reminder(content: str) -> str:
     """Wrap dynamic state for injection into a user message."""
     return f"<system-reminder>\n{content}\n</system-reminder>"
+
+
+# Short, per-turn descriptions of what the active permission mode allows. Ride
+# in the user turn (never the cache-stable prefix) so the model always knows
+# its live constraints even when the user cycles mode mid-session.
+_MODE_REMINDERS = {
+    "plan": (
+        "Permission mode: PLAN. Investigate and design only — file-mutating "
+        "tools are withheld. Present your plan via the plan tool; do not "
+        "implement yet."
+    ),
+    "ask": (
+        "Permission mode: ASK. You may edit files and run commands, but each "
+        "mutating action asks the user for approval first. Batch related edits."
+    ),
+    "auto-edit": (
+        "Permission mode: AUTO-EDIT. File edits within the project apply "
+        "without asking; commands outside the allowlist still prompt. Keep "
+        "changes tightly scoped to the request."
+    ),
+    "dontask": (
+        "Permission mode: DONTASK. Approved actions proceed without prompting. "
+        "Stay within the requested scope; avoid destructive operations."
+    ),
+    "yolo": (
+        "Permission mode: YOLO. All actions run without prompts, including "
+        "outside the project. Be careful and deliberate."
+    ),
+}
+
+
+def mode_reminder(mode_value: str) -> str:
+    """The reminder body for a permission mode value, or '' if unknown."""
+    return _MODE_REMINDERS.get(mode_value, "")

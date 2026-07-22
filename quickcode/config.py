@@ -18,6 +18,38 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 CONFIG_DIR = Path.home() / ".quickcode"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
+# The default (warm, non-blue) theme. Every key is a user-editable color; the
+# Theme tab in Settings edits these live and persists them here. Kept as a
+# plain dict so ``config`` has no dependency on the UI layer.
+DEFAULT_THEME_COLORS: dict[str, str] = {
+    "background": "#15140f",
+    "surface": "#1b1a15",
+    "panel": "#24221b",
+    "primary": "#c8973f",
+    "secondary": "#8fae74",
+    "accent": "#e08a4b",
+    "foreground": "#e9e3d5",
+    "success": "#8fb56a",
+    "warning": "#d9a441",
+    "error": "#d76c53",
+    "boost": "#2b2820",
+}
+
+# Order to present color fields in the editor (stable, grouped structure→accent).
+THEME_COLOR_ORDER: list[str] = [
+    "background",
+    "surface",
+    "panel",
+    "boost",
+    "foreground",
+    "primary",
+    "secondary",
+    "accent",
+    "success",
+    "warning",
+    "error",
+]
+
 
 Tier = str  # "quality" | "balanced" | "cheap"
 Role = str  # "orchestrator" | "worker"
@@ -53,15 +85,24 @@ class CatalogEntry:
 class Profile:
     name: str = "default"
     base_url: str = DEFAULT_BASE_URL
-    api_key_env: str = "OPENROUTER_API_KEY"
     orchestrator_model: str = "anthropic/claude-opus-4.8"
     worker_model: str = "anthropic/claude-sonnet-4.5"
     # Curated OpenRouter models admitted into this profile (empty = allow any).
     catalog: list[CatalogEntry] = field(default_factory=list)
 
     @property
+    def api_key_env(self) -> str:
+        """Fixed, non-configurable env var name for the API key."""
+        from quickcode.secrets import API_KEY_ENV
+
+        return API_KEY_ENV
+
+    @property
     def api_key(self) -> str | None:
-        return os.environ.get(self.api_key_env)
+        """Env var first, then the DPAPI-encrypted value saved from Settings."""
+        from quickcode.secrets import load_api_key
+
+        return load_api_key()
 
     def models_for(self, role: Role, tier: Tier | None = None) -> list[CatalogEntry]:
         """Curated models eligible for a role, optionally filtered by tier."""
@@ -84,10 +125,17 @@ class Config:
     active_profile: str = "default"
     profiles: dict[str, Profile] = field(default_factory=lambda: {"default": Profile()})
     default_mode: str = "ask"
+    theme: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME_COLORS))
 
     @property
     def profile(self) -> Profile:
         return self.profiles.get(self.active_profile, Profile())
+
+    def theme_colors(self) -> dict[str, str]:
+        """Full color map: defaults overlaid with any saved user overrides."""
+        merged = dict(DEFAULT_THEME_COLORS)
+        merged.update({k: v for k, v in (self.theme or {}).items() if v})
+        return merged
 
     @classmethod
     def load(cls, path: Path = CONFIG_PATH) -> Config:
@@ -99,17 +147,21 @@ class Config:
             profiles[name] = Profile(
                 name=name,
                 base_url=p.get("base_url", DEFAULT_BASE_URL),
-                api_key_env=p.get("api_key_env", "OPENROUTER_API_KEY"),
-                orchestrator_model=p.get("orchestrator_model", Profile.orchestrator_model),
-                worker_model=p.get("worker_model", Profile.worker_model),
+                orchestrator_model=p.get("orchestrator_model", "anthropic/claude-opus-4.8"),
+                worker_model=p.get("worker_model", "anthropic/claude-sonnet-4.5"),
                 catalog=[CatalogEntry.from_dict(e) for e in p.get("catalog", [])],
             )
         if not profiles:
             profiles = {"default": Profile()}
+        theme = dict(DEFAULT_THEME_COLORS)
+        saved_theme = raw.get("theme")
+        if isinstance(saved_theme, dict):
+            theme.update({k: v for k, v in saved_theme.items() if isinstance(v, str) and v})
         return cls(
             active_profile=raw.get("active_profile", next(iter(profiles))),
             profiles=profiles,
             default_mode=raw.get("default_mode", "ask"),
+            theme=theme,
         )
 
     def save(self, path: Path = CONFIG_PATH) -> None:
@@ -117,10 +169,10 @@ class Config:
         data = {
             "active_profile": self.active_profile,
             "default_mode": self.default_mode,
+            "theme": self.theme,
             "profiles": {
                 name: {
                     "base_url": p.base_url,
-                    "api_key_env": p.api_key_env,
                     "orchestrator_model": p.orchestrator_model,
                     "worker_model": p.worker_model,
                     "catalog": [e.to_dict() for e in p.catalog],

@@ -35,6 +35,25 @@ Keys: `Enter` send · `Ctrl+J` newline · `Shift+Tab` cycle permission mode ·
 `F1` help · `F2` model picker · `F3` settings (curate OpenRouter models by
 tier/role, view usage) · `Esc` interrupt. Tests: `uv run pytest -q`.
 
+### Installation (Windows)
+
+Two ways to install QuickCode on Windows without the manual `uv` steps above:
+
+- **Installer (`.exe`)** — build `packaging\quickcode.iss` with the
+  [Inno Setup](https://jrsoftware.org/isinfo.php) compiler to produce a
+  wizard-driven installer that installs Git and Python (3.12+) if they're
+  missing, `pip install`s QuickCode, adds it to your `PATH`, and creates a
+  Start Menu shortcut. See [packaging/README.md](packaging/README.md).
+- **PowerShell script** — from a checkout of this repo:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+  ```
+
+  Creates/reuses a `.venv` (or pass `-UsePipx` for a global pipx install),
+  ensuring Git/Python along the way. See
+  [packaging/README.md](packaging/README.md) for flags and details.
+
 ### Design docs
 
 The full plan lives in `docs/`:

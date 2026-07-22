@@ -39,6 +39,22 @@ class PermissionOutcome:
 PermissionCallback = Callable[[PermissionRequest], Awaitable[PermissionOutcome]]
 
 
+@dataclass
+class PlanOutcome:
+    """Result of a plan review, mapped by the UI from the PlanReviewModal.
+
+    ``approved`` True with ``mode_after`` set means execution proceeds in that
+    mode; False means keep planning and ``feedback`` steers the next turn.
+    """
+
+    approved: bool
+    mode_after: Mode | None = None
+    feedback: str = ""
+
+
+PlanCallback = Callable[[str], Awaitable[PlanOutcome]]
+
+
 class EventBus:
     """Fan-out with bounded per-subscriber queues (drop-to-resync on overflow)."""
 
@@ -103,6 +119,23 @@ class AgentInstance:
         self.context_length = context_length
         self._cancel = asyncio.Event()
         self.busy = False
+        self._post_compaction = False
+        # Optional hooks set by the app: called with a ChatMessage after each
+        # message is appended (session persistence).
+        self.on_message = None
+        # Set by the app to review plans via the PlanReviewModal; None -> the
+        # loop treats a plan call as recorded-without-review (headless).
+        self.plan_cb = None
+        self.approved_plan: str | None = None
+
+    def mark_compacted(self) -> None:
+        """Flag that the next user turn should carry a post-compaction reminder."""
+        self._post_compaction = True
+
+    def take_post_compaction(self) -> bool:
+        was = self._post_compaction
+        self._post_compaction = False
+        return was
 
     @property
     def mode(self) -> Mode:

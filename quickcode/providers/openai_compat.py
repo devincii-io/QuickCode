@@ -255,30 +255,57 @@ class OpenAICompatProvider:
 
         models: list[ModelInfo] = []
         for m in getattr(resp, "data", []) or []:
-            model_id = getattr(m, "id", "")
-            name = getattr(m, "name", None) or model_id
-            context_length = getattr(m, "context_length", None)
+            try:
+                model_id = getattr(m, "id", "") or ""
+                if not model_id:
+                    continue
+                name = getattr(m, "name", None) or model_id
 
-            pricing = getattr(m, "pricing", None)
-            prompt_price = None
-            completion_price = None
-            if pricing is not None:
-                prompt_price = getattr(pricing, "prompt", None)
-                completion_price = getattr(pricing, "completion", None)
-                if prompt_price is None and isinstance(pricing, dict):
-                    prompt_price = pricing.get("prompt")
-                if completion_price is None and isinstance(pricing, dict):
-                    completion_price = pricing.get("completion")
+                # OpenRouter (and other extended OpenAI-compatible backends)
+                # attach extra per-model fields the openai SDK stashes on
+                # `model_extra` since they aren't part of the base schema.
+                extra = getattr(m, "model_extra", None) or {}
+                if not isinstance(extra, dict):
+                    extra = {}
 
-            models.append(
-                ModelInfo(
-                    id=model_id,
-                    name=name,
-                    context_length=context_length,
-                    prompt_price=prompt_price,
-                    completion_price=completion_price,
-                    supports_tools=True,
+                context_length = getattr(m, "context_length", None) or extra.get(
+                    "context_length"
                 )
-            )
+                try:
+                    context_length = (
+                        int(context_length) if context_length is not None else None
+                    )
+                except (TypeError, ValueError):
+                    context_length = None
+
+                pricing = extra.get("pricing")
+                if not isinstance(pricing, dict):
+                    pricing = {}
+
+                prompt_price = _price_per_million(pricing.get("prompt"))
+                completion_price = _price_per_million(pricing.get("completion"))
+
+                models.append(
+                    ModelInfo(
+                        id=model_id,
+                        name=name,
+                        context_length=context_length,
+                        prompt_price=prompt_price,
+                        completion_price=completion_price,
+                        supports_tools=True,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - one bad entry shouldn't break listing
+                continue
 
         return models
+
+
+def _price_per_million(raw: Any) -> float | None:
+    """OpenRouter reports USD-per-token pricing as strings; convert to USD/1M tokens."""
+    if raw is None:
+        return None
+    try:
+        return float(raw) * 1_000_000
+    except (TypeError, ValueError):
+        return None

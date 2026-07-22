@@ -28,7 +28,7 @@ from quickcode.core.events import (
     Usage,
 )
 from quickcode.core.permissions import Decision
-from quickcode.prompts.system import system_reminder
+from quickcode.prompts.system import mode_reminder, system_reminder
 from quickcode.providers.base import ChatRequest, ProviderError
 
 if TYPE_CHECKING:
@@ -38,7 +38,14 @@ MAX_ROUNDS = 50
 
 
 async def run_turn(agent: AgentInstance, user_input: str) -> str:
-    agent.history.push_user(user_input)
+    reminders: list[str] = []
+    if agent.take_post_compaction():
+        from quickcode.prompts.compact import POST_COMPACTION_REMINDER
+
+        reminders.append(system_reminder(POST_COMPACTION_REMINDER))
+    if (mode_note := mode_reminder(agent.mode.value)):
+        reminders.append(system_reminder(mode_note))
+    agent.history.push_user(user_input, reminders or None)
     last_text = ""
     for round_no in range(MAX_ROUNDS + 1):
         if round_no == MAX_ROUNDS:
@@ -69,11 +76,31 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
     return last_text
 
 
+def _tools_for(agent: AgentInstance):
+    """Structural tool filtering by mode (docs/PERMISSIONS §Plan mode).
+
+    In plan mode we withhold the file-mutating tools entirely and offer the
+    ``plan`` tool; outside plan mode the ``plan`` tool is hidden.
+    """
+    from quickcode.core.permissions import Mode
+
+    in_plan = agent.mode == Mode.plan
+    out = []
+    for s in agent.registry.schemas():
+        if s.name == "plan":
+            if not in_plan:
+                continue
+        elif in_plan and s.name in {"write", "edit"}:
+            continue
+        out.append(s)
+    return out
+
+
 async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
     req = ChatRequest(
         model=agent.model,
         messages=agent.history.build_messages(),
-        tools=agent.registry.schemas(),
+        tools=_tools_for(agent),
     )
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -170,6 +197,9 @@ async def _run_tool(agent: AgentInstance, call: AssembledToolCall) -> tuple[str,
         raw = json.loads(call.arguments or "{}")
     except json.JSONDecodeError as e:
         return (f"Invalid tool arguments (not JSON): {e}", True)
+
+    if call.name == "plan":
+        return await _handle_plan(agent, raw.get("plan", ""))
     try:
         inp = tool.Input(**raw)
     except Exception as e:  # pydantic validation
@@ -202,6 +232,25 @@ async def _run_tool(agent: AgentInstance, call: AssembledToolCall) -> tuple[str,
         return (result.content, result.is_error)
     except Exception as e:  # tools never crash the loop
         return (f"Tool {call.name} raised: {type(e).__name__}: {e}", True)
+
+
+async def _handle_plan(agent: AgentInstance, plan_md: str) -> tuple[str, bool]:
+    """Route a plan submission to the UI's plan_cb and apply the outcome."""
+    if agent.plan_cb is None:
+        agent.approved_plan = plan_md
+        return ("Plan recorded (no interactive review available).", False)
+    outcome = await agent.plan_cb(plan_md)
+    if outcome.approved:
+        if outcome.mode_after is not None:
+            agent.set_mode(outcome.mode_after)
+        agent.approved_plan = plan_md
+        return (
+            f"Plan approved. Proceeding in {agent.mode.value} mode. "
+            "Execute the plan now.",
+            False,
+        )
+    fb = outcome.feedback.strip() or "(no feedback given)"
+    return (f"Plan not approved. Stay in plan mode and revise. Feedback: {fb}", False)
 
 
 def _match_target(tool_name: str, raw: dict) -> str:
