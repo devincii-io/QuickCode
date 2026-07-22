@@ -16,6 +16,7 @@ SLASH_COMMANDS: list[tuple[str, str, bool]] = [
     ("/model", "Switch the active model (picker)", False),
     ("/settings", "Open settings (models · usage · theme · profile)", False),
     ("/agents", "Show subagent definitions the model can delegate to", False),
+    ("/usage", "Show token & cost usage for this session", False),
     ("/mode", "Set permission mode: plan | ask | auto-edit | yolo", True),
     ("/tasks", "Toggle the task board sidebar", False),
     ("/compact", "Compress the conversation to free up context", False),

@@ -44,6 +44,7 @@ from quickcode.ui.settings import SettingsScreen
 from quickcode.ui.slashmenu import SlashMenu, command_takes_args
 from quickcode.ui.statusbar import StatusBar
 from quickcode.ui.transcript import Transcript
+from quickcode.ui.usage_modal import UsageScreen
 
 _THEME_PATH = Path(__file__).parent / "ui" / "theme.tcss"
 
@@ -289,6 +290,7 @@ class QuickCodeApp(App[None]):
         "/model": "open the model picker",
         "/settings": "open settings (models, usage, permissions, profile)",
         "/agents": "show subagent definitions the model can delegate to",
+        "/usage": "show token & cost usage for this session",
         "/mode": "/mode <plan|ask|auto-edit|yolo> — set permission mode",
         "/tasks": "toggle the task board sidebar",
         "/compact": "compress the conversation to free up context",
@@ -320,6 +322,8 @@ class QuickCodeApp(App[None]):
             self.action_show_settings()
         elif cmd == "/agents":
             self.action_show_agents()
+        elif cmd == "/usage":
+            self.action_show_usage()
         elif cmd == "/tasks":
             self.action_toggle_sidebar()
         elif cmd == "/compact":
@@ -521,6 +525,18 @@ class QuickCodeApp(App[None]):
 
     def action_show_settings(self) -> None:
         self.push_screen(SettingsScreen(config=self.config, agent=self.agent, app_ref=self))
+
+    def action_show_usage(self) -> None:
+        deps = self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
+        spawned = list(deps.spawned) if deps is not None else []
+        self.push_screen(
+            UsageScreen(
+                model=self.agent.model,
+                ledger=self.agent.ledger,
+                context_pct=self.agent.context_pct(),
+                spawned=spawned,
+            )
+        )
 
     def apply_theme(self, colors: dict[str, str]) -> None:
         """Rebuild and re-apply the theme live from an edited color map.

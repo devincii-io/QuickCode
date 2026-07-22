@@ -209,7 +209,11 @@ class AgentPane(Vertical):
 
 
 class AgentPanes(Vertical):
-    """A keyboard-navigable stack of ``AgentPane`` rows. Hidden while empty."""
+    """A keyboard-navigable stack of ``AgentPane`` rows. Hidden while empty.
+
+    A small always-visible header shows the agent count and the control hints,
+    so the panes are discoverable and dismissable without opening help.
+    """
 
     DEFAULT_CSS = """
     AgentPanes {
@@ -220,6 +224,16 @@ class AgentPanes(Vertical):
         padding: 1 1;
         overflow-y: auto;
     }
+    AgentPanes #panes-header {
+        color: $accent;
+        text-style: bold;
+        height: 1;
+    }
+    AgentPanes #panes-hint {
+        color: $text-muted;
+        height: auto;
+        margin: 0 0 1 0;
+    }
     """
 
     def __init__(self, **kwargs) -> None:
@@ -227,8 +241,18 @@ class AgentPanes(Vertical):
         self._panes: list[AgentPane] = []
         self._selected = -1
 
+    def compose(self):
+        yield Static("Subagents", id="panes-header", markup=False)
+        yield Static(
+            "Ctrl+←/→ move · Ctrl+E expand · Ctrl+W close done",
+            id="panes-hint",
+            markup=False,
+        )
+
     def on_mount(self) -> None:
         self._update_visibility()
+        # Keep the live/done count fresh as panes finish on their own timers.
+        self.set_interval(0.5, self._update_header)
 
     # ---- public API used by the app ----
 
@@ -243,7 +267,22 @@ class AgentPanes(Vertical):
             self._selected = 0
         self._sync_selection()
         self._update_visibility()
+        self._update_header()
         return pane
+
+    def _update_header(self) -> None:
+        try:
+            header = self.query_one("#panes-header", Static)
+        except Exception:
+            return
+        n = len(self._panes)
+        live = sum(1 for p in self._panes if not p.finished)
+        label = f"Subagents · {n}"
+        if live:
+            label += f"  ({live} live)"
+        elif n:
+            label += "  (all done)"
+        header.update(label)
 
     def focus_next(self) -> None:
         self._move(1)
@@ -276,6 +315,7 @@ class AgentPanes(Vertical):
             self._selected = len(self._panes) - 1
         self._sync_selection()
         self._update_visibility()
+        self._update_header()
 
     # ---- internals ----
 

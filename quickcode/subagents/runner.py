@@ -23,6 +23,7 @@ from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.prompts.subagent import render_subagent_prompt
 from quickcode.providers.base import Provider
+from quickcode.subagents.artifacts import maybe_offload
 from quickcode.subagents.definitions import AgentDef, load_defs
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry, build_registry
@@ -186,4 +187,5 @@ async def spawn_subagent(
     if child.cancelled or not report.strip():
         report = report or "(no output)"
         report = f"[did not finish]\n{report}"
+    report = maybe_offload(deps.cwd, agent_id, report)
     return agent_id, sanitize_report(report)

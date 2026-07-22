@@ -147,6 +147,13 @@ async def _run_headless(agent: AgentInstance, prompt: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # `quickcode doctor` runs the environment diagnostic and exits.
+    if raw and raw[0] == "doctor":
+        from quickcode.doctor import main as doctor_main
+
+        raise SystemExit(doctor_main())
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 
