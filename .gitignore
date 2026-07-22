@@ -3,6 +3,7 @@ dist/
 *.log
 .env
 .quickcode/sessions/
+.quickcode/tasks/
 .quickcode/settings.local.json
 __pycache__/
 *.pyc
