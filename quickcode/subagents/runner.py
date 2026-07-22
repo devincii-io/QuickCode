@@ -11,6 +11,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from quickcode.config import Environment, Profile
 from quickcode.core.agent import (
@@ -25,6 +26,9 @@ from quickcode.providers.base import Provider
 from quickcode.subagents.definitions import AgentDef, load_defs
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry, build_registry
+
+if TYPE_CHECKING:
+    from quickcode.core.agent import EventBus
 
 MAX_DEPTH = 2
 MAX_AGENTS = 50
@@ -58,6 +62,10 @@ class SubagentDeps:
     # Shared across the whole conversation's agent tree.
     counter: itertools.count = field(default_factory=lambda: itertools.count(1))
     spawned: list[str] = field(default_factory=list)
+    # UI hook: called synchronously at spawn with (agent_id, definition name,
+    # the child's EventBus) so a live pane can subscribe to the child's stream.
+    # Optional — headless runs leave it None.
+    on_pane: Callable[[str, str, EventBus], None] | None = None
 
     def child(self, depth: int, effective_mode: Mode) -> SubagentDeps:
         """A deps object for the next level down, sharing the counter/roster.
@@ -73,6 +81,7 @@ class SubagentDeps:
             depth=depth,
             counter=self.counter,
             spawned=self.spawned,
+            on_pane=self.on_pane,
         )
 
 
@@ -160,6 +169,14 @@ async def spawn_subagent(
         model=model,
         permission_cb=_deny_cb,
     )
+
+    # Surface a live pane before the child starts streaming. A UI failure here
+    # must never break the subagent run, so it is fully isolated.
+    if deps.on_pane is not None:
+        try:
+            deps.on_pane(agent_id, defn.name, child.bus)
+        except Exception:  # noqa: BLE001 — the pane is best-effort telemetry
+            pass
 
     try:
         report = await child.run_turn(prompt)

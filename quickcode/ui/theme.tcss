@@ -225,3 +225,54 @@ SettingsScreen .key-buttons Button {
 .model-row {
     height: auto;
 }
+
+/* ---- subagent live panes ------------------------------------------- */
+/* A right-hand column of compact, streaming subagent summaries. Hidden while
+   empty (managed by the widget). Warm palette, no blue — matches the sidebar. */
+#agent-panes {
+    width: 42;
+    height: 1fr;
+    background: $panel;
+    color: $text;
+    border-left: vkey $primary-darken-2;
+    padding: 1 1;
+    overflow-y: auto;
+}
+
+AgentPane {
+    height: auto;
+    border-left: outer $panel-lighten-2;
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+
+/* Selected pane: accent rail. */
+AgentPane.selected {
+    border-left: outer $accent;
+    background: $boost;
+}
+
+/* Finished panes dim and (unless expanded) collapse to the title row. */
+AgentPane.finished {
+    color: $text-muted;
+}
+
+AgentPane .pane-title {
+    text-style: bold;
+    color: $secondary;
+}
+
+AgentPane.finished .pane-title {
+    color: $text-muted;
+    text-style: none;
+}
+
+AgentPane .pane-body {
+    color: $text-muted;
+    height: auto;
+}
+
+/* Expanded pane gets a touch more breathing room. */
+AgentPane.expanded {
+    background: $boost;
+}

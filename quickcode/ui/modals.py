@@ -311,6 +311,9 @@ QuickCode — keybindings (keyboard-only friendly)
   PageUp/Down    scroll the transcript
   Ctrl+Home/End  jump to top / bottom of transcript
   Ctrl+B         toggle the task board sidebar
+  Ctrl+←/→       select prev / next live subagent pane (also Ctrl+↑/↓)
+  Ctrl+E         expand / collapse the selected subagent pane
+  Ctrl+W         dismiss finished subagent panes
   Ctrl+P         command palette
   F1             this help screen
   F2             model picker (type to filter · ↑/↓ · Enter)

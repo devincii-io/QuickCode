@@ -35,6 +35,8 @@ from quickcode.core.events import (
     Usage,
 )
 from quickcode.core.permissions import Mode, next_mode
+from quickcode.ui.agent_pane import AgentPanes
+from quickcode.ui.agents_modal import AgentsScreen
 from quickcode.ui.modals import HelpScreen, ModelPicker, PermissionModal
 from quickcode.ui.palette import THEME_NAME, build_theme
 from quickcode.ui.plan_modal import PlanDecision, PlanReviewModal
@@ -169,6 +171,13 @@ class QuickCodeApp(App[None]):
         Binding("pagedown", "scroll_transcript('pagedown')", "Scroll down", show=False, priority=True),
         Binding("ctrl+home", "scroll_transcript('home')", "Top", show=False, priority=True),
         Binding("ctrl+end", "scroll_transcript('end')", "Bottom", show=False, priority=True),
+        # Keyboard-only subagent pane navigation (no-ops when no panes exist).
+        Binding("ctrl+right", "pane_next", "Next pane", show=False, priority=True),
+        Binding("ctrl+left", "pane_prev", "Prev pane", show=False, priority=True),
+        Binding("ctrl+down", "pane_next", "Next pane", show=False, priority=True),
+        Binding("ctrl+up", "pane_prev", "Prev pane", show=False, priority=True),
+        Binding("ctrl+e", "pane_expand", "Expand pane", show=False, priority=True),
+        Binding("ctrl+w", "pane_close_finished", "Dismiss done panes", show=False, priority=True),
     ]
 
     def __init__(self, agent: AgentInstance, config: Config, *, allow_yolo: bool = False,
@@ -193,6 +202,7 @@ class QuickCodeApp(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
             yield Transcript()
+            yield AgentPanes(id="agent-panes")
             yield Static("", id="sidebar", markup=False)
         yield SlashMenu(id="slash-menu")
         with Vertical(id="input-area"):
@@ -209,6 +219,11 @@ class QuickCodeApp(App[None]):
         status.model = self.agent.model
         status.mode = self.agent.mode
         self.query_one("#sidebar", Static).display = False
+        # Route subagent spawns to live panes. The deps object is shared across
+        # the whole agent tree, so setting the hook once reaches every child.
+        deps = self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
+        if deps is not None:
+            deps.on_pane = self._on_subagent_pane
         self.query_one("#input-area").border_title = "▌ message"
         transcript = self.query_one(Transcript)
         # Replay any resumed history into the transcript.
@@ -273,6 +288,7 @@ class QuickCodeApp(App[None]):
         "/help": "show this help / keybindings",
         "/model": "open the model picker",
         "/settings": "open settings (models, usage, permissions, profile)",
+        "/agents": "show subagent definitions the model can delegate to",
         "/mode": "/mode <plan|ask|auto-edit|yolo> — set permission mode",
         "/tasks": "toggle the task board sidebar",
         "/compact": "compress the conversation to free up context",
@@ -302,6 +318,8 @@ class QuickCodeApp(App[None]):
             self.action_show_model_picker()
         elif cmd == "/settings":
             self.action_show_settings()
+        elif cmd == "/agents":
+            self.action_show_agents()
         elif cmd == "/tasks":
             self.action_toggle_sidebar()
         elif cmd == "/compact":
@@ -496,6 +514,11 @@ class QuickCodeApp(App[None]):
                     "will be slower and cost more input tokens."
                 )
 
+    def action_show_agents(self) -> None:
+        deps = self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
+        spawned = list(deps.spawned) if deps is not None else []
+        self.push_screen(AgentsScreen(cwd=self.agent.ctx.cwd, spawned=spawned))
+
     def action_show_settings(self) -> None:
         self.push_screen(SettingsScreen(config=self.config, agent=self.agent, app_ref=self))
 
@@ -514,6 +537,40 @@ class QuickCodeApp(App[None]):
         sidebar.display = not sidebar.display
         if sidebar.display:
             self._refresh_sidebar()
+
+    # ------------------------------------------------------------------
+    # Subagent panes
+    # ------------------------------------------------------------------
+
+    def _on_subagent_pane(self, agent_id: str, agent_type: str, bus) -> None:
+        """Runner hook (on the event loop thread): open a live pane for a
+        freshly spawned subagent. Best-effort — never raise back into the run."""
+        try:
+            self.query_one(AgentPanes).add_pane(agent_id, agent_type, bus)
+        except Exception:
+            pass
+
+    def _panes(self) -> AgentPanes | None:
+        try:
+            return self.query_one(AgentPanes)
+        except Exception:
+            return None
+
+    def action_pane_next(self) -> None:
+        if (p := self._panes()) is not None:
+            p.focus_next()
+
+    def action_pane_prev(self) -> None:
+        if (p := self._panes()) is not None:
+            p.focus_prev()
+
+    def action_pane_expand(self) -> None:
+        if (p := self._panes()) is not None:
+            p.toggle_expand()
+
+    def action_pane_close_finished(self) -> None:
+        if (p := self._panes()) is not None:
+            p.close_finished()
 
     async def _plan_cb(self, plan_markdown: str) -> PlanOutcome:
         result = await self.push_screen_wait(PlanReviewModal(plan_markdown))
