@@ -7,7 +7,7 @@ result bodies (auto-collapsed on success, expanded + red on error).
 
 from __future__ import annotations
 
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Collapsible, Markdown, Static
 
 
@@ -36,6 +36,7 @@ class Transcript(VerticalScroll):
         self._assistant_text: str = ""
         self._assistant_dirty: bool = False
         self._current_reasoning: Static | None = None
+        self._current_reasoning_box: Collapsible | None = None
         self._reasoning_text: str = ""
         self._reasoning_dirty: bool = False
         self._tool_headers: dict[str, Static] = {}
@@ -55,8 +56,15 @@ class Transcript(VerticalScroll):
         self.scroll_end(animate=False)
 
     def add_user(self, text: str) -> None:
+        # Right-aligned bubble (iMessage style): a row that pushes an auto-width
+        # bubble to the right edge.
         self._reset_streams()
-        self.mount(Static(f"› {text}", classes="msg-user", markup=False))
+        self.mount(
+            Horizontal(
+                Static(text, classes="user-bubble", markup=False),
+                classes="user-row",
+            )
+        )
         self.scroll_end(animate=False)
 
     def add_system_note(self, text: str) -> None:
@@ -72,6 +80,7 @@ class Transcript(VerticalScroll):
         self._assistant_text = ""
         self._assistant_dirty = False
         self._current_reasoning = None
+        self._current_reasoning_box = None
         self._reasoning_text = ""
         self._reasoning_dirty = False
 
@@ -93,7 +102,13 @@ class Transcript(VerticalScroll):
     # here either — the app drain loop does one anchor-aware scroll per frame.
 
     def append_text_delta(self, text: str) -> None:
-        # Real answer text starts; stop appending to any reasoning block.
+        # Real answer text starting: render the final reasoning and collapse the
+        # thinking box out of the way (still expandable by the user).
+        if self._current_reasoning_box is not None:
+            if self._current_reasoning is not None and self._current_reasoning.is_mounted:
+                self._current_reasoning.update(self._reasoning_text)
+            self._current_reasoning_box.collapsed = True
+            self._current_reasoning_box = None
         self._current_reasoning = None
         if self._current_assistant is None:
             self._current_assistant = Markdown(classes="msg-assistant")
@@ -103,15 +118,21 @@ class Transcript(VerticalScroll):
         self._assistant_dirty = True
 
     def append_reasoning_delta(self, text: str) -> None:
-        # One wrapped block for the whole reasoning stream (a widget per delta
-        # rendered thinking as a narrow one-token-per-line column). The "✱
-        # Thinking" header is mounted once so only the body text rebuilds.
+        # Accumulate the whole reasoning stream into one wrapped, collapsible
+        # block (a widget per delta rendered thinking as a narrow one-token-per-
+        # line column). Starts expanded so you watch it stream; collapses when
+        # the answer begins.
         self._current_assistant = None
         if self._current_reasoning is None:
             self._reasoning_text = ""
-            self.mount(Static("✱ Thinking", classes="msg-reasoning-head", markup=False))
             self._current_reasoning = Static("", classes="msg-reasoning", markup=False)
-            self.mount(self._current_reasoning)
+            self._current_reasoning_box = Collapsible(
+                self._current_reasoning,
+                title="✱ Thinking",
+                collapsed=False,
+                classes="reasoning-box",
+            )
+            self.mount(self._current_reasoning_box)
         self._reasoning_text += text
         self._reasoning_dirty = True
 

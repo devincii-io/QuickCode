@@ -30,9 +30,11 @@ def format_context(n: int | None) -> str:
 def format_price(prompt_price: float | None, completion_price: float | None) -> str:
     """Price label in USD per 1M tokens, e.g. '$3.00/$15.00 /M'."""
     if prompt_price is None and completion_price is None:
-        return "—"
-    p = f"${prompt_price:.2f}" if prompt_price is not None else "—"
-    c = f"${completion_price:.2f}" if completion_price is not None else "—"
+        return "price n/a"
+    if prompt_price == 0 and completion_price == 0:
+        return "free"
+    p = f"${prompt_price:.2f}" if prompt_price is not None else "$?"
+    c = f"${completion_price:.2f}" if completion_price is not None else "$?"
     return f"{p}/{c} /M"
 
 

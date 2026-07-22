@@ -302,10 +302,16 @@ class OpenAICompatProvider:
 
 
 def _price_per_million(raw: Any) -> float | None:
-    """OpenRouter reports USD-per-token pricing as strings; convert to USD/1M tokens."""
+    """OpenRouter reports USD-per-token pricing as strings; convert to USD/1M
+    tokens. Negative values are OpenRouter's "variable/router" sentinel (e.g.
+    ``-1`` for openrouter/auto) — treat those as unknown rather than showing a
+    nonsensical negative price."""
     if raw is None:
         return None
     try:
-        return float(raw) * 1_000_000
+        value = float(raw)
     except (TypeError, ValueError):
         return None
+    if value < 0:
+        return None
+    return value * 1_000_000

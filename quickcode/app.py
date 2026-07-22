@@ -39,6 +39,7 @@ from quickcode.ui.modals import HelpScreen, ModelPicker, PermissionModal
 from quickcode.ui.palette import THEME_NAME, build_theme
 from quickcode.ui.plan_modal import PlanDecision, PlanReviewModal
 from quickcode.ui.settings import SettingsScreen
+from quickcode.ui.slashmenu import SlashMenu, command_takes_args
 from quickcode.ui.statusbar import StatusBar
 from quickcode.ui.transcript import Transcript
 
@@ -92,14 +93,42 @@ def _explain_error(error: str, agent: AgentInstance, api_key_env: str = "") -> s
 
 
 class ChatInput(TextArea):
-    """A TextArea where Enter submits and Ctrl+J inserts a newline."""
+    """A TextArea where Enter submits and Ctrl+J inserts a newline.
+
+    While the slash-command menu is open, ↑/↓/Tab/Enter/Esc drive the menu
+    instead of the text area.
+    """
 
     class Submitted(events.Event):
         def __init__(self, text: str) -> None:
             super().__init__()
             self.text = text
 
+    def _menu(self) -> SlashMenu | None:
+        try:
+            menu = self.app.query_one(SlashMenu)
+        except Exception:
+            return None
+        return menu if menu.is_open else None
+
     async def _on_key(self, event: events.Key) -> None:
+        menu = self._menu()
+        if menu is not None:
+            if event.key in ("up", "down"):
+                event.prevent_default()
+                event.stop()
+                (menu.action_cursor_up if event.key == "up" else menu.action_cursor_down)()
+                return
+            if event.key in ("enter", "tab"):
+                event.prevent_default()
+                event.stop()
+                self.app.accept_slash_command()
+                return
+            if event.key == "escape":
+                event.prevent_default()
+                event.stop()
+                menu.hide()
+                return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -158,6 +187,7 @@ class QuickCodeApp(App[None]):
         with Horizontal(id="body"):
             yield Transcript()
             yield Static("", id="sidebar", markup=False)
+        yield SlashMenu(id="slash-menu")
         with Vertical(id="input-area"):
             yield ChatInput(id="chat-input", show_line_numbers=False)
         yield StatusBar(id="status-bar")
@@ -204,7 +234,33 @@ class QuickCodeApp(App[None]):
     # ------------------------------------------------------------------
 
     def on_chat_input_submitted(self, message: ChatInput.Submitted) -> None:
+        self.query_one(SlashMenu).hide()
         self._submit(message.text)
+
+    def on_text_area_changed(self, event) -> None:
+        # Show/refresh the slash-command popup as the user types a leading "/".
+        try:
+            menu = self.query_one(SlashMenu)
+        except Exception:
+            return
+        menu.show_for(self.query_one("#chat-input", ChatInput).text)
+
+    def accept_slash_command(self) -> None:
+        """Complete the highlighted slash command: arg-taking commands fill the
+        input and wait; the rest run immediately."""
+        menu = self.query_one(SlashMenu)
+        cmd = menu.selected_command()
+        menu.hide()
+        if cmd is None:
+            return
+        chat = self.query_one("#chat-input", ChatInput)
+        if command_takes_args(cmd):
+            chat.load_text(cmd + " ")
+            chat.move_cursor(chat.document.end)
+            chat.focus()
+        else:
+            chat.load_text("")
+            self._handle_command(cmd)
 
     _COMMANDS = {
         "/help": "show this help / keybindings",

@@ -43,35 +43,68 @@ def _valid_hex(value: str) -> bool:
     return len(body) in (3, 6) and all(ch in "0123456789abcdefABCDEF" for ch in body)
 
 
+_ROLE_CHOICES = [
+    ("worker", "worker"),
+    ("orchestrator", "orchestrator"),
+    ("both", "both"),
+]
+_ROLES_FROM_CHOICE = {
+    "worker": ["worker"],
+    "orchestrator": ["orchestrator"],
+    "both": ["orchestrator", "worker"],
+}
+
+
+def _role_choice(roles: list[str]) -> str:
+    has_o = "orchestrator" in roles
+    has_w = "worker" in roles
+    if has_o and has_w:
+        return "both"
+    if has_o:
+        return "orchestrator"
+    return "worker"
+
+
 class _ModelRow(Vertical):
-    """One curatable model line: curated toggle, tier select, role checkboxes,
-    plus a context/price info line. Reports changes via ``on_change`` so the
-    curation state survives even after the row is dropped by re-filtering."""
+    """One curatable model. Top line: a single "Add to catalog" toggle, the
+    model id, and its context/price. When curated, a second line reveals tier
+    and role selectors. Reports changes via ``on_change`` so curation survives
+    re-filtering."""
 
     DEFAULT_CSS = """
     _ModelRow {
         height: auto;
-        padding: 1 1 0 1;
+        padding: 0 1;
         border-bottom: solid $panel-lighten-1;
     }
 
     _ModelRow.-curated {
-        background: $accent 10%;
+        background: $accent 12%;
     }
 
     /* Container rows must be auto-height, else they default to 1fr and the
        single row balloons to fill the whole scroll area. */
-    _ModelRow .row-controls,
-    _ModelRow .row-meta {
+    _ModelRow .row-top,
+    _ModelRow .row-detail {
         height: auto;
         width: 1fr;
+        align-vertical: middle;
+    }
+
+    _ModelRow .row-detail {
+        display: none;
+        padding: 0 0 1 2;
+    }
+
+    _ModelRow.-curated .row-detail {
+        display: block;
     }
 
     _ModelRow Checkbox {
         width: auto;
-        height: auto;
+        height: 3;
         border: none;
-        padding: 0 1 0 0;
+        padding: 1 1 0 0;
         background: transparent;
     }
 
@@ -82,14 +115,23 @@ class _ModelRow(Vertical):
         text-style: bold;
     }
 
-    _ModelRow Select {
-        width: 15;
+    _ModelRow .model-row-info {
+        width: auto;
+        height: 3;
+        content-align: right middle;
+        color: $text-muted;
     }
 
-    _ModelRow .model-row-info {
-        width: 1fr;
+    _ModelRow .detail-label {
+        width: auto;
+        height: 3;
+        content-align: left middle;
         color: $text-muted;
-        height: auto;
+        padding: 0 1;
+    }
+
+    _ModelRow Select {
+        width: 20;
     }
     """
 
@@ -105,38 +147,34 @@ class _ModelRow(Vertical):
         self._on_change = on_change
         self._curated = entry is not None
         self._tier = entry.tier if entry else "balanced"
-        self._orch = bool(entry and "orchestrator" in entry.roles)
-        self._worker = bool(entry and "worker" in entry.roles) if entry else True
+        self._role_choice = _role_choice(entry.roles) if entry else "worker"
 
     def compose(self) -> ComposeResult:
-        # Line 1: curate toggle · model id (fills) · tier select
-        with Horizontal(classes="row-controls"):
-            yield Checkbox("use", value=self._curated, id="curate")
+        ctx = format_context(self.model.context_length)
+        price = format_price(self.model.prompt_price, self.model.completion_price)
+        # Top line: one clear toggle + id + specs.
+        with Horizontal(classes="row-top"):
+            yield Checkbox("catalog", value=self._curated, id="curate")
             yield Label(self.model_id, classes="model-id")
+            yield Static(f"{ctx} · {price}", classes="model-row-info")
+        # Detail line (revealed only when curated): tier + role.
+        with Horizontal(classes="row-detail"):
+            yield Label("tier", classes="detail-label")
             yield Select(
                 [(t, t) for t in _TIERS], value=self._tier, id="tier", allow_blank=False
             )
-        # Line 2: role toggles · context/price info (dim)
-        ctx = format_context(self.model.context_length)
-        price = format_price(self.model.prompt_price, self.model.completion_price)
-        with Horizontal(classes="row-meta"):
-            yield Checkbox("orch", value=self._orch, id="role-orch")
-            yield Checkbox("worker", value=self._worker, id="role-worker")
-            yield Static(f"{ctx} ctx · {price}", classes="model-row-info")
+            yield Label("role", classes="detail-label")
+            yield Select(
+                _ROLE_CHOICES, value=self._role_choice, id="role", allow_blank=False
+            )
 
     def to_entry(self) -> CatalogEntry | None:
-        curated = self.query_one("#curate", Checkbox).value
-        if not curated:
+        if not self.query_one("#curate", Checkbox).value:
             return None
-        tier = self.query_one("#tier", Select).value
-        roles = []
-        if self.query_one("#role-orch", Checkbox).value:
-            roles.append("orchestrator")
-        if self.query_one("#role-worker", Checkbox).value:
-            roles.append("worker")
-        if not roles:
-            roles = ["worker"]
-        return CatalogEntry(id=self.model_id, tier=str(tier), roles=roles)
+        tier = str(self.query_one("#tier", Select).value)
+        role_choice = str(self.query_one("#role", Select).value)
+        roles = list(_ROLES_FROM_CHOICE.get(role_choice, ["worker"]))
+        return CatalogEntry(id=self.model_id, tier=tier, roles=roles)
 
     @on(Checkbox.Changed)
     @on(Select.Changed)
@@ -263,11 +301,8 @@ class SettingsScreen(ModalScreen[None]):
                     with Horizontal(classes="key-buttons"):
                         yield Button("Save key", id="save-key", variant="primary")
                         yield Button("Clear saved key", id="clear-key", variant="error")
-                    yield Label("orchestrator_model")
-                    yield Input(value=self.profile.orchestrator_model, id="profile-orch-model")
-                    yield Label("worker_model")
-                    yield Input(value=self.profile.worker_model, id="profile-worker-model")
-                    yield Button("Save profile", id="save-profile", variant="primary")
+                    yield Static(self._models_summary(), id="models-summary", markup=False)
+                    yield Button("Save base URL", id="save-profile", variant="primary")
             yield Button("Close (Esc)", id="close-settings")
 
     def on_mount(self) -> None:
@@ -412,6 +447,17 @@ class SettingsScreen(ModalScreen[None]):
             f"cost (session): ${ledger.cost_usd:.4f}\n"
         )
 
+    def _models_summary(self) -> str:
+        """Which models drive each role — chosen via the Models tab / F2, not typed."""
+        orch = self.profile.resolve("orchestrator")
+        worker = self.profile.resolve("worker")
+        return (
+            "\nModels are chosen in the Models tab (tag a model's role) or with "
+            "F2.\n"
+            f"  orchestrator → {orch}\n"
+            f"  worker       → {worker}\n"
+        )
+
     def _key_status(self) -> str:
         import os
 
@@ -473,8 +519,6 @@ class SettingsScreen(ModalScreen[None]):
     @on(Button.Pressed, "#save-profile")
     def _save_profile(self) -> None:
         self.profile.base_url = self.query_one("#profile-base-url", Input).value
-        self.profile.orchestrator_model = self.query_one("#profile-orch-model", Input).value
-        self.profile.worker_model = self.query_one("#profile-worker-model", Input).value
         self.config.save()
 
     @on(Button.Pressed, "#close-settings")

@@ -120,15 +120,31 @@ StatusBar Static {
     margin: 0 0 1 0;
 }
 
-.msg-user {
-    color: $accent;
-    text-style: bold;
+/* User messages: right-aligned chat bubble (iMessage style). */
+.user-row {
+    height: auto;
+    width: 1fr;
+    align-horizontal: right;
     margin: 1 0 0 0;
 }
 
+.user-bubble {
+    width: auto;
+    max-width: 80%;
+    height: auto;
+    background: $accent 25%;
+    color: $text;
+    border: round $accent;
+    padding: 0 1;
+}
+
+/* Assistant: left-aligned, NO built-in Markdown indent, a thin accent gutter
+   to distinguish it from tool output; margin below separates turns. */
 .msg-assistant {
     color: $text;
+    padding: 0 0 0 1;
     margin: 0 0 1 0;
+    border-left: solid $secondary;
 }
 
 .msg-reasoning {
@@ -136,10 +152,15 @@ StatusBar Static {
     text-style: italic;
 }
 
-.msg-reasoning-head {
+/* Collapsible "✱ Thinking" block. */
+.reasoning-box {
+    margin: 0 0 1 0;
     color: $text-muted;
-    text-style: bold;
-    margin: 1 0 0 0;
+}
+
+.reasoning-box CollapsibleTitle {
+    color: $text-muted;
+    text-style: italic;
 }
 
 .tool-header {
