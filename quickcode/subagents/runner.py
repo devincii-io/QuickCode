@@ -63,6 +63,9 @@ class SubagentDeps:
     # Shared across the whole conversation's agent tree.
     counter: itertools.count = field(default_factory=lambda: itertools.count(1))
     spawned: list[str] = field(default_factory=list)
+    # Every spawned child, keyed by agent_id, so ``send_message`` can resume one
+    # by id from anywhere in the tree. Shared down the tree like counter/spawned.
+    roster: dict[str, AgentInstance] = field(default_factory=dict)
     # UI hook: called synchronously at spawn with (agent_id, definition name,
     # the child's EventBus) so a live pane can subscribe to the child's stream.
     # Optional — headless runs leave it None.
@@ -82,6 +85,7 @@ class SubagentDeps:
             depth=depth,
             counter=self.counter,
             spawned=self.spawned,
+            roster=self.roster,
             on_pane=self.on_pane,
         )
 
@@ -170,6 +174,9 @@ async def spawn_subagent(
         model=model,
         permission_cb=_deny_cb,
     )
+    # Registered immediately so the agent is resumable via send_message even if
+    # this first run errors out below.
+    deps.roster[agent_id] = child
 
     # Surface a live pane before the child starts streaming. A UI failure here
     # must never break the subagent run, so it is fully isolated.
@@ -179,13 +186,46 @@ async def spawn_subagent(
         except Exception:  # noqa: BLE001 — the pane is best-effort telemetry
             pass
 
+    report = await _run_and_finish(deps, agent_id, child, prompt)
+    return agent_id, report
+
+
+async def _run_and_finish(
+    deps: SubagentDeps, agent_id: str, child: AgentInstance, message: str
+) -> str:
+    """Drive one turn on ``child`` and post-process the result: exception
+    safety, "[did not finish]" tagging, artifact offload, and sanitization.
+
+    Shared by ``spawn_subagent`` (first turn) and ``resume_subagent`` (any
+    later turn) so both go through identical treatment.
+    """
     try:
-        report = await child.run_turn(prompt)
+        report = await child.run_turn(message)
     except Exception as e:  # a child failure must not crash the parent's loop
-        return agent_id, sanitize_report(f"[did not finish] subagent errored: {e}")
+        return sanitize_report(f"[did not finish] subagent errored: {e}")
 
     if child.cancelled or not report.strip():
         report = report or "(no output)"
         report = f"[did not finish]\n{report}"
     report = maybe_offload(deps.cwd, agent_id, report)
-    return agent_id, sanitize_report(report)
+    return sanitize_report(report)
+
+
+async def resume_subagent(
+    deps: SubagentDeps, *, agent_id: str, message: str
+) -> tuple[str, str]:
+    """Send a follow-up message to a previously spawned, now-idle subagent,
+    resuming it with its full history intact. Returns ``(agent_id, sanitized_report)``.
+
+    Raises ValueError for an unknown agent_id or if the agent is still mid-turn
+    — the tool wrapper turns those into an error ToolResult.
+    """
+    child = deps.roster.get(agent_id)
+    if child is None:
+        known = ", ".join(deps.roster) or "(none)"
+        raise ValueError(f"unknown agent_id '{agent_id}'. Known: {known}")
+    if child.busy:
+        raise ValueError(f"agent '{agent_id}' is still running")
+
+    report = await _run_and_finish(deps, agent_id, child, message)
+    return agent_id, report

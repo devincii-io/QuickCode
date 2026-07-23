@@ -41,7 +41,9 @@ class AgentTool(Tool[AgentInput]):
         "parallel, or 'general' for a bounded implementation/analysis task. The "
         "subagent sees only your prompt and returns a single final report. Prefer "
         "doing simple things yourself; delegate for context isolation or genuine "
-        "parallelism. Give each subagent a distinct, non-overlapping scope."
+        "parallelism. Give each subagent a distinct, non-overlapping scope. The "
+        "returned agent id can be resumed later via send_message instead of "
+        "respawning a fresh subagent."
     )
     # Classified read-only so multiple spawns in one turn fan out CONCURRENTLY
     # (the loop batches read-only calls with asyncio.gather). Delegation is

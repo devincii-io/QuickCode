@@ -11,6 +11,7 @@ from quickcode.tools.glob import GlobTool
 from quickcode.tools.grep import GrepTool
 from quickcode.tools.plan import PlanTool
 from quickcode.tools.read import ReadTool
+from quickcode.tools.send_message import SendMessageTool
 from quickcode.tools.task import task_tools
 from quickcode.tools.write import WriteTool
 
@@ -44,7 +45,7 @@ def _core_tool_factories() -> dict[str, list[Tool]]:
 
 def default_registry(*, include_agent: bool = True) -> ToolRegistry:
     """The standard core tools: file/shell tools, the task board, plan, and
-    (for the main agent) the ``agent`` delegation tool."""
+    (for the main agent) the ``agent``/``send_message`` delegation tools."""
     tools: list[Tool] = [
         ReadTool(),
         WriteTool(),
@@ -57,6 +58,7 @@ def default_registry(*, include_agent: bool = True) -> ToolRegistry:
     ]
     if include_agent:
         tools.append(AgentTool())
+        tools.append(SendMessageTool())
     return ToolRegistry(tools)
 
 
@@ -67,7 +69,8 @@ def build_registry(
 
     ``tool_names=None`` inherits the full core toolset. ``plan`` is never
     included (subagents don't do interactive plan review). ``include_agent``
-    grants the delegation tool when the child is still above the depth floor.
+    grants the delegation tools (``agent`` and ``send_message``) when the
+    child is still above the depth floor.
     """
     factories = _core_tool_factories()
     names = list(factories) if tool_names is None else tool_names
@@ -76,4 +79,5 @@ def build_registry(
         tools.extend(factories.get(n, []))
     if include_agent:
         tools.append(AgentTool())
+        tools.append(SendMessageTool())
     return ToolRegistry(tools)

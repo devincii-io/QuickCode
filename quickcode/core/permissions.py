@@ -140,11 +140,12 @@ class PermissionEngine:
         """Decide for a single tool invocation. ``arg`` is the match target
         (bash command string, or file path for read/write/edit)."""
         is_write = tool in MUTATING_TOOLS
-        # "agent" is auto-allowed like a read-only tool: spawning a subagent
-        # doesn't touch the filesystem from the parent (the child's own actions
-        # are gated by its capped mode), and concurrent fan-out can't surface a
-        # separate modal per spawn. Cost stays visible in the status-bar meter.
-        is_read = tool in READONLY_TOOLS or tool in {"read", "agent"}
+        # "agent"/"send_message" are auto-allowed like a read-only tool: spawning
+        # or resuming a subagent doesn't touch the filesystem from the parent
+        # (the child's own actions are gated by its capped mode), and concurrent
+        # fan-out can't surface a separate modal per spawn. Cost stays visible in
+        # the status-bar meter.
+        is_read = tool in READONLY_TOOLS or tool in {"read", "agent", "send_message"}
 
         # 1. Protected paths always prompt (before any allow rule).
         if tool in {"read", "write", "edit"} and _protected(arg, self.root):
