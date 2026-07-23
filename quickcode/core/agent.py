@@ -86,11 +86,17 @@ class Ledger:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float = 0.0
+    # The most recent request's footprint — this is the live context size
+    # (the cumulative fields above measure session spend, not context).
+    last_input_tokens: int = 0
+    last_output_tokens: int = 0
 
     def add(self, u: Usage) -> None:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cached_tokens += u.cached_tokens
+        self.last_input_tokens = u.input_tokens
+        self.last_output_tokens = u.output_tokens
         if u.cost_usd:
             self.cost_usd += u.cost_usd
 
@@ -166,5 +172,5 @@ class AgentInstance:
     def context_pct(self) -> float | None:
         if not self.context_length:
             return None
-        used = self.ledger.input_tokens + self.ledger.output_tokens
+        used = self.ledger.last_input_tokens + self.ledger.last_output_tokens
         return min(100.0, 100.0 * used / self.context_length)

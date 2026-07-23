@@ -73,9 +73,9 @@ def test_select_tail_cuts_at_user_boundary():
 
 def test_should_compact_threshold():
     agent = _agent(StubProvider("x"), context_length=100)
-    agent.ledger.input_tokens = 85
+    agent.ledger.last_input_tokens = 85
     assert should_compact(agent) is True
-    agent.ledger.input_tokens = 10
+    agent.ledger.last_input_tokens = 10
     assert should_compact(agent) is False
 
 

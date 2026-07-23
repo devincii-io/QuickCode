@@ -110,7 +110,9 @@ class ChatInput(TextArea):
     """A TextArea where Enter submits and Ctrl+J inserts a newline.
 
     While the slash-command menu is open, ↑/↓/Tab/Enter/Esc drive the menu
-    instead of the text area.
+    instead of the text area. When the input is empty and the subagent list
+    is showing, a plain Down hands focus off to ``AgentPanes`` instead of
+    moving the (empty) cursor.
     """
 
     class Submitted(events.Event):
@@ -124,6 +126,12 @@ class ChatInput(TextArea):
         except Exception:
             return None
         return menu if menu.is_open else None
+
+    def _agent_panes(self) -> AgentPanes | None:
+        try:
+            return self.app.query_one(AgentPanes)
+        except Exception:
+            return None
 
     async def _on_key(self, event: events.Key) -> None:
         menu = self._menu()
@@ -142,6 +150,13 @@ class ChatInput(TextArea):
                 event.prevent_default()
                 event.stop()
                 menu.hide()
+                return
+        if event.key == "down" and self.text == "":
+            panes = self._agent_panes()
+            if panes is not None and panes.display:
+                event.prevent_default()
+                event.stop()
+                panes.focus()
                 return
         if event.key == "enter":
             event.prevent_default()
@@ -244,6 +259,9 @@ class QuickCodeApp(App[None]):
         if self._startup_notice:
             transcript.add_banner(self._startup_notice)
         self.set_interval(1 / 30, self._drain_bus)
+        # The ctx meter needs the model's context window; fetch it off-thread
+        # so startup never blocks on the network.
+        self.run_worker(self._resolve_context_length(), group="ctx-length", exclusive=True)
         self.query_one("#chat-input", ChatInput).focus()
         if self._initial_prompt:
             self._submit(self._initial_prompt)
@@ -520,6 +538,11 @@ class QuickCodeApp(App[None]):
         if picked and picked != self.agent.model:
             had_history = any(m.role != "system" for m in self.agent.history.messages)
             self.agent.model = picked
+            # The old window no longer applies; re-resolve for the new model.
+            self.agent.context_length = None
+            self.run_worker(
+                self._resolve_context_length(), group="ctx-length", exclusive=True
+            )
             self.query_one("#status-bar", StatusBar).model = picked
             # Refresh the identity in the system prompt so the model reports what
             # it actually is now (the switch already invalidated the cache).
@@ -539,6 +562,23 @@ class QuickCodeApp(App[None]):
                     "will be slower and cost more input tokens."
                 )
 
+    async def _resolve_context_length(self) -> None:
+        """Look up the current model's context window from the provider's model
+        list so ``context_pct`` has a denominator (cli builds with None)."""
+        try:
+            models = await self.agent.provider.list_models()
+        except Exception:
+            return
+        model = self.agent.model
+        length = next((m.context_length for m in models if m.id == model), None)
+        if length and self.agent.model == model:
+            self.agent.context_length = length
+            try:
+                status = self.query_one("#status-bar", StatusBar)
+                status.update_usage(self.agent.context_pct(), self.agent.ledger.cost_usd)
+            except Exception:
+                pass
+
     def _refresh_identity(self, model: str) -> None:
         if self._env is None:
             return
@@ -553,6 +593,9 @@ class QuickCodeApp(App[None]):
                     model=model,
                     provider=provider_name,
                     plan=(self.agent.mode == Mode.plan),
+                    # Must match the CLI's initial render — dropping this here
+                    # would silently strip the subagent guidance on a switch.
+                    orchestration=True,
                 )
             )
         except Exception:

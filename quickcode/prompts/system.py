@@ -17,7 +17,11 @@ explaining code, and running project commands.
 
 You are powered by the model "{model}" served through {provider} (an
 OpenAI-compatible endpoint). When asked which model or agent you are, answer
-plainly with that: you are QuickCode running on {model}. QuickCode can drive
+plainly with that: you are QuickCode running on {model}. This line is
+authoritative and live — answer identity questions from it directly, without
+running commands or reading config files to "verify" it. If earlier messages
+in the conversation name a different model, the user switched models
+mid-conversation and this line reflects the current one. QuickCode can drive
 different underlying models, so do not assume any capability or vendor beyond
 what "{model}" implies.
 </identity>
@@ -116,6 +120,14 @@ editing and mutating tools are withheld. When you have a complete plan, call
 the plan tool with the plan as markdown. Do not attempt to implement yet.
 </plan_mode>"""
 
+_SEND_MESSAGE_HINT = """
+
+<send_message_hint>
+A finished subagent stays resumable: call send_message with its returned id to
+continue the same task with its full context intact, instead of respawning a
+fresh subagent.
+</send_message_hint>"""
+
 
 def render_system_prompt(
     env: Environment,
@@ -150,6 +162,7 @@ def render_system_prompt(
         from quickcode.prompts.subagent import ORCHESTRATION
 
         body += ORCHESTRATION
+        body += _SEND_MESSAGE_HINT
     if plan:
         body += _PLAN_MODE
     if headless:

@@ -227,8 +227,11 @@ SettingsScreen .key-buttons Button {
 }
 
 /* ---- subagent live panes ------------------------------------------- */
-/* A right-hand column of compact, streaming subagent summaries. Hidden while
-   empty (managed by the widget). Warm palette, no blue — matches the sidebar. */
+/* A right-hand FleetView-style column: a compact, selectable list of
+   subagent rows plus one detail panel for the selected row. Hidden while
+   empty (managed by the widget). Warm palette, no blue — matches the
+   sidebar. Structural/base rules live in AgentPane(s).DEFAULT_CSS; these
+   mirror the theme's color choices for the row states and detail panel. */
 #agent-panes {
     width: 42;
     height: 1fr;
@@ -239,40 +242,30 @@ SettingsScreen .key-buttons Button {
     overflow-y: auto;
 }
 
-AgentPane {
-    height: auto;
-    border-left: outer $panel-lighten-2;
-    padding: 0 1;
-    margin: 0 0 1 0;
+#agent-panes:focus {
+    border-left: vkey $accent;
 }
 
-/* Selected pane: accent rail. */
+/* Row glyph/state color by class: live (●), finished ok (○), error (✗). */
+AgentPane.live {
+    color: $success;
+}
+
+AgentPane.finished {
+    color: $text-muted;
+}
+
+AgentPane.error {
+    color: $error;
+}
+
+/* Selected row: accent rail + highlight background. */
 AgentPane.selected {
     border-left: outer $accent;
     background: $boost;
 }
 
-/* Finished panes dim and (unless expanded) collapse to the title row. */
-AgentPane.finished {
+#panes-detail {
     color: $text-muted;
-}
-
-AgentPane .pane-title {
-    text-style: bold;
-    color: $secondary;
-}
-
-AgentPane.finished .pane-title {
-    color: $text-muted;
-    text-style: none;
-}
-
-AgentPane .pane-body {
-    color: $text-muted;
-    height: auto;
-}
-
-/* Expanded pane gets a touch more breathing room. */
-AgentPane.expanded {
-    background: $boost;
+    border-top: solid $panel-lighten-2;
 }
