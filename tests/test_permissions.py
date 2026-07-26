@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from quickcode.core.permissions import Decision, Mode, PermissionEngine, Rules, next_mode
+from quickcode.core.permissions import (
+    Decision,
+    Mode,
+    PermissionEngine,
+    Rules,
+    _glob_match,
+    next_mode,
+)
 
 
 def engine(mode=Mode.ask, root=None, **kw):
@@ -11,6 +18,27 @@ def test_readonly_builtin_auto_allows():
     e = engine()
     assert e.evaluate("bash", "ls -la") == Decision.allow
     assert e.evaluate("bash", "cat file.txt") == Decision.allow
+
+
+def test_find_is_not_auto_allowed_and_dangerous_find_prompts():
+    e = engine()
+    assert e.evaluate("bash", "find . -name '*.py'") == Decision.ask
+    assert e.evaluate("bash", "find . -name '*.py' -exec rm {} ;") == Decision.ask
+    assert e.evaluate("bash", "find . -delete") == Decision.ask
+
+
+def test_bash_readonly_commands_prompt_for_protected_paths(tmp_path):
+    e = engine(root=tmp_path)
+    assert e.evaluate("bash", "cat .env") == Decision.ask
+    assert e.evaluate("bash", "grep -r secret ~/.ssh") == Decision.ask
+    assert e.evaluate("bash", "cat safe.txt") == Decision.allow
+
+
+def test_single_star_does_not_cross_directory_boundaries():
+    assert _glob_match("src/*", "src/file.py")
+    assert not _glob_match("src/*", "src/deep/file.py")
+    assert not _glob_match("src/*", r"src\deep\file.py")
+    assert _glob_match("src/**", "src/deep/file.py")
 
 
 def test_mutating_bash_prompts_in_ask():

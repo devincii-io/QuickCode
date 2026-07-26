@@ -22,6 +22,7 @@ from textual.widgets import (
 from quickcode.config import (
     DEFAULT_THEME_COLORS,
     THEME_COLOR_ORDER,
+    THEME_PRESETS,
     CatalogEntry,
     Config,
     Profile,
@@ -272,6 +273,11 @@ class SettingsScreen(ModalScreen[None]):
                         id="theme-hint",
                         markup=False,
                     )
+                    with Horizontal(classes="key-buttons"):
+                        yield Button("Warm", id="preset-warm", classes="theme-preset")
+                        yield Button("Classic Dark", id="preset-dark", classes="theme-preset")
+                        yield Button("Midnight", id="preset-midnight", classes="theme-preset")
+                        yield Button("Light", id="preset-light", classes="theme-preset")
                     with VerticalScroll(id="theme-list"):
                         for key in THEME_COLOR_ORDER:
                             value = self._theme_colors.get(key, "")
@@ -412,6 +418,26 @@ class SettingsScreen(ModalScreen[None]):
                 self._app_ref.apply_theme(colors)
             except Exception:
                 pass
+
+    @on(Button.Pressed, ".theme-preset")
+    def _apply_theme_preset(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        preset_name = button_id.removeprefix("preset-")
+        preset = THEME_PRESETS.get(preset_name)
+        if preset is None:
+            return
+        self._theme_colors = dict(preset)
+        for key, value in preset.items():
+            try:
+                self.query_one(f"#color-{key}", Input).value = value
+                self.query_one(f"#swatch-{key}", Static).styles.background = value
+            except Exception:
+                pass
+        # Presets are one-click choices: apply and persist immediately. The
+        # individual fields remain available for further customization.
+        self.config.theme = dict(preset)
+        self.config.save()
+        self._apply_theme_live()
 
     @on(Button.Pressed, "#save-theme")
     def _save_theme(self) -> None:

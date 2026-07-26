@@ -79,6 +79,11 @@ StatusBar Static {
     color: $text-muted;
 }
 
+#seg-cwd {
+    color: $text-muted;
+    background: $surface;
+}
+
 #seg-cost {
     color: $success;
 }

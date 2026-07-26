@@ -19,7 +19,7 @@ from pathlib import Path
 # Builtin read-only shell commands that auto-allow (first token).
 READONLY_BUILTINS = {
     "ls", "cat", "pwd", "head", "tail", "wc", "which", "stat", "diff",
-    "echo", "cd", "rg", "grep", "find", "tree", "file", "basename", "dirname",
+    "echo", "cd", "rg", "grep", "tree", "file", "basename", "dirname",
 }
 # Harmless wrappers stripped before matching (allow-side only).
 WRAPPERS = {"timeout", "time", "nice", "nohup"}
@@ -108,19 +108,33 @@ def _rule_matches(rule: str, tool: str, arg: str) -> bool:
 
 
 def _glob_match(pattern: str, value: str) -> bool:
-    """`*` spans anything, `**` too here (simplified). Whole-string match."""
-    regex = re.escape(pattern)
-    regex = regex.replace(r"\*\*", ".*").replace(r"\*", "[^\x00]*")
-    return re.fullmatch(regex, value) is not None
+    """Whole-string glob match where only ``**`` crosses directories."""
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append(r"[^/\\]*")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.fullmatch("".join(parts), value) is not None
 
 
 def _protected(path: str, root: Path) -> bool:
     try:
-        rp = Path(path).resolve()
+        candidate = Path(path).expanduser()
+        rp = (candidate if candidate.is_absolute() else root / candidate).resolve()
     except Exception:
         return True
     parts = set(rp.parts)
     if ".git" in parts or ".quickcode" in parts:
+        return True
+    # Secret-bearing files warrant an explicit prompt even inside the project.
+    if any(part == ".ssh" or part == ".env" or part.startswith(".env.") for part in rp.parts):
         return True
     try:
         rp.relative_to(root.resolve())
@@ -213,6 +227,17 @@ class PermissionEngine:
             idx += 1
         stripped = " ".join(tokens[idx:])
         first = tokens[idx].split("/")[-1] if idx < len(tokens) else ""
+
+        # Shell reads must respect the same protected-path boundary as the
+        # dedicated read tool. Treat every non-option argument as a potential
+        # path; ordinary words resolve inside the project and remain harmless.
+        for token in tokens[idx + 1 :]:
+            if token.startswith("-"):
+                continue
+            candidate = token.split("=", 1)[-1] if "=" in token else token
+            candidate = candidate.strip("'\"{},()")
+            if candidate and _protected(candidate, self.root):
+                return Decision.deny if self.mode == Mode.dontask else Decision.ask
 
         # deny rules first (against the substitution-free subcommand)
         for r in self.rules.deny:

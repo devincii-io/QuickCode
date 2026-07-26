@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from textual.containers import VerticalScroll
 from textual.widgets import Collapsible, Markdown, Static
+from textual.widgets._collapsible import CollapsibleTitle
 
 
 def _preview(args: str, limit: int = 60) -> str:
@@ -33,6 +34,30 @@ def _clip(content: str, max_lines: int = 100) -> str:
         return content
     hidden = len(lines) - max_lines
     return "\n".join(lines[:max_lines]) + f"\n… ({hidden} more lines)"
+
+
+class TranscriptCollapsibleTitle(CollapsibleTitle):
+    """Toggle on mouse click without stealing focus from the composer.
+
+    Textual provides this separate switch precisely for mouse focus. Keyboard
+    focus via Tab remains available, so Enter/Esc accessibility is preserved.
+    """
+
+    FOCUS_ON_CLICK = False
+
+
+class TranscriptCollapsible(Collapsible):
+    """Collapsible with a title tailored to the chat transcript."""
+
+    def __init__(self, *children, **kwargs) -> None:
+        super().__init__(*children, **kwargs)
+        old_title = self._title
+        self._title = TranscriptCollapsibleTitle(
+            label=old_title.label,
+            collapsed_symbol=old_title.collapsed_symbol,
+            expanded_symbol=old_title.expanded_symbol,
+            collapsed=old_title.collapsed,
+        )
 
 
 class Transcript(VerticalScroll):
@@ -136,7 +161,7 @@ class Transcript(VerticalScroll):
         if self._current_reasoning is None:
             self._reasoning_text = ""
             self._current_reasoning = Static("", classes="msg-reasoning", markup=False)
-            self._current_reasoning_box = Collapsible(
+            self._current_reasoning_box = TranscriptCollapsible(
                 self._current_reasoning,
                 title="✱ Thinking",
                 collapsed=False,
@@ -209,7 +234,7 @@ class Transcript(VerticalScroll):
         # Cap the rendered body so expanding a huge file-read/log result doesn't
         # trigger a giant reflow; the full content already went to the model.
         body = Static(_clip(content), classes=body_cls, markup=False)
-        collapsible = Collapsible(
+        collapsible = TranscriptCollapsible(
             body,
             title=title,
             collapsed=not is_error,

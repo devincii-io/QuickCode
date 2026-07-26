@@ -18,8 +18,10 @@ A terminal coding agent — an interactive TUI in the spirit of Claude Code and 
 
 ## Status
 
-**M0 + M1 core implemented.** A runnable TUI that streams model chat and acts as
-a coding agent (six tools, permission-gated). See the roadmap for what's next.
+**M0–M4 core implemented, plus selected M6 polish.** QuickCode is a persistent,
+permission-gated coding agent with streaming tools, plan review, tasks, compaction,
+concurrent subagent fan-out, usage tracking, diagnostics, mouse controls, and editable
+theme presets. True detached background agents and teammate mode remain roadmap work.
 
 ### Quickstart
 
@@ -33,7 +35,9 @@ uv run quickcode -p "explain this repo" # headless / print mode
 
 Keys: `Enter` send · `Ctrl+J` newline · `Shift+Tab` cycle permission mode ·
 `F1` help · `F2` model picker · `F3` settings (curate OpenRouter models by
-tier/role, view usage) · `Esc` interrupt. Tests: `uv run pytest -q`.
+tier/role, themes, and usage) · `Esc` interrupt · `PageUp/PageDown` transcript.
+Subagent rows support mouse selection, an expand/collapse button, and drag resizing
+from the pane's left edge. Tests: `uv run pytest -q`.
 
 ### Installation (Windows)
 

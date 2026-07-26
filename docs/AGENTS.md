@@ -1,5 +1,11 @@
 # Multi-Agent Design — subagents, teammate mode, task board
 
+> **Design document:** this describes the intended end state. See
+> [ROADMAP.md](ROADMAP.md) for the exact implemented status. In `0.1.0`, an
+> individual `agent` call waits for its report, while multiple agent calls in
+> one model turn run concurrently. Detached/background collection and teammate
+> mode are not implemented yet.
+
 One runtime, three shapes. Every agent is the same `AgentInstance` (loop + history + ledger + event bus); the differences are prompt, model, permission cap, and who reads its results.
 
 | Shape | Context | Reports to | Coordination | Cost profile |

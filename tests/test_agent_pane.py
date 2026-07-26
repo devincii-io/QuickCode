@@ -200,3 +200,44 @@ async def test_hint_line_changes_with_focus_and_enter_toggles_detail():
         await pilot.press("enter")
         await pilot.pause()
         assert panes._detail_expanded is True
+
+
+async def test_mouse_selects_rows_and_button_toggles_detail():
+    app = QuickCodeApp(_agent(), Config())
+    async with app.run_test(size=(120, 40)) as pilot:
+        panes = app.query_one(AgentPanes)
+        first = panes.add_pane("explore-1", "explore", EventBus())
+        second = panes.add_pane("general-2", "general", EventBus())
+        for _ in range(3):
+            await pilot.pause()
+
+        assert first.has_class("selected")
+        await pilot.click(second, offset=(2, 0))
+        await pilot.pause()
+        assert second.has_class("selected")
+        assert not first.has_class("selected")
+        assert panes._detail_expanded is False
+
+        await pilot.click("#panes-toggle")
+        await pilot.pause()
+        assert panes._detail_expanded is True
+        assert panes.query_one("#panes-resize-handle") is not None
+
+
+async def test_mouse_drag_resizes_subagent_pane():
+    app = QuickCodeApp(_agent(), Config())
+    async with app.run_test(size=(120, 40)) as pilot:
+        panes = app.query_one(AgentPanes)
+        panes.add_pane("explore-1", "explore", EventBus())
+        for _ in range(3):
+            await pilot.pause()
+
+        handle = panes.query_one("#panes-resize-handle")
+        original_width = panes.region.width
+        target = (handle.region.x - 8, handle.region.y + 2)
+        await pilot.mouse_down(handle)
+        await pilot.hover(None, offset=target)
+        await pilot.mouse_up(None, offset=target)
+        await pilot.pause()
+
+        assert panes.region.width > original_width

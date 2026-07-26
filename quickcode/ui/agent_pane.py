@@ -27,10 +27,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from textual import events
+from textual import events, on
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 from quickcode.core.events import (
     AgentStatus,
@@ -60,7 +60,7 @@ def _tail(text: str, max_lines: int) -> str:
     return "\n".join(lines[-max_lines:]).strip()
 
 
-class AgentPane(Static):
+class AgentPane(Static, can_focus=True):
     """One compact row in the subagent list. Subscribes to the child's bus in
     __init__ so no events are missed between spawn and mount; drains on its
     own interval and keeps enough state for the detail panel to render it."""
@@ -107,6 +107,14 @@ class AgentPane(Static):
         # Poll the child's stream a bit slower than the main transcript — this
         # is a summary, not a full render.
         self.set_interval(1 / 15, self._drain)
+
+    def on_focus(self, event: events.Focus) -> None:
+        """Mouse clicks focus rows, which makes selection work reliably."""
+        try:
+            panes = self.query_ancestor(AgentPanes)
+            panes.select_pane(self)
+        except Exception:
+            pass
 
     @property
     def finished(self) -> bool:
@@ -217,6 +225,54 @@ class AgentPane(Static):
         return "\n".join(lines)
 
 
+class PaneResizeHandle(Static):
+    """One-cell drag target on the pane's left edge."""
+
+    DEFAULT_CSS = """
+    PaneResizeHandle {
+        dock: left;
+        width: 1;
+        height: 100%;
+        background: $primary-darken-2;
+        pointer: ew-resize;
+    }
+    PaneResizeHandle:hover {
+        background: $accent;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__("", id="panes-resize-handle", markup=False)
+        self._dragging = False
+        self._start_x = 0.0
+        self._start_width = 42
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
+        event.stop()
+        self._dragging = True
+        self._start_x = event.screen_x
+        self._start_width = self.parent.region.width if self.parent is not None else 42
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging or self.parent is None:
+            return
+        event.stop()
+        # This is the left edge: dragging left makes the right-hand pane wider.
+        delta = int(round(self._start_x - event.screen_x))
+        max_width = max(28, min(90, self.app.size.width - 30))
+        self.parent.styles.width = max(28, min(max_width, self._start_width + delta))
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self._dragging:
+            return
+        event.stop()
+        self._dragging = False
+        self.release_mouse()
+
+
 class AgentPanes(Vertical):
     """A keyboard-navigable, focusable list of ``AgentPane`` rows plus one
     detail panel for the selected row. Hidden while empty.
@@ -258,6 +314,15 @@ class AgentPanes(Vertical):
         height: auto;
         margin: 0 0 1 0;
     }
+    AgentPanes #panes-toggle {
+        width: auto;
+        min-width: 16;
+        height: 1;
+        min-height: 1;
+        border: none;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
     AgentPanes #panes-list {
         height: auto;
     }
@@ -277,8 +342,10 @@ class AgentPanes(Vertical):
         self._detail_expanded = False
 
     def compose(self):
+        yield PaneResizeHandle()
         yield Static("Subagents", id="panes-header", markup=False)
         yield Static(_HINT_UNFOCUSED, id="panes-hint", markup=False)
+        yield Button("Expand / collapse", id="panes-toggle")
         yield Vertical(id="panes-list")
         yield Static("", id="panes-detail", markup=False)
 
@@ -344,10 +411,24 @@ class AgentPanes(Vertical):
     def focus_prev(self) -> None:
         self._move(-1)
 
+    def select_pane(self, pane: AgentPane) -> None:
+        """Mouse counterpart to arrow-key selection."""
+        try:
+            index = self._panes.index(pane)
+        except ValueError:
+            return
+        self._selected = index
+        self._sync_selection()
+        self._refresh_detail()
+
     def toggle_expand(self) -> None:
         """Toggle the shared detail panel between compact and tall."""
         self._detail_expanded = not self._detail_expanded
         self._refresh_detail()
+
+    @on(Button.Pressed, "#panes-toggle")
+    def _mouse_toggle_expand(self) -> None:
+        self.toggle_expand()
 
     def close_finished(self) -> None:
         """Remove every finished row, keeping the live ones."""
