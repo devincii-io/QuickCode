@@ -43,6 +43,7 @@ class StatusBar(Horizontal):
     """A single-line footer of colored segments showing live agent state."""
 
     model: reactive[str] = reactive("")
+    cwd: reactive[str] = reactive("")
     ctx_pct: reactive[float | None] = reactive(None)
     cost_usd: reactive[float] = reactive(0.0)
     mode: reactive[Mode] = reactive(Mode.ask)
@@ -57,18 +58,20 @@ class StatusBar(Horizontal):
 
     def compose(self):
         yield Static("", id="seg-model", markup=False)
+        yield Static("", id="seg-cwd", markup=False)
         yield Static("", id="seg-ctx", markup=False)
         yield Static("", id="seg-cost", markup=False)
         yield Static("", id="seg-mode", markup=False)
         yield Static("", id="seg-state", markup=False)
 
     def on_mount(self) -> None:
-        for key in ("model", "ctx", "cost", "mode", "state"):
+        for key in ("model", "cwd", "ctx", "cost", "mode", "state"):
             try:
                 self._segs[key] = self.query_one(f"#seg-{key}", Static)
             except Exception:
                 pass
         self._set("model", f" {self.model or '(no model)'} ")
+        self._set("cwd", f" {self.cwd or '(no cwd)'} ")
         self._set("ctx", self._ctx_text())
         self._set("cost", f" ${self.cost_usd:.4f} ")
         self._set_mode()
@@ -82,7 +85,12 @@ class StatusBar(Horizontal):
         seg.update(text)
 
     def _ctx_text(self) -> str:
-        ctx = f"{self.ctx_pct:.0f}%" if self.ctx_pct is not None else "--"
+        if self.ctx_pct is None:
+            ctx = "--"
+        elif 0 < self.ctx_pct < 1:
+            ctx = "<1%"
+        else:
+            ctx = f"{self.ctx_pct:.0f}%"
         return f" ctx {ctx} "
 
     def _state_text(self) -> str:
@@ -100,6 +108,9 @@ class StatusBar(Horizontal):
     # reactive watchers -> update only the affected segment
     def watch_model(self, _v: str) -> None:
         self._set("model", f" {self.model or '(no model)'} ")
+
+    def watch_cwd(self, _v: str) -> None:
+        self._set("cwd", f" {self.cwd or '(no cwd)'} ")
 
     def watch_ctx_pct(self, _v: float | None) -> None:
         self._set("ctx", self._ctx_text())

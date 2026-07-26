@@ -140,7 +140,10 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
             elif isinstance(ev, TurnDone):
                 finish = ev.finish_reason
                 if ev.error:
-                    agent.bus.emit(TurnDone("error", ev.error))
+                    # The provider event was already emitted above. Flip state
+                    # and stop without duplicating the same error in the UI.
+                    agent.bus.emit(AgentStatus("error"))
+                    return None
     except ProviderError as e:
         # Emit the error once (TurnDone carries the text); AgentStatus only
         # flips the state indicator so it is not rendered a second time.
@@ -179,7 +182,23 @@ async def _execute_tools(
         (readonly if (tool and tool.is_read_only) else mutating).append(c)
 
     if readonly:
-        await asyncio.gather(*(run_one(c) for c in readonly))
+        if agent.cancelled:
+            for c in readonly:
+                results[c.id] = ("[interrupted]", True)
+        else:
+            running = asyncio.gather(*(run_one(c) for c in readonly))
+            interrupted = asyncio.create_task(agent._cancel.wait())
+            done, _ = await asyncio.wait(
+                {running, interrupted}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if interrupted in done and agent.cancelled:
+                running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+                for c in readonly:
+                    results.setdefault(c.id, ("[interrupted]", True))
+            else:
+                interrupted.cancel()
+                await asyncio.gather(interrupted, return_exceptions=True)
     for c in mutating:
         if agent.cancelled:
             results[c.id] = ("[interrupted]", True)

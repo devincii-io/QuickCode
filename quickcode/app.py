@@ -198,6 +198,9 @@ class QuickCodeApp(App[None]):
         Binding("pagedown", "scroll_transcript('pagedown')", "Scroll down", show=False, priority=True),
         Binding("ctrl+home", "scroll_transcript('home')", "Top", show=False, priority=True),
         Binding("ctrl+end", "scroll_transcript('end')", "Bottom", show=False, priority=True),
+        # A transcript control reached with Tab should have an intuitive path
+        # back to composing. TextArea consumes Down itself while it has focus.
+        Binding("down", "focus_input_from_transcript", "Return to input", show=False),
         # Keyboard-only subagent pane navigation (no-ops when no panes exist).
         Binding("ctrl+right", "pane_next", "Next pane", show=False, priority=True),
         Binding("ctrl+left", "pane_prev", "Prev pane", show=False, priority=True),
@@ -245,6 +248,7 @@ class QuickCodeApp(App[None]):
         self._bus_queue = self.agent.bus.subscribe(maxsize=0)  # unbounded UI queue
         status = self.query_one("#status-bar", StatusBar)
         status.model = self.agent.model
+        status.cwd = str(self.agent.ctx.cwd)
         status.mode = self.agent.mode
         self.query_one("#sidebar", Static).display = False
         # Route subagent spawns to live panes. The deps object is shared across
@@ -714,6 +718,13 @@ class QuickCodeApp(App[None]):
             t.scroll_home(animate=False)
         else:
             t.scroll_end(animate=False)
+
+    def action_focus_input_from_transcript(self) -> None:
+        """Down from any focused transcript control returns to the composer."""
+        transcript = self.query_one(Transcript)
+        focused = self.focused
+        if focused is transcript or (focused is not None and transcript in focused.ancestors):
+            self.query_one("#chat-input", ChatInput).focus()
 
     def on_resize(self, event: events.Resize) -> None:
         # After a terminal resize the layout reflows via CSS. Only re-pin to the

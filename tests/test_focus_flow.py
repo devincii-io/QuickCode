@@ -84,3 +84,41 @@ async def test_keyboard_flows_between_input_and_thinking():
         await pilot.pause()
         assert app.agent.mode != before
         assert app.focused is chat
+
+
+async def test_transcript_click_toggles_block_then_restores_input_focus():
+    app = QuickCodeApp(_agent(), Config())
+    async with app.run_test(size=(100, 40)) as pilot:
+        chat = app.query_one("#chat-input", ChatInput)
+        transcript = app.query_one(Transcript)
+        transcript.tool_result("tool-1", "read", "result body", False)
+        await pilot.pause()
+
+        box = next(iter(transcript.query(Collapsible)))
+        title = box.query_one(CollapsibleTitle)
+        was = box.collapsed
+
+        await pilot.click(title)
+        await pilot.pause()
+
+        assert box.collapsed is not was
+        assert app.focused is chat
+
+
+async def test_down_from_transcript_control_returns_to_input():
+    app = QuickCodeApp(_agent(), Config())
+    async with app.run_test(size=(100, 40)) as pilot:
+        chat = app.query_one("#chat-input", ChatInput)
+        transcript = app.query_one(Transcript)
+        transcript.tool_result("tool-1", "read", "result body", False)
+        await pilot.pause()
+
+        title = next(iter(transcript.query(Collapsible))).query_one(CollapsibleTitle)
+        title.focus()
+        await pilot.pause()
+        assert app.focused is title
+
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert app.focused is chat

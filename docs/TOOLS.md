@@ -91,6 +91,10 @@ class Tool[In: BaseModel]:
 
 ## bash
 
+> **Design target:** `run_in_background` and persistent background-task output
+> are not implemented in `0.1.0`; the tool returns an explicit error when that
+> flag is requested. Current status is tracked in [ROADMAP.md](ROADMAP.md).
+
 > Executes a command in ${shellName} on ${platform} and returns combined stdout+stderr. Use for builds, tests, git, package managers, and anything without a dedicated tool. Do NOT use for reading files or searching (use read/grep/glob). State persists via tracked cwd; quote paths containing spaces.
 
 ```json

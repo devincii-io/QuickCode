@@ -15,6 +15,15 @@ from quickcode.config import DEFAULT_THEME_COLORS
 THEME_NAME = "quickcode"
 
 
+def _dark_background(value: str) -> bool:
+    """Infer Textual's dark/light mode from a #rrggbb background."""
+    value = value.lstrip("#")
+    if len(value) != 6:
+        return True
+    red, green, blue = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+    return (0.299 * red + 0.587 * green + 0.114 * blue) < 150
+
+
 def build_theme(colors: dict[str, str] | None = None) -> Theme:
     """Construct the QuickCode Textual theme from a color map.
 
@@ -26,7 +35,7 @@ def build_theme(colors: dict[str, str] | None = None) -> Theme:
         c.update({k: v for k, v in colors.items() if v})
     return Theme(
         name=THEME_NAME,
-        dark=True,
+        dark=_dark_background(c["background"]),
         background=c["background"],
         surface=c["surface"],
         panel=c["panel"],
@@ -42,7 +51,7 @@ def build_theme(colors: dict[str, str] | None = None) -> Theme:
             "block-cursor-background": c["accent"],
             "block-cursor-foreground": c["background"],
             "input-selection-background": f"{c['primary']} 35%",
-            "border": "#3a362b",
+            "border": c["boost"],
         },
     )
 

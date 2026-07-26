@@ -1,8 +1,9 @@
 """Context-engineering (identity + per-turn mode reminder) and theming."""
 
-from quickcode.config import DEFAULT_THEME_COLORS, Config, Environment
+from quickcode.config import DEFAULT_THEME_COLORS, THEME_PRESETS, Config, Environment
 from quickcode.prompts.system import mode_reminder, render_system_prompt
 from quickcode.ui.palette import THEME_NAME, build_theme
+from quickcode.ui.statusbar import StatusBar
 
 
 def test_identity_names_the_running_model():
@@ -41,3 +42,16 @@ def test_theme_colors_persist_round_trip(tmp_path):
     assert loaded.theme_colors()["accent"] == "#abcdef"
     # Untouched keys fall back to defaults.
     assert loaded.theme_colors()["primary"] == DEFAULT_THEME_COLORS["primary"]
+
+
+def test_theme_presets_are_complete_and_light_mode_is_detected():
+    for colors in THEME_PRESETS.values():
+        assert set(colors) == set(DEFAULT_THEME_COLORS)
+    assert build_theme(THEME_PRESETS["dark"]).dark is True
+    assert build_theme(THEME_PRESETS["light"]).dark is False
+
+
+def test_tiny_nonzero_context_is_not_displayed_as_zero():
+    status = StatusBar()
+    status.ctx_pct = 0.25
+    assert "<1%" in status._ctx_text()
