@@ -49,6 +49,38 @@ export function oneLine(s, max = 200) {
   return String(s ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+// Paint a theme (the eleven config colors) onto the CSS variables app.css
+// defines. Shared by boot and by the Settings appearance picker, which applies
+// a preset live before persisting it.
+const THEME_VARS = {
+  background: "--bg", surface: "--surface", panel: "--panel", boost: "--boost",
+  foreground: "--fg", primary: "--primary", secondary: "--secondary",
+  accent: "--accent", success: "--success", warning: "--warning", error: "--error",
+};
+
+export function applyTheme(theme) {
+  for (const [key, cssVar] of Object.entries(THEME_VARS)) {
+    if (theme?.[key]) document.documentElement.style.setProperty(cssVar, theme[key]);
+  }
+}
+
+// The ghost logo ships as a separate asset (assets/icon.svg). If it is absent
+// the brand must degrade to the emoji, never to a broken-image glyph.
+export function wireLogo(img, className = "logo-fallback") {
+  if (!img) return;
+  const swap = () => {
+    if (!img.isConnected) return;
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = "👻";
+    img.replaceWith(span);
+  };
+  img.addEventListener("error", swap);
+  // Module scripts are deferred, so the load may already have failed before
+  // this ran: a finished image with no intrinsic width is exactly that.
+  if (img.complete && img.naturalWidth === 0) swap();
+}
+
 export function debounce(fn, ms) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };

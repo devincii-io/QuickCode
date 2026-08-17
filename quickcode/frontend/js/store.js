@@ -6,6 +6,7 @@ const subs = new Set();
 
 export const store = {
   bootstrap: null,          // /api/bootstrap payload
+  projectId: null,          // project the shell is attached to
   convId: null,
   state: null,              // last "state" event
   events: [],               // logged events (have seq)

@@ -64,27 +64,13 @@ textarea, input { font: inherit; color: inherit; }
   background: var(--panel); padding: 2px 9px; border-radius: 20px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px;
 }
-.view-tabs { display: flex; gap: 2px; background: var(--panel); border-radius: 9px; padding: 3px; }
-.view-tab {
-  padding: 4px 14px; border-radius: 7px; color: var(--fg-dim); font-weight: 500;
-}
-.view-tab:hover { color: var(--fg); }
-.view-tab.active { background: var(--boost); color: var(--fg); }
 .topbar-actions { margin-left: auto; display: flex; gap: 6px; }
 .ghost-btn {
   padding: 4px 10px; border-radius: 7px; color: var(--fg-dim); font-size: 13px;
 }
 .ghost-btn:hover { background: var(--panel); color: var(--fg); }
 
-/* ---------- main layout ---------- */
-#main { flex: 1; display: flex; min-height: 0; }
-.pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-#chat-pane { flex: 1; }
-#traj-pane { flex: 1; border-left: 1px solid var(--line); }
-#main.mode-chat #traj-pane { display: none; }
-#main.mode-trajectory #chat-pane { display: none; }
-#main.mode-trajectory #traj-pane { border-left: none; }
-#main.mode-split #chat-pane { flex: 0 0 46%; border-right: 1px solid var(--line); }
+/* The shell layout (views, top bar, side panel) lives in css/shell.css. */
 
 /* ---------- transcript ---------- */
 .transcript {
@@ -492,8 +478,22 @@ textarea, input { font: inherit; color: inherit; }
 .help-desc { color: var(--fg-dim); }
 .help-note { font-size: 12.5px; color: var(--fg-dim); }
 
-@media (max-width: 900px) {
-  #main.mode-split #chat-pane { flex: 1; }
-  #main.mode-split #traj-pane { display: none; }
-  .traj-detail { flex: 0 0 100%; position: absolute; inset: 0; z-index: 10; }
+/* appearance picker (Settings → Appearance) */
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.theme-card {
+  border: 1px solid var(--line); border-radius: 10px; padding: 8px;
+  background: var(--panel); text-align: left;
 }
+.theme-card:hover { border-color: var(--line-strong); }
+.theme-card[data-current] { border-color: var(--primary); }
+.tc-swatch { display: flex; height: 34px; border-radius: 6px; overflow: hidden; }
+.tc-swatch i { flex: 1; }
+.tc-name {
+  display: flex; align-items: center; gap: 6px; margin-top: 7px;
+  font-size: 12.5px; text-transform: capitalize;
+}
+.tc-name .check { margin-left: auto; color: var(--success); }
+
+/* menus: separator and inert note rows */
+.menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.menu-note { padding: 9px 12px; font-size: 12.5px; color: var(--fg-dim); }

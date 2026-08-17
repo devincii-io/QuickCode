@@ -1,0 +1,155 @@
+/* Home view: the landing page. Same density and radii as the workspace, with
+   more air — this is the one screen that is not a working surface.
+   Also styles the directory-browser modal that "Open folder…" opens. */
+
+.home-inner {
+  max-width: 1040px; margin: 0 auto;
+  padding: clamp(28px, 6vh, 64px) clamp(16px, 4vw, 40px) 60px;
+}
+
+/* ---------- header ---------- */
+
+.home-head { display: flex; align-items: center; gap: 16px; margin-bottom: 40px; }
+.home-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.home-logo { flex: none; display: grid; place-items: center; line-height: 0; }
+.home-logo img { width: 44px; height: 44px; display: block; }
+.home-logo-fallback { font-size: 38px; line-height: 1; }
+.home-titles { flex: 1; min-width: 0; }
+.home-titles h1 { font-size: 26px; font-weight: 600; letter-spacing: .2px; }
+.home-sub { color: var(--fg-dim); font-size: 13.5px; margin-top: 2px; }
+
+.home-sec-head {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 8px; margin-bottom: 14px; border-bottom: 1px solid var(--line);
+}
+.home-sec-head h2 {
+  flex: 1; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .8px; color: var(--fg-faint);
+}
+
+/* ---------- project cards ---------- */
+
+.home-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  align-items: start;
+}
+
+.home-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+  transition: border-color .12s, transform .12s;
+}
+.home-card:hover { border-color: var(--line-strong); }
+.home-card.open { border-color: color-mix(in srgb, var(--primary) 45%, transparent); }
+
+.hc-main { display: block; width: 100%; text-align: left; padding: 12px 14px 10px; }
+.hc-main:hover { background: var(--panel); }
+.hc-main:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+
+.hc-top { display: flex; align-items: center; gap: 8px; }
+.hc-name {
+  font-weight: 600; font-size: 14.5px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hc-live { flex: none; font-size: 11px; color: var(--success); }
+.hc-last {
+  flex: none; font-size: 10px; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--primary); background: color-mix(in srgb, var(--primary) 16%, transparent);
+  padding: 1px 7px; border-radius: 10px;
+}
+.hc-path {
+  font-family: var(--mono); font-size: 11.5px; color: var(--fg-dim); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hc-meta {
+  display: flex; gap: 6px; align-items: baseline; margin-top: 6px;
+  font-size: 11.5px; color: var(--fg-faint);
+}
+.hc-dot { opacity: .6; }
+
+.hc-expand {
+  width: 100%; text-align: left; padding: 5px 14px 7px;
+  font-size: 11.5px; color: var(--fg-faint); font-family: var(--mono);
+  border-top: 1px solid var(--line);
+}
+.hc-expand:hover { color: var(--fg-dim); background: var(--panel); }
+
+.hc-sessions { display: none; border-top: 1px solid var(--line); background: var(--bg); }
+.home-card.open .hc-sessions { display: block; }
+
+/* ---------- session rows ---------- */
+
+.hs-row { display: flex; align-items: stretch; flex-wrap: wrap; }
+.hs-row:hover { background: var(--panel); }
+.hs-open {
+  flex: 1; min-width: 0; text-align: left; padding: 7px 8px 7px 14px;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.hs-title {
+  flex: 1; min-width: 0; font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hs-live { flex: none; color: var(--success); font-size: 10px; }
+.hs-meta {
+  flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+}
+.hs-del {
+  flex: none; padding: 0 12px; color: var(--fg-faint); font-size: 12px;
+}
+.hs-del:hover { color: var(--error); }
+.hs-row.confirming .hs-del {
+  color: var(--error); font-family: var(--mono); font-size: 11px;
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+.hs-error {
+  flex: 1 0 100%; padding: 2px 14px 7px; font-size: 11.5px; color: var(--error);
+}
+
+.hs-note { padding: 9px 14px; font-size: 12px; color: var(--fg-faint); }
+.hs-note.hs-err { color: var(--error); }
+
+/* ---------- notes ---------- */
+
+.home-note { color: var(--fg-dim); font-size: 13px; padding: 8px 2px; }
+.home-err {
+  grid-column: 1 / -1; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+  border: 1px solid color-mix(in srgb, var(--error) 45%, transparent);
+  background: color-mix(in srgb, var(--error) 8%, transparent); color: var(--error);
+}
+
+/* ---------- directory browser modal ---------- */
+
+.dirb { display: flex; flex-direction: column; gap: 10px; }
+.dirb-bar { display: flex; gap: 8px; align-items: center; }
+.dirb-up { flex: none; font-size: 14px; }
+.dirb-up:disabled { opacity: .3; cursor: default; }
+.dirb-path {
+  flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; outline: none;
+  font-family: var(--mono); font-size: 12.5px;
+}
+.dirb-path:focus { border-color: var(--line-strong); }
+.dirb-go { flex: none; }
+
+.dirb-list {
+  height: 46vh; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  padding: 4px;
+}
+.dirb-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 6px 10px; border-radius: 7px; font-size: 13px;
+}
+.dirb-row:hover { background: var(--panel); }
+.dirb-icon { flex: none; color: var(--fg-faint); width: 14px; }
+.dirb-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dirb-git {
+  flex: none; font-size: 10px; font-family: var(--mono); color: var(--secondary);
+  background: color-mix(in srgb, var(--secondary) 16%, transparent);
+  padding: 1px 7px; border-radius: 10px;
+}
+.dirb-empty { padding: 14px; color: var(--fg-faint); font-size: 12.5px; }
+.dirb-msg { font-size: 12px; color: var(--error); min-height: 16px; }

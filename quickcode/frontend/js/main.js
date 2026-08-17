@@ -1,36 +1,39 @@
-// Boot: auth → bootstrap → conversation → WebSocket. Wires the top bar,
-// composer, status bar, and view switching (chat / trajectory / split).
+// Boot and routing. QuickCode is a two-view single-page app: a Home view that
+// lists projects, and a workspace (chat + side panel) bound to exactly one
+// project and one conversation.
+//
+// The launch fragment carries the token and, when the CLI opened a directory,
+// the project id — api.initAuth() strips it immediately, so navigation after
+// boot never touches the URL. A project id in the fragment is the only thing
+// that skips Home; otherwise the last project is merely offered there.
 
-import { api, initAuth } from "./api.js";
+import { api, currentProject, initAuth, setProject } from "./api.js";
 import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
-import { initReviews, openSessions, openSettings } from "./modals.js";
+import { initHome, refreshHome, rememberProject } from "./home.js";
+import { initReviews, openHelp, openSessionMenu, openSettings } from "./modals.js";
+import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
-import { fmtCost, fmtTokens } from "./util.js";
-import { connect } from "./ws.js";
+import { applyTheme, debounce, fmtCost, fmtTokens, oneLine, wireLogo } from "./util.js";
+import { connect, disconnect } from "./ws.js";
 
 const $ = (id) => document.getElementById(id);
 
-let view = "chat";
+// ---- view switching ----
 
-function setView(v) {
-  view = v;
-  $("main").className = "mode-" + v;
-  document.querySelectorAll(".view-tab").forEach((t) =>
-    t.classList.toggle("active", t.dataset.view === v));
-  localStorage.setItem("qc-view", v);
+function showHome() {
+  disconnect();
+  // No project is "current" on Home, so the global modals (settings, help)
+  // fall back to the unscoped routes, which address the launch project.
+  setProject(null);
+  document.getElementById("app").classList.add("showing-home");
+  document.title = "QuickCode";
+  refreshHome();
 }
 
-function applyTheme(theme) {
-  const map = {
-    background: "--bg", surface: "--surface", panel: "--panel", boost: "--boost",
-    foreground: "--fg", primary: "--primary", secondary: "--secondary",
-    accent: "--accent", success: "--success", warning: "--warning", error: "--error",
-  };
-  for (const [k, cssVar] of Object.entries(map)) {
-    if (theme?.[k]) document.documentElement.style.setProperty(cssVar, theme[k]);
-  }
+function showWorkspace() {
+  document.getElementById("app").classList.remove("showing-home");
 }
 
 // ---- status bar + pills ----
@@ -63,27 +66,99 @@ function refreshStatus(state) {
   stEl.className = "st-seg st-state s-" + state;
 }
 
+// The chip shows the session's own title, which the backend derives from the
+// first user message — so it only becomes meaningful after that message lands.
+async function refreshSessionChip() {
+  const chip = $("session-chip");
+  const convId = store.convId;
+  let title = "New session";
+  try {
+    const sessions = await api.sessions();
+    const mine = sessions.find((s) => s.conv_id === convId);
+    if (mine?.title) title = oneLine(mine.title, 42);
+  } catch { /* offline: keep the placeholder */ }
+  if (store.convId !== convId) return;   // switched while we were asking
+  chip.textContent = title + " ▾";
+  chip.title = `Session ${convId} — click to switch`;
+}
+
+const bumpSessionChip = debounce(refreshSessionChip, 800);
+
+// ---- project + conversation lifecycle ----
+
+async function openProject(project, { resume = null } = {}) {
+  setProject(project.id);
+  setPanelProject(project.id);
+  rememberProject(project.id);
+  showWorkspace();
+
+  $("project-chip").textContent = project.name || "…";
+  $("session-chip").textContent = "New session ▾";
+
+  let bs;
+  try {
+    bs = await api.bootstrap();
+  } catch (err) {
+    showHome();
+    $("home-projects").insertAdjacentHTML("afterbegin",
+      `<div class="home-err">Could not open that project (${err.message}).</div>`);
+    return;
+  }
+  store.bootstrap = bs;
+  applyTheme(bs.theme);
+  const chip = $("project-chip");
+  chip.textContent = bs.project + (bs.git_branch ? ` · ${bs.git_branch}` : "");
+  chip.title = bs.cwd;
+  $("model-pill").textContent = shortModel(bs.default_model) + " ▾";
+  document.title = `QuickCode — ${bs.project}`;
+
+  await openConversation(resume);
+}
+
+async function openConversation(resume) {
+  const pid = currentProject();
+  try {
+    const { conv_id } = await api.openConversation(resume || undefined);
+    connect(pid, conv_id);
+  } catch (err) {
+    $("transcript").innerHTML =
+      `<div class="err-note">Could not start a conversation (${err.message}).</div>`;
+    return;
+  }
+  refreshSessionChip();
+}
+
 // ---- boot ----
 
 async function boot() {
-  const { token, resumeHint } = initAuth();
-  initChat({ openTrace: (seq) => { if (view === "chat") setView("split"); selectSeq(seq, { scroll: true }); } });
+  const { token, project, resumeHint } = initAuth();
+
+  initChat({
+    openTrace: (seq) => { openPanelTab("trajectory"); selectSeq(seq, { scroll: true }); },
+  });
   initTrajectory();
+  initPanel();
   initReviews();
   initComposer({ onNewConversation: () => openConversation(null) });
+  initHome({ onOpen: (proj, opts) => openProject(proj, opts) });
+  wireLogo($("brand-home").querySelector("img"), "brand-mark-fallback");
 
-  document.querySelectorAll(".view-tab").forEach((t) =>
-    t.addEventListener("click", () => setView(t.dataset.view)));
-  setView(localStorage.getItem("qc-view") || "chat");
-
-  $("btn-sessions").addEventListener("click", () =>
-    openSessions((convId) => openConversation(convId)));
+  $("brand-home").addEventListener("click", showHome);
+  // Settings and help are install-wide, so Home carries them too.
+  $("home-settings").addEventListener("click", () => openSettings());
+  $("home-help").addEventListener("click", () => openHelp());
   $("btn-new-chat").addEventListener("click", () => openConversation(null));
   $("btn-settings").addEventListener("click", () => openSettings());
+  $("session-chip").addEventListener("click", (e) =>
+    openSessionMenu(e.currentTarget, {
+      onPick: (convId) => openConversation(convId),
+      onNew: () => openConversation(null),
+    }));
 
   subscribe((kind, ev) => {
     if (kind === "state") refreshState();
     if (kind === "status") refreshStatus(ev.state);
+    if (kind === "event" && ev.type === "user_message") bumpSessionChip();
     if (kind === "connection") {
       const c = $("st-conn");
       c.classList.toggle("off", store.connection !== "open");
@@ -91,27 +166,20 @@ async function boot() {
     }
   });
 
-  let bs;
-  try {
-    bs = await api.bootstrap();
-  } catch (err) {
-    document.getElementById("transcript").innerHTML =
-      `<div class="err-note">Cannot reach the QuickCode backend (${err.message}).
-       ${token ? "" : "Open QuickCode through the URL printed by the CLI — it carries the auth token."}</div>`;
+  if (!token) {
+    showHome();
+    $("home-projects").innerHTML =
+      `<div class="home-err">No auth token. Open QuickCode through the URL printed
+       by the CLI — it carries the token in the fragment.</div>`;
     return;
   }
-  store.bootstrap = bs;
-  applyTheme(bs.theme);
-  $("project-chip").textContent = bs.project + (bs.git_branch ? ` · ${bs.git_branch}` : "");
-  $("model-pill").textContent = shortModel(bs.default_model) + " ▾";
-  document.title = `QuickCode — ${bs.project}`;
 
-  await openConversation(resumeHint);
-}
-
-async function openConversation(resume) {
-  const { conv_id } = await api.openConversation(resume || undefined);
-  connect(conv_id);
+  // Only a fragment-carried project skips Home.
+  if (project) {
+    await openProject({ id: project }, { resume: resumeHint });
+    return;
+  }
+  showHome();
 }
 
 boot();

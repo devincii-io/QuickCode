@@ -2,7 +2,7 @@
 // an inline diff per file. Read-only; it refreshes itself after any tool that
 // can touch the disk.
 
-import { api } from "../api.js";
+import { api, currentProject } from "../api.js";
 import { subscribe } from "../store.js";
 import { debounce, el, esc } from "../util.js";
 
@@ -97,7 +97,19 @@ export const panel = {
     container.querySelector(".pf-refresh").addEventListener("click", refresh);
 
     const bump = debounce(refresh, 400);
+    let shownProject = currentProject();
     subscribe((kind, ev) => {
+      // A finished replay means the socket is live — and possibly pointed at a
+      // different project, in which case the tree on screen belongs somewhere
+      // else entirely. Keyed off replay_done rather than reset on purpose: a
+      // reset also fires for every failed reconnect attempt, and re-asking a
+      // server that is not answering just piles up errors.
+      if (kind === "replay_done") {
+        const pid = currentProject();
+        if (pid !== shownProject) { shownProject = pid; openPaths.clear(); }
+        bump();
+        return;
+      }
       if (kind === "event" && ev.type === "tool_result" && WRITING_TOOLS.has(ev.name)) bump();
     });
   },
