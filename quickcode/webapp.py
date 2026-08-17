@@ -1,9 +1,10 @@
 """Web app launcher: uvicorn on a loopback port + default browser window.
 
-The default ``quickcode`` invocation lands here. It assembles the provider,
-plugin tools, and MCP servers, starts the FastAPI app on 127.0.0.1, and opens
-the frontend with the auth token in the URL fragment (never sent to the
-server, never logged).
+The default ``quickcode`` invocation lands here. It assembles the shared
+provider and plugin tools, opens the launch directory as the default project
+in a ``ProjectHub`` (further projects are opened on demand by the UI), starts
+the FastAPI app on 127.0.0.1, and opens the frontend with the auth token in
+the URL fragment (never sent to the server, never logged).
 """
 
 from __future__ import annotations
@@ -17,11 +18,10 @@ from pathlib import Path
 import uvicorn
 
 from quickcode.config import Config, Environment
-from quickcode.plugins import loader, mcp
+from quickcode.plugins import loader
 from quickcode.server import auth
 from quickcode.server.app import create_app
-from quickcode.server.manager import ConversationManager
-from quickcode.tools.registry import ToolRegistry, default_registry
+from quickcode.server.projects import ProjectHub
 
 log = logging.getLogger("quickcode.webapp")
 
@@ -57,37 +57,25 @@ async def _serve(
     profile = config.profile
     provider = loader.make_provider(profile.provider, profile.base_url, profile.api_key)
 
-    plugin_tools = loader.load_tool_plugins()
-    servers, mcp_tools = await mcp.connect_servers(cwd)
-    extra = [*plugin_tools, *mcp_tools]
-
-    def registry_factory() -> ToolRegistry:
-        reg = default_registry()
-        for t in extra:
-            reg.tools[t.name] = t
-        return reg
-
-    manager = ConversationManager(
-        cwd=cwd,
+    hub = ProjectHub(
         config=config,
-        env=env,
         provider=provider,
         allow_yolo=allow_yolo,
         default_mode=default_mode,
-        registry_factory=registry_factory,
+        plugin_tools=loader.load_tool_plugins(),
     )
-    manager.mcp_servers = [s.name for s in servers]
-    # Warm the model catalog so context lengths are known at first open.
-    await manager.models()
+    # The launch directory is the default project: registered, opened, and its
+    # model catalog warmed so context lengths are known at first open.
+    await hub.open(cwd, make_default=True, env=env)
 
     token = auth.get_or_create_token()
-    app = create_app(manager, host="127.0.0.1", port=port, token=token)
+    app = create_app(hub, host="127.0.0.1", port=port, token=token)
 
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     )
 
-    url = f"http://127.0.0.1:{port}/#token={token}"
+    url = f"http://127.0.0.1:{port}/#token={token}&project={hub.default_id}"
     if initial_resume:
         url += f"&resume={initial_resume}"
     if open_browser:
@@ -99,9 +87,7 @@ async def _serve(
     try:
         await server.serve()
     finally:
-        await manager.close()
-        for s in servers:
-            await s.stop()
+        await hub.close()
 
 
 def run_webapp(
