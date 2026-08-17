@@ -181,6 +181,49 @@ export async function openModelMenu(anchor) {
   });
 }
 
+// ---- help ----
+
+const HELP_KEYS = [
+  ["Enter", "Send the message"],
+  ["Shift + Enter", "Newline inside the composer"],
+  ["Esc", "Interrupt the agent (when no menu or dialog is open)"],
+  ["↑ / ↓", "Walk back and forward through sent-message history"],
+  ["/", "Open the slash-command menu; Tab completes, Enter runs, Esc closes"],
+];
+
+const HELP_COMMANDS = [
+  ["/compact", "Compress the conversation into a summary"],
+  ["/clear", "Start a new conversation"],
+  ["/mode &lt;plan|ask|auto-edit|dontask|yolo&gt;", "Switch the permission mode"],
+  ["/model", "Pick the model for this session"],
+  ["/help", "This reference"],
+];
+
+export function openHelp() {
+  const row = ([k, d]) =>
+    `<div class="help-row"><span class="help-key">${k}</span>
+       <span class="help-desc">${d}</span></div>`;
+  modal("Help", `
+    <div class="help-sec">
+      <h4>Keyboard</h4>
+      ${HELP_KEYS.map(([k, d]) => row([esc(k), esc(d)])).join("")}
+    </div>
+    <div class="help-sec">
+      <h4>Slash commands</h4>
+      ${HELP_COMMANDS.map(([k, d]) => row([k, esc(d)])).join("")}
+    </div>
+    <div class="help-sec">
+      <h4>Permission modes</h4>
+      ${MODES.map(([id, , desc]) => row([esc(id), esc(desc)])).join("")}
+    </div>
+    <div class="help-sec">
+      <h4>Trajectory</h4>
+      <div class="help-note">Every event the model sees is logged and
+        inspectable — open the Trajectory tab (or ⧉ Split) to read the raw
+        payloads, results, and timings behind each turn.</div>
+    </div>`);
+}
+
 // ---- sessions ----
 
 export async function openSessions(onPick) {
