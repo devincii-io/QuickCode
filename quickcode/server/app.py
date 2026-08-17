@@ -6,6 +6,12 @@ the Origin allowlist defeats cross-origin requests from other sites in the
 same browser, and the loopback token (server/auth.py) stops other local
 processes. Static frontend files carry no secrets and stay open so the shell
 can bootstrap.
+
+Routes come in two shapes over the same handlers: the legacy single-project
+paths (``/api/bootstrap``, ``/ws/conversation/{id}``…), which address the hub's
+default project, and the ``/api/projects/{project_id}/…`` paths, which address
+any open project. The default project is just the launch directory, so the two
+shapes never diverge for a single-project run.
 """
 
 from __future__ import annotations
@@ -14,6 +20,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +32,28 @@ from starlette.websockets import WebSocketDisconnect
 from quickcode.server import auth
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
-from quickcode.session.store import SessionStore
+from quickcode.server.projects import ProjectHub, list_dirs
+from quickcode.session.store import SESSIONS_DIRNAME, SessionStore
 
 log = logging.getLogger("quickcode.server")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 JSON_BODY_CAP = 1024 * 1024
+# Conversation ids are generated as hex; anything else in a path segment would
+# be a traversal attempt against the sessions directory.
+_CONV_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+
+
+def _valid_conv_id(conv_id: str) -> bool:
+    return _CONV_ID_RE.fullmatch(conv_id) is not None
+
+
+def _session_count(root: Path) -> int:
+    sessions_dir = root / SESSIONS_DIRNAME
+    try:
+        return sum(1 for _ in sessions_dir.glob("*.jsonl"))
+    except OSError:
+        return 0
 
 
 def _allowed_origins(host: str, port: int) -> tuple[set[str], set[str]]:
@@ -40,14 +64,23 @@ def _allowed_origins(host: str, port: int) -> tuple[set[str], set[str]]:
 
 
 def create_app(
-    manager: ConversationManager,
+    target: ConversationManager | ProjectHub,
     *,
     host: str = "127.0.0.1",
     port: int = 8642,
     token: str = "",
 ) -> FastAPI:
+    # A bare manager is the single-project shape; wrap it so every handler has
+    # exactly one code path.
+    hub = target if isinstance(target, ProjectHub) else ProjectHub.from_manager(target)
     app = FastAPI(title="QuickCode", docs_url=None, redoc_url=None)
     allowed_hosts, allowed_origins = _allowed_origins(host, port)
+
+    def _project(pid: str) -> ConversationManager:
+        manager = hub.get(pid)
+        if manager is None:
+            raise HTTPException(404, f"unknown project: {pid}")
+        return manager
 
     def _token_required(request: Request) -> bool:
         path = request.url.path
@@ -94,8 +127,9 @@ def create_app(
 
         return {"app": "quickcode", "version": __version__}
 
-    @app.get("/api/bootstrap")
-    def bootstrap() -> dict:
+    # ---- per-project payload builders (shared by both route shapes) ----
+
+    def _bootstrap(manager: ConversationManager) -> dict:
         from quickcode.cli import __version__
 
         cfg = manager.config
@@ -115,8 +149,7 @@ def create_app(
             "api_key_env": profile.api_key_env,
         }
 
-    @app.get("/api/sessions")
-    def sessions() -> list[dict]:
+    def _sessions(manager: ConversationManager) -> list[dict]:
         live = set(manager.conversations)
         out = []
         for info in SessionStore.list_sessions(manager.cwd):
@@ -132,17 +165,17 @@ def create_app(
             )
         return out
 
-    @app.post("/api/conversations")
-    async def open_conversation(request: Request) -> dict:
+    async def _open_conversation(manager: ConversationManager, request: Request) -> dict:
         body = await _read_json(request)
         conv_id = body.get("resume") if isinstance(body, dict) else None
         if conv_id is not None and not isinstance(conv_id, str):
             raise HTTPException(400, "resume must be a conversation id string")
+        if conv_id is not None and not _valid_conv_id(conv_id):
+            raise HTTPException(400, "invalid conversation id")
         conv = manager.open(conv_id)
         return {"conv_id": conv.conv_id}
 
-    @app.get("/api/models")
-    async def models(refresh: bool = False) -> list[dict]:
+    async def _models(manager: ConversationManager, refresh: bool) -> list[dict]:
         out = []
         for m in await manager.models(refresh=refresh):
             out.append(
@@ -157,16 +190,125 @@ def create_app(
             )
         return out
 
+    def _delete_session(manager: ConversationManager, conv_id: str) -> Response:
+        if not _valid_conv_id(conv_id):
+            raise HTTPException(404, "unknown conversation")
+        if manager.get(conv_id) is not None:
+            raise HTTPException(409, "conversation is live; close it first")
+        store = SessionStore(manager.cwd, conv_id)
+        if not store.path.exists():
+            raise HTTPException(404, "unknown conversation")
+        try:
+            store.path.unlink()
+        except OSError as e:
+            raise HTTPException(500, f"could not delete session: {e}") from e
+        # The task board lives beside the transcript; deleting one orphans the
+        # other, so they go together.
+        board_dir = manager.cwd / ".quickcode" / "tasks" / conv_id
+        if board_dir.is_dir():
+            shutil.rmtree(board_dir, ignore_errors=True)
+        return Response(status_code=204)
+
+    # ---- default-project routes (the original single-project API) ----
+
+    @app.get("/api/bootstrap")
+    def bootstrap() -> dict:
+        return _bootstrap(hub.default)
+
+    @app.get("/api/sessions")
+    def sessions() -> list[dict]:
+        return _sessions(hub.default)
+
+    @app.post("/api/conversations")
+    async def open_conversation(request: Request) -> dict:
+        return await _open_conversation(hub.default, request)
+
+    @app.get("/api/models")
+    async def models(refresh: bool = False) -> list[dict]:
+        return await _models(hub.default, refresh)
+
     @app.get("/api/plugins")
     def plugins() -> dict:
-        return manager.plugin_inventory()
+        return hub.default.plugin_inventory()
+
+    # ---- project registry + browsing ----
+
+    @app.get("/api/projects")
+    def projects() -> dict:
+        out = []
+        for entry in hub.registry.list():
+            manager = hub.get(entry.id)
+            out.append(
+                {
+                    "id": entry.id,
+                    "path": str(entry.path),
+                    "name": entry.name,
+                    "last_opened": entry.last_opened,
+                    "session_count": _session_count(entry.path),
+                    "live_sessions": len(manager.conversations) if manager else 0,
+                }
+            )
+        return {"home": str(Path.home()), "projects": out}
+
+    @app.post("/api/projects/open")
+    async def open_project(request: Request) -> dict:
+        body = await _read_json(request)
+        path = body.get("path") if isinstance(body, dict) else None
+        if not isinstance(path, str) or not path.strip():
+            raise HTTPException(400, "body must be {'path': <directory>}")
+        try:
+            manager = await hub.open(path.strip())
+        except NotADirectoryError as e:
+            raise HTTPException(400, f"not a directory: {e}") from e
+        return {
+            "id": hub.id_of(manager),
+            "path": str(manager.cwd),
+            "name": manager.cwd.name,
+        }
+
+    @app.get("/api/dir")
+    def browse_dir(path: str | None = None) -> dict:
+        try:
+            return list_dirs(path)
+        except NotADirectoryError as e:
+            raise HTTPException(400, f"not a directory: {e}") from e
+        except OSError as e:
+            raise HTTPException(400, f"cannot read directory: {e}") from e
+
+    # ---- project-scoped routes ----
+
+    @app.get("/api/projects/{pid}/bootstrap")
+    def project_bootstrap(pid: str) -> dict:
+        return {**_bootstrap(_project(pid)), "id": pid}
+
+    @app.get("/api/projects/{pid}/sessions")
+    def project_sessions(pid: str) -> list[dict]:
+        return _sessions(_project(pid))
+
+    @app.delete("/api/projects/{pid}/sessions/{conv_id}")
+    def project_delete_session(pid: str, conv_id: str) -> Response:
+        return _delete_session(_project(pid), conv_id)
+
+    @app.post("/api/projects/{pid}/conversations")
+    async def project_open_conversation(pid: str, request: Request) -> dict:
+        return await _open_conversation(_project(pid), request)
+
+    @app.get("/api/projects/{pid}/models")
+    async def project_models(pid: str, refresh: bool = False) -> list[dict]:
+        return await _models(_project(pid), refresh)
+
+    @app.get("/api/projects/{pid}/plugins")
+    def project_plugins(pid: str) -> dict:
+        return _project(pid).plugin_inventory()
 
     @app.put("/api/config")
     async def put_config(request: Request) -> Response:
         body = await _read_json(request)
         if not isinstance(body, dict):
             raise HTTPException(400, "request body must be a JSON object")
-        cfg = manager.config
+        # Config is per install, not per project: the default manager's handle
+        # is the same object every project shares.
+        cfg = hub.config
         theme = body.get("theme")
         if isinstance(theme, dict):
             cfg.theme = {
@@ -194,15 +336,20 @@ def create_app(
 
     # ---- WebSocket ----
 
-    @app.websocket("/ws/conversation/{conv_id}")
-    async def ws_conversation(ws: WebSocket, conv_id: str) -> None:
+    async def _attach(ws: WebSocket, manager: ConversationManager | None, conv_id: str) -> None:
         if not _ws_allowed(ws):
             await ws.close(code=4403)
             return
         await ws.accept(subprotocol=(auth.SUBPROTOCOL_PREFIX + token) if token else None)
+        if manager is None:
+            await ws.close(code=4404)
+            return
         conv = manager.get(conv_id)
         if conv is None:
             # Attaching to an on-disk session revives it; unknown ids 404.
+            if not _valid_conv_id(conv_id):
+                await ws.close(code=4404)
+                return
             store = SessionStore(manager.cwd, conv_id)
             if not store.path.exists():
                 await ws.close(code=4404)
@@ -225,7 +372,17 @@ def create_app(
         finally:
             conv.clients.discard(client)
 
-    register_git_routes(app, lambda: manager)
+    @app.websocket("/ws/conversation/{conv_id}")
+    async def ws_conversation(ws: WebSocket, conv_id: str) -> None:
+        await _attach(ws, hub.default, conv_id)
+
+    @app.websocket("/ws/projects/{pid}/conversation/{conv_id}")
+    async def ws_project_conversation(ws: WebSocket, pid: str, conv_id: str) -> None:
+        await _attach(ws, hub.get(pid), conv_id)
+
+    # Git routes stay on the default project for now; they resolve the manager
+    # lazily so the hub's default is read per request.
+    register_git_routes(app, lambda: hub.default)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():

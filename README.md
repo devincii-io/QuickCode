@@ -28,9 +28,16 @@ uv venv --python 3.12
 uv pip install -e ".[dev,pty]"
 export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (encrypted)
 uv run quickcode                        # start the web app  (qc also works)
+qc .                                    # open the app on this directory
+qc C:\proj "fix the build"              # open a project, with a first prompt
 uv run quickcode --no-browser           # print the URL instead of opening it
 uv run quickcode -p "explain this repo" # headless / print mode
 ```
+
+One running app hosts many projects (like editor windows): the launch
+directory is the default project, and further directories are opened on demand
+through `/api/projects/open`. Recently-opened projects are remembered in
+`~/.quickcode/projects.json`.
 
 In the app: `Enter` send · `Shift+Enter` newline · `Esc` interrupt · mode and
 model pickers live on the composer · `⚙` Settings has General / Models /
