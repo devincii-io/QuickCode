@@ -129,6 +129,91 @@ def test_chat_turn_streams_and_logs(tmp_path):
             assert "assistant_message" in types
 
 
+def _replay(ws):
+    """Drain one attach: returns the replayed events between the markers."""
+    recv_until(ws, "replay_start")
+    events = []
+    while True:
+        ev = ws.receive_json()
+        if ev["type"] == "replay_done":
+            return events
+        events.append(ev)
+
+
+def test_reattach_replays_the_whole_transcript_every_time(tmp_path):
+    """Leaving a session and coming back must replay it in full — twice over.
+
+    The client mirrors the log and dedupes by ``seq``; seq numbering restarts
+    at 1 in every conversation, so a replay that were ever partial (or a
+    client that kept another conversation's seqs) shows an empty transcript.
+    """
+    provider = FakeProvider([[TextDelta("first answer"), TurnDone("stop")]])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            ws.receive_json()
+            recv_until(ws, "replay_done")
+            ws.send_text(json.dumps({"type": "user_message", "text": "hi"}))
+            recv_until(ws, "assistant_message")
+
+        # A second conversation in between: this is the "switch session" path.
+        other_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{other_id}") as ws:
+            ws.receive_json()
+            other = _replay(ws)
+        # Its seqs restart at 1 — the hazard the client must not carry over.
+        assert [e["seq"] for e in other][:1] == [1]
+
+        # Reattaching to the first one, twice, yields the identical transcript.
+        seen = []
+        for _ in range(2):
+            with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+                ws.receive_json()
+                events = _replay(ws)
+            texts = [e["text"] for e in events if e["type"] == "assistant_message"]
+            assert texts == ["first answer"]
+            assert [e["text"] for e in events if e["type"] == "user_message"] == ["hi"]
+            seen.append([e["seq"] for e in events])
+        assert seen[0] == seen[1]
+        assert seen[0] == sorted(set(seen[0]))   # strictly increasing, no repeats
+
+
+def test_message_only_session_still_replays_its_transcript(tmp_path):
+    """Sessions written before the event log existed hold messages only;
+    their transcript is projected from those rather than replaying empty."""
+    from quickcode.providers.base import ChatMessage
+    from quickcode.session.store import SessionStore
+
+    store = SessionStore(tmp_path, "legacy00sess")
+    store.append_meta(title="legacy", model="test/model", cwd=str(tmp_path))
+    store.append_message(ChatMessage(
+        role="user", content="old question\n\n<system-reminder>\nmode\n</system-reminder>"))
+    store.append_message(ChatMessage(
+        role="assistant", content="thinking",
+        tool_calls=[{"id": "c1", "name": "read", "arguments": '{"file_path": "x"}'}]))
+    store.append_message(ChatMessage(role="tool", content="file body",
+                                     tool_call_id="c1", name="read"))
+    store.append_message(ChatMessage(role="assistant", content="old answer"))
+
+    provider = FakeProvider([])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        with ws_connect(client, "/ws/conversation/legacy00sess") as ws:
+            ws.receive_json()
+            events = _replay(ws)
+    kinds = [e["type"] for e in events]
+    assert kinds[:4] == ["user_message", "assistant_message", "tool_call", "tool_result"]
+    # The reminder the turn carried is not part of what the user saw.
+    assert events[0]["text"] == "old question"
+    assert [e["text"] for e in events if e["type"] == "assistant_message"] == [
+        "thinking", "old answer"]
+    # Synthesized seqs stay clear of the real log's positive numbering.
+    synth = [e["seq"] for e in events if e["type"] != "system_prompt"]
+    assert all(s < 0 for s in synth)
+    assert synth == sorted(synth)
+
+
 def test_permission_roundtrip_allow(tmp_path):
     write_call = ToolCallEnd(
         id="c1", name="write",

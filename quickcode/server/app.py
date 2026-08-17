@@ -367,7 +367,7 @@ def create_app(
         try:
             await ws.send_text(json.dumps(conv.state_event(), ensure_ascii=False))
             await ws.send_text('{"type": "replay_start"}')
-            for ev in conv.store.load_events():
+            for ev in conv.store.replay_events():
                 await ws.send_text(json.dumps(ev, ensure_ascii=False))
             await ws.send_text('{"type": "replay_done"}')
             await _live_phase(ws, conv, client)
