@@ -2,7 +2,7 @@
 
 Parses arguments, assembles the agent (provider, registry, permissions,
 history), and either runs one headless turn (``-p/--print``) or launches the
-Textual TUI.
+local web app (FastAPI on 127.0.0.1 + the default browser).
 """
 
 from __future__ import annotations
@@ -46,7 +46,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yolo", action="store_true",
                          help="allow cycling into yolo mode (skips all permission prompts)")
     parser.add_argument("--continue", dest="continue_session", action="store_true",
-                         help="continue the most recent session (not yet persisted)")
+                         help="continue the most recent session")
+    parser.add_argument("--port", type=int, default=None,
+                         help="local web port (default: 8642, or a free port)")
+    parser.add_argument("--no-browser", action="store_true",
+                         help="don't open a browser window (prints the URL)")
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     return parser
 
@@ -161,41 +165,43 @@ def main(argv: list[str] | None = None) -> None:
         print(f"quickcode {__version__}")
         return
 
-    agent, config, env, store = _build_agent(args)
-    profile = config.profile
-
-    no_key_notice = None
-    if not profile.api_key:
-        no_key_notice = (
-            f"No API key set. Set ${profile.api_key_env} or add one in "
-            f"Settings (F3 -> Profile) — it is saved encrypted at rest."
-        )
-
     if args.print_mode:
+        agent, config, env, store = _build_agent(args)
         prompt = args.prompt
         if not prompt:
             prompt = sys.stdin.read()
         if not prompt or not prompt.strip():
             print("error: no prompt given for --print", file=sys.stderr)
             sys.exit(2)
-        if no_key_notice:
-            print(f"warning: {no_key_notice}", file=sys.stderr)
+        if not config.profile.api_key:
+            print(
+                f"warning: no API key set. Set ${config.profile.api_key_env} "
+                "or add one in Settings.",
+                file=sys.stderr,
+            )
         result = asyncio.run(_run_headless(agent, prompt))
         print(result)
         return
 
-    from quickcode.app import QuickCodeApp
+    from quickcode.session.store import SessionStore
+    from quickcode.webapp import run_webapp
 
-    app = QuickCodeApp(
-        agent,
-        config,
-        allow_yolo=args.yolo,
-        startup_notice=no_key_notice,
-        initial_prompt=args.prompt,
-        session_store=store,
+    config = Config.load()
+    cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    env = Environment.detect(cwd)
+    if args.model:
+        config.last_model = args.model
+    resume = SessionStore.most_recent(cwd) if args.continue_session else None
+    run_webapp(
+        cwd=cwd,
+        config=config,
         env=env,
+        allow_yolo=args.yolo,
+        default_mode=args.mode,
+        port=args.port,
+        open_browser=not args.no_browser,
+        initial_resume=resume,
     )
-    app.run()
 
 
 if __name__ == "__main__":

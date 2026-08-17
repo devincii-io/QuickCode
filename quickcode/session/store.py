@@ -1,8 +1,14 @@
 """JSONL session persistence: append-only conversation logs on disk.
 
 Each conversation is one JSONL file under ``<root>/.quickcode/sessions/``.
-Lines are either ``{"kind": "message", ...}`` (a serialized ``ChatMessage``)
-or ``{"kind": "meta", ...}`` (free-form session metadata such as title/model).
+Lines are one of:
+  - ``{"kind": "message", ...}`` — a serialized ``ChatMessage`` (model context)
+  - ``{"kind": "meta", ...}``    — free-form session metadata (title/model)
+  - ``{"kind": "event", ...}``   — a UI/trace event (the append-only event log
+    the web transcript replays; see server/serialization.py for shapes)
+
+The event log is the source of truth for what the user *saw*; the message log
+is the source of truth for what the model *sees* on resume.
 """
 
 from __future__ import annotations
@@ -61,6 +67,14 @@ class SessionStore:
         self.conv_id = conv_id or uuid.uuid4().hex[:12]
         self.sessions_dir = self.root / SESSIONS_DIRNAME
         self.path = self.sessions_dir / f"{self.conv_id}.jsonl"
+        self._next_seq: int | None = None
+
+    def _scan_last_seq(self) -> int:
+        last = 0
+        for rec in self._iter_records():
+            if rec.get("kind") == "event" and isinstance(rec.get("seq"), int):
+                last = max(last, rec["seq"])
+        return last
 
     # ---- writing ----
     def _append_line(self, obj: dict[str, Any]) -> None:
@@ -79,6 +93,22 @@ class SessionStore:
 
     def append_meta(self, **fields: Any) -> None:
         self._append_line({"kind": "meta", **fields})
+
+    def append_event(self, ev: dict[str, Any]) -> int:
+        """Append one trace event; returns the sequence number assigned."""
+        if self._next_seq is None:
+            self._next_seq = self._scan_last_seq() + 1
+        seq = self._next_seq
+        self._next_seq += 1
+        self._append_line(
+            {
+                "kind": "event",
+                "seq": seq,
+                "ts": datetime.datetime.now().isoformat(),
+                "ev": ev,
+            }
+        )
+        return seq
 
     # ---- reading ----
     def _iter_records(self) -> list[dict[str, Any]]:
@@ -105,6 +135,17 @@ class SessionStore:
                 except (KeyError, TypeError):
                     continue
         return messages
+
+    def load_events(self) -> list[dict[str, Any]]:
+        """All trace events, oldest first, with ``seq``/``ts`` folded in."""
+        events: list[dict[str, Any]] = []
+        for rec in self._iter_records():
+            if rec.get("kind") == "event" and isinstance(rec.get("ev"), dict):
+                ev = dict(rec["ev"])
+                ev["seq"] = rec.get("seq")
+                ev["ts"] = rec.get("ts")
+                events.append(ev)
+        return events
 
     def title(self) -> str:
         for rec in self._iter_records():

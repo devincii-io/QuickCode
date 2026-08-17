@@ -18,6 +18,7 @@ from quickcode.core.events import (
     AgentStatus,
     AssembledToolCall,
     AssistantMessage,
+    ContextInjection,
     ReasoningDelta,
     TextDelta,
     ToolCallDelta,
@@ -45,16 +46,17 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
         reminders.append(system_reminder(POST_COMPACTION_REMINDER))
     if (mode_note := mode_reminder(agent.mode.value)):
         reminders.append(system_reminder(mode_note))
+    for r in reminders:
+        agent.bus.emit(ContextInjection(r))
     agent.history.push_user(user_input, reminders or None)
     last_text = ""
     for round_no in range(MAX_ROUNDS + 1):
         if round_no == MAX_ROUNDS:
-            agent.history.push_user(
-                "",
-                [system_reminder(
-                    "You are over the iteration budget. Wrap up: report state and next steps."
-                )],
+            wrap_up = system_reminder(
+                "You are over the iteration budget. Wrap up: report state and next steps."
             )
+            agent.bus.emit(ContextInjection(wrap_up))
+            agent.history.push_user("", [wrap_up])
         agent.bus.emit(AgentStatus("sending"))
         msg = await _stream_once(agent)
         if msg is None:  # cancelled or error already surfaced
@@ -171,9 +173,11 @@ async def _execute_tools(
     results: dict[str, tuple[str, bool]] = {}
 
     async def run_one(call: AssembledToolCall) -> None:
+        started = asyncio.get_running_loop().time()
         content, is_error = await _run_tool(agent, call)
+        ms = int((asyncio.get_running_loop().time() - started) * 1000)
         results[call.id] = (content, is_error)
-        agent.bus.emit(ToolResultEvent(call.id, call.name, content, is_error))
+        agent.bus.emit(ToolResultEvent(call.id, call.name, content, is_error, ms))
 
     readonly: list[AssembledToolCall] = []
     mutating: list[AssembledToolCall] = []

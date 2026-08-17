@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>QuickCode</title>
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark">⚡</span>
+      <span class="brand-name">QuickCode</span>
+      <span class="project-chip" id="project-chip" title="project directory">…</span>
+    </div>
+    <nav class="view-tabs" role="tablist">
+      <button class="view-tab active" data-view="chat" role="tab">Chat</button>
+      <button class="view-tab" data-view="trajectory" role="tab">Trajectory</button>
+      <button class="view-tab split-toggle" data-view="split" role="tab"
+              title="Chat and trajectory side by side">⧉ Split</button>
+    </nav>
+    <div class="topbar-actions">
+      <button id="btn-sessions" class="ghost-btn" title="Sessions">☰ Sessions</button>
+      <button id="btn-new-chat" class="ghost-btn" title="New conversation">＋ New</button>
+      <button id="btn-settings" class="ghost-btn" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Chat pane -->
+    <section id="chat-pane" class="pane">
+      <div id="transcript" class="transcript" aria-live="polite"></div>
+      <div id="composer">
+        <div id="queue-strip" class="queue-strip hidden"></div>
+        <div class="composer-box">
+          <textarea id="input" rows="1" placeholder="Message the agent…"
+                    spellcheck="false"></textarea>
+          <div class="composer-row">
+            <div class="composer-left">
+              <button id="mode-pill" class="pill" title="Permission mode">ask ▾</button>
+              <button id="model-pill" class="pill" title="Model">…</button>
+              <button id="btn-compact" class="pill subtle" title="Compact the conversation">⇊ compact</button>
+            </div>
+            <div class="composer-right">
+              <span id="queued-count" class="queued-count hidden"></span>
+              <button id="btn-interrupt" class="interrupt-btn hidden" title="Interrupt (Esc)">■ Stop</button>
+              <button id="btn-send" class="send-btn" title="Send (Enter)">↑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trajectory pane -->
+    <section id="traj-pane" class="pane">
+      <div class="traj-toolbar">
+        <div class="traj-filters" id="traj-filters"></div>
+        <input id="traj-search" class="traj-search" type="search" placeholder="Search events…">
+        <button id="traj-export" class="ghost-btn" title="Export event log as JSON">⤓ Export</button>
+      </div>
+      <div id="traj-timeline" class="traj-timeline" title="Event timeline"></div>
+      <div class="traj-body">
+        <div id="traj-table" class="traj-table" role="table"></div>
+        <aside id="traj-detail" class="traj-detail hidden">
+          <div class="traj-detail-head">
+            <span id="traj-detail-title">—</span>
+            <button id="traj-detail-close" class="ghost-btn">✕</button>
+          </div>
+          <nav class="detail-tabs" id="detail-tabs">
+            <button data-tab="summary" class="active">Summary</button>
+            <button data-tab="payload">Payload</button>
+            <button data-tab="result">Result</button>
+            <button data-tab="timing">Timing</button>
+          </nav>
+          <div id="detail-body" class="detail-body"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer id="statusbar">
+    <span id="st-state" class="st-seg st-state">idle</span>
+    <span id="st-model" class="st-seg" title="Model"></span>
+    <span id="st-ctx" class="st-seg" title="Context window usage"></span>
+    <span id="st-tokens" class="st-seg" title="Session tokens (in/out)"></span>
+    <span id="st-cost" class="st-seg" title="Session cost"></span>
+    <span class="st-spacer"></span>
+    <span id="st-conn" class="st-seg st-conn" title="Connection">●</span>
+  </footer>
+
+  <!-- Modal root -->
+  <div id="modal-root"></div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

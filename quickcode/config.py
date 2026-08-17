@@ -111,6 +111,8 @@ class Profile:
     base_url: str = DEFAULT_BASE_URL
     orchestrator_model: str = "anthropic/claude-opus-4.8"
     worker_model: str = "anthropic/claude-sonnet-4.5"
+    # Provider plugin name (entry-point group "quickcode.providers").
+    provider: str = "openai-compat"
     # Curated OpenRouter models admitted into this profile (empty = allow any).
     catalog: list[CatalogEntry] = field(default_factory=list)
 
@@ -175,6 +177,7 @@ class Config:
                 base_url=p.get("base_url", DEFAULT_BASE_URL),
                 orchestrator_model=p.get("orchestrator_model", "anthropic/claude-opus-4.8"),
                 worker_model=p.get("worker_model", "anthropic/claude-sonnet-4.5"),
+                provider=p.get("provider", "openai-compat"),
                 catalog=[CatalogEntry.from_dict(e) for e in p.get("catalog", [])],
             )
         if not profiles:
@@ -203,6 +206,7 @@ class Config:
                     "base_url": p.base_url,
                     "orchestrator_model": p.orchestrator_model,
                     "worker_model": p.worker_model,
+                    "provider": p.provider,
                     "catalog": [e.to_dict() for e in p.catalog],
                 }
                 for name, p in self.profiles.items()
