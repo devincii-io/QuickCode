@@ -45,6 +45,8 @@ export const api = {
   openConversation: (resume) => req("POST", "/api/conversations", resume ? { resume } : {}),
   models: (refresh = false) => req("GET", `/api/models?refresh=${refresh}`),
   plugins: () => req("GET", "/api/plugins"),
+  gitStatus: () => req("GET", "/api/git/status"),
+  gitDiff: (path) => req("GET", `/api/git/diff?path=${encodeURIComponent(path)}`),
   putConfig: (cfg) => req("PUT", "/api/config", cfg),
   putApiKey: (key) => req("POST", "/api/apikey", { key }),
 };

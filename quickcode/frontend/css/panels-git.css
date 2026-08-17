@@ -1,0 +1,124 @@
+/* Side panels: Files (git working tree) and Usage (token breakdown).
+   Every rule stays under .panel-files / .panel-usage so mounting a panel can
+   never leak style into the chat or trajectory views. */
+
+/* ---------- Files ---------- */
+
+.panel-files { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+
+.panel-files .pf-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 8px 10px; border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.panel-files .pf-branch {
+  font-family: var(--mono); font-size: 12px; color: var(--fg-dim);
+  background: var(--panel); padding: 2px 9px; border-radius: 20px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.panel-files .pf-refresh {
+  margin-left: auto; padding: 2px 8px; border-radius: 7px;
+  color: var(--fg-faint); font-size: 14px; line-height: 1;
+}
+.panel-files .pf-refresh:hover { background: var(--panel); color: var(--fg); }
+
+.panel-files .pf-list { flex: 1; overflow-y: auto; min-height: 0; padding: 6px 0; }
+
+.panel-files .pf-empty {
+  padding: 10px 12px; color: var(--fg-faint); font-size: 12.5px;
+}
+
+.panel-files .pf-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; cursor: pointer; user-select: none;
+}
+.panel-files .pf-row:hover { background: var(--panel); }
+.panel-files .pf-file.open > .pf-row { background: var(--panel); }
+
+.panel-files .pf-chip {
+  flex: none; min-width: 22px; text-align: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  padding: 1px 5px; border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg-dim);
+}
+.panel-files .pf-chip.st-mod {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+.panel-files .pf-chip.st-new {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+}
+.panel-files .pf-chip.st-del {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+}
+
+.panel-files .pf-path {
+  font-family: var(--mono); font-size: 12.5px; color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.panel-files .pf-diff { display: none; }
+.panel-files .pf-file.open .pf-diff { display: block; padding: 2px 10px 10px; }
+
+.panel-files .pf-pre {
+  font-family: var(--mono); font-size: 12px; line-height: 1.45;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 8px 10px;
+  max-height: 420px; overflow: auto; white-space: pre;
+}
+.panel-files .d-add { color: var(--success); }
+.panel-files .d-del { color: var(--error); }
+.panel-files .d-hunk { color: var(--fg-faint); }
+.panel-files .d-meta { color: var(--fg-faint); }
+.panel-files .pf-trunc {
+  margin-top: 4px; font-size: 11.5px; color: var(--warning);
+}
+
+/* ---------- Usage ---------- */
+
+.panel-usage { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+
+.panel-usage .pu-live {
+  display: flex; flex-wrap: wrap; gap: 6px; flex: none;
+  padding: 8px 10px; border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.panel-usage .pu-stat {
+  display: flex; align-items: baseline; gap: 5px;
+  background: var(--panel); border-radius: 20px; padding: 2px 10px;
+}
+.panel-usage .pu-k { font-size: 11px; color: var(--fg-faint); }
+.panel-usage .pu-v { font-family: var(--mono); font-size: 12.5px; color: var(--fg); }
+
+.panel-usage .pu-table { flex: 1; overflow: auto; min-height: 0; }
+
+.panel-usage .pu-empty {
+  padding: 10px 12px; color: var(--fg-faint); font-size: 12.5px;
+}
+
+.panel-usage .pu-grid {
+  width: 100%; border-collapse: collapse;
+  font-family: var(--mono); font-size: 12px;
+}
+.panel-usage .pu-grid th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: right; font-weight: 500; color: var(--fg-faint);
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 5px 10px;
+}
+.panel-usage .pu-grid td {
+  text-align: right; padding: 4px 10px; color: var(--fg-dim);
+  border-bottom: 1px solid var(--line);
+}
+.panel-usage .pu-grid tbody tr:hover td { background: var(--panel); color: var(--fg); }
+.panel-usage .pu-grid th:first-child,
+.panel-usage .pu-grid td.pu-turn { text-align: left; color: var(--fg); }
+.panel-usage .pu-grid tfoot td {
+  color: var(--fg); font-weight: 600;
+  border-top: 1px solid var(--line-strong); border-bottom: none;
+  background: var(--surface);
+  position: sticky; bottom: 0;
+}

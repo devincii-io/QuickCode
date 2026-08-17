@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
 from quickcode.server import auth
+from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.session.store import SessionStore
 
@@ -223,6 +224,8 @@ def create_app(
             pass
         finally:
             conv.clients.discard(client)
+
+    register_git_routes(app, lambda: manager)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():
