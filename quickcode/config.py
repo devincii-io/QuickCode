@@ -37,19 +37,24 @@ DEFAULT_THEME_COLORS: dict[str, str] = {
 
 # Ready-to-use palettes for people who don't want to tune eleven hex fields.
 # The warm palette remains the default and every preset is still editable.
+#
+# Structural tokens (background / surface / panel / boost) stay neutral in the
+# dark presets on purpose: a hue baked into every surface reads as a colour
+# cast across the whole app. Colour belongs to primary / secondary / accent,
+# where it marks something, not to the paper it is printed on.
 THEME_PRESETS: dict[str, dict[str, str]] = {
     "warm": dict(DEFAULT_THEME_COLORS),
     "dark": {
-        "background": "#0d1117", "surface": "#161b22", "panel": "#21262d",
+        "background": "#101011", "surface": "#18181a", "panel": "#212124",
         "primary": "#58a6ff", "secondary": "#3fb950", "accent": "#d2a8ff",
-        "foreground": "#e6edf3", "success": "#3fb950", "warning": "#d29922",
-        "error": "#f85149", "boost": "#30363d",
+        "foreground": "#e6e6e8", "success": "#3fb950", "warning": "#d29922",
+        "error": "#f85149", "boost": "#2b2b30",
     },
     "midnight": {
-        "background": "#090b16", "surface": "#101426", "panel": "#181d33",
+        "background": "#0c0c0e", "surface": "#141416", "panel": "#1d1d21",
         "primary": "#7aa2f7", "secondary": "#9ece6a", "accent": "#bb9af7",
-        "foreground": "#c0caf5", "success": "#9ece6a", "warning": "#e0af68",
-        "error": "#f7768e", "boost": "#24283b",
+        "foreground": "#e3e3e6", "success": "#9ece6a", "warning": "#e0af68",
+        "error": "#f7768e", "boost": "#27272d",
     },
     "light": {
         "background": "#f6f8fa", "surface": "#ffffff", "panel": "#eaeef2",
