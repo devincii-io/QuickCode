@@ -113,12 +113,25 @@ class ChatInput(TextArea):
     instead of the text area. When the input is empty and the subagent list
     is showing, a plain Down hands focus off to ``AgentPanes`` instead of
     moving the (empty) cursor.
+
+    ↑ at the top line recalls the previous submitted input (shell-style
+    history); ↓ at the bottom line moves forward. The in-progress draft is
+    preserved while browsing and restored when you move past either end.
     """
 
     class Submitted(events.Event):
-        def __init__(self, text: str) -> None:
+        def __init__(self, text: str, queued: bool = False) -> None:
             super().__init__()
             self.text = text
+            # True when the app queued this submit because the agent was busy;
+            # the app uses it to avoid double-queuing on replay.
+            self.queued = queued
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int = -1  # -1 = not browsing; otherwise cursor into _history
+        self._draft: str = ""  # the in-progress text saved when entering history
 
     def _menu(self) -> SlashMenu | None:
         try:
@@ -158,17 +171,62 @@ class ChatInput(TextArea):
                 event.stop()
                 panes.focus()
                 return
+        # Shell-style history: Up at the first line recalls the previous
+        # submitted input; Down at the last line moves forward. Multi-line
+        # drafts keep the cursor moving within the draft until it reaches the
+        # top/bottom edge, so normal editing is unaffected.
+        if event.key == "up" and self.cursor_location[0] == 0 and not self.text.startswith("/"):
+            if self._history_index == -1:
+                self._draft = self.text
+                self._history_index = len(self._history)
+            if self._history_index > 0:
+                self._history_index -= 1
+                self.load_text(self._history[self._history_index])
+                self.move_cursor((0, 0))
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "down" and self.cursor_location[0] == self.document.line_count - 1 and not self.text.startswith("/"):
+            if self._history_index != -1:
+                self._history_index += 1
+                if self._history_index >= len(self._history):
+                    # Past the newest: restore the in-progress draft.
+                    self._history_index = -1
+                    self.load_text(self._draft)
+                else:
+                    self.load_text(self._history[self._history_index])
+                self.move_cursor((self.document.line_count - 1, 0))
+                event.prevent_default()
+                event.stop()
+                return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
             text = self.text
             self.text = ""
+            # Record into history: skip empty and pure-slash commands (those
+            # are handled by the command menu, not worth recalling). Dedup only
+            # on exact repeats so a re-phrased retry is still logged.
+            if text and not text.startswith("/"):
+                if not (self._history and self._history[-1] == text):
+                    self._history.append(text)
+            self._history_index = -1
+            self._draft = ""
             self.post_message(ChatInput.Submitted(text))
             return
         if event.key == "ctrl+j":
             event.prevent_default()
             event.stop()
             self.insert("\n")
+            return
+        # Ctrl+V (inherited from TextArea) reads the OS clipboard; some terminals
+        # swallow Ctrl+V or map it to something else, so Alt+V is an explicit
+        # alias that always reaches us. Bracketed-paste (terminal "right-click
+        # paste") is handled by _on_paste independently of either binding.
+        if event.key == "alt+v":
+            event.prevent_default()
+            event.stop()
+            self.action_paste()
             return
         if event.key == "tab":
             # Move focus out of the input into the transcript (collapsibles,
@@ -225,6 +283,10 @@ class QuickCodeApp(App[None]):
         self._tool_names: dict[str, str] = {}
         self._store = session_store
         self._persisted = 0  # count of history messages already written to disk
+        # Messages submitted while the agent was mid-turn; sent FIFO once the
+        # current turn ends. Lets the user steer the conversation or queue the
+        # next task without waiting for the stream to finish.
+        self._queue: list[str] = []
 
     # ------------------------------------------------------------------
     # Layout
@@ -292,7 +354,7 @@ class QuickCodeApp(App[None]):
 
     def on_chat_input_submitted(self, message: ChatInput.Submitted) -> None:
         self.query_one(SlashMenu).hide()
-        self._submit(message.text)
+        self._submit(message.text, queued=message.queued)
 
     def on_text_area_changed(self, event) -> None:
         # Show/refresh the slash-command popup as the user types a leading "/".
@@ -332,12 +394,20 @@ class QuickCodeApp(App[None]):
         "/quit": "exit QuickCode",
     }
 
-    def _submit(self, text: str) -> None:
+    def _submit(self, text: str, *, queued: bool = False) -> None:
         text = text.strip()
-        if not text or self.agent.busy:
+        if not text:
             return
+        # Slash commands are UI, not model turns — run immediately even while
+        # the agent is mid-stream (so /mode, /compact, /clear take effect now).
         if text.startswith("/"):
             self._handle_command(text)
+            return
+        if self.agent.busy:
+            self._queue.append(text)
+            transcript = self.query_one(Transcript)
+            transcript.add_queued(text)
+            self._refresh_queue_indicator()
             return
         transcript = self.query_one(Transcript)
         transcript.add_user(text)
@@ -405,8 +475,34 @@ class QuickCodeApp(App[None]):
             status.agent_state = "idle"
             self._persist_new_messages()
             self._refresh_sidebar()
+            self._refresh_queue_indicator()
             if should_compact(self.agent):
                 self.run_worker(self._do_compact(manual=False), exclusive=True, group="compact")
+            # If the user queued follow-ups while the agent was busy, send the
+            # next one now (FIFO). Compaction (above) may itself run async; it
+            # doesn't set agent.busy, so a queued item can interleave safely —
+            # it just starts a new turn once the compaction worker yields.
+            self._drain_queue()
+
+    def _drain_queue(self) -> None:
+        """Send the next queued message if the agent is idle. Called at the end
+        of each turn and after a manual interrupt. No-op if the queue is empty
+        or the agent is busy again (the next turn-end will retry)."""
+        if not self._queue or self.agent.busy:
+            return
+        next_text = self._queue.pop(0)
+        transcript = self.query_one(Transcript)
+        transcript.add_user(next_text)
+        self._refresh_queue_indicator()
+        self.run_worker(self._run_turn(next_text), exclusive=False, group="turn")
+
+    def _refresh_queue_indicator(self) -> None:
+        """Keep the status bar's queued-count segment in sync."""
+        try:
+            status = self.query_one("#status-bar", StatusBar)
+        except Exception:
+            return
+        status.queued = len(self._queue)
 
     def _persist_new_messages(self) -> None:
         if self._store is None:
@@ -701,9 +797,28 @@ class QuickCodeApp(App[None]):
     def action_interrupt(self) -> None:
         if self.agent.busy:
             self.agent.cancel()
-            self.query_one(Transcript).add_system_note("(interrupted)")
+            # Drop any queued follow-ups too: an interrupt means "stop, I've
+            # changed my mind", not "stop then run the rest of my plan".
+            if self._queue:
+                n = len(self._queue)
+                self._queue.clear()
+                self._refresh_queue_indicator()
+                self.query_one(Transcript).add_system_note(
+                    f"(interrupted; {n} queued message{'s' if n != 1 else ''} cleared)"
+                )
+            else:
+                self.query_one(Transcript).add_system_note("(interrupted)")
             return
-        # Idle: Esc pulls focus back to the input from anywhere in the transcript.
+        # Idle: if there are queued messages (agent finished but drain pending),
+        # Esc clears them; otherwise Esc pulls focus back to the input.
+        if self._queue:
+            n = len(self._queue)
+            self._queue.clear()
+            self._refresh_queue_indicator()
+            self.query_one(Transcript).add_system_note(
+                f"(cleared {n} queued message{'s' if n != 1 else ''})"
+            )
+            return
         chat = self.query_one("#chat-input", ChatInput)
         if self.focused is not chat:
             chat.focus()

@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.log
 .env
+.quickcode/artifacts/
 .quickcode/sessions/
 .quickcode/tasks/
 .quickcode/settings.local.json

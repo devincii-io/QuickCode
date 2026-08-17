@@ -7,12 +7,13 @@ result bodies (auto-collapsed on success, expanded + red on error).
 
 from __future__ import annotations
 
+from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Collapsible, Markdown, Static
 from textual.widgets._collapsible import CollapsibleTitle
 
 
-def _preview(args: str, limit: int = 60) -> str:
+def _preview(args: str, limit: int = 80) -> str:
     args = args.replace("\n", " ").strip()
     if len(args) > limit:
         args = args[: limit - 1] + "…"
@@ -47,7 +48,17 @@ class TranscriptCollapsibleTitle(CollapsibleTitle):
 
 
 class TranscriptCollapsible(Collapsible):
-    """Collapsible with a title tailored to the chat transcript."""
+    """Collapsible with a title tailored to the chat transcript.
+
+    A click anywhere on the expanded body collapses it — a fast dismiss that
+    does not require aiming at the small title glyph — and, like the title,
+    never steals focus from the composer.
+    """
+
+    # A click on the expanded body collapses it; like the title, the body must
+    # not grab keyboard focus from the composer (the toggle is a mouse-only
+    # convenience, Tab/Enter accessibility is handled by the title).
+    FOCUS_ON_CLICK = False
 
     def __init__(self, *children, **kwargs) -> None:
         super().__init__(*children, **kwargs)
@@ -58,6 +69,26 @@ class TranscriptCollapsible(Collapsible):
             expanded_symbol=old_title.expanded_symbol,
             collapsed=old_title.collapsed,
         )
+
+    async def _on_click(self, event: events.Click) -> None:
+        """Clicking the expanded body collapses it; clicking the title is left
+        to the title's own handler (it stops the event, so this never fires for
+        title clicks). The body's child widgets aren't focusable, so without
+        this a click would walk up and focus the Transcript scroll container —
+        we restore the composer to match the title-click behavior."""
+        event.prevent_default()
+        event.stop()
+        if not self.collapsed:
+            self.collapsed = True
+            # Keep keyboard focus in the composer (the title does the same via
+            # FOCUS_ON_CLICK=False; the body path needs it explicitly because
+            # the click target is a non-focusable Static inside us).
+            try:
+                chat = self.app.query_one("#chat-input")
+            except Exception:
+                return
+            if self.app.focused is not chat:
+                chat.focus()
 
 
 class Transcript(VerticalScroll):
@@ -79,6 +110,7 @@ class Transcript(VerticalScroll):
         self._tool_headers: dict[str, Static] = {}
         self._tool_names: dict[str, str] = {}
         self._tool_args: dict[str, str] = {}
+        self._tool_boxes: dict[str, TranscriptCollapsible] = {}
 
     def on_mount(self) -> None:
         # Flush accumulated stream text at ~12Hz rather than re-rendering the
@@ -105,6 +137,12 @@ class Transcript(VerticalScroll):
 
     def add_system_note(self, text: str) -> None:
         self.mount(Static(text, classes="msg-reasoning", markup=False))
+
+    def add_queued(self, text: str) -> None:
+        """Show a queued follow-up as a dimmed user line (distinct from a live
+        turn): the message will be sent when the current turn ends, so it's
+        marked "queued" and visually de-emphasized."""
+        self.mount(Static(f"› {text}  (queued)", classes="msg-queued", markup=False))
 
     def add_error(self, text: str) -> None:
         self.mount(Static(f"⚠ {text}", classes="tool-result-error", markup=False))
@@ -229,14 +267,37 @@ class Transcript(VerticalScroll):
 
     def tool_result(self, tool_id: str, name: str, content: str, is_error: bool) -> None:
         display_name = self._tool_names.get(tool_id, name)
-        title = f"{'✗' if is_error else '✓'} {display_name} result"
+        full_args = self._tool_args.get(tool_id, "")
+        glyph = "✗" if is_error else "✓"
+        title = f"{glyph} {display_name}({full_args})" if full_args else f"{glyph} {display_name}"
         body_cls = "tool-result-error" if is_error else "tool-result-ok"
-        # Cap the rendered body so expanding a huge file-read/log result doesn't
-        # trigger a giant reflow; the full content already went to the model.
-        body = Static(_clip(content), classes=body_cls, markup=False)
+        # The expanded body shows the full command/arguments (the streaming
+        # header only ever showed a truncated preview) followed by the result,
+        # so a long bash command can finally be read in full. The whole body is
+        # clickable to collapse again (TranscriptCollapsible._on_click).
+        body_parts: list[str] = []
+        if full_args:
+            body_parts.append(f"$ {full_args}")
+            body_parts.append("")
+        body_parts.append(_clip(content))
+        body = Static("\n".join(body_parts), classes=body_cls, markup=False)
         collapsible = TranscriptCollapsible(
             body,
             title=title,
             collapsed=not is_error,
         )
-        self.mount(collapsible)
+        # Replace the live-streaming header with the final, expandable record.
+        header = self._tool_headers.pop(tool_id, None)
+        self._tool_boxes[tool_id] = collapsible
+        if header is not None and header.is_mounted:
+            self.mount(collapsible, after=header)
+            header.remove()
+        else:
+            # Header not flushed yet (or absent): just append the record and
+            # make sure a pending header can't pop in after it.
+            self.mount(collapsible)
+            if header is not None:
+                try:
+                    header.remove()
+                except Exception:
+                    pass

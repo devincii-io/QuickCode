@@ -48,6 +48,7 @@ class StatusBar(Horizontal):
     cost_usd: reactive[float] = reactive(0.0)
     mode: reactive[Mode] = reactive(Mode.ask)
     agent_state: reactive[str] = reactive("idle")
+    queued: reactive[int] = reactive(0)
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -61,11 +62,12 @@ class StatusBar(Horizontal):
         yield Static("", id="seg-cwd", markup=False)
         yield Static("", id="seg-ctx", markup=False)
         yield Static("", id="seg-cost", markup=False)
+        yield Static("", id="seg-queued", markup=False)
         yield Static("", id="seg-mode", markup=False)
         yield Static("", id="seg-state", markup=False)
 
     def on_mount(self) -> None:
-        for key in ("model", "cwd", "ctx", "cost", "mode", "state"):
+        for key in ("model", "cwd", "ctx", "cost", "queued", "mode", "state"):
             try:
                 self._segs[key] = self.query_one(f"#seg-{key}", Static)
             except Exception:
@@ -74,6 +76,7 @@ class StatusBar(Horizontal):
         self._set("cwd", f" {self.cwd or '(no cwd)'} ")
         self._set("ctx", self._ctx_text())
         self._set("cost", f" ${self.cost_usd:.4f} ")
+        self._set("queued", self._queued_text())
         self._set_mode()
         self._set("state", self._state_text())
 
@@ -95,6 +98,9 @@ class StatusBar(Horizontal):
 
     def _state_text(self) -> str:
         return f" {_STATE_GLYPH.get(self.agent_state, '●')} {self.agent_state} "
+
+    def _queued_text(self) -> str:
+        return f" ⏸ {self.queued} queued " if self.queued else ""
 
     def _set_mode(self) -> None:
         seg = self._segs.get("mode")
@@ -123,6 +129,9 @@ class StatusBar(Horizontal):
 
     def watch_agent_state(self, _v: str) -> None:
         self._set("state", self._state_text())
+
+    def watch_queued(self, _v: int) -> None:
+        self._set("queued", self._queued_text())
 
     def update_usage(self, ctx_pct: float | None, cost_usd: float) -> None:
         self.ctx_pct = ctx_pct

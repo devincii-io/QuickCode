@@ -88,6 +88,11 @@ StatusBar Static {
     color: $success;
 }
 
+#seg-queued {
+    color: $warning;
+    text-style: bold;
+}
+
 #seg-state {
     color: $text-muted;
 }
@@ -134,6 +139,13 @@ StatusBar Static {
     margin: 1 0 0 0;
 }
 
+/* A follow-up queued while the agent was busy: dimmed, italic, marked. */
+.msg-queued {
+    color: $text-muted;
+    text-style: italic;
+    margin: 0 0 0 0;
+}
+
 .msg-assistant {
     color: $text;
     padding: 0;
@@ -159,10 +171,28 @@ StatusBar Static {
 .tool-header {
     color: $secondary;
     text-style: bold;
+    margin: 0 0 0 0;
+}
+
+/* Expandable tool record (full command + result). Distinct from the live
+   streaming header: a subtle panel surface and a hairline top border so a
+   run of tool calls reads as a tidy log, not a wall of same-color text. */
+TranscriptCollapsible {
+    background: $panel;
+    border-top: solid $boost;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
+TranscriptCollapsible CollapsibleTitle {
+    color: $secondary;
+    text-style: bold;
+    padding: 0 0;
 }
 
 .tool-result-ok {
     color: $text-muted;
+    margin: 0 0 0 0;
 }
 
 .tool-result-error {
