@@ -55,24 +55,43 @@ Plugins · messages sent while the agent is busy are queued. Tests:
   stdio transport, tools appear as `mcp__<server>__<tool>` behind the same
   permission gate.
 
-### Installation (Windows)
+### Installation
 
-Two ways to install QuickCode on Windows without the manual `uv` steps above:
+QuickCode 1.0 installs three ways. All of them give you the same local web app.
 
-- **Installer (`.exe`)** — build `packaging\quickcode.iss` with the
-  [Inno Setup](https://jrsoftware.org/isinfo.php) compiler to produce a
-  wizard-driven installer that installs Git and Python (3.12+) if they're
-  missing, `pip install`s QuickCode, adds it to your `PATH`, and creates a
-  Start Menu shortcut. See [packaging/README.md](packaging/README.md).
-- **PowerShell script** — from a checkout of this repo:
+**Windows installer (`.exe`)** — the turnkey path. Build
+`packaging\quickcode.iss` with the [Inno Setup](https://jrsoftware.org/isinfo.php)
+compiler, then run the resulting `QuickCode-Setup-1.0.0.exe`. It installs
+per-user, ensures Git and Python 3.12+ (installing them silently if missing),
+creates a private venv, puts `quickcode`/`qc` on your `PATH`, and adds a Start
+Menu shortcut — plus optional desktop and *"Open QuickCode here"* folder
+context-menu entries. See [packaging/README.md](packaging/README.md).
 
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-  ```
+**pip / uv** — for anyone who already has Python 3.12+:
 
-  Creates/reuses a `.venv` (or pass `-UsePipx` for a global pipx install),
-  ensuring Git/Python along the way. See
-  [packaging/README.md](packaging/README.md) for flags and details.
+```bash
+uv pip install quickcode        # or: pip install quickcode
+```
+
+**From source** — see the Quickstart above, or run
+`powershell -ExecutionPolicy Bypass -File scripts\install.ps1` from a checkout
+to get a `.venv` (or `-UsePipx` for a global install).
+
+Then, from any terminal:
+
+```bash
+quickcode        # start the app on the current directory (qc works too)
+qc .             # same thing, explicitly
+qc C:\proj       # open another project
+```
+
+The installer's **QuickCode** shortcut runs `quickcode-app`, a windowed entry
+point that opens your home directory as the default project with no console
+window behind the browser.
+
+QuickCode's mark is a friendly blue ghost — it's the Start Menu icon, the
+browser favicon, and the app's own brand mark
+([`quickcode/frontend/assets/icon.svg`](quickcode/frontend/assets/icon.svg)).
 
 ### Design docs
 

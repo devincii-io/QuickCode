@@ -1,6 +1,6 @@
 [project]
 name = "quickcode"
-version = "0.1.0"
+version = "1.0.0"
 description = "A local-first coding agent with a traceable web UI, in the spirit of Claude Code and DeepSeek Harness."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,6 +22,11 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
 [project.scripts]
 quickcode = "quickcode.cli:main"
 qc = "quickcode.cli:main"
+
+# Launched by the Start-Menu/Desktop shortcut: pythonw, so no console window
+# flashes up behind the browser.
+[project.gui-scripts]
+quickcode-app = "quickcode.cli:main_app"
 
 [build-system]
 requires = ["hatchling"]
