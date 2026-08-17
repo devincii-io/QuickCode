@@ -7,11 +7,15 @@ import { debounce, el, esc, fmtMs, fmtTime, fmtTokens, oneLine } from "./util.js
 
 const ROLES = ["SYSTEM", "USER", "CONTEXT", "ASSISTANT", "TOOL", "REVIEW", "AGENT", "ERROR"];
 
-let table, timeline, detail, detailBody, detailTitle, searchBox;
+let table, timeline, detail, detailBody, detailTitle, searchBox, followBtn;
 let activeFilters = new Set(ROLES);
 let query = "";
 let selectedSeq = null;
 let detailTab = "summary";
+// Live-follow: on by default, paused by any manual scroll-up or row click, and
+// only ever resumed by the toolbar button (which jumps to the newest event).
+let following = true;
+let autoScrollUntil = 0;     // our own scrolls must not read as "user scrolled"
 
 export function roleOf(ev) {
   const inner = ev.type === "agent_event" ? ev.ev || {} : ev;
@@ -63,6 +67,19 @@ export function initTrajectory() {
   detailBody = document.getElementById("detail-body");
   detailTitle = document.getElementById("traj-detail-title");
   searchBox = document.getElementById("traj-search");
+  followBtn = document.getElementById("traj-follow");
+
+  followBtn.addEventListener("click", () => setFollowing(!following, { jump: true }));
+  // Scrolling away from the newest row is the gesture that means "let me read".
+  table.addEventListener("scroll", () => {
+    if (!following || Date.now() < autoScrollUntil || !table.clientHeight) return;
+    if (!atBottom()) setFollowing(false);
+  });
+  // A hidden pane has no scroll height, so rows that arrived while the panel
+  // was closed leave it parked at the top: re-anchor once it gets a size.
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => { if (following) scrollToNewest(); }).observe(table);
+  }
 
   const filters = document.getElementById("traj-filters");
   for (const role of ROLES) {
@@ -105,11 +122,58 @@ export function initTrajectory() {
   });
 
   subscribe((kind, ev) => {
-    if (kind === "reset") { renderAll(); return; }
+    // A new conversation starts at the live edge again.
+    if (kind === "reset") { selectedSeq = null; setFollowing(true); renderAll(); return; }
     if (kind === "replay_done") { renderAll(); return; }
     if (kind === "event" && !store.replaying) appendRow(ev);
   });
+  setFollowing(true);
   renderAll();
+}
+
+// ---- live follow ----
+
+function atBottom() {
+  return table.scrollHeight - table.scrollTop - table.clientHeight < 24;
+}
+
+function newestSeq() {
+  return store.events.length ? store.events[store.events.length - 1].seq : null;
+}
+
+function scrollToNewest() {
+  // The scroll event lands a tick later; a short window is what tells our own
+  // scroll apart from the user's.
+  autoScrollUntil = Date.now() + 150;
+  table.scrollTop = table.scrollHeight;
+  timeline.scrollTop = timeline.scrollHeight;
+}
+
+// While following, the newest block wears a marker so the timeline shows where
+// the live edge is even when the table is scrolled elsewhere.
+function markNewest() {
+  timeline.querySelectorAll(".tl-block.newest").forEach((b) => b.classList.remove("newest"));
+  if (following) timeline.lastElementChild?.classList.add("newest");
+}
+
+function setFollowing(on, { jump = false } = {}) {
+  following = on;
+  if (followBtn) {
+    followBtn.textContent = on ? "⏸ Follow" : "▶ Follow";
+    followBtn.classList.toggle("paused", !on);
+    followBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    followBtn.title = on
+      ? "Following the newest event — click to pause"
+      : "Paused — click to jump to the newest event and resume";
+  }
+  if (on && jump) {
+    scrollToNewest();
+    const seq = newestSeq();
+    if (seq != null && !detail.classList.contains("hidden")) {
+      selectSeq(seq, { keepFollow: true });
+    }
+  }
+  markNewest();
 }
 
 function visible(ev) {
@@ -150,18 +214,23 @@ function renderAll() {
     if (visible(ev)) table.appendChild(rowNode(ev));
   }
   if (selectedSeq != null) highlight(selectedSeq);
-  table.scrollTop = table.scrollHeight;
+  if (following) scrollToNewest();
+  markNewest();
 }
 
 function appendRow(ev) {
   timeline.appendChild(blockNode(ev));
-  if (!visible(ev)) return;
-  const nearBottom = table.scrollHeight - table.scrollTop - table.clientHeight < 120;
-  table.appendChild(rowNode(ev));
-  if (nearBottom) table.scrollTop = table.scrollHeight;
+  if (visible(ev)) table.appendChild(rowNode(ev));
+  if (!following) return;
+  scrollToNewest();
+  // The inspector tracks the live edge only while it is already open.
+  if (!detail.classList.contains("hidden")) selectSeq(ev.seq, { keepFollow: true });
+  markNewest();
 }
 
-export function selectSeq(seq, { scroll = false } = {}) {
+export function selectSeq(seq, { scroll = false, keepFollow = false } = {}) {
+  // Picking an event by hand is the other way to say "let me read".
+  if (!keepFollow && following) setFollowing(false);
   selectedSeq = seq;
   highlight(seq);
   if (scroll) {

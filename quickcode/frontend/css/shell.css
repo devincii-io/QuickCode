@@ -111,6 +111,22 @@ body.resizing-panel { cursor: col-resize; user-select: none; }
   position: absolute; inset: 0; z-index: 5; flex: none; border-left: none;
 }
 
+/* Maximized, the trajectory gets the reading layout it was designed for: the
+   whole timeline strip across the top, then a roomier table beside a wider
+   inspector. Narrow-panel rules above are left exactly as they are. */
+#main.panel-max .traj-toolbar { flex-wrap: nowrap; padding: 8px 16px; }
+#main.panel-max .traj-search { flex: 0 0 260px; width: auto; }
+#main.panel-max .traj-timeline {
+  max-height: 132px; padding: 10px 16px; gap: 3px;
+}
+#main.panel-max .tl-block { width: 18px; height: 18px; border-radius: 4px; }
+#main.panel-max .traj-table { font-size: 13px; }
+#main.panel-max .trow { padding: 5px 16px; }
+#main.panel-max .trow .seq { width: 54px; }
+#main.panel-max .trow .chip { width: 92px; }
+#main.panel-max .traj-detail { flex: 0 0 clamp(380px, 36%, 620px); }
+#main.panel-max .detail-body { padding: 16px 18px; }
+
 /* ---------- narrow windows ---------- */
 
 @media (max-width: 820px) {

@@ -1,6 +1,12 @@
 // WebSocket connection to one conversation. The token rides as a subprotocol
 // (browsers can't set WS headers). Reconnects with backoff; every reconnect
 // replays the event log and the store dedupes by seq.
+//
+// Exactly one socket may reach the store at a time. Sequence numbers restart
+// at 1 in every conversation, so a single late frame from a superseded socket
+// would poison `seenSeq` and make the next replay dedupe itself away — an
+// empty transcript. `generation` is the guard: every connect/disconnect bumps
+// it, and a socket whose generation is stale is deaf and mute.
 
 import { authToken } from "./api.js";
 import { ingest, resetConversation, setConnection, store } from "./store.js";
@@ -9,51 +15,77 @@ let ws = null;
 let convId = null;
 let projectId = null;
 let backoff = 500;
-let closedByUs = false;
+let generation = 0;
+let retryTimer = null;
 
 // Attach to one conversation of one project. Switching either tears the old
 // socket down and resets the store, so no state leaks across the switch.
 export function connect(pid, id) {
-  closedByUs = false;
-  if (ws) { closedByUs = true; ws.close(); }
+  teardown();
   projectId = pid;
   convId = id;
   store.convId = id;
   store.projectId = pid;
+  backoff = 500;
   resetConversation();
   open();
 }
 
 export function disconnect() {
-  if (ws) { closedByUs = true; ws.close(); }
-  ws = null;
+  teardown();
   convId = null;
+  // Leaving a conversation empties the mirror: the store must only ever hold
+  // the conversation currently attached.
+  resetConversation();
+}
+
+// Retire the current socket *and* its handlers, and cancel any pending
+// reconnect. Detaching the handlers is what makes the retirement final —
+// close() alone leaves a socket that can still deliver queued frames.
+function teardown() {
+  generation++;
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  if (ws) {
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    try { ws.close(); } catch { /* already closing */ }
+    ws = null;
+  }
 }
 
 function open() {
+  const mine = generation;
   setConnection("connecting");
   const proto = authToken() ? ["qcauth." + authToken()] : undefined;
-  ws = new WebSocket(
+  const sock = new WebSocket(
     `ws://${location.host}/ws/projects/${encodeURIComponent(projectId)}` +
     `/conversation/${encodeURIComponent(convId)}`,
     proto,
   );
+  ws = sock;
 
-  ws.onopen = () => { backoff = 500; setConnection("open"); };
-  ws.onmessage = (m) => {
+  sock.onopen = () => {
+    if (mine !== generation) return;
+    backoff = 500;
+    setConnection("open");
+  };
+  sock.onmessage = (m) => {
+    if (mine !== generation) return;
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
     ingest(ev);
   };
-  ws.onclose = () => {
-    if (closedByUs) { closedByUs = false; return; }
+  sock.onclose = () => {
+    if (mine !== generation) return;   // superseded: someone else owns the store
     setConnection("closed");
-    setTimeout(() => {
-      if (convId) { resetConversation(); open(); }
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (mine !== generation || !convId) return;
+      resetConversation();
+      open();
     }, backoff);
     backoff = Math.min(backoff * 2, 8000);
   };
-  ws.onerror = () => {};
+  sock.onerror = () => {};
 }
 
 export function send(obj) {
