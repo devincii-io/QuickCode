@@ -35,7 +35,12 @@ async def _headless_permission_cb(request: PermissionRequest) -> PermissionOutco
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quickcode", description="QuickCode coding agent")
-    parser.add_argument("prompt", nargs="?", default=None, help="initial prompt (optional)")
+    # `qc [path] [prompt]`: the first positional is the project directory when
+    # it names one (`qc .`), otherwise it is the prompt (the original shape).
+    parser.add_argument("first", nargs="?", default=None,
+                         help="project directory, or the initial prompt")
+    parser.add_argument("second", nargs="?", default=None,
+                         help="initial prompt, when a directory was given first")
     parser.add_argument("-p", "--print", dest="print_mode", action="store_true",
                          help="run headlessly: print the final response and exit")
     parser.add_argument("--cwd", default=None, help="project directory (default: current dir)")
@@ -53,6 +58,37 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="don't open a browser window (prints the URL)")
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     return parser
+
+
+def _resolve_positionals(args: argparse.Namespace) -> None:
+    """Fold ``[path] [prompt]`` into ``args.cwd`` / ``args.prompt``.
+
+    ``qc .`` and ``qc C:\\proj`` open a project; ``qc "fix the build"`` keeps
+    the original prompt-only shape. An explicit ``--cwd`` always wins.
+    """
+    first, second = args.first, args.second
+    path: str | None = None
+    prompt: str | None = first
+    if first is not None and _looks_like_dir(first):
+        path = first
+        prompt = second
+    elif second is not None:
+        print(
+            "error: with two positional arguments the first must be a project directory",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    args.prompt = prompt
+    args.project_given = bool(path or args.cwd)
+    if args.cwd is None:
+        args.cwd = path
+
+
+def _looks_like_dir(value: str) -> bool:
+    try:
+        return Path(value).expanduser().is_dir()
+    except OSError:
+        return False
 
 
 def _build_agent(args: argparse.Namespace):
@@ -164,6 +200,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.version:
         print(f"quickcode {__version__}")
         return
+
+    _resolve_positionals(args)
 
     if args.print_mode:
         agent, config, env, store = _build_agent(args)
