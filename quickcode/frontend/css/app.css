@@ -468,6 +468,30 @@ textarea, input { font: inherit; color: inherit; }
 .task-item.st-completed { color: var(--fg-faint); text-decoration: line-through; }
 .task-item.st-in_progress { color: var(--warning); }
 
+/* slash-command menu (anchored above the composer) */
+.slash-menu { max-width: none; min-width: 240px; }
+.slash-menu .menu-item { padding: 7px 12px; }
+.slash-menu .sm-line { display: flex; gap: 8px; align-items: baseline; }
+.slash-menu .sm-cmd { font-family: var(--mono); font-size: 13px; color: var(--primary); font-weight: 600; }
+.slash-menu .sm-arg { font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint); }
+.slash-menu .sm-desc { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
+.slash-hint {
+  border-top: 1px solid var(--line); padding: 5px 12px; flex: none;
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+}
+
+/* help modal */
+.help-sec { margin-bottom: 18px; }
+.help-sec:last-child { margin-bottom: 0; }
+.help-sec h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--fg-faint); margin-bottom: 6px; font-weight: 600;
+}
+.help-row { display: flex; gap: 14px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+.help-key { flex: 0 0 210px; font-family: var(--mono); font-size: 12px; color: var(--primary); }
+.help-desc { color: var(--fg-dim); }
+.help-note { font-size: 12.5px; color: var(--fg-dim); }
+
 @media (max-width: 900px) {
   #main.mode-split #chat-pane { flex: 1; }
   #main.mode-split #traj-pane { display: none; }
