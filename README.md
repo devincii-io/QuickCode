@@ -1,43 +1,52 @@
 # QuickCode
 
-A terminal coding agent — an interactive TUI in the spirit of Claude Code and Codex CLI, built with **Python + Textual**, talking to models through a **pluggable provider layer** (OpenRouter by default, any OpenAI-compatible endpoint by config).
+A local-first coding agent with a **traceable web UI** — in the spirit of
+Claude Code and DeepSeek Harness. Python core, no terminal library: the CLI
+starts a loopback FastAPI server and opens a browser app. Models are reached
+through a **pluggable provider layer** (OpenRouter by default, any
+OpenAI-compatible endpoint by config), and the agent's capabilities — tools,
+providers, MCP servers — are plugins; the UI is built in.
 
-```
-┌─ quickcode ─────────────────────────────┬─ tasks ──────────────┐
-│ ⏺ Read src/index.py (142 lines)     ▸   │ ✓ Locate failing test│
-│ ⏺ Edit src/paginate.py              ▾   │ ◐ Fix off-by-one     │
-│   - end = start + size + 1              │ ○ Run full suite     │
-│   + end = start + size                  ├─ files ──────────────┤
-│ ● Running tests…                        │ M src/paginate.py    │
-│                                         │                      │
-│ > _                                     │                      │
-├─────────────────────────────────────────┴──────────────────────┤
-│ anthropic/claude-opus-4.8 · ctx 12% · $0.08 · Esc interrupt   │
-└────────────────────────────────────────────────────────────────┘
-```
+**Every run is traceable.** Everything the model sees is recorded in an
+append-only session event log: the system prompt, context injections, tool
+calls and results, subagent activity, permission decisions. The **Trajectory**
+view renders that log as an inspectable table (role chips, timeline strip,
+search, per-event Summary/Payload/Result/Timing inspector) and switches
+seamlessly with **Chat** — or opens beside it in **Split** view. Resume and
+replay operate on the same event stream.
 
 ## Status
 
-**M0–M4 core implemented, plus selected M6 polish.** QuickCode is a persistent,
-permission-gated coding agent with streaming tools, plan review, tasks, compaction,
-concurrent subagent fan-out, usage tracking, diagnostics, mouse controls, and editable
-theme presets. True detached background agents and teammate mode remain roadmap work.
+Complete rewrite of the former Textual TUI (v2). Persistent, permission-gated
+agent with streaming, plan review, tasks, compaction, concurrent subagent
+fan-out, usage tracking, session resume, and the trajectory inspector.
 
 ### Quickstart
 
 ```bash
 uv venv --python 3.12
 uv pip install -e ".[dev,pty]"
-export OPENROUTER_API_KEY=sk-...        # or edit the Profile tab in Settings
-uv run quickcode                        # launch the TUI  (qc also works)
+export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (encrypted)
+uv run quickcode                        # start the web app  (qc also works)
+uv run quickcode --no-browser           # print the URL instead of opening it
 uv run quickcode -p "explain this repo" # headless / print mode
 ```
 
-Keys: `Enter` send · `Ctrl+J` newline · `Shift+Tab` cycle permission mode ·
-`F1` help · `F2` model picker · `F3` settings (curate OpenRouter models by
-tier/role, themes, and usage) · `Esc` interrupt · `PageUp/PageDown` transcript.
-Subagent rows support mouse selection, an expand/collapse button, and drag resizing
-from the pane's left edge. Tests: `uv run pytest -q`.
+In the app: `Enter` send · `Shift+Enter` newline · `Esc` interrupt · mode and
+model pickers live on the composer · `⚙` Settings has General / Models /
+Plugins · messages sent while the agent is busy are queued. Tests:
+`uv run pytest -q`.
+
+### Plugins (agent capabilities)
+
+- **Tools** — Python entry point group `quickcode.tools` returning `Tool`
+  instances.
+- **Providers** — entry point group `quickcode.providers`; select per profile
+  via `"provider"` in `~/.quickcode/config.json`.
+- **MCP servers** — Claude-compatible `"mcpServers"` config in
+  `.quickcode/settings.json` (project) or `~/.quickcode/settings.json` (user);
+  stdio transport, tools appear as `mcp__<server>__<tool>` behind the same
+  permission gate.
 
 ### Installation (Windows)
 
@@ -65,7 +74,7 @@ The full plan lives in `docs/`:
 | Doc | Contents |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, async agent loop, provider abstraction, PTY subsystem, efficiency techniques |
-| [docs/UI.md](docs/UI.md) | The interactive TUI: panes, conversation switcher, modals, keybindings (QuickTerm-safe) |
+| [docs/UI.md](docs/UI.md) | The web UI: chat/trajectory/split views, event log protocol, modals (partly historical — describes the retired TUI) |
 | [docs/AGENTS.md](docs/AGENTS.md) | Subagents, teammate mode, task board, orchestration playbook |
 | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Permission modes (plan → yolo), rules engine, plan mode, bypass guardrails |
 | [docs/PROMPTS.md](docs/PROMPTS.md) | System prompt (XML-sectioned), dynamic reminders, compaction + delegation prompts |
@@ -77,4 +86,5 @@ The full plan lives in `docs/`:
 1. **Efficiency is architecture, not magic** — cache-stable prompt prefixes, parallel tool execution, diff-based edits, hard output truncation, compaction before overflow.
 2. **The harness owns safety** — the model emits tool calls; the permission layer decides what runs.
 3. **Provider-agnostic core** — the agent loop speaks a normalized event stream; adapters translate.
-4. **Actually interactive** — mouse-clickable, collapsible, streaming everything; the terminal UI should feel like an app, not a log file.
+4. **Every run is traceable** — the append-only event log is the source of truth; the trajectory view shows everything the model saw, and replay/resume derive from the same stream.
+5. **Agent capabilities are plugins; the UI is not** — tools, providers, and MCP servers are swappable, the built-in web UI stays coherent.

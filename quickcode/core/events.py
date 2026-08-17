@@ -79,6 +79,15 @@ class ToolResultEvent:
     name: str
     content: str
     is_error: bool = False
+    ms: int = 0  # wall-clock execution time, for the trajectory view
+
+
+@dataclass
+class ContextInjection:
+    """A system-reminder spliced into the user turn (mode note, post-compaction
+    handoff). Emitted so the trace shows everything the model sees."""
+
+    text: str
 
 
 @dataclass
@@ -98,6 +107,7 @@ AgentEvent = (
     | Usage
     | TurnDone
     | ToolResultEvent
+    | ContextInjection
     | AgentStatus
 )
 
