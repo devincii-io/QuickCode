@@ -1,0 +1,243 @@
+/* Side-panel modules (js/panels/*.js). Every selector is namespaced under
+   .panel-agents / .panel-tasks so nothing here can leak into the shell, and
+   every colour comes from the theme variables defined in app.css. */
+
+/* ============================ Agents panel ============================ */
+
+.panel-agents {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  font: 13px/1.5 var(--sans); color: var(--fg);
+  background: var(--bg);
+}
+
+.panel-agents .pa-summary {
+  flex: none; padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 12px; color: var(--fg-dim);
+  font-family: var(--mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.panel-agents .pa-sum-n { color: var(--fg); font-weight: 600; }
+.panel-agents .pa-sum-run { color: var(--warning); font-weight: 600; }
+.panel-agents .pa-sum-done { color: var(--success); font-weight: 600; }
+.panel-agents .pa-sum-idle { color: var(--fg-faint); }
+.panel-agents .pa-sep { color: var(--fg-faint); margin: 0 4px; }
+
+.panel-agents .pa-list {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+
+/* ---- status dot ---- */
+.panel-agents .pa-dot {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--fg-faint);
+}
+.panel-agents .pa-dot.pa-running { background: var(--chip-agent); }
+.panel-agents .pa-dot.pa-done { background: var(--success); }
+.panel-agents .pa-dot.pa-error { background: var(--error); }
+.panel-agents .pa-dot.pa-live { animation: qc-panel-pulse 1.1s ease-in-out infinite; }
+@keyframes qc-panel-pulse { 50% { opacity: .25; } }
+
+/* ---- agent card ---- */
+.panel-agents .pa-card {
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden;
+}
+.panel-agents .pa-card.open { border-color: var(--chip-agent); }
+
+.panel-agents .pa-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; cursor: pointer; user-select: none;
+}
+.panel-agents .pa-head:hover { background: var(--panel); }
+.panel-agents .pa-head:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+
+.panel-agents .pa-caret {
+  flex: none; color: var(--fg-faint); font-size: 10px;
+  transition: transform .12s ease-out;
+}
+.panel-agents .pa-card.open .pa-caret { transform: rotate(90deg); }
+
+.panel-agents .pa-id {
+  font-family: var(--mono); font-size: 12px; color: var(--fg);
+  font-weight: 600; flex: none;
+  max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-agents .pa-def {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--chip-agent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-agents .pa-count,
+.panel-agents .pa-dur {
+  flex: none; font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
+  white-space: nowrap;
+}
+.panel-agents .pa-dur { min-width: 52px; text-align: right; }
+
+.panel-agents .pa-body {
+  display: none; padding: 8px 10px 10px;
+  border-top: 1px solid var(--line);
+}
+.panel-agents .pa-card.open .pa-body { display: block; }
+
+.panel-agents .pa-waiting {
+  color: var(--fg-faint); font-size: 12px; font-style: italic;
+}
+
+/* ---- agent text ---- */
+.panel-agents .pa-text {
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12.5px; color: var(--fg);
+  padding: 6px 8px; margin-top: 6px;
+  background: var(--bg); border-left: 2px solid var(--secondary);
+  border-radius: 0 6px 6px 0;
+}
+.panel-agents .pa-text.pa-streaming {
+  color: var(--fg-dim); border-left-color: var(--chip-agent);
+}
+.panel-agents .pa-text.pa-streaming:empty { display: none; }
+
+/* ---- nested tool call ---- */
+.panel-agents .pa-tool {
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); overflow: hidden; margin-top: 6px;
+}
+.panel-agents .pa-tool-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 8px; cursor: pointer; user-select: none;
+}
+.panel-agents .pa-tool-head:hover { background: var(--boost); }
+.panel-agents .pa-tool-head:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+
+.panel-agents .pa-tool-name {
+  flex: none; font-family: var(--mono); font-size: 11.5px;
+  color: var(--chip-tool); font-weight: 600;
+}
+.panel-agents .pa-tool-args {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px;
+  color: var(--fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-agents .pa-tool-ms {
+  flex: none; font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
+}
+
+.panel-agents .pa-tool-body {
+  display: none; padding: 8px; border-top: 1px solid var(--line);
+}
+.panel-agents .pa-tool.open .pa-tool-body { display: block; }
+
+.panel-agents .pa-lbl {
+  font-size: 10px; color: var(--fg-faint); text-transform: uppercase;
+  letter-spacing: .6px; margin: 8px 0 4px;
+}
+.panel-agents .pa-lbl:first-child { margin-top: 0; }
+
+.panel-agents .pa-tool-body pre {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.45;
+  background: var(--bg); color: var(--fg-dim);
+  border-radius: 6px; padding: 7px 8px;
+  max-height: 320px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* ---- empty state ---- */
+.panel-agents .pa-empty,
+.panel-tasks .pt-empty {
+  margin: auto; padding: 28px 18px; max-width: 320px; text-align: center;
+}
+.panel-agents .pa-empty-mark,
+.panel-tasks .pt-empty-mark { font-size: 26px; color: var(--fg-faint); }
+.panel-agents .pa-empty-title,
+.panel-tasks .pt-empty-title {
+  margin: 8px 0 4px; font-weight: 600; color: var(--fg-dim);
+}
+.panel-agents .pa-empty-hint,
+.panel-tasks .pt-empty-hint { font-size: 12px; color: var(--fg-faint); line-height: 1.55; }
+.panel-agents .pa-empty-hint code {
+  font-family: var(--mono); font-size: 11.5px;
+  background: var(--panel); color: var(--chip-agent);
+  padding: 1px 5px; border-radius: 4px;
+}
+
+/* ============================ Tasks panel ============================= */
+
+.panel-tasks {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  font: 13px/1.5 var(--sans); color: var(--fg);
+  background: var(--bg);
+}
+
+.panel-tasks .pt-progress {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.panel-tasks .pt-bar {
+  flex: 1; height: 3px; border-radius: 2px; background: var(--boost); overflow: hidden;
+}
+.panel-tasks .pt-bar i {
+  display: block; height: 100%; width: 0;
+  background: var(--primary); transition: width .25s ease-out;
+}
+.panel-tasks.pt-complete .pt-bar i { background: var(--success); }
+.panel-tasks .pt-count {
+  flex: none; font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
+}
+
+.panel-tasks .pt-list {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 8px 10px 12px; display: flex; flex-direction: column;
+}
+
+.panel-tasks .pt-section { margin-top: 10px; }
+.panel-tasks .pt-section:first-child { margin-top: 0; }
+
+.panel-tasks .pt-sec-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 3px 2px 5px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--fg-faint); border-bottom: 1px solid var(--line);
+}
+.panel-tasks .pt-sec-title { flex: 1; }
+.panel-tasks .pt-sec-n { font-family: var(--mono); }
+.panel-tasks .pt-in_progress .pt-sec-head,
+.panel-tasks .pt-in_progress .pt-sec-mark { color: var(--warning); }
+
+.panel-tasks .pt-task {
+  display: flex; align-items: baseline; gap: 7px;
+  padding: 4px 2px; font-size: 12.5px;
+}
+.panel-tasks .pt-mark { flex: none; width: 12px; color: var(--fg-faint); }
+.panel-tasks .pt-id {
+  flex: none; font-family: var(--mono); font-size: 10.5px;
+  color: var(--fg-dim); background: var(--panel);
+  padding: 0 5px; border-radius: 4px;
+}
+.panel-tasks .pt-subject {
+  flex: 1; min-width: 0; overflow-wrap: anywhere;
+}
+.panel-tasks .pt-chips { flex: none; display: flex; gap: 4px; }
+.panel-tasks .pt-chip {
+  font-family: var(--mono); font-size: 10.5px;
+  padding: 0 5px; border-radius: 4px; white-space: nowrap;
+}
+.panel-tasks .pt-blocked {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 16%, transparent);
+}
+.panel-tasks .pt-owner {
+  color: var(--chip-agent);
+  background: color-mix(in srgb, var(--chip-agent) 16%, transparent);
+}
+
+.panel-tasks .pt-st-in_progress { color: var(--warning); }
+.panel-tasks .pt-st-in_progress .pt-mark { color: var(--warning); }
+.panel-tasks .pt-st-pending { color: var(--fg-dim); }
+.panel-tasks .pt-st-completed { color: var(--fg-faint); }
+.panel-tasks .pt-st-completed .pt-mark { color: var(--success); }
+.panel-tasks .pt-st-completed .pt-subject { text-decoration: line-through; }
