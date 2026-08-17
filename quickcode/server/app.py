@@ -131,10 +131,14 @@ def create_app(
 
     def _bootstrap(manager: ConversationManager) -> dict:
         from quickcode.cli import __version__
+        from quickcode.config import THEME_PRESETS
 
         cfg = manager.config
         profile = cfg.profile
         return {
+            # The presets ride along so Settings can offer them without
+            # duplicating eleven hex values per palette in the frontend.
+            "theme_presets": THEME_PRESETS,
             "version": __version__,
             "cwd": str(manager.cwd),
             "project": manager.cwd.name,
@@ -380,9 +384,9 @@ def create_app(
     async def ws_project_conversation(ws: WebSocket, pid: str, conv_id: str) -> None:
         await _attach(ws, hub.get(pid), conv_id)
 
-    # Git routes stay on the default project for now; they resolve the manager
-    # lazily so the hub's default is read per request.
-    register_git_routes(app, lambda: hub.default)
+    # Both git shapes resolve their manager lazily, so the hub's default is
+    # read per request and a project opened after startup is addressable.
+    register_git_routes(app, lambda: hub.default, _project)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():

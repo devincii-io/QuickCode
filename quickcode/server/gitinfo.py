@@ -110,18 +110,45 @@ def _safe_rel(root: Path, raw: str) -> str:
     return rel
 
 
+async def _status_payload(root: Path) -> dict:
+    return await asyncio.to_thread(_status, root)
+
+
+async def _diff_payload(root: Path, path: str) -> dict:
+    rel = _safe_rel(root, path)
+    text = await asyncio.to_thread(_diff, root, rel)
+    return {"path": rel, "diff": text[:DIFF_CAP], "truncated": len(text) > DIFF_CAP}
+
+
 def register_git_routes(
-    app: FastAPI, get_manager: Callable[[], ConversationManager]
+    app: FastAPI,
+    get_manager: Callable[[], ConversationManager],
+    get_project: Callable[[str], ConversationManager] | None = None,
 ) -> None:
-    """Mount the read-only /api/git routes (token-gated by the app middleware)."""
+    """Mount the read-only git routes (token-gated by the app middleware).
+
+    Two shapes over one pair of handlers, mirroring the rest of the API: the
+    unscoped ``/api/git/…`` paths read the hub's default project, and the
+    ``/api/projects/{pid}/git/…`` aliases read whichever project the UI is
+    currently showing. ``get_project`` resolves a project id to its manager and
+    is expected to raise for unknown ids; omit it for a single-project app.
+    """
 
     @app.get("/api/git/status")
     async def git_status() -> dict:
-        return await asyncio.to_thread(_status, Path(get_manager().cwd))
+        return await _status_payload(Path(get_manager().cwd))
 
     @app.get("/api/git/diff")
     async def git_diff(path: str) -> dict:
-        root = Path(get_manager().cwd)
-        rel = _safe_rel(root, path)
-        text = await asyncio.to_thread(_diff, root, rel)
-        return {"path": rel, "diff": text[:DIFF_CAP], "truncated": len(text) > DIFF_CAP}
+        return await _diff_payload(Path(get_manager().cwd), path)
+
+    if get_project is None:
+        return
+
+    @app.get("/api/projects/{pid}/git/status")
+    async def project_git_status(pid: str) -> dict:
+        return await _status_payload(Path(get_project(pid).cwd))
+
+    @app.get("/api/projects/{pid}/git/diff")
+    async def project_git_diff(pid: str, path: str) -> dict:
+        return await _diff_payload(Path(get_project(pid).cwd), path)

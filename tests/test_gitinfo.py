@@ -12,6 +12,7 @@ from quickcode.config import Config, Environment
 from quickcode.providers.base import ModelInfo
 from quickcode.server.app import create_app
 from quickcode.server.manager import ConversationManager
+from quickcode.server.projects import project_id
 
 
 class FakeProvider:
@@ -112,3 +113,41 @@ def test_non_repo_reports_not_a_repo(tmp_path):
     with make_client(make_manager(tmp_path, FakeProvider())) as client:
         body = client.get("/api/git/status").json()
     assert body == {"is_repo": False, "branch": "", "files": []}
+
+
+# ---- project-scoped aliases ----
+# The UI addresses git by project id once a second project is open; the scoped
+# routes must answer exactly what the unscoped ones answer for that project.
+
+
+def test_project_scoped_status_matches_default(repo):
+    pid = project_id(repo)
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        scoped = client.get(f"/api/projects/{pid}/git/status")
+        default = client.get("/api/git/status")
+    assert scoped.status_code == 200
+    assert scoped.json() == default.json()
+    assert scoped.json()["branch"] == "main"
+
+
+def test_project_scoped_diff_reads_that_project(repo):
+    pid = project_id(repo)
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        body = client.get(f"/api/projects/{pid}/git/diff", params={"path": "tracked.txt"}).json()
+    assert body["path"] == "tracked.txt"
+    assert "+two" in body["diff"]
+
+
+def test_project_scoped_diff_rejects_path_escape(repo):
+    pid = project_id(repo)
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        res = client.get(f"/api/projects/{pid}/git/diff", params={"path": "../outside.txt"})
+    assert res.status_code == 400
+
+
+def test_project_scoped_git_404s_for_unknown_project(repo):
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        assert client.get("/api/projects/deadbeef1234/git/status").status_code == 404
+        assert client.get(
+            "/api/projects/deadbeef1234/git/diff", params={"path": "tracked.txt"}
+        ).status_code == 404
