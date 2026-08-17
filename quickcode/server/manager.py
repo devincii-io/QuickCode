@@ -440,6 +440,14 @@ class Conversation:
         self.store.append_meta(model=model)
         self.emit({"type": "model_changed", "model": model,
                    "context_length": self.agent.context_length})
+        # Any id the provider accepts is allowed; the catalog is a convenience,
+        # so an unknown one is a note, not a refusal.
+        if self.manager.knows_model(model) is False:
+            self.emit({
+                "type": "system_note",
+                "text": f"(model “{model}” is not in the provider catalog — "
+                        f"using it as typed; no context length known)",
+            })
         self.emit({"type": "system_prompt", "text": self.agent.history.system_prompt})
         self._emit_state()
 
@@ -517,6 +525,12 @@ class ConversationManager:
             if m.id == model_id:
                 return m
         return None
+
+    def knows_model(self, model_id: str) -> bool | None:
+        """Whether the catalog lists this id — None while no catalog is loaded."""
+        if not self._models:
+            return None
+        return any(m.id == model_id for m in self._models)
 
     # ---- conversations ----
     def get(self, conv_id: str) -> Conversation | None:

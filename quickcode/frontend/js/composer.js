@@ -2,6 +2,7 @@
 // send / interrupt / compact, mode + model pills, input history (localStorage)
 // and the slash-command menu. Parity with the old Textual TUI composer.
 
+import { currentProject } from "./api.js";
 import { openHelp, openModeMenu, openModelMenu } from "./modals.js";
 import { esc } from "./util.js";
 import { actions } from "./ws.js";
@@ -21,15 +22,30 @@ const MODE_DESCS = [
 
 // ---- history (project-scoped, shared across conversations) ----
 
+// One list per project, like the side panel's layout: the messages you sent to
+// one repo are noise in the next.
+function historyKey() { return `${HISTORY_KEY}:${currentProject() || "default"}`; }
+
 function loadHistory() {
   try {
-    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    const raw = JSON.parse(localStorage.getItem(historyKey()) || "[]");
     return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
   } catch { return []; }
 }
 
 function saveHistory(h) {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch { /* quota / private mode */ }
+  try { localStorage.setItem(historyKey(), JSON.stringify(h)); } catch { /* quota / private mode */ }
+}
+
+// The composer is wired once, before any project is open, so the list is
+// (re)read the first time each project needs it.
+function syncHistory() {
+  const pid = currentProject() || "default";
+  if (pid === historyPid) return;
+  historyPid = pid;
+  history = loadHistory();
+  histIdx = null;
+  draft = "";
 }
 
 // ---- module state ----
@@ -37,6 +53,7 @@ function saveHistory(h) {
 let input = null;
 let hooks = { onNewConversation: () => {} };
 let history = [];
+let historyPid = null;
 let histIdx = null;   // null = editing the draft, else index into history
 let draft = "";
 let menuEl = null;
@@ -210,6 +227,7 @@ function setInput(text) {
 }
 
 function remember(text) {
+  syncHistory();
   if (history[history.length - 1] !== text) {
     history.push(text);
     if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
@@ -228,6 +246,7 @@ function onLastLine() {
 }
 
 function historyBack() {
+  syncHistory();
   if (!history.length) return false;
   if (histIdx === null) {
     draft = input.value;
@@ -269,7 +288,6 @@ function send() {
 export function initComposer(h) {
   hooks = { onNewConversation: () => {}, ...(h || {}) };
   input = $("input");
-  history = loadHistory();
 
   input.addEventListener("input", () => {
     histIdx = null;               // typing leaves history browsing
