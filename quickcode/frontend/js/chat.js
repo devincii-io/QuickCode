@@ -2,7 +2,7 @@
 
 import { renderMarkdown } from "./markdown.js";
 import { store, subscribe } from "./store.js";
-import { el, esc, fmtMs, oneLine } from "./util.js";
+import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;
 let streamNode = null;          // live assistant bubble
@@ -148,7 +148,7 @@ function diffBody(name, argsRaw) {
 function toolCardNode(ev, { agent } = {}) {
   const summary = argSummary(ev.name, ev.arguments);
   const card = el(`<div class="tool-card" data-call="${esc(ev.id)}">
-    <div class="tool-head">
+    <div class="tool-head" aria-expanded="false">
       <span class="tool-dot running"></span>
       <span class="tool-name">${esc(ev.name)}</span>
       <span class="tool-summary">${esc(summary)}</span>
@@ -162,8 +162,10 @@ function toolCardNode(ev, { agent } = {}) {
   body.innerHTML = (diff || `<div class="lbl">Arguments</div><pre>${esc(pretty)}</pre>`) +
     `<div class="result-slot"></div>` +
     (ev.seq != null ? `<div class="lbl" style="margin-top:10px">${traceLink(ev.seq)}</div>` : "");
-  card.querySelector(".tool-head").addEventListener("click", () =>
-    card.classList.toggle("open"));
+  const head = card.querySelector(".tool-head");
+  clickable(head, () => {
+    head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
+  });
   wireTraceLinks(card);
   return card;
 }
@@ -193,13 +195,15 @@ function attachToolResult(ev) {
 function addAgentCard(ev) {
   streamNode = null;
   const card = el(`<div class="agent-card" data-agent="${esc(ev.agent_id)}">
-    <div class="agent-head"><span>⛓</span>
+    <div class="agent-head" aria-expanded="false"><span>⛓</span>
       <strong>${esc(ev.agent_id)}</strong>
       <span class="tool-summary">${esc(ev.definition)}</span>
       <span class="tool-dot running"></span></div>
     <div class="agent-body"><div class="agent-text"></div></div></div>`);
-  card.querySelector(".agent-head").addEventListener("click", () =>
-    card.classList.toggle("open"));
+  const head = card.querySelector(".agent-head");
+  clickable(head, () => {
+    head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
+  });
   transcript.appendChild(card);
   agentCards.set(ev.agent_id, card);
 }

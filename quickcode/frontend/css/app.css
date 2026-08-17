@@ -354,7 +354,7 @@ textarea, input { font: inherit; color: inherit; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 13px 18px; border-bottom: 1px solid var(--line); font-weight: 600;
 }
-.modal-body { padding: 16px 18px; overflow-y: auto; }
+.modal-body { padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain; }
 .modal-foot {
   display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px;
   border-top: 1px solid var(--line);
@@ -384,34 +384,57 @@ textarea, input { font: inherit; color: inherit; }
 .menu {
   position: fixed; z-index: 50; background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
-  box-shadow: 0 14px 44px rgba(0,0,0,.5); min-width: 300px; max-width: 420px;
+  box-shadow: 0 14px 44px rgba(0,0,0,.5);
+  min-width: min(300px, calc(100vw - 24px)); max-width: min(420px, calc(100vw - 24px));
   max-height: 60vh; display: flex; flex-direction: column;
 }
+/* The search box is a fixed header over the scrolling list, so a 400-model
+   catalog scrolls inside the card and never carries the box out of sight. */
 .menu-search {
-  margin: 8px; background: var(--panel); border: 1px solid var(--line);
+  flex: none; margin: 8px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 10px; font-size: 13px; outline: none;
 }
-.menu-list { overflow-y: auto; padding: 4px; }
+.menu-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px;
+  overscroll-behavior: contain;   /* reaching the end must not scroll the chat */
+}
+.menu-foot { flex: none; border-top: 1px solid var(--line); padding: 4px; }
 .menu-item {
   display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 8px;
 }
 .menu-item:hover, .menu-item.hover { background: var(--panel); }
 .menu-item .mi-title { font-weight: 600; font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
-.menu-item .mi-title .check { margin-left: auto; color: var(--success); }
+/* Long ids ellipsize instead of pushing the checkmark out of the card. */
+.menu-item .mi-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu-item .mi-title .check { margin-left: auto; flex: none; color: var(--success); }
 .menu-item .mi-desc { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
-.menu-item .mi-meta { font-size: 11px; color: var(--fg-faint); font-family: var(--mono); }
+.menu-item .mi-meta {
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* settings modal */
-.settings-layout { display: flex; min-height: 380px; }
+/* Bounded, so a long page scrolls beside the tab rail instead of carrying it
+   off the top of the dialog. */
+.settings-layout { display: flex; min-height: 380px; max-height: 74vh; }
 .settings-nav {
   flex: 0 0 150px; border-right: 1px solid var(--line); padding: 10px 8px;
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; flex-direction: column; gap: 2px; overflow-y: auto;
 }
 .settings-nav button {
   text-align: left; padding: 7px 12px; border-radius: 8px; color: var(--fg-dim); font-size: 13px;
 }
 .settings-nav button.active { background: var(--panel); color: var(--fg); }
-.settings-content { flex: 1; padding: 16px 18px; overflow-y: auto; }
+.settings-content { flex: 1; min-width: 0; padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain; }
+.set-filter {
+  width: 100%; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; margin-bottom: 10px;
+}
+.set-count { font-size: 11.5px; color: var(--fg-faint); margin-bottom: 6px; }
+/* The catalog scrolls on its own so the filter above it stays reachable. */
+.set-scroll { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
 .set-field { margin-bottom: 14px; }
 .set-field label { display: block; font-size: 12px; color: var(--fg-dim); margin-bottom: 4px; }
 .set-field input, .set-field select {
@@ -497,3 +520,19 @@ textarea, input { font: inherit; color: inherit; }
 /* menus: separator and inert note rows */
 .menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
 .menu-note { padding: 9px 12px; font-size: 12.5px; color: var(--fg-dim); }
+
+/* Keyboard focus has to be visible — several inputs clear the UA outline on
+   purpose, so this comes last and only fires for keyboard focus. */
+button:focus-visible, input:focus-visible, textarea:focus-visible,
+select:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 1px;
+}
+/* Bordered fields clear the UA outline; they mark focus on the border, the
+   way .dirb-path already does. */
+.deny-input:focus, .menu-search:focus, .set-filter:focus,
+.set-field input:focus, .set-field select:focus {
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+}
+/* The dialog itself is focused on open so Escape works wherever you clicked;
+   it is a programmatic target, not a tab stop, so it draws no ring. */
+.modal:focus { outline: none; }

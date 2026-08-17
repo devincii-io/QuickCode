@@ -3,7 +3,7 @@
 // (Summary / Payload / Result / Timing), DeepSeek-Harness-style.
 
 import { store, subscribe, toolResultFor } from "./store.js";
-import { debounce, el, esc, fmtMs, fmtTime, fmtTokens, oneLine } from "./util.js";
+import { clickable, debounce, el, esc, fmtMs, fmtTime, fmtTokens, oneLine } from "./util.js";
 
 const ROLES = ["SYSTEM", "USER", "CONTEXT", "ASSISTANT", "TOOL", "REVIEW", "AGENT", "ERROR"];
 
@@ -129,13 +129,16 @@ function rowNode(ev) {
     <span class="chip chip-${role}">${role}</span>
     <span class="preview">${esc(previewOf(ev))}</span>
     <span class="t-ms">${ms}</span></div>`);
-  row.addEventListener("click", () => selectSeq(ev.seq));
+  clickable(row, () => selectSeq(ev.seq));
   return row;
 }
 
 function blockNode(ev) {
   const role = roleOf(ev);
-  const b = el(`<span class="tl-block" data-seq="${ev.seq}"
+  // The strip is a mouse-only mini-map of the table above it: every block is
+  // reachable as a row, so it stays out of the tab order and off the a11y tree
+  // rather than adding hundreds of duplicate stops.
+  const b = el(`<span class="tl-block" data-seq="${ev.seq}" aria-hidden="true"
      style="background:var(--chip-${role.toLowerCase()})"
      title="#${ev.seq} ${role}: ${esc(oneLine(previewOf(ev), 80))}"></span>`);
   b.addEventListener("click", () => selectSeq(ev.seq, { scroll: true }));

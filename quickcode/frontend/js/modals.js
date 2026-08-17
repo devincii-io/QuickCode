@@ -8,11 +8,23 @@ import { applyTheme, el, esc, fmtTokens, oneLine, relTime } from "./util.js";
 
 const root = () => document.getElementById("modal-root");
 
-function closeModal() { root().innerHTML = ""; }
+// Escape has to close the dialog wherever the focus sits — clicking a settings
+// tab leaves it on a button, not inside the modal — so the listener is
+// document-level, added on open and dropped on close.
+let modalEsc = null;
+
+function closeModal() {
+  if (modalEsc) {
+    document.removeEventListener("keydown", modalEsc, true);
+    modalEsc = null;
+  }
+  root().innerHTML = "";
+}
 
 function modal(title, bodyHtml, footHtml = "") {
   closeModal();
-  const m = el(`<div class="modal-backdrop"><div class="modal">
+  const m = el(`<div class="modal-backdrop"><div class="modal" tabindex="-1"
+       role="dialog" aria-modal="true" aria-label="${esc(String(title))}">
     <div class="modal-head"><span>${title}</span>
       <button class="ghost-btn" data-close>✕</button></div>
     <div class="modal-body">${bodyHtml}</div>
@@ -22,6 +34,19 @@ function modal(title, bodyHtml, footHtml = "") {
     if (e.target === m || e.target.closest("[data-close]")) closeModal();
   });
   root().appendChild(m);
+  modalEsc = (e) => {
+    if (e.key !== "Escape") return;
+    if (document.querySelector(".menu")) return;   // a menu on top closes first
+    e.preventDefault();
+    // Capture phase plus stopImmediatePropagation: the composer's Escape
+    // (interrupt) and the panel's un-maximize must not also fire.
+    e.stopImmediatePropagation();
+    closeModal();
+  };
+  document.addEventListener("keydown", modalEsc, true);
+  // Move focus into the dialog: Escape and Tab should belong to it from the
+  // first keystroke, not to whatever button opened it.
+  m.querySelector(".modal").focus();
   return m;
 }
 
@@ -43,10 +68,6 @@ export function initReviews() {
       if (shownReviews.has(ev.req_id)) { shownReviews.delete(ev.req_id); closeModal(); }
     }
   });
-}
-
-function isPendingNow(reqId) {
-  return (store.state?.pending || []).some((p) => p.req_id === reqId) || !store.replaying;
 }
 
 function maybeShowPermission(ev) {
@@ -116,23 +137,77 @@ function maybeShowPlan(ev) {
 
 // ---- dropdown menus ----
 
+const GAP = 8;
+
 function menuAt(anchor, contentHtml, { searchable = false, below = false } = {}) {
   document.querySelectorAll(".menu").forEach((m) => m.remove());
   const m = el(`<div class="menu">
     ${searchable ? '<input class="menu-search" placeholder="Search…">' : ""}
     <div class="menu-list">${contentHtml}</div></div>`);
   document.body.appendChild(m);
-  const r = anchor.getBoundingClientRect();
-  const mh = Math.min(m.offsetHeight, window.innerHeight * 0.6);
-  m.style.left = Math.min(r.left, window.innerWidth - m.offsetWidth - 12) + "px";
-  // Composer pills open upward; a top-bar anchor has no room above it.
-  m.style.top = below
-    ? Math.min(r.bottom + 8, window.innerHeight - mh - 8) + "px"
-    : Math.max(8, r.top - mh - 8) + "px";
-  const dismiss = (e) => {
-    if (!m.contains(e.target)) { m.remove(); document.removeEventListener("mousedown", dismiss); }
+
+  // Pinned to the trigger by the edge that faces it, never by a height measured
+  // once: filtering a 400-model list shrinks the menu, and a `top` computed for
+  // the tall version would leave it floating far above its pill.
+  const place = () => {
+    const r = anchor.getBoundingClientRect();
+    const room = below ? window.innerHeight - r.bottom - GAP * 2 : r.top - GAP * 2;
+    m.style.maxHeight = Math.max(160, Math.min(window.innerHeight * 0.6, room)) + "px";
+    // Composer pills open upward; a top-bar anchor has no room above it.
+    if (below) {
+      m.style.top = r.bottom + GAP + "px";
+      m.style.bottom = "auto";
+    } else {
+      m.style.bottom = window.innerHeight - r.top + GAP + "px";
+      m.style.top = "auto";
+    }
+    m.style.left = Math.max(GAP, Math.min(r.left, window.innerWidth - m.offsetWidth - 12)) + "px";
   };
-  setTimeout(() => document.addEventListener("mousedown", dismiss), 0);
+  place();
+  // Freeze the width the full list asked for: without it every keystroke in
+  // the search box resizes the card between the min and max width.
+  m.style.width = m.offsetWidth + "px";
+
+  // The handlers survive `m.remove()` calls made by the callers, so each one
+  // unregisters itself the moment the menu is gone.
+  const cleanup = () => {
+    document.removeEventListener("mousedown", dismiss, true);
+    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("scroll", onScroll, true);
+    window.removeEventListener("resize", onResize);
+  };
+  const gone = () => {
+    if (m.isConnected) return false;
+    cleanup();
+    return true;
+  };
+  const close = () => { m.remove(); cleanup(); };
+  const dismiss = (e) => { if (!gone() && !m.contains(e.target)) close(); };
+  const onKey = (e) => {
+    if (gone() || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopImmediatePropagation();   // closing a menu must not interrupt the agent
+    close();
+  };
+  // Scrolling the menu's own list keeps the menu; anything else moved the
+  // anchor, so follow it rather than leaving a detached card behind.
+  const onScroll = (e) => {
+    if (gone()) return;
+    if (e.target === m || (e.target.nodeType === 1 && m.contains(e.target))) return;
+    place();
+  };
+  const onResize = () => { if (!gone()) place(); };
+
+  setTimeout(() => {
+    if (gone()) return;
+    document.addEventListener("mousedown", dismiss, true);
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+  }, 0);
+  // Callers close through this, so the listeners go with the node. (A stray
+  // `m.remove()` elsewhere is still safe: every handler checks isConnected.)
+  m.closeMenu = close;
   return m;
 }
 
@@ -155,7 +230,7 @@ export function openModeMenu(anchor) {
   const m = menuAt(anchor, items);
   m.addEventListener("click", (e) => {
     const b = e.target.closest("[data-mode]");
-    if (b) { actions.setMode(b.dataset.mode); m.remove(); }
+    if (b) { actions.setMode(b.dataset.mode); m.closeMenu(); }
   });
 }
 
@@ -163,24 +238,74 @@ export async function openModelMenu(anchor) {
   let models = [];
   try { models = await api.models(); } catch { /* offline */ }
   const cur = store.state?.model;
-  const render = (list) => list.slice(0, 200).map((mo) => `
-    <button class="menu-item" data-model="${esc(mo.id)}">
-      <div class="mi-title">${esc(mo.name || mo.id)}${cur === mo.id ? '<span class="check">✓</span>' : ""}</div>
+  // The whole catalog, not a slice of it: the search box is what makes 400
+  // entries navigable, and a cap would hide the model somebody came for.
+  const render = (list) => list.map((mo) => `
+    <button class="menu-item" data-model="${esc(mo.id)}" title="${esc(mo.id)}">
+      <div class="mi-title"><span class="mi-name">${esc(mo.name || mo.id)}</span>${
+        cur === mo.id ? '<span class="check">✓</span>' : ""}</div>
       <div class="mi-meta">${esc(mo.id)} · ctx ${fmtTokens(mo.context_length)}${
         mo.prompt_price != null ? ` · $${mo.prompt_price}/M in` : ""}</div>
-    </button>`).join("");
+    </button>`).join("") || `<div class="menu-note">No models match.</div>`;
   const m = menuAt(anchor, render(models), { searchable: true });
   const list = m.querySelector(".menu-list");
   const search = m.querySelector(".menu-search");
+  // A pinned footer, so the escape hatch stays reachable without scrolling
+  // past the whole catalog.
+  const foot = el(`<div class="menu-foot">
+    <button class="menu-item" data-custom>
+      <div class="mi-title">Custom model id…</div>
+      <div class="mi-desc">Use any id the provider accepts, listed or not.</div>
+    </button></div>`);
+  m.appendChild(foot);
+  const customDesc = foot.querySelector(".mi-desc");
   search?.focus();
   search?.addEventListener("input", () => {
-    const q = search.value.toLowerCase();
+    const q = search.value.trim().toLowerCase();
     list.innerHTML = render(models.filter((mo) =>
-      (mo.id + " " + mo.name).toLowerCase().includes(q)));
+      (mo.id + " " + (mo.name || "")).toLowerCase().includes(q)));
+    list.scrollTop = 0;
+    customDesc.textContent = q
+      ? `Use “${search.value.trim()}” as the model id.`
+      : "Use any id the provider accepts, listed or not.";
   });
   m.addEventListener("click", (e) => {
+    if (e.target.closest("[data-custom]")) {
+      const typed = search?.value.trim() || "";
+      m.closeMenu();
+      askCustomModel(typed);
+      return;
+    }
     const b = e.target.closest("[data-model]");
-    if (b) { actions.setModel(b.dataset.model); m.remove(); }
+    if (b) { actions.setModel(b.dataset.model); m.closeMenu(); }
+  });
+}
+
+/** Free-text model id. The backend takes any string; an id the catalog does
+ *  not know simply comes back with no context length until the provider says. */
+function askCustomModel(prefill = "") {
+  const m = modal(
+    "Custom model id",
+    `<div style="font-size:13px;color:var(--fg-dim);margin-bottom:10px">
+       The catalog is a convenience, not a gate — anything your provider accepts
+       works here. An id it does not list keeps the context meter blank.</div>
+     <input class="deny-input" id="custom-model" spellcheck="false"
+            placeholder="e.g. vendor/model-name" value="${esc(prefill)}">`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" data-use>Use this model</button>`,
+  );
+  const input = m.querySelector("#custom-model");
+  input.focus();
+  input.select();
+  const use = () => {
+    const v = input.value.trim();
+    if (!v) { input.focus(); return; }
+    actions.setModel(v);
+    closeModal();
+  };
+  m.querySelector("[data-use]").addEventListener("click", use);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); use(); }
   });
 }
 
@@ -237,9 +362,9 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
   try { sessions = await api.sessions(); } catch { /* server gone */ }
   const cur = store.convId;
   const rows = sessions.map((s) => `
-    <button class="menu-item" data-conv="${esc(s.conv_id)}">
-      <div class="mi-title">${esc(oneLine(s.title, 60))}
-        ${s.conv_id === cur ? '<span class="check">✓</span>' : ""}</div>
+    <button class="menu-item" data-conv="${esc(s.conv_id)}" title="${esc(oneLine(s.title, 200))}">
+      <div class="mi-title"><span class="mi-name">${esc(oneLine(s.title, 90))}</span>${
+        s.conv_id === cur ? '<span class="check">✓</span>' : ""}</div>
       <div class="mi-meta">${s.live ? "● live · " : ""}${esc(oneLine(s.model, 28))} ·
         ${s.message_count} msgs · ${relTime(s.mtime)}</div>
     </button>`).join("");
@@ -252,9 +377,9 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
     { below: true },
   );
   m.addEventListener("click", (e) => {
-    if (e.target.closest("[data-new]")) { m.remove(); onNew(); return; }
+    if (e.target.closest("[data-new]")) { m.closeMenu(); onNew(); return; }
     const b = e.target.closest("[data-conv]");
-    if (b) { m.remove(); onPick(b.dataset.conv); }
+    if (b) { m.closeMenu(); onPick(b.dataset.conv); }
   });
 }
 
@@ -441,16 +566,33 @@ export function openSettings() {
     } else if (page === "models") {
       c.innerHTML = `<div style="color:var(--fg-dim);font-size:13px;margin-bottom:10px">
         The session model is switched from the composer's model pill. This list
-        comes from the provider's catalog.</div><div id="set-models">Loading…</div>`;
+        comes from the provider's catalog.</div>
+        <input id="set-model-filter" class="set-filter" spellcheck="false"
+               placeholder="Filter models…" disabled>
+        <div id="set-models" class="set-scroll">Loading…</div>`;
+      const filter = c.querySelector("#set-model-filter");
       try {
         const models = await api.models();
-        c.querySelector("#set-models").innerHTML = models.slice(0, 100).map((mo) => `
+        const card = (mo) => `
           <div class="plugin-card" style="margin-bottom:6px">
             <div class="p-name">${esc(mo.id)}
               ${store.state?.model === mo.id ? '<span class="p-badge">active</span>' : ""}</div>
             <div class="p-desc">ctx ${fmtTokens(mo.context_length)}
               ${mo.prompt_price != null ? ` · $${mo.prompt_price}/M in · $${mo.completion_price}/M out` : ""}</div>
-          </div>`).join("");
+          </div>`;
+        // The whole catalog is listed; the filter is what keeps it usable.
+        const paint = (list) => {
+          c.querySelector("#set-models").innerHTML = list.length
+            ? `<div class="set-count">${list.length} of ${models.length} models</div>`
+              + list.map(card).join("")
+            : `<div class="set-count">No model matches that filter.</div>`;
+        };
+        filter.disabled = false;
+        filter.addEventListener("input", () => {
+          const q = filter.value.trim().toLowerCase();
+          paint(models.filter((mo) => (mo.id + " " + (mo.name || "")).toLowerCase().includes(q)));
+        });
+        paint(models);
       } catch (err) {
         c.querySelector("#set-models").textContent = "Could not load models: " + err.message;
       }

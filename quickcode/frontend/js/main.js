@@ -15,7 +15,7 @@ import { initReviews, openHelp, openSessionMenu, openSettings } from "./modals.j
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
-import { applyTheme, debounce, fmtCost, fmtTokens, oneLine, wireLogo } from "./util.js";
+import { applyTheme, debounce, esc, fmtCost, fmtTokens, oneLine, wireLogo } from "./util.js";
 import { connect, disconnect } from "./ws.js";
 
 const $ = (id) => document.getElementById(id);
@@ -42,9 +42,25 @@ function shortModel(id) {
   return (id || "").split("/").pop();
 }
 
+// Messages sent while the agent is busy wait in the server's input queue. The
+// state event carries only the depth, so the strip keeps the texts it saw on
+// the queued_message events and lets the depth trim them as they drain.
+let queuedTexts = [];
+
+function renderQueue() {
+  const strip = $("queue-strip");
+  strip.classList.toggle("hidden", !queuedTexts.length);
+  strip.innerHTML = queuedTexts
+    .map((t) => `<div class="q-item">⇢ ${esc(oneLine(t, 90))}</div>`).join("");
+}
+
 function refreshState() {
   const s = store.state;
   if (!s) return;
+  if (s.queued < queuedTexts.length) {
+    queuedTexts = s.queued ? queuedTexts.slice(-s.queued) : [];
+    renderQueue();
+  }
   $("st-model").textContent = s.model;
   $("model-pill").textContent = shortModel(s.model) + " ▾";
   const pill = $("mode-pill");
@@ -117,6 +133,8 @@ async function openProject(project, { resume = null } = {}) {
 
 async function openConversation(resume) {
   const pid = currentProject();
+  queuedTexts = [];             // the queue belongs to the conversation
+  renderQueue();
   try {
     const { conv_id } = await api.openConversation(resume || undefined);
     connect(pid, conv_id);
@@ -158,6 +176,7 @@ async function boot() {
   subscribe((kind, ev) => {
     if (kind === "state") refreshState();
     if (kind === "status") refreshStatus(ev.state);
+    if (kind === "queued") { queuedTexts.push(ev.text); renderQueue(); }
     if (kind === "event" && ev.type === "user_message") bumpSessionChip();
     if (kind === "connection") {
       const c = $("st-conn");
