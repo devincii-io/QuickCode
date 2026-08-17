@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import sys
 import webbrowser
 from pathlib import Path
 
@@ -82,7 +83,10 @@ async def _serve(
         # Give uvicorn a beat to bind before the browser asks.
         loop = asyncio.get_running_loop()
         loop.call_later(0.4, webbrowser.open, url)
-    print(f"QuickCode running at {url}")
+    # `quickcode-app` runs under pythonw, where a GUI process has no console
+    # and sys.stdout is None; the URL only goes to a console that exists.
+    if sys.stdout is not None:
+        print(f"QuickCode running at {url}")
 
     try:
         await server.serve()

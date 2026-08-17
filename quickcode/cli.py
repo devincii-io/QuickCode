@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,30 @@ try:
     __version__ = _pkg_version("quickcode")
 except Exception:  # not installed as a package (running from source)
     __version__ = "0.1.0-dev"
+
+
+def _say(message: str) -> None:
+    """Print a status line, unless there is nowhere to print it.
+
+    ``quickcode-app`` runs under pythonw, where a GUI process has no console
+    and ``sys.stdout`` is ``None``.
+    """
+    if sys.stdout is None:
+        return
+    print(message)
+
+
+def _bind_null_streams() -> None:
+    """Point ``sys.stdout``/``sys.stderr`` at the null device when they are ``None``.
+
+    Under pythonw both are ``None``. Guarding our own prints is not enough:
+    uvicorn installs logging handlers around ``sys.stdout``/``sys.stderr``, and
+    any third-party writer would hit the same hole. Giving them a real file
+    keeps every writer happy for the life of the process.
+    """
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
 
 
 async def _headless_permission_cb(request: PermissionRequest) -> PermissionOutcome:
@@ -198,7 +223,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.version:
-        print(f"quickcode {__version__}")
+        _say(f"quickcode {__version__}")
         return
 
     _resolve_positionals(args)
@@ -240,6 +265,19 @@ def main(argv: list[str] | None = None) -> None:
         open_browser=not args.no_browser,
         initial_resume=resume,
     )
+
+
+def main_app() -> None:
+    """GUI entry point (``quickcode-app``) for the Start Menu / Desktop shortcut.
+
+    Equivalent to ``quickcode --cwd <home>``: the user's home directory is the
+    default project, and the browser opens on the app. Launched through
+    pythonw, so the console streams are patched up before anything writes to
+    them. Extra arguments still pass through -- argparse takes the last
+    ``--cwd``, so a caller can override the default.
+    """
+    _bind_null_streams()
+    main(["--cwd", str(Path.home()), *sys.argv[1:]])
 
 
 if __name__ == "__main__":

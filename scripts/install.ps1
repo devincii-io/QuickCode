@@ -18,6 +18,12 @@
     root and installs QuickCode into it. Pass -UsePipx to install with pipx
     instead (isolated, puts `quickcode` on PATH globally for the user).
 
+    QuickCode is a local web app: `quickcode` (or `qc`) starts a FastAPI server
+    on 127.0.0.1 and opens your browser. The install also provides
+    `quickcode-app`, a windowed entry point that opens your home directory as
+    the default project without a console window - that is what the Start Menu
+    shortcut from the .exe installer runs.
+
     Written for Windows PowerShell 5.1: no &&, no ||, no ternary / ?? / ?.
     operators. All branching uses if/else and explicit $null checks.
 
@@ -191,11 +197,13 @@ else {
 
     Write-Ok "QuickCode installed into $venvPath"
     Write-Host ""
-    Write-Host "    Run it with:" -ForegroundColor Cyan
+    Write-Host "    Start the web app with:" -ForegroundColor Cyan
     Write-Host "        $venvPath\Scripts\quickcode.exe"
     Write-Host "    or activate the venv first:" -ForegroundColor Cyan
     Write-Host "        $venvPath\Scripts\Activate.ps1"
-    Write-Host "        quickcode"
+    Write-Host "        quickcode          # serves on 127.0.0.1 and opens your browser"
+    Write-Host "        qc .               # open the current directory as the project"
+    Write-Host "        quickcode-app      # windowed launch, no console (home directory)"
 }
 
 Write-Host ""
