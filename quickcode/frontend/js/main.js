@@ -3,11 +3,12 @@
 
 import { api, initAuth } from "./api.js";
 import { initChat } from "./chat.js";
-import { initReviews, openModeMenu, openModelMenu, openSessions, openSettings } from "./modals.js";
+import { initComposer } from "./composer.js";
+import { initReviews, openSessions, openSettings } from "./modals.js";
 import { store, subscribe } from "./store.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
 import { fmtCost, fmtTokens } from "./util.js";
-import { actions, connect } from "./ws.js";
+import { connect } from "./ws.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -30,40 +31,6 @@ function applyTheme(theme) {
   for (const [k, cssVar] of Object.entries(map)) {
     if (theme?.[k]) document.documentElement.style.setProperty(cssVar, theme[k]);
   }
-}
-
-// ---- composer ----
-
-function initComposer() {
-  const input = $("input");
-  const send = () => {
-    const text = input.value.trim();
-    if (!text) return;
-    if (text === "/compact") { actions.compact(); input.value = ""; return; }
-    if (text.startsWith("/mode ")) { actions.setMode(text.slice(6).trim()); input.value = ""; return; }
-    actions.userMessage(text);
-    input.value = "";
-    autosize();
-  };
-  const autosize = () => {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + "px";
-  };
-  input.addEventListener("input", autosize);
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-    if (e.key === "Escape") actions.interrupt();
-  });
-  $("btn-send").addEventListener("click", send);
-  $("btn-interrupt").addEventListener("click", () => actions.interrupt());
-  $("btn-compact").addEventListener("click", () => actions.compact());
-  $("mode-pill").addEventListener("click", (e) => openModeMenu(e.currentTarget));
-  $("model-pill").addEventListener("click", (e) => openModelMenu(e.currentTarget));
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !document.querySelector(".modal-backdrop, .menu")) {
-      actions.interrupt();
-    }
-  });
 }
 
 // ---- status bar + pills ----
@@ -103,7 +70,7 @@ async function boot() {
   initChat({ openTrace: (seq) => { if (view === "chat") setView("split"); selectSeq(seq, { scroll: true }); } });
   initTrajectory();
   initReviews();
-  initComposer();
+  initComposer({ onNewConversation: () => openConversation(null) });
 
   document.querySelectorAll(".view-tab").forEach((t) =>
     t.addEventListener("click", () => setView(t.dataset.view)));

@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
 from quickcode.server import auth
+from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.projects import ProjectHub, list_dirs
 from quickcode.session.store import SESSIONS_DIRNAME, SessionStore
@@ -378,6 +379,10 @@ def create_app(
     @app.websocket("/ws/projects/{pid}/conversation/{conv_id}")
     async def ws_project_conversation(ws: WebSocket, pid: str, conv_id: str) -> None:
         await _attach(ws, hub.get(pid), conv_id)
+
+    # Git routes stay on the default project for now; they resolve the manager
+    # lazily so the hub's default is read per request.
+    register_git_routes(app, lambda: hub.default)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():
