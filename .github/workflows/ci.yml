@@ -8,17 +8,41 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
+    strategy:
+      # One version failing should not hide the others: the point of the
+      # matrix is to learn which ones work, not to stop at the first bad news.
+      fail-fast: false
+      matrix:
+        # 3.12 is the floor declared in pyproject. 3.14 is what a fresh install
+        # of Python picks up today, and what the Windows installer provisions,
+        # so it is the version most users actually run.
+        python-version: ["3.12", "3.13", "3.14"]
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      # The project is developed with uv, and `dev` is a PEP 735 dependency
+      # group rather than an extra -- `pip install ".[dev]"` silently installs
+      # nothing and the lint and test steps then fail on a missing ruff.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          enable-cache: true
+
       - name: Install project
-        run: python -m pip install -e ".[dev,pty]"
+        run: uv sync --all-extras --dev --python ${{ matrix.python-version }}
+
       - name: Lint
-        run: python -m ruff check .
+        run: uv run ruff check quickcode/ tests/
+
       - name: Test
-        run: python -m pytest -q
+        run: uv run pytest -q
+
+      # The frontend has no build step, so nothing else would ever catch a
+      # syntax error in a module until it failed to load in the browser.
+      - name: Frontend syntax
+        shell: bash
+        run: |
+          find quickcode/frontend/js -name '*.js' -print0 \
+            | xargs -0 -n1 node --check

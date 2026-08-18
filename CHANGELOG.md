@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — 2.1.0
+
+### Added
+
+- **You can see that it is working.** A line above the composer shows an
+  animated glyph, a verb, the elapsed time and the tokens produced this turn:
+  `✳ Nebulizing… (4m 7s · ↓ 5.3k tokens · esc to interrupt)`. The whimsy stops
+  where the information starts — a verb appears only while waiting on the
+  model; running a tool names the tool, because someone watching a long call
+  needs to know it is the tool and not the model; compaction says so; and a
+  pending permission or plan review says the app is waiting on *you*, since a
+  spinner implying progress would be a lie while nothing moves. The Esc hint
+  is printed only when Esc actually interrupts, which it does not while a
+  modal is open.
+
+### Fixed
+
+- **Startup showed nothing at all, then everything at once.** Importing the
+  CLI cost 1.21 s warm and 823 ms of that was the OpenAI SDK — almost entirely
+  Pydantic model trees for Assistants, graders, evals, batches and responses,
+  none of which the adapter touches. Cold, with a virus scanner reading each
+  of those files for the first time out of a freshly installed venv, that is
+  the difference between a few seconds and a minute of a window that does not
+  exist yet. The SDK now loads when the client is first used rather than when
+  the module is imported, and the client is built on first access rather than
+  in the constructor: importing the CLI is **0.34 s**, and `openai` is absent
+  from `sys.modules` until a request needs it — by which point the wait is
+  hidden behind model latency. A test pins it in a fresh interpreter, because
+  a single stray top-level import would silently undo it.
+
 ## [2.0.0] — 2026-08-18
 
 The plugin overhaul: every agent capability —
@@ -339,6 +369,7 @@ provider abstraction, tool registry, PTY sessions, plan mode, compaction,
 subagent delegation via the agent tool) before the web UI rewrite replaced
 it. Not published as a release artifact.
 
-[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/devincii-io/QuickCode/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/devincii-io/QuickCode/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/devincii-io/QuickCode/releases/tag/v1.0.0
