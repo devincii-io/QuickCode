@@ -244,7 +244,9 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
             directly with no shell involved. Fill the parameters in to see the
             exact array.`,
         });
-        wireDryRun(drySlot, argv, params, values);
+        // Resolve by id, not by the schema-derived template: the file is where
+        // a bool's custom `flag:` is written, and the schema does not carry it.
+        wireDryRun(drySlot, argv, params, values, { id: plugin.id });
       }
     } catch (err) {
       schemaSlot.innerHTML = `<div class="set-error">Could not read the declaration:

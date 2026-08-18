@@ -190,15 +190,22 @@ export function dryRunHtml(template, params, values, { lede = "" } = {}) {
  *  the validator the runtime uses rather than from a second reading of the file
  *  here. Without it the already-validated template is sent as it is. Either way
  *  the substitution happens once, on the server. */
-export function wireDryRun(host, template, params, values, { source = null } = {}) {
+export function wireDryRun(host, template, params, values,
+                           { source = null, id = "" } = {}) {
   const out = host.querySelector("[data-dr-out]");
   if (!out) return;
   const key = keyOf(template, params);
 
-  const body = () => (source
-    ? { text: source(), values: valuesForRequest(params, values) }
-    : { argv: template || [], params: params || [],
-        values: valuesForRequest(params, values) });
+  const body = () => {
+    const sent = valuesForRequest(params, values);
+    if (source) return { text: source(), values: sent };
+    // Prefer the saved file over a caller-supplied template. A tool card
+    // derives its parameters from the JSON schema, which carries no `flag`,
+    // so a bool with a custom flag would preview as `--name` — the file is
+    // the only place the real flag is written down.
+    if (id) return { id, values: sent };
+    return { argv: template || [], params: params || [], values: sent };
+  };
 
   const resolve = async () => {
     const mine = ++seq;
