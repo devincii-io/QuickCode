@@ -26,7 +26,7 @@ fan-out, usage tracking, session resume, and the trajectory inspector.
 ```bash
 uv venv --python 3.12
 uv sync --all-extras --dev
-export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (encrypted)
+export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (see below)
 uv run quickcode                        # start the web app  (qc also works)
 qc .                                    # open the app on this directory
 qc C:\proj "fix the build"              # open a project, with a first prompt
@@ -92,10 +92,15 @@ creates a private venv, puts `quickcode`/`qc` on your `PATH`, and adds a Start
 Menu shortcut — plus optional desktop and *"Open QuickCode here"* folder
 context-menu entries. See [packaging/README.md](packaging/README.md).
 
-**pip / uv** — for anyone who already has Python 3.12+:
+**pip / uv** — for anyone who already has Python 3.12+. QuickCode is not
+published on PyPI; install the wheel from a
+[GitHub release](https://github.com/devincii-io/QuickCode/releases) (verify it
+against the release's `SHA256SUMS.txt` first):
 
 ```bash
-uv pip install quickcode        # or: pip install quickcode
+uv pip install https://github.com/devincii-io/QuickCode/releases/download/v2.0.0/quickcode-2.0.0-py3-none-any.whl
+# or, for the interactive terminal tool on Windows:
+uv pip install "quickcode[pty] @ https://github.com/devincii-io/QuickCode/releases/download/v2.0.0/quickcode-2.0.0-py3-none-any.whl"
 ```
 
 **From source** — see the Quickstart above, or run
@@ -117,6 +122,35 @@ window behind the browser.
 QuickCode's mark is a friendly blue ghost — it's the Start Menu icon, the
 browser favicon, and the app's own brand mark
 ([`quickcode/frontend/assets/icon.svg`](quickcode/frontend/assets/icon.svg)).
+
+### What it sends, and what it stores
+
+**No telemetry, no analytics, no crash reporting, no phone-home.** Almost every
+network call QuickCode makes is one you asked for: the model provider you
+configured, and the `web_search` / `web_fetch` tools when the agent calls them
+and you approve. The frontend loads nothing from the internet — no CDN, no
+fonts, no external scripts.
+
+There is exactly **one** request it makes on its own initiative: an
+unauthenticated `GET` of the GitHub releases API to see whether a newer version
+exists, at most once every six hours. It carries no API key, no cookie, no
+identifier, no project path, no session or usage data and no version number —
+the whole request is printed verbatim on its Settings card so you can check
+that rather than take our word for it. Turn it off under Install → Updates and
+nothing is sent at all.
+
+**But your prompts, source code and shell output do go to your model provider**
+— that is what the product does — and the full transcript is written to
+`<project>/.quickcode/sessions/*.jsonl` in plaintext, unredacted and
+unexpired. Add `.quickcode/` to your project's `.gitignore`; QuickCode does not
+do it for you.
+
+[`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) is the full write-up for a security,
+legal or procurement review: every outbound connection, every file written,
+the dependency licence table, the security model, the supply chain, and an
+honest list of the known gaps. `sbom.cdx.json` is a CycloneDX SBOM of the
+runtime dependency closure. Third-party attribution is in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 ### Design docs
 
