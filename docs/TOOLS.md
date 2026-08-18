@@ -9,12 +9,25 @@ class Tool[In: BaseModel]:
     name: str
     description: str            # prompt copy — see style rules in PROMPTS.md §3
     Input: type[In]             # Pydantic model → strict JSON Schema on the wire
-    is_read_only: bool          # True → parallel-safe + auto-allowed
+    is_read_only: bool          # True → parallel-safe
+    permission: PermissionSpec  # how the permission engine should gate it
+    source: str                 # internal | entrypoint | config (stamped, not guessed)
     async def run(self, input: In, ctx: ToolCtx) -> ToolResult: ...
-    def render_call(self, input: In) -> Widget | str: ...    # "⏺ Read src/index.py"
-    def render_result(self, r: ToolResult) -> Widget | str:  # diff view, match list, ...
+    def render_call(self, input: In) -> str: ...    # "⏺ Read src/index.py"
+    def render_result(self, r: ToolResult) -> str:  # diff view, match list, ...
         ...
 ```
+
+`permission` is what makes the gate work for tools we did not write. The
+engine holds no list of tool names: a tool declares whether it mutates, which
+argument is the thing being acted on, and whether that argument is a path
+(protected-path check) or a shell command (per-subcommand decomposition). An
+undeclared tool is treated as mutating and prompted for. Details in
+docs/PERMISSIONS.md.
+
+`ToolResult.ui_meta` carries structured extras for the UI — an edit's diff, or
+`{"tasks_changed": True}`, which is how the task panel learns to refresh
+without the server sniffing for a `task_` name prefix.
 
 `ToolResult` carries `content` (string for the model), `is_error`, and optional UI metadata. Truncation always happens **inside the tool**, with an explicit marker the model can act on:
 

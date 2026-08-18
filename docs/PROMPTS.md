@@ -8,7 +8,27 @@ All prompts are XML-sectioned. XML tags give the model unambiguous section bound
 
 ## 1. System prompt template
 
-`quickcode/prompts/system.py` renders this once per session. `${...}` values are computed at session start and then frozen.
+The text lives in `quickcode/prompts/sections.py` — one `PromptSection` per
+block, each with an id, an order and a mutability tier;
+`prompts/system.py:render_system_prompt` composes them. `${...}` values are
+computed at session start and then frozen.
+
+Two consequences worth knowing:
+
+- **`render_with_sections()` returns byte offsets per section**, so the UI can
+  show which part of the prompt came from where instead of one wall of text.
+- **Sections are overridable by tier.** `<tone_and_style>`, `<conventions>`,
+  `<task_management>` and `<verification>` are `free`; `<identity>`,
+  `<autonomy>`, orchestration, plan and headless blocks are `confirm`;
+  `<tool_use_policy>` is `locked` — how tools are called is the contract the
+  loop and the trajectory depend on — and `<environment>` /
+  `<project_instructions>` are generated from session facts rather than
+  authored here. Overrides live in `.quickcode/settings.json` under
+  `plugins.<section-id>.settings.body`. Locked and generated sections ignore
+  an override, and stay fully readable either way.
+
+Composition must stay byte-stable for the session: the cache breakpoint sits
+on the system message, so the same inputs must produce the same bytes.
 
 ```xml
 <identity>

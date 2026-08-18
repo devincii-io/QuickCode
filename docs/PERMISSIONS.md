@@ -5,6 +5,34 @@ Modeled on Claude Code's system (researched against current docs), simplified wh
 1. **Parse, don't prefix-match.** String-prefix matching on bash commands is trivially bypassed by `&& rm -rf`. We decompose commands and evaluate each subcommand.
 2. **Deny beats allow, everywhere.** A deny rule from *any* settings scope beats an allow rule from any other scope. Precedence is about rule kind first, file origin second.
 
+## Tools declare their own shape
+
+The engine does not recognise tools by name. Each tool carries a
+`PermissionSpec` (`core/permissions.py`) that says how it wants to be gated:
+
+```python
+class ReadTool(Tool[ReadInput]):
+    permission = PermissionSpec(mutates=False, target_field="file_path", path_target=True)
+
+class BashTool(Tool[BashInput]):
+    permission = PermissionSpec(mutates=True, target_field="command", shell=True)
+```
+
+- `mutates` — blocked in plan mode, prompted in ask mode. Read-only tools are
+  allowed by default.
+- `target_field` — which argument a rule matches against (`edit(src/**)`,
+  `bash(npm *)`).
+- `path_target` — the target is a path, so the protected-path check applies.
+- `shell` — the target is a command line and gets decomposed per subcommand.
+
+This is what lets a **plugin** tool get the same protection a built-in one
+gets. Previously the engine held name sets (`{"write", "edit", "bash"}`), so a
+third-party tool that wrote files was waved through purely because it was not
+called `write`. An undeclared tool defaults to *mutating, prompt for it*.
+
+MCP tools declare `mutates=not read_only`, honouring the server's
+`annotations.readOnlyHint` and defaulting to prompting when it says nothing.
+
 ## Modes
 
 | Mode | Reads | Edits | Bash/mutating | Use |
@@ -77,6 +105,7 @@ While any agent is blocked on a prompt, its tab/pane row glows orange (never an 
 
 - Entry: `Shift+Tab`, `/plan`, or `--mode plan`. System prompt gains a `<plan_mode>` section: *investigate, don't mutate; produce a plan; call the `plan` tool when ready*.
 - Enforcement is **structural, not prompt-based**: in plan mode the mutating tools are withheld from the request's tool list (the model can't call what isn't offered), and the bash pipeline only permits builtin read-only commands.
+- It lives in `PlanModeHook` (`core/hooks.py`), not in the loop. The hook hides every tool declaring `mutates` unless it also declares `shell` — a shell tool is only partly mutating and the engine gates it per subcommand — and it intercepts the `plan` call to run the review. Because the rule is written against the declaration rather than against two tool names, a plugin's mutating tool is withheld in plan mode too.
 - Exit: the model calls `plan(markdown)` → **PlanReviewModal**:
   1. **Approve & auto-edit** — plan accepted, mode drops to `auto-edit` for execution
   2. **Approve, manual** — mode drops to `ask`
@@ -84,9 +113,20 @@ While any agent is blocked on a prompt, its tab/pane row glows orange (never an 
   - `Ctrl+G` opens the plan in `$EDITOR`; saved edits replace the plan text before approval.
 - On approval the plan is pinned: injected as a `<approved_plan>` system-reminder on subsequent turns and shown as a collapsible card in the sidebar; task board seeded from its steps (docs/AGENTS.md).
 
-## Hooks (extension point, post-MVP)
+## Hooks
 
-A `pre_tool_use` hook: user-configured script receiving `{tool_name, tool_input, mode, cwd}` on stdin, answering `{"decision": "allow"|"deny"|"ask"|"defer", "reason": "..."}`. Decisions are subordinate to deny/ask rules (a hook cannot override a deny). Exit code 2 = hard block with stderr as the reason shown to the model. This gives Devin-style automation (lint gates, org policy) without forking the core.
+In-process loop hooks exist (`core/hooks.py`). A `LoopHook` may narrow the
+tools offered for a request (`visible_tools`), answer a tool call itself
+(`intercept`), or observe a finished result (`after_tool`). Hooks run in list
+order and the first to intercept wins. Plan mode is implemented as one, which
+is the proof the seam is real rather than decorative.
+
+Still **not implemented**: the out-of-process `pre_tool_use` script hook — a
+user-configured executable receiving `{tool_name, tool_input, mode, cwd}` on
+stdin and answering `{"decision": "allow"|"deny"|"ask"|"defer", "reason": …}`,
+subordinate to deny/ask rules (a hook must never be able to override a deny),
+with exit code 2 as a hard block whose stderr is shown to the model. The
+in-process seam above is where it would attach.
 
 ## Headless mode
 
