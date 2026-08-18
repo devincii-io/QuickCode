@@ -90,6 +90,33 @@ neutralized so a file cannot smuggle instructions into the orchestrator.
 
 This cannot be switched off."""
 
+_UPDATE_CHECK = """\
+The entire request, in full:
+
+    GET https://api.github.com/repos/devincii-io/QuickCode/releases/latest
+    Accept: application/vnd.github+json
+    X-GitHub-Api-Version: 2022-11-28
+    User-Agent: QuickCode
+
+That is all of it. No Authorization header, no cookies, no query string, no
+body. GitHub requires a User-Agent, so it gets a fixed string rather than one
+carrying a version -- that would have been the only part of the request that
+varied per install. Nothing about the machine, the open project, the session,
+the model or the user is sent, and there is no second endpoint.
+
+The answer is compared against the installed distribution's version. It is
+asked at most once every six hours (thirty minutes after a check that did not
+complete), and the last-check time is stored at ~/.quickcode/update-check.json
+so twenty launches in an afternoon are one request. A 403 carrying
+x-ratelimit-remaining: 0 is honoured: nothing is asked again until the reset
+time GitHub named.
+
+Nothing is ever executed as a result. A pip or uv install is told the command,
+because a process cannot reliably replace the package it is running. Only the
+Windows installer layout is offered a download, and only after the release's
+own SHA256SUMS.txt has vouched for the bytes -- a mismatch deletes the file and
+refuses."""
+
 
 def _view(fmt: str, content: str, title: str = "", path: str = ""):
     return lambda: PluginView(format=fmt, content=content, title=title, path=path)
@@ -434,6 +461,58 @@ def core_specs(*, prompt_view=None) -> list[PluginSpec]:
                 ),
             ),
             view=_view("text", _SESSION_FORMAT, "Session log format"),
+        ),
+        PluginSpec(
+            id="runtime.updates",
+            kind="policy",
+            title="Update checking",
+            description="Whether QuickCode asks github.com if a newer release exists.",
+            group="Safety",
+            summary="The one request this app makes to the internet on its own "
+                    "initiative.",
+            affects=("ui", "storage"),
+            audience="install",
+            consequence="On, a plain unauthenticated GET to the GitHub releases API "
+                        "runs at most once every six hours and the answer is cached in "
+                        "~/.quickcode. Off, nothing is sent and nothing is asked -- the "
+                        "Install page then only reports the version you are running.",
+            settings=(
+                SettingSpec(
+                    key="check_automatically", type="bool", default=True, tier="free",
+                    title="Check for updates automatically",
+                    help="A plain unauthenticated GET of the GitHub releases API, at "
+                         "most once every six hours. It carries no API key, no cookies, "
+                         "no identifier, no project path, no session or usage data and "
+                         "no version number -- there is no telemetry here. Off means "
+                         "nothing is sent at all.",
+                    affects=("ui", "storage"),
+                    effect_detail="Off, no request is made -- not at launch, and not by "
+                                  "the Check now button on Install > Updates, which "
+                                  "does not quietly re-enable this. Any answer already "
+                                  "stored is still shown, labelled as the last one that "
+                                  "arrived.",
+                ),
+                SettingSpec(
+                    key="endpoint", type="string",
+                    default="https://api.github.com/repos/devincii-io/QuickCode"
+                            "/releases/latest",
+                    tier="locked", fact=True,
+                    title="Where the check goes",
+                    help="One address, unauthenticated. There is no fallback host and "
+                         "no second endpoint.",
+                    affects=("ui",),
+                    effect_detail="The only outbound address QuickCode contacts without "
+                                  "being asked. Everything else it sends goes to the "
+                                  "model provider configured under Install.",
+                    locked_because="An update check that could be pointed somewhere else "
+                                   "is a channel for handing this app an installer to "
+                                   "run. The address is fixed so the checksum it is "
+                                   "verified against comes from the same release.",
+                    recourse=Recourse("settings", "Switch the check off above to stop it "
+                                                  "entirely", "runtime.updates"),
+                ),
+            ),
+            view=_view("text", _UPDATE_CHECK, "Update check"),
         ),
         PluginSpec(
             id="prompt.system",

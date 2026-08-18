@@ -186,4 +186,23 @@ export const api = {
   // ---- per install ----
   putConfig: (cfg) => req("PUT", "/api/config", cfg),
   putApiKey: (key) => req("POST", "/api/apikey", { key }),
+
+  // ---- update checking (the one outbound request QuickCode makes) ----
+  // GET asks github.com only when a check is due, and answers 200 even when
+  // the network is dead — `state: "unknown"` with the reason in `error`. So a
+  // caller never has to treat "offline" as a failure, and the chrome can stay
+  // quiet about it while the Install page says it out loud.
+  update: (force = false) => req("GET", `/api/update?force=${force}`),
+  // The off switch. Written at user scope, so it follows the install rather
+  // than the project that happened to be open.
+  setUpdateCheck: (on) =>
+    req("PUT", "/api/update/settings", { check_automatically: !!on }),
+  // Downloads the installer and verifies it against the release's own
+  // SHA256SUMS.txt. 409 means the digest did not match — and by then the
+  // bytes have already been deleted. Nothing is executed here.
+  downloadUpdate: () => req("POST", "/api/update/download"),
+  // Runs it, on an explicit click, naming the exact digest that was shown
+  // beside the button. The file is hashed again before it starts.
+  installUpdate: (path, sha256) =>
+    req("POST", "/api/update/install", { confirm: true, path, sha256 }),
 };

@@ -174,6 +174,33 @@ async function refreshSessionChip() {
 
 const bumpSessionChip = debounce(refreshSessionChip, 800);
 
+// ---- the update chip ----
+//
+// The calmest affordance the requirement allows: a chip that is simply not
+// there unless there is a newer release. It never appears while the check is
+// in flight, never appears when the check fails (a dead network must not
+// produce a banner every launch — the Install page is where a failure is
+// visible), and never does anything but link to the page that explains it.
+// Fire-and-forget from boot, so nothing waits on it and no turn is touched.
+
+const UPDATES_ROUTE = "#/config/install/updates";
+
+async function refreshUpdateChip() {
+  const chip = $("update-chip");
+  if (!chip) return;
+  let status;
+  try {
+    status = await api.update();
+  } catch {
+    return;                       // silent by design
+  }
+  if (!status?.update_available) return;
+  chip.textContent = `↑ ${status.latest}`;
+  chip.title = `QuickCode ${status.latest} is available — you are running ${
+    status.installed}. Click for the release notes and what updating means here.`;
+  chip.classList.remove("hidden");
+}
+
 // ---- project + conversation lifecycle ----
 
 async function openProject(project, { resume = null } = {}) {
@@ -265,6 +292,7 @@ async function boot() {
   $("btn-settings").addEventListener("click", () => showConfig(lastConfigRoute()));
   $("btn-quick-settings").addEventListener("click", () =>
     openQuickSettings({ onFull: () => showConfig(DEFAULT_ROUTE) }));
+  $("update-chip").addEventListener("click", () => showConfig(UPDATES_ROUTE));
 
   // Every configuration page is a URL. A hash that names one shows the view;
   // anything else (including "back" out of it) returns to where we were.
@@ -306,6 +334,9 @@ async function boot() {
        by the CLI — it carries the token in the fragment.</div>`;
     return;
   }
+
+  // Not awaited: boot must not wait on a network call, least of all this one.
+  refreshUpdateChip();
 
   // Only a fragment-carried project skips Home.
   if (project) {

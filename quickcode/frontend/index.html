@@ -56,6 +56,13 @@
       <button class="session-chip" id="session-chip" title="Switch session">New session ▾</button>
 
       <div class="topbar-actions">
+        <!-- Shown only when a newer release exists, and never any other time:
+             no spinner while the check runs, nothing at all when it fails.
+             Clicking opens Configuration ▸ Install ▸ Updates, which is where
+             the whole story is. It is a link, not a nag — it blocks nothing
+             and interrupts nothing. -->
+        <button id="update-chip" class="ghost-btn update-chip hidden"
+                title="A newer QuickCode is available"></button>
         <button id="btn-new-chat" class="ghost-btn" title="New conversation">＋ New</button>
         <button id="btn-panel-toggle" class="ghost-btn" title="Show or hide the side panel">⧉ Panel</button>
         <button id="btn-help" class="ghost-btn" title="Help — shortcuts and slash commands (/help)">?</button>

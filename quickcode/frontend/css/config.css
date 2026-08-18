@@ -968,3 +968,113 @@ a.wb-tool:hover { border-color: var(--kind-agent); }
   .ed { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
   .ed-side { border-left: 0; border-top: 1px solid var(--line); max-height: 40%; }
 }
+
+/* ---------- Install ▸ Updates, and the top-bar chip ---------- */
+
+/* The chip lives in the workspace top bar rather than in a configuration
+   page, so its rule lives here beside the page it links to: the two are one
+   feature, and splitting them across two stylesheets is how one of them gets
+   restyled alone. It is a ghost-btn first — calm by default — with only the
+   accent border to say there is something new. */
+.update-chip {
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.update-chip:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+.upd-page { max-width: 74ch; }
+
+.upd-state {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--fg); margin: 14px 0 10px;
+}
+.upd-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--fg-faint); flex: none;
+}
+.upd-state-available .upd-dot { background: var(--accent); }
+.upd-state-current .upd-dot { background: var(--success); }
+.upd-state-unknown .upd-dot, .upd-state-disabled .upd-dot { background: var(--warning); }
+
+.upd-versions {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; margin-bottom: 14px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.upd-v { display: flex; flex-direction: column; gap: 3px; }
+.upd-v-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-faint); }
+.upd-v-num { font-family: var(--mono); font-size: 15px; color: var(--fg); }
+.upd-v-new .upd-v-num { color: var(--accent); }
+.upd-v-arrow { color: var(--fg-faint); }
+
+.upd-note, .upd-when {
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim); margin-bottom: 12px;
+}
+.upd-when { margin: 10px 0 0; }
+
+.upd-release {
+  padding: 12px 14px; margin-bottom: 14px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.upd-release-name { font-size: 13.5px; color: var(--fg); margin-bottom: 3px; }
+.upd-release-meta { font-size: 11px; color: var(--fg-faint); margin-bottom: 8px; font-family: var(--mono); }
+
+.upd-method { margin-bottom: 16px; }
+.upd-method-head { font-size: 12.5px; color: var(--fg-dim); margin-bottom: 4px; }
+.upd-method-head strong { color: var(--fg); font-weight: 500; }
+.upd-method-detail { font-size: 11.5px; line-height: 1.6; color: var(--fg-faint); }
+.upd-steps { list-style: none; margin-top: 8px; }
+.upd-steps li {
+  font-size: 12px; line-height: 1.6; color: var(--fg-dim);
+  padding-left: 14px; text-indent: -14px; margin-bottom: 5px;
+}
+.upd-steps li::before { content: "→ "; color: var(--fg-faint); }
+
+.upd-download {
+  padding: 12px 14px; margin-bottom: 16px;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+.upd-download-what { font-size: 11.5px; line-height: 1.65; color: var(--fg-dim); margin-bottom: 10px; }
+.upd-download-what code, .upd-verified-what code { font-family: var(--mono); color: var(--fg); }
+
+.upd-verified {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.upd-verified-head { color: var(--success); font-size: 12.5px; margin-bottom: 6px; }
+.upd-verified-file, .upd-verified-sum {
+  font-size: 11px; color: var(--fg-dim); margin-bottom: 4px; overflow-wrap: anywhere;
+}
+.upd-verified-file code, .upd-verified-sum code {
+  font-family: var(--mono); color: var(--fg-dim); user-select: all;
+}
+.upd-verified-what { font-size: 11.5px; line-height: 1.65; color: var(--fg-dim); margin: 8px 0; }
+
+.upd-error {
+  padding: 11px 13px; margin-bottom: 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: var(--radius);
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+}
+.upd-error-head { color: var(--warning); margin-bottom: 4px; font-size: 12.5px; }
+.upd-error-advice { margin-top: 6px; color: var(--fg-faint); }
+/* A refused checksum is not a warning. */
+.upd-refused { border-color: color-mix(in srgb, var(--error) 60%, transparent); }
+.upd-refused .upd-error-head { color: var(--error); }
+
+.upd-setting {
+  padding: 12px 14px; margin-bottom: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.upd-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg); cursor: pointer; }
+.upd-toggle input { margin: 0; }
+.upd-setting-help { margin-top: 8px; }
+.upd-setting-help p {
+  font-size: 11.5px; line-height: 1.65; color: var(--fg-dim); margin-bottom: 7px;
+}
+.upd-setting-help p:last-child { margin-bottom: 0; }
+.upd-setting-help em { color: var(--fg); font-style: normal; }
+.upd-setting-help code { font-family: var(--mono); color: var(--fg-dim); overflow-wrap: anywhere; }
