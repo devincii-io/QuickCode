@@ -100,6 +100,26 @@ class Ledger:
         if u.cost_usd:
             self.cost_usd += u.cost_usd
 
+    @classmethod
+    def from_events(cls, events: list[dict]) -> Ledger:
+        """Rebuild a session's spend from its logged ``usage`` events.
+
+        What a session cost is a fact about the session, not about the process
+        that happened to be running it — reopening one and being told it cost
+        nothing is simply wrong.
+        """
+        ledger = cls()
+        for ev in events:
+            if ev.get("type") != "usage":
+                continue
+            ledger.add(Usage(
+                input_tokens=int(ev.get("input_tokens") or 0),
+                output_tokens=int(ev.get("output_tokens") or 0),
+                cached_tokens=int(ev.get("cached_tokens") or 0),
+                cost_usd=ev.get("cost_usd"),
+            ))
+        return ledger
+
 
 class AgentInstance:
     def __init__(
@@ -115,6 +135,7 @@ class AgentInstance:
         permission_cb: PermissionCallback,
         bus: EventBus | None = None,
         context_length: int | None = None,
+        hooks: list | None = None,
     ) -> None:
         self.name = name
         self.provider = provider
@@ -125,6 +146,13 @@ class AgentInstance:
         self.model = model
         self.permission_cb = permission_cb
         self.bus = bus or EventBus()
+        # Loop lifecycle hooks: tool visibility and call interception. Plan
+        # mode is one of these rather than a branch inside the loop.
+        if hooks is None:
+            from quickcode.core.hooks import default_hooks
+
+            hooks = default_hooks()
+        self.hooks = hooks
         self.ledger = Ledger()
         self.context_length = context_length
         self._cancel = asyncio.Event()

@@ -79,23 +79,16 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
 
 
 def _tools_for(agent: AgentInstance):
-    """Structural tool filtering by mode (docs/PERMISSIONS §Plan mode).
+    """The tools offered to the model for this request.
 
-    In plan mode we withhold the file-mutating tools entirely and offer the
-    ``plan`` tool; outside plan mode the ``plan`` tool is hidden.
+    Structural filtering is a hook's business (plan mode withholds the
+    mutating tools -- docs/PERMISSIONS §Plan mode). The loop just asks each
+    hook to narrow the list and sends what survives.
     """
-    from quickcode.core.permissions import Mode
-
-    in_plan = agent.mode == Mode.plan
-    out = []
-    for s in agent.registry.schemas():
-        if s.name == "plan":
-            if not in_plan:
-                continue
-        elif in_plan and s.name in {"write", "edit"}:
-            continue
-        out.append(s)
-    return out
+    tools = list(agent.registry.tools.values())
+    for hook in agent.hooks:
+        tools = hook.visible_tools(agent, tools)
+    return [t.schema() for t in tools]
 
 
 async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
@@ -174,10 +167,12 @@ async def _execute_tools(
 
     async def run_one(call: AssembledToolCall) -> None:
         started = asyncio.get_running_loop().time()
-        content, is_error = await _run_tool(agent, call)
+        content, is_error, ui_meta = await _run_tool(agent, call)
         ms = int((asyncio.get_running_loop().time() - started) * 1000)
         results[call.id] = (content, is_error)
-        agent.bus.emit(ToolResultEvent(call.id, call.name, content, is_error, ms))
+        agent.bus.emit(
+            ToolResultEvent(call.id, call.name, content, is_error, ms, ui_meta)
+        )
 
     readonly: list[AssembledToolCall] = []
     mutating: list[AssembledToolCall] = []
@@ -212,25 +207,30 @@ async def _execute_tools(
     return [(c, *results.get(c.id, ("[no result]", True))) for c in calls]
 
 
-async def _run_tool(agent: AgentInstance, call: AssembledToolCall) -> tuple[str, bool]:
+async def _run_tool(
+    agent: AgentInstance, call: AssembledToolCall
+) -> tuple[str, bool, dict]:
     tool = agent.registry.get(call.name)
     if tool is None:
-        return (f"Unknown tool: {call.name}", True)
+        return (f"Unknown tool: {call.name}", True, {})
     try:
         raw = json.loads(call.arguments or "{}")
     except json.JSONDecodeError as e:
-        return (f"Invalid tool arguments (not JSON): {e}", True)
+        return (f"Invalid tool arguments (not JSON): {e}", True, {})
 
-    if call.name == "plan":
-        return await _handle_plan(agent, raw.get("plan", ""))
+    # A hook may answer the call itself -- that is how plan review works.
+    for hook in agent.hooks:
+        taken = await hook.intercept(agent, tool, raw)
+        if taken is not None:
+            return (taken.content, taken.is_error, taken.ui_meta)
     try:
         inp = tool.Input(**raw)
     except Exception as e:  # pydantic validation
-        return (f"Invalid arguments for {call.name}: {e}", True)
+        return (f"Invalid arguments for {call.name}: {e}", True, {})
 
-    # Permission gate.
-    arg_target = _match_target(call.name, raw)
-    decision = agent.permissions.evaluate(call.name, arg_target)
+    # Permission gate. The tool declares which argument is the target and how
+    # it wants to be gated; the engine no longer recognises tools by name.
+    decision, arg_target = agent.permissions.evaluate_tool(tool, raw)
     if decision == Decision.ask:
         from quickcode.core.agent import PermissionRequest
 
@@ -244,39 +244,17 @@ async def _run_tool(agent: AgentInstance, call: AssembledToolCall) -> tuple[str,
         outcome = await agent.permission_cb(req)
         if not outcome.allow:
             reason = outcome.deny_message or "User denied this action."
-            return (f"Permission denied by user: {reason}", True)
+            return (f"Permission denied by user: {reason}", True, {})
         if outcome.persist:
             agent.permissions.rules.persist_allow(agent.ctx.cwd, req.rule_suggestion)
     elif decision == Decision.deny:
-        return ("Blocked by permission rules or current mode.", True)
+        return ("Blocked by permission rules or current mode.", True, {})
 
     try:
         result = await tool.run(inp, agent.ctx)
-        return (result.content, result.is_error)
     except Exception as e:  # tools never crash the loop
-        return (f"Tool {call.name} raised: {type(e).__name__}: {e}", True)
+        return (f"Tool {call.name} raised: {type(e).__name__}: {e}", True, {})
 
-
-async def _handle_plan(agent: AgentInstance, plan_md: str) -> tuple[str, bool]:
-    """Route a plan submission to the UI's plan_cb and apply the outcome."""
-    if agent.plan_cb is None:
-        agent.approved_plan = plan_md
-        return ("Plan recorded (no interactive review available).", False)
-    outcome = await agent.plan_cb(plan_md)
-    if outcome.approved:
-        if outcome.mode_after is not None:
-            agent.set_mode(outcome.mode_after)
-        agent.approved_plan = plan_md
-        return (
-            f"Plan approved. Proceeding in {agent.mode.value} mode. "
-            "Execute the plan now.",
-            False,
-        )
-    fb = outcome.feedback.strip() or "(no feedback given)"
-    return (f"Plan not approved. Stay in plan mode and revise. Feedback: {fb}", False)
-
-
-def _match_target(tool_name: str, raw: dict) -> str:
-    if tool_name == "bash":
-        return raw.get("command", "")
-    return raw.get("file_path") or raw.get("path") or ""
+    for hook in agent.hooks:
+        hook.after_tool(agent, tool, result.content, result.is_error)
+    return (result.content, result.is_error, result.ui_meta)

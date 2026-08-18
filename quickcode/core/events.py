@@ -80,6 +80,10 @@ class ToolResultEvent:
     content: str
     is_error: bool = False
     ms: int = 0  # wall-clock execution time, for the trajectory view
+    # Structured extras the tool attached for the UI (a diff, "the task board
+    # changed"). Stays server-side: some of it repeats the tool's own input,
+    # so it is not put on the wire or into the session log.
+    ui_meta: dict = field(default_factory=dict)
 
 
 @dataclass
