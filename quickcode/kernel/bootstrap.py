@@ -29,6 +29,12 @@ def _safe(label: str, fn, default):
         return default
 
 
+def _discover_authored(cwd: Path | None):
+    from quickcode.kernel.authoring import discovery
+
+    return discovery.discover(cwd)
+
+
 def build_registry(
     cwd: Path | None = None,
     *,
@@ -45,6 +51,23 @@ def build_registry(
     from quickcode.tools.registry import default_registry
 
     registry = PluginRegistry(cwd)
+
+    # Authored plugins first, because the tool list and the prompt bodies both
+    # depend on what came out of it. Inside _safe: one malformed file must not
+    # stop Settings rendering, must not stop the app starting, and must not
+    # hide the plugins that are fine.
+    authored = _safe(
+        "authored plugins",
+        lambda: _discover_authored(cwd),
+        None,
+    )
+    authored_plugins = list(authored.plugins) if authored is not None else []
+    authored_problems = list(authored.problems) if authored is not None else []
+    authored_tools = _safe(
+        "authored command tools",
+        lambda: {p.id: p.to_tool() for p in authored_plugins if p.kind == "tool"},
+        {},
+    ) or {}
 
     if tools is None:
         live = _safe("tool registry", lambda: default_registry(), None)
@@ -65,11 +88,20 @@ def build_registry(
 
     # With an Environment we can render the real prompt for this project, so
     # the Prompt section of Settings shows what the agent is actually told.
+    authored_sections = _safe(
+        "authored prompt sections",
+        lambda: [p.to_prompt_section() for p in authored_plugins
+                 if p.kind == "prompt" and "main" in p.applies_to],
+        [],
+    ) or []
+
     if env is not None and (not prompt_text or prompt_bodies is None):
         from quickcode.prompts.system import render_with_sections
 
         def _render():
-            return render_with_sections(env, orchestration=True)
+            return render_with_sections(
+                env, orchestration=True, extra_sections=authored_sections,
+            )
 
         composed, rendered = _safe("system prompt", _render, ("", []))
         prompt_text = prompt_text or composed
@@ -88,6 +120,20 @@ def build_registry(
     registry.register_all(manifest.agent_specs(agent_defs or {}))
     registry.register_all(manifest.provider_specs(providers or {}, active=active_provider))
     registry.register_all(manifest.mcp_specs(mcp_configs or {}))
+    # Authored specs land *after* the internal ones, so a reserved-id collision
+    # loses. Discovery already refuses those with ``id_reserved``; this is the
+    # structural backstop, not the message.
+    # A caller that already put the authored command tools in ``tools`` (the
+    # session pool does) has had them described by ``tool_specs`` already, and
+    # one plugin must have exactly one spec.
+    described = {f"tool.{getattr(t, 'name', '')}" for t in tools}
+    pending = [p for p in authored_plugins if p.id not in described]
+    registry.register_all(
+        _safe("authored specs",
+              lambda: manifest.authored_specs(pending, authored_tools),
+              [])
+    )
+    registry.add_problems(authored_problems)
     # Configuration written where nothing reads it is a silent no-op, which is
     # the one failure mode a settings screen must never have.
     from quickcode.kernel import state as state_store

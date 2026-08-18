@@ -15,6 +15,16 @@ from quickcode.config import Environment
 from quickcode.prompts.sections import PromptContext, RenderedSection, compose
 
 
+def _authored_sections(env: Environment) -> tuple:
+    """Authored sections for this project. Never raises, never blocks a render."""
+    from quickcode.kernel.authoring import discovery
+
+    try:
+        return tuple(discovery.prompt_sections(env.cwd))
+    except Exception:  # a broken plugin file must not cost you a session
+        return ()
+
+
 def _context(
     env: Environment,
     model: str,
@@ -23,6 +33,7 @@ def _context(
     plan: bool,
     orchestration: bool,
     overrides: dict[str, str] | None,
+    extra_sections=None,
 ) -> PromptContext:
     return PromptContext(
         env=env,
@@ -32,6 +43,11 @@ def _context(
         plan=plan,
         orchestration=orchestration,
         overrides=overrides or {},
+        # ``None`` means "find them"; an explicit tuple (including an empty
+        # one) means the caller has already resolved them, which is what a
+        # session does at open so the prompt cannot change underneath it.
+        extra_sections=tuple(extra_sections) if extra_sections is not None
+        else _authored_sections(env),
     )
 
 
@@ -44,6 +60,7 @@ def render_system_prompt(
     plan: bool = False,
     orchestration: bool = False,
     overrides: dict[str, str] | None = None,
+    extra_sections=None,
 ) -> str:
     """Pure function: env → the frozen system prompt for the session.
 
@@ -56,7 +73,8 @@ def render_system_prompt(
     generated sections ignore it.
     """
     text, _ = compose(
-        _context(env, model, provider, headless, plan, orchestration, overrides)
+        _context(env, model, provider, headless, plan, orchestration, overrides,
+                 extra_sections)
     )
     return text
 
@@ -70,6 +88,7 @@ def render_with_sections(
     plan: bool = False,
     orchestration: bool = False,
     overrides: dict[str, str] | None = None,
+    extra_sections=None,
 ) -> tuple[str, list[RenderedSection]]:
     """The prompt plus where each section landed in it, for the UI.
 
@@ -77,7 +96,8 @@ def render_with_sections(
     reader can be shown which section produced which part of the prompt.
     """
     return compose(
-        _context(env, model, provider, headless, plan, orchestration, overrides)
+        _context(env, model, provider, headless, plan, orchestration, overrides,
+                 extra_sections)
     )
 
 

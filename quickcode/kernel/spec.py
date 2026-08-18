@@ -63,6 +63,7 @@ Source = Literal[
     "internal",   # shipped with QuickCode, declared in manifest.py
     "entrypoint", # third-party, discovered via importlib entry points
     "config",     # data-driven, e.g. an MCP server from settings.json
+    "authored",   # a markdown file the user wrote, in .quickcode/plugins/
 ]
 
 SettingType = Literal["string", "text", "bool", "int", "float", "enum", "list"]
@@ -241,6 +242,13 @@ class PluginSpec:
     recourse: Recourse | None = None
     # The long form, e.g. "docs/PERMISSIONS.md#modes".
     docs_anchor: str = ""
+    # Where this plugin's definition lives on disk, for authored plugins. The
+    # UI turns it into "open file"; empty for everything that is code.
+    path: str = ""
+    # The id this was copied from, when it was. A breadcrumb: nothing inherits
+    # through it, and the runtime ignores it entirely. Live inheritance would
+    # recreate the coupling the locked tier exists to prevent.
+    derived_from: str = ""
 
     def setting(self, key: str) -> SettingSpec | None:
         for spec in self.settings:

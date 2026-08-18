@@ -19,7 +19,7 @@ Two rules the composition must keep:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from quickcode.config import Environment
@@ -41,6 +41,11 @@ class PromptContext:
     # section id -> replacement body, from the plugin registry. A section not
     # named here renders its default.
     overrides: dict[str, str] = field(default_factory=dict)
+    # Authored sections from ``.quickcode/plugins/*.md``. They take a slot in
+    # the composition next to the internal ones rather than replacing any of
+    # them, and are resolved once per session: a new one appears in the next
+    # session, because the prompt cache breakpoint sits on this message.
+    extra_sections: tuple[PromptSection, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -288,8 +293,20 @@ SECTIONS: list[PromptSection] = [
 ]
 
 
-def ordered() -> list[PromptSection]:
-    return sorted(SECTIONS, key=lambda s: s.order)
+def ordered(extra: Iterable[PromptSection] | None = None) -> list[PromptSection]:
+    """The internal sections, with any authored ones merged in.
+
+    Sorted by ``(order, id)``: ties break by id, deterministically, because the
+    composed prompt is a cache breakpoint and must be byte-identical for
+    identical inputs. An authored section claiming an internal section's id
+    would be a second definition of one thing, so the internal one wins -- the
+    same refusal the registry makes for a reserved id.
+    """
+    merged = list(SECTIONS)
+    if extra:
+        known = {s.id for s in merged}
+        merged += [s for s in extra if s.id not in known]
+    return sorted(merged, key=lambda s: (s.order, s.id))
 
 
 def get(section_id: str) -> PromptSection | None:
@@ -308,7 +325,7 @@ def compose(ctx: PromptContext) -> tuple[str, list[RenderedSection]]:
     parts: list[str] = []
     rendered: list[RenderedSection] = []
     cursor = 0
-    for section in ordered():
+    for section in ordered(ctx.extra_sections):
         text = section.body(ctx)
         if not text:
             continue

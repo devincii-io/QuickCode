@@ -232,6 +232,12 @@ _USER_DIR = Path.home() / ".quickcode" / "agents"
 def load_defs(cwd: Path) -> dict[str, AgentDef]:
     """Built-ins, then user defs, then project defs (each shadows the prior).
 
+    Four directories, in the layering every other loader in this codebase uses:
+    ``~/.quickcode/agents``, ``~/.quickcode/plugins`` (``kind: agent``), then
+    the project's two. ``.quickcode/agents/*.md`` keeps working exactly as
+    documented; the plugins directory is the new canonical home and wins at the
+    same scope because it is the one the authoring UI edits.
+
     Snapshot this once per session: resolving it live on every spawn would
     change an agent's behaviour mid-conversation, which is the same lie the
     frozen preset exists to prevent, and worse for subagents because the parent
@@ -247,13 +253,44 @@ def load_defs(cwd: Path) -> dict[str, AgentDef]:
                     continue
                 if parsed is not None:
                     defs[parsed.name] = parsed
+    # Authored ``kind: agent`` files. Discovery owns the scan order, the
+    # shadowing and the validation, so a broken file is skipped with a problem
+    # rather than silently swallowed here.
+    try:
+        from quickcode.kernel.authoring import discovery
+
+        defs.update(discovery.agent_defs(cwd))
+    except Exception as exc:  # a definition source must never stop a session
+        log.warning("authored agent definitions unavailable: %s", exc)
     return defs
 
 
 def _parse_def(path: Path) -> AgentDef | None:
+    """One ``.quickcode/agents/*.md`` file."""
     text = path.read_text(encoding="utf-8")
     meta, body = _split_frontmatter(text)
-    name = meta.get("name") or path.stem
+    return agent_def_from_meta(
+        meta, body, path=str(path), source="authored", fallback_name=path.stem,
+    )
+
+
+def agent_def_from_meta(
+    meta: dict[str, str],
+    body: str,
+    *,
+    path: str = "",
+    source: str = "config",
+    fallback_name: str = "",
+) -> AgentDef | None:
+    """Build an ``AgentDef`` from parsed frontmatter plus a body.
+
+    The one place agent frontmatter is interpreted. ``.quickcode/agents/*.md``
+    and ``.quickcode/plugins/*.md`` both arrive here, so the two loaders cannot
+    drift apart about what ``mode_cap`` means.
+    """
+    name = (meta.get("name") or fallback_name or "").strip()
+    if not name:
+        return None
     tools_raw = meta.get("tools")
     # Kept verbatim: patterns are resolved against the live tool pool at spawn
     # time (tools/registry.py:select), so a definition may name a plugin or an
@@ -293,7 +330,7 @@ def _parse_def(path: Path) -> AgentDef | None:
         name=name,
         description=meta.get("description", f"Custom agent '{name}'."),
         role=role,
-        source="config",
+        source=source,
         path=str(path),
         tools=tools,
         spawns=_parse_list(spawns_raw) if spawns_raw else None,
@@ -310,23 +347,22 @@ def _parse_def(path: Path) -> AgentDef | None:
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Minimal ``---`` frontmatter parser (key: value; no nested YAML)."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    meta: dict[str, str] = {}
-    body_start = len(lines)
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            body_start = i + 1
-            break
-        if ":" in lines[i]:
-            key, _, val = lines[i].partition(":")
-            meta[key.strip()] = val.strip()
-    return meta, "\n".join(lines[body_start:])
+    """``---`` frontmatter, delegated to the one document parser.
+
+    This used to be fifteen lines of ``key: value`` here. It is now a thin
+    caller of ``kernel/authoring/format.py`` so the agent loader and the plugin
+    loader cannot drift apart -- and agent files gain the one thing that reader
+    lacked, which is indented continuation lines, so a two-line
+    ``description:`` stays one value.
+    """
+    from quickcode.kernel.authoring.format import parse_document
+
+    doc = parse_document(text)
+    return doc.meta, doc.body
 
 
 def _parse_list(raw: str) -> list[str]:
     """Parse ``[read, glob, grep]`` or ``read, glob`` into a list."""
-    raw = raw.strip().lstrip("[").rstrip("]")
-    return [item.strip().strip("'\"") for item in raw.split(",") if item.strip()]
+    from quickcode.kernel.authoring.format import parse_list
+
+    return parse_list(raw)

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.kernel import state as state_store
-from quickcode.kernel.problems import Problem
+from quickcode.kernel.problems import Problem, Provenance
 from quickcode.kernel.spec import (
     Kind,
     LockedSetting,
@@ -66,8 +66,24 @@ class PluginRegistry:
     def register(self, spec: PluginSpec) -> None:
         if spec.id in self._specs:
             # Two plugins claiming one id would make the UI show a capability
-            # the runtime does not have. Keep the first, say so loudly.
+            # the runtime does not have. Keep the first -- bootstrap registers
+            # the internal specs before anything else, so this is where a
+            # reserved-id collision loses -- and record it where the user can
+            # see it. A warning in a log file is not a surface.
+            kept = self._specs[spec.id]
             log.warning("duplicate plugin id %r from %s ignored", spec.id, spec.source)
+            self.problems.append(Problem(
+                code="id_duplicate", severity="error",
+                message=(f"'{spec.id}' is claimed twice: the {kept.source} one "
+                         f"is in use and the {spec.source} one was refused"),
+                fix=("Rename the second one. An id names one plugin; letting a "
+                     "later definition replace an earlier one would mean a "
+                     "cloned repository could quietly stand in for something "
+                     "you trust."),
+                subject=spec.id,
+                provenance=Provenance(layer="project", source=spec.source,
+                                      path=spec.path),
+            ))
             return
         self._specs[spec.id] = spec
 
@@ -199,6 +215,10 @@ class PluginRegistry:
             "locked_because": spec.locked_because,
             "recourse": _recourse_json(spec.recourse),
             "docs_anchor": spec.docs_anchor,
+            # Authored plugins only: where the file is, and what it was copied
+            # from. Both empty for anything that is code.
+            "path": spec.path,
+            "derived_from": spec.derived_from,
             "settings": [
                 {
                     "key": s.key,

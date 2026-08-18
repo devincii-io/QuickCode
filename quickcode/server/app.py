@@ -38,6 +38,7 @@ from quickcode.kernel.spec import (
 from quickcode.kernel.state import prompt_overrides
 from quickcode.prompts.system import render_with_sections
 from quickcode.server import auth
+from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.projects import ProjectHub, list_dirs
@@ -728,6 +729,12 @@ def create_app(
     # Both git shapes resolve their manager lazily, so the hub's default is
     # read per request and a project opened after startup is addressable.
     register_git_routes(app, lambda: hub.default, _project)
+    # Authored plugins: list, create, read, save, delete, validate, duplicate,
+    # and the problems array. Registered from their own module for the same
+    # reason the git routes are -- app.py's diff for a whole feature is two
+    # lines. Declared after the kernel routes so the literal ``authored``
+    # segment cannot be read as a plugin id.
+    register_authoring_routes(app, lambda: hub.default, _project)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():

@@ -661,17 +661,39 @@ def resolve_composition(
 # --------------------------------------------------------------------------
 
 def session_pool(cwd: Path | None, tools: Iterable[Any]) -> list[Any]:
-    """The tools this session has, after the session-wide revoke.
+    """The tools this session has: the install's, plus this project's authored
+    command tools, minus whatever the session-wide revoke removes.
 
     ``plugins.<id>.enabled = false`` removes a plugin from the pool entirely --
     every agent, every depth. That toggle is the whole authoring surface for
     the revoke, and until this function existed it was decoration: the UI wrote
     the flag and nothing on the tool path ever read it.
+
+    Authored command tools join here rather than in the process-wide tool
+    registry because they are per *project* and the registry is per install.
+    Discovery applies the trust gate, so a project that has not been trusted
+    contributes none of them.
     """
+    pool = list(tools)
+    known = {getattr(t, "name", "") for t in pool}
+    for tool in _authored_tools(cwd):
+        if tool.name not in known:
+            pool.append(tool)
     disabled = state_store.disabled_plugin_ids(cwd)
     if not disabled:
-        return list(tools)
-    return [t for t in tools if f"tool.{getattr(t, 'name', '')}" not in disabled]
+        return pool
+    return [t for t in pool if f"tool.{getattr(t, 'name', '')}" not in disabled]
+
+
+def _authored_tools(cwd: Path | None) -> list[Any]:
+    if cwd is None:
+        return []
+    try:
+        from quickcode.kernel.authoring import discovery
+
+        return discovery.command_tools(cwd)
+    except Exception:  # a session must always open
+        return []
 
 
 # --------------------------------------------------------------------------

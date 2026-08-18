@@ -89,6 +89,9 @@ class Tool(Generic[In]):
     # inferred from its name, so the Settings list stays truthful when a
     # plugin ships a tool called "read".
     source: ClassVar[str] = "internal"
+    # Where the definition lives, for tools that have a file behind them (an
+    # authored command tool). Empty for tools that are code.
+    path: ClassVar[str] = ""
     Input: type[BaseModel] = BaseModel
 
     async def run(self, input: In, ctx: ToolCtx) -> ToolResult:  # noqa: A002
