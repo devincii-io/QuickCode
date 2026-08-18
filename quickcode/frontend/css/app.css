@@ -317,6 +317,102 @@ textarea, input { font: inherit; color: inherit; }
 .st-conn { color: var(--success); }
 .st-conn.off { color: var(--error); }
 
+/* ---------- project trust (the MCP gate) ----------
+   A strip under the top bar, not a modal: the decision is about this project,
+   it must survive a stray click outside it, and there is no backdrop to
+   dismiss. Collapsing it is an explicit button, and the chip in the top bar
+   stays behind so the refusal is never fully out of sight. */
+.trust-host { flex: none; }
+.trust-chip {
+  flex: none; font-size: 12px; font-family: var(--mono); padding: 3px 10px;
+  border-radius: 20px; border: 1px solid transparent; white-space: nowrap;
+}
+.trust-chip.warn {
+  color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.trust-chip.ok { color: var(--fg-faint); border-color: var(--line); }
+.trust-chip.unknown { color: var(--fg-faint); border-color: var(--line); }
+.trust-chip:hover { color: var(--fg); }
+
+.trust-card {
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--surface);
+  max-height: 62vh; overflow-y: auto; overscroll-behavior: contain;
+}
+.trust-card.warn {
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 6%, var(--surface));
+}
+.trust-card.ok { border-left: 3px solid var(--success); }
+
+.trust-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px clamp(12px, 3vw, 26px) 4px;
+}
+.trust-icon { flex: none; font-size: 15px; line-height: 1; }
+.trust-card.warn .trust-icon { color: var(--warning); }
+.trust-card.ok .trust-icon { color: var(--success); }
+.trust-title { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; }
+.trust-collapse {
+  flex: none; padding: 2px 9px; border-radius: 7px; color: var(--fg-faint);
+}
+.trust-collapse:hover { background: var(--panel); color: var(--fg); }
+
+.trust-body {
+  padding: 2px clamp(12px, 3vw, 26px) 4px; max-width: 900px;
+  font-size: 13px; color: var(--fg-dim);
+}
+.trust-body p { margin: 6px 0; }
+.trust-body code { font-family: var(--mono); font-size: 12px; }
+.trust-note { color: var(--fg-faint); font-size: 12px; }
+.trust-muted { color: var(--fg-faint); }
+.trust-err { color: var(--error); font-size: 12.5px; }
+
+/* One row per refused server: the name, then the command that would run. The
+   command is the thing being consented to, so it is never truncated away. */
+.trust-srvs { list-style: none; margin: 10px 0; display: grid; gap: 6px; }
+.trust-srv {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  padding: 7px 11px;
+}
+.ts-name { font-weight: 600; color: var(--fg); font-size: 13px; }
+.ts-cmd {
+  display: block; margin-top: 3px; font-family: var(--mono); font-size: 12px;
+  color: var(--fg); word-break: break-word;
+}
+.ts-env { display: block; margin-top: 3px; font-size: 11.5px; color: var(--fg-faint); }
+
+.trust-changed { list-style: none; margin: 8px 0; display: grid; gap: 3px; }
+.trust-changed li { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.tc-label {
+  flex: 0 0 130px; font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--fg-faint);
+}
+
+.trust-raw { margin: 8px 0; }
+.trust-raw summary { cursor: pointer; font-size: 12.5px; color: var(--accent); }
+.trust-raw-path {
+  margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
+  word-break: break-all;
+}
+.trust-raw pre {
+  margin-top: 4px; font-family: var(--mono); font-size: 12px; color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 11px; max-height: 30vh; overflow: auto; white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trust-foot {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 8px clamp(12px, 3vw, 26px) 13px;
+}
+.trust-foot .btn.armed {
+  background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error);
+  font-family: var(--mono); font-size: 12px;
+}
+.trust-foot .btn:disabled { opacity: .5; cursor: default; }
+
 /* ---------- modals ---------- */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid;

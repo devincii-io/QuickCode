@@ -9,6 +9,7 @@
 
 import { api } from "./api.js";
 import { openDirBrowser } from "./modals.js";
+import { armed, trustSummary } from "./trust.js";
 import { el, esc, oneLine, relTime, wireLogo } from "./util.js";
 
 const LAST_PROJECT_KEY = "qc-last-project";
@@ -88,20 +89,46 @@ function cardNode(p, isLast) {
   return card;
 }
 
-/** Arm-then-act on the same button. Returns true once the caller may proceed;
- *  the first call only changes the label and disarms itself after a moment. */
-function armed(btn, prompt, resting) {
-  if (btn.dataset.armed === "1") return true;
-  btn.dataset.armed = "1";
-  btn.classList.add("armed");
-  btn.textContent = prompt;
-  setTimeout(() => {
-    if (!btn.isConnected || btn.dataset.armed !== "1") return;
-    delete btn.dataset.armed;
-    btn.classList.remove("armed");
-    btn.textContent = resting;
-  }, 4000);
-  return false;
+// The arm-then-act helper this file used to define now lives in trust.js, so
+// the trust prompt and the destructive actions here share one implementation.
+
+/** A card that is open says whether the project's own MCP servers are running.
+ *  Nothing is rendered for a project that declares none, which is most of them;
+ *  the decision itself is taken in the workspace, where the commands are on
+ *  screen, so this row only reports and offers the revoke. */
+async function trustRow(p, container, reload) {
+  const status = await trustSummary(p.id);
+  if (!status?.has_servers) return;
+  const n = status.servers.length;
+  const word = n === 1 ? "server" : "servers";
+  const row = status.inert
+    ? el(`<div class="hs-trust warn">
+        <span class="ht-text">△ ${n} MCP ${word} declared here ${
+          n === 1 ? "is" : "are"} not running until you trust this project.</span>
+        <button class="hs-tool ht-review">review</button>
+      </div>`)
+    : el(`<div class="hs-trust ok">
+        <span class="ht-text">✓ Trusted to run ${n} MCP ${word}: ${
+          esc(status.servers.join(", "))}.</span>
+        <button class="hs-tool ht-revoke">revoke</button>
+      </div>`);
+
+  row.querySelector(".ht-review")?.addEventListener("click", () => open(p));
+  const revoke = row.querySelector(".ht-revoke");
+  revoke?.addEventListener("click", async () => {
+    if (!armed(revoke, "revoke?", "revoke")) return;
+    revoke.textContent = "…";
+    try {
+      await api.revokeTrustOf(p.id);
+      reload();
+    } catch (err) {
+      delete revoke.dataset.armed;
+      revoke.classList.remove("armed");
+      revoke.textContent = "revoke";
+      revoke.title = err.message;
+    }
+  });
+  container.replaceChildren(row);
 }
 
 async function loadSessions(p, container) {
@@ -117,7 +144,15 @@ async function loadSessions(p, container) {
     container.innerHTML = `<div class="hs-note hs-err">${esc(err.message)}</div>`;
     return;
   }
-  renderSessions(p, container, sessions);
+  // Two slots: the trust report keeps its own, so re-rendering the list (the
+  // archive toggle does that) never wipes it.
+  container.innerHTML = "";
+  const trustSlot = el(`<div class="hs-trust-slot"></div>`);
+  const listSlot = el(`<div class="hs-list"></div>`);
+  container.append(trustSlot, listSlot);
+  renderSessions(p, listSlot, sessions);
+  // After the rows, so a slow trust report never delays the session list.
+  trustRow(p, trustSlot, () => loadSessions(p, container));
 }
 
 function renderSessions(p, container, sessions) {

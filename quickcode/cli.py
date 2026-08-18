@@ -17,6 +17,7 @@ from quickcode.config import Config, Environment
 from quickcode.core.agent import AgentInstance, PermissionOutcome, PermissionRequest
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.kernel.resolve import runtime_limits
 from quickcode.kernel.state import prompt_overrides
 from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.openai_compat import OpenAICompatProvider
@@ -168,6 +169,10 @@ def _build_agent(args: argparse.Namespace):
     # tool needs to spawn workers on the catalog's worker model.
     from quickcode.subagents.runner import SubagentDeps
 
+    # Resolved once here, like the server does at session open, so the CLI
+    # obeys the same declared limits instead of a second set of constants.
+    limits = runtime_limits(cwd)
+
     ctx.extra["subagent"] = SubagentDeps(
         provider=provider,
         profile=profile,
@@ -176,6 +181,7 @@ def _build_agent(args: argparse.Namespace):
         cwd=cwd,
         depth=0,
         tool_pool=list(registry.tools.values()),
+        limits=limits,
     )
 
     # Model precedence: explicit --model, then the last model picked via F2
@@ -207,6 +213,7 @@ def _build_agent(args: argparse.Namespace):
         model=model,
         permission_cb=_headless_permission_cb,
         context_length=None,
+        limits=limits,
     )
     if not conv_id:
         store.append_meta(title="", model=model, cwd=str(cwd))

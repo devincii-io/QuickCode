@@ -135,6 +135,14 @@ class SettingSpec:
     # A good non-default value, used as the input placeholder. Never the
     # default -- the default is already shown.
     example: str = ""
+    # This row states something the object declares about *itself* rather than
+    # a knob that was taken away. A tool's ``read_only`` is the case that
+    # matters: the tool's class decides it, the runtime reads it on every call,
+    # and no invariant is being defended by refusing to edit it -- there is
+    # simply nothing there to edit. Facts are still ``locked`` (writing one
+    # must fail) but they do not make their plugin read as locked; see
+    # ``PluginSpec.tier``.
+    fact: bool = False
 
     def label(self) -> str:
         return self.title or self.key.replace("_", " ").capitalize()
@@ -257,16 +265,32 @@ class PluginSpec:
         return setting.recourse or self.recourse
 
     def tier(self) -> Tier:
-        """The strictest tier among this plugin's settings.
+        """The strictest tier among this plugin's *knobs*.
 
         Used for the badge on a collapsed card: a plugin holding one locked
         knob should not read as freely editable at a glance.
+
+        Settings marked ``fact`` are skipped, and that exclusion is the whole
+        point of the flag. Every tool's only setting is its declared
+        ``read_only``, so the strictest-tier rule badged all thirteen tool
+        cards ``locked`` -- which told a reader nothing (they were all the
+        same) and was untrue besides: a tool is not fixed by design, it can be
+        switched off like anything else, and its read-only-ness is a fact about
+        the class rather than a knob somebody removed. A plugin whose settings
+        are all facts has no knobs at all, so nothing about it needs
+        confirming: it badges ``free``, which is exactly what its one real
+        affordance -- the enable toggle -- is.
+
+        The setting keeps its own ``locked`` tier and still refuses writes;
+        this is only about what the card claims about itself.
         """
         if self.tier_hint is not None:
             return self.tier_hint
         order: dict[Tier, int] = {"free": 0, "confirm": 1, "locked": 2}
         worst: Tier = "free"
         for s in self.settings:
+            if s.fact:
+                continue
             if order[s.tier] > order[worst]:
                 worst = s.tier
         return worst

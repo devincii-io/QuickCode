@@ -16,6 +16,7 @@ from quickcode.core.events import AgentEvent, Usage
 from quickcode.core.history import History
 from quickcode.core.loop import run_turn
 from quickcode.core.permissions import Mode, PermissionEngine
+from quickcode.kernel.composition import RuntimeLimits
 from quickcode.providers.base import Provider
 from quickcode.tools.base import ToolCtx
 
@@ -136,6 +137,7 @@ class AgentInstance:
         bus: EventBus | None = None,
         context_length: int | None = None,
         hooks: list | None = None,
+        limits: RuntimeLimits | None = None,
     ) -> None:
         self.name = name
         self.provider = provider
@@ -153,6 +155,11 @@ class AgentInstance:
 
             hooks = default_hooks()
         self.hooks = hooks
+        # The session's frozen runtime numbers. Handed in at construction and
+        # never re-read, so a settings edit reaches the next session rather
+        # than a conversation already running. A direct embedder that passes
+        # nothing gets the declared defaults.
+        self.limits = limits or RuntimeLimits()
         self.ledger = Ledger()
         self.context_length = context_length
         self._cancel = asyncio.Event()

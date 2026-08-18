@@ -93,6 +93,17 @@ export const api = {
   // The composed system prompt with each section's byte range.
   prompt: () => req("GET", P("/prompt")),
 
+  // ---- project trust (the MCP gate) ----
+  // A project's own mcpServers are inert until the project is trusted once,
+  // because starting one runs its command on this machine. GET reports what was
+  // refused, POST grants and connects, DELETE revokes future connects.
+  trust: () => req("GET", P("/trust")),
+  grantTrust: () => req("POST", P("/trust")),
+  revokeTrust: () => req("DELETE", P("/trust")),
+  trustOf: (pid) => req("GET", `/api/projects/${encodeURIComponent(pid)}/trust`),
+  revokeTrustOf: (pid) =>
+    req("DELETE", `/api/projects/${encodeURIComponent(pid)}/trust`),
+
   // ---- project registry (never scoped) ----
   projects: () => req("GET", "/api/projects"),
   openProject: (path) => req("POST", "/api/projects/open", { path }),

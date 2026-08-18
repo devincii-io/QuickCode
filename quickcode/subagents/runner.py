@@ -23,7 +23,12 @@ from quickcode.core.agent import (
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import MODE_PRIVILEGE, Resolved, cap_mode
+from quickcode.kernel.composition import (
+    MODE_PRIVILEGE,
+    Resolved,
+    RuntimeLimits,
+    cap_mode,
+)
 from quickcode.kernel.resolve import resolve_composition
 from quickcode.prompts.subagent import render_subagent_prompt
 from quickcode.providers.base import Provider
@@ -35,8 +40,13 @@ from quickcode.tools.registry import ToolRegistry, build_registry, core_tools
 if TYPE_CHECKING:
     from quickcode.core.agent import EventBus
 
-MAX_DEPTH = 2
-MAX_AGENTS = 50
+# The fallbacks, kept as module names because callers and tests import them.
+# What a session actually enforces is ``deps.limits``, resolved once at open
+# from ``runtime.subagents.max_depth`` and ``max_agents`` and clamped to the
+# maxima those settings declare -- a settings file cannot raise either backstop
+# past the number its own card promises.
+MAX_DEPTH = RuntimeLimits().max_depth
+MAX_AGENTS = RuntimeLimits().max_agents
 
 # Kept as module names because callers import them from here. The definitions
 # moved into ``kernel/composition.py`` so the resolver can narrow a ceiling
@@ -106,6 +116,9 @@ class SubagentDeps:
     # Delegation turns spent per agent id, against that agent's max_turns.
     turns: dict[str, int] = field(default_factory=dict)
     budgets: dict[str, int] = field(default_factory=dict)
+    # The session's frozen runtime numbers, shared down the whole tree so every
+    # depth counts against the same budget the session opened with.
+    limits: RuntimeLimits = field(default_factory=RuntimeLimits)
 
     def child(self, depth: int, effective_mode: Mode,
               *, tool_pool: list | None = None,
@@ -138,6 +151,7 @@ class SubagentDeps:
             preset=self.preset,
             turns=self.turns,
             budgets=self.budgets,
+            limits=self.limits,
         )
 
     def session_pool(self) -> list:
@@ -190,8 +204,17 @@ async def spawn_subagent(
     Raises ValueError for an unknown agent_type or when a spawn limit is hit —
     the tool wrapper turns those into an error ToolResult.
     """
-    if len(deps.spawned) >= MAX_AGENTS:
-        raise ValueError(f"subagent limit reached ({MAX_AGENTS} per conversation)")
+    max_agents = deps.limits.max_agents
+    if len(deps.spawned) >= max_agents:
+        raise ValueError(f"subagent limit reached ({max_agents} per conversation)")
+    # The depth backstop, enforced here as well as in the resolver. The
+    # resolver withholds the delegation pair from an agent that is already at
+    # the limit, which is what the model sees; this is what holds if an
+    # embedder hands the tool out anyway.
+    if deps.depth >= deps.limits.max_depth:
+        raise ValueError(
+            f"delegation depth limit reached (max_depth={deps.limits.max_depth})"
+        )
 
     defs = deps.definitions()
     if deps.allowed_agents is not None:
@@ -213,7 +236,7 @@ async def spawn_subagent(
         parent=deps.parent,
         depth=deps.depth,
         overrides={"model": model_override} if model_override else None,
-        max_depth=MAX_DEPTH,
+        max_depth=deps.limits.max_depth,
         resolve_model=lambda spec: _resolve_role(deps, spec),
     )
     if resolved.errors():
@@ -264,6 +287,7 @@ async def spawn_subagent(
         permissions=PermissionEngine(effective_mode, Rules(), deps.cwd),
         model=model,
         permission_cb=_deny_cb,
+        limits=deps.limits,
     )
     # Registered immediately so the agent is resumable via send_message even if
     # this first run errors out below.

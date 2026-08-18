@@ -19,6 +19,7 @@ import {
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
 import { setInspector } from "./inspect.js";
+import { checkTrust, initTrust, resetTrust } from "./trust.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
 import { applyTheme, debounce, esc, fmtCost, fmtMs, fmtTokens, oneLine, wireLogo } from "./util.js";
 import { connect, disconnect } from "./ws.js";
@@ -34,6 +35,9 @@ let cameFrom = "home";
 function showHome() {
   leaveConfig();
   disconnect();
+  // The trust banner belongs to one project; leaving the workspace drops it so
+  // the next project is asked about rather than inheriting an answer.
+  resetTrust();
   // No project is "current" on Home, so the global modals (quick settings,
   // help) fall back to the unscoped routes, which address the launch project.
   setProject(null);
@@ -193,6 +197,11 @@ async function openProject(project, { resume = null } = {}) {
   document.title = `QuickCode — ${bs.project}`;
 
   await openConversation(resume);
+
+  // Opening a project can no longer start its MCP servers on its own. Ask what
+  // was refused and put it in front of the user — a project that silently
+  // loses its tools is the failure mode this whole gate has to avoid.
+  checkTrust(project.id);
 }
 
 async function openConversation(resume) {
@@ -230,6 +239,9 @@ async function boot() {
   initPanel();
   initReviews();
   initComposer({ onNewConversation: () => openConversation(null) });
+  // Freshly trusted MCP tools only reach a conversation that starts after the
+  // grant, so the trust card can offer that restart itself.
+  initTrust({ onNewConversation: () => openConversation(null) });
   initHome({ onOpen: (proj, opts) => openProject(proj, opts) });
   wireLogo($("brand-home").querySelector("img"), "brand-mark-fallback");
   wireLogo($("config-brand").querySelector("img"), "brand-mark-fallback");

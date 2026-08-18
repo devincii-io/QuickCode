@@ -51,14 +51,17 @@ from quickcode.kernel.composition import (
     Composition,
     Resolved,
     Role,
+    RuntimeLimits,
     narrower_mode,
     selector_matches,
 )
+from quickcode.kernel.manifest import core_setting
 from quickcode.kernel.problems import Layer, Problem, Provenance
 
-# Kept in step with ``subagents.runner.MAX_DEPTH``; passed in rather than
-# imported so the kernel never depends on the runtime that calls it.
-DEFAULT_MAX_DEPTH = 2
+# The fallback for callers that resolve without a session -- the runtime passes
+# the resolved ``RuntimeLimits.max_depth`` instead, which is where
+# ``runtime.subagents.max_depth`` reaches the resolver.
+DEFAULT_MAX_DEPTH = RuntimeLimits().max_depth
 
 _GLOB_CHARS = ("*", "?", "[")
 
@@ -482,8 +485,13 @@ def resolve_composition(
                 ))
         spawn_asked &= allowed_by_parent
 
+    # The orchestrator is included in this check deliberately. ``max_depth``
+    # counts levels of subagent *below* the agent you talk to, so 0 has to mean
+    # "no delegation at all"; exempting the orchestrator made the declared
+    # minimum a value that did nothing. For every value from 1 up this decides
+    # exactly what it decided before.
     child_depth = depth if is_orchestrator else depth + 1
-    if not is_orchestrator and child_depth >= max_depth:
+    if child_depth >= max_depth:
         for name in sorted(spawn_asked):
             spawn_chains[name].append(
                 Provenance(layer="runtime", source="runtime.subagents", rule=name,
@@ -664,6 +672,83 @@ def session_pool(cwd: Path | None, tools: Iterable[Any]) -> list[Any]:
     if not disabled:
         return list(tools)
     return [t for t in tools if f"tool.{getattr(t, 'name', '')}" not in disabled]
+
+
+# --------------------------------------------------------------------------
+# runtime limits
+# --------------------------------------------------------------------------
+
+# Which declared setting governs which runtime number. Everything on this table
+# was rendered by the Settings UI, editable, saved -- and read by nothing: the
+# loop, the compactor and the spawner each held a module constant of their own.
+# The table is the wiring, and it is the only place the pairing is written
+# down.
+_LIMIT_SETTINGS: tuple[tuple[str, str, str], ...] = (
+    ("max_rounds", "runtime.agent_loop", "max_rounds"),
+    ("compaction_enabled", "runtime.compaction", "enabled"),
+    ("compaction_threshold", "runtime.compaction", "threshold"),
+    ("keep_turns", "runtime.compaction", "keep_turns"),
+    ("max_depth", "runtime.subagents", "max_depth"),
+    ("max_agents", "runtime.subagents", "max_agents"),
+)
+
+
+def _coerce_limit(spec: Any, raw: Any, fallback: Any) -> Any:
+    """One stored value as the declared type, clamped into the declared range.
+
+    ``SettingSpec.coerce`` raises outside the range, which is right when a
+    person is typing into a form and wrong here: the value is already on disk
+    and a session must still open. So an out-of-range value clamps to the
+    bound the manifest declares rather than being refused or obeyed. That is
+    what keeps ``max_depth`` and ``max_agents`` backstops: a settings file
+    asking for 4000 agents gets 500, the maximum its own card promises.
+    """
+    if raw is None or spec is None:
+        return fallback
+    if spec.type == "bool":
+        return bool(spec.coerce(raw))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return fallback
+    if spec.minimum is not None:
+        value = max(value, float(spec.minimum))
+    if spec.maximum is not None:
+        value = min(value, float(spec.maximum))
+    return int(value) if spec.type == "int" else value
+
+
+def runtime_limits(
+    cwd: Path | None = None,
+    *,
+    settings: dict[str, dict[str, Any]] | None = None,
+) -> RuntimeLimits:
+    """The six runtime numbers a session runs on.
+
+    Pass ``settings`` -- a resolved composition's settings map -- to read them
+    out of a session's frozen snapshot, which is what a running conversation
+    does: its limits were decided at open and an edit afterwards belongs to the
+    next session, exactly like the tool list and the section bodies. Pass only
+    ``cwd`` to resolve straight off disk, which is what a session that is being
+    opened does.
+
+    Never raises: an unreadable or absurd value falls back to the declared
+    default rather than refusing to give an answer.
+    """
+    values: dict[str, Any] = {}
+    fallbacks = RuntimeLimits()
+    for attr, plugin_id, key in _LIMIT_SETTINGS:
+        spec = core_setting(plugin_id, key)
+        if settings is not None:
+            raw = (settings.get(plugin_id) or {}).get(key)
+        else:
+            raw = state_store.plugin_setting(cwd, plugin_id, key)
+        default = spec.default if spec is not None else getattr(fallbacks, attr)
+        try:
+            values[attr] = _coerce_limit(spec, raw, default)
+        except Exception:  # a broken settings file must not stop a session
+            values[attr] = default
+    return RuntimeLimits(**values)
 
 
 def default_mode(cwd: Path | None, fallback: str = "ask") -> str:

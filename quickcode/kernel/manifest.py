@@ -100,6 +100,29 @@ def _view(fmt: str, content: str, title: str = "", path: str = ""):
 # --------------------------------------------------------------------------
 
 
+_CORE_SETTINGS: dict[tuple[str, str], SettingSpec] | None = None
+
+
+def core_setting(plugin_id: str, key: str) -> SettingSpec | None:
+    """The declared spec for one internal setting, bounds included.
+
+    The runtime resolves its limits through this rather than restating any of
+    the numbers: the default the card shows, the minimum and the maximum are
+    one declaration, so the value a reader is promised and the value the loop
+    enforces cannot drift apart. It matters most for ``max_depth`` and
+    ``max_agents``, whose declared maxima are safety backstops -- a stored
+    setting is clamped to them, never able to raise them.
+    """
+    global _CORE_SETTINGS
+    if _CORE_SETTINGS is None:
+        _CORE_SETTINGS = {
+            (spec.id, setting.key): setting
+            for spec in core_specs()
+            for setting in spec.settings
+        }
+    return _CORE_SETTINGS.get((plugin_id, key))
+
+
 def core_specs(*, prompt_view=None) -> list[PluginSpec]:
     """The internals that are not tools, agents, providers or MCP servers."""
     return [
@@ -275,7 +298,8 @@ def core_specs(*, prompt_view=None) -> list[PluginSpec]:
                     effect_detail="Checked before the rule list: a path resolving "
                                   "outside the project root, or into .git, .quickcode, "
                                   ".ssh or a .env file, forces a prompt -- and a "
-                                  "refusal outright in dontask mode.",
+                                  "refusal outright wherever there is nobody to ask, "
+                                  "which is dontask mode and every subagent.",
                 ),
             ),
         ),
@@ -900,6 +924,10 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
                                   "else runs alone and takes the mode's answer.",
                     locked_because=_READ_ONLY_LOCKED_BECAUSE,
                     recourse=_READ_ONLY_RECOURSE,
+                    # Declared by the tool class, not withheld from you: this
+                    # row reports a fact and must not badge the whole card
+                    # locked. See PluginSpec.tier.
+                    fact=True,
                 ),
             ),
             metadata={"tool_name": name,

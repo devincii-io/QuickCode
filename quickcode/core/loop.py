@@ -5,7 +5,8 @@ Rules that matter (docs/ARCHITECTURE §The agent loop):
   - All tool results return in a single batch (one push), never split.
   - Read-only tools run concurrently; mutating tools sequentially in call order.
   - Failed tools still return a result with is_error so the model can recover.
-  - Loop guard: max 50 tool rounds, then a wrap-up reminder.
+  - Loop guard: ``runtime.agent_loop.max_rounds`` tool rounds (50 by default),
+    then a wrap-up reminder.
 """
 
 from __future__ import annotations
@@ -29,13 +30,18 @@ from quickcode.core.events import (
     Usage,
 )
 from quickcode.core.permissions import Decision
+from quickcode.kernel.composition import RuntimeLimits
 from quickcode.prompts.system import mode_reminder, system_reminder
 from quickcode.providers.base import ChatRequest, ProviderError
 
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance
 
-MAX_ROUNDS = 50
+# The fallback budget, for an agent built without resolved limits. What a turn
+# actually spends is ``agent.limits.max_rounds``, resolved once per session
+# from ``runtime.agent_loop.max_rounds``; the number itself is declared in the
+# manifest and reaches here through ``RuntimeLimits``.
+MAX_ROUNDS = RuntimeLimits().max_rounds
 
 
 async def run_turn(agent: AgentInstance, user_input: str) -> str:
@@ -50,8 +56,11 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
         agent.bus.emit(ContextInjection(r))
     agent.history.push_user(user_input, reminders or None)
     last_text = ""
-    for round_no in range(MAX_ROUNDS + 1):
-        if round_no == MAX_ROUNDS:
+    # Read once per turn, off the session's frozen limits: a settings edit
+    # mid-turn must not move the budget under a turn already counting.
+    max_rounds = max(1, int(getattr(agent, "limits", RuntimeLimits()).max_rounds))
+    for round_no in range(max_rounds + 1):
+        if round_no == max_rounds:
             wrap_up = system_reminder(
                 "You are over the iteration budget. Wrap up: report state and next steps."
             )

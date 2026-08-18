@@ -232,6 +232,37 @@ EMPTY = Composition()
 
 
 # --------------------------------------------------------------------------
+# RuntimeLimits
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RuntimeLimits:
+    """The runtime's numbers, resolved once per session and then frozen.
+
+    These six were declared in the manifest, rendered by the Settings UI,
+    written to disk -- and read by nobody: the loop, the compactor and the
+    spawner each used a module constant instead. They live here, next to
+    ``Resolved``, because they are the same kind of thing: a derived answer a
+    session is handed at open and keeps for its whole life. A settings edit
+    while a conversation is running must not change how that conversation
+    behaves mid-turn, so nothing re-reads them.
+
+    The values below are the fallbacks used when nothing has been configured
+    and no manifest is reachable. The declared defaults, and the minima and
+    maxima that clamp a configured value, live in ``kernel/manifest.py`` --
+    ``resolve.runtime_limits`` reads them from there rather than restating
+    them here.
+    """
+
+    max_rounds: int = 50
+    compaction_enabled: bool = True
+    compaction_threshold: float = 0.8
+    keep_turns: int = 2
+    max_depth: int = 2
+    max_agents: int = 50
+
+
+# --------------------------------------------------------------------------
 # Binding
 # --------------------------------------------------------------------------
 

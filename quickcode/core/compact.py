@@ -34,6 +34,12 @@ def _select_tail(messages: list[ChatMessage], keep_turns: int) -> list[ChatMessa
     Cutting at a user message keeps the slice self-contained: no orphaned tool
     results referencing an assistant turn that got summarized away.
     """
+    # ``runtime.compaction.keep_turns`` declares a minimum of 0, and 0 has to
+    # mean "nothing verbatim": ``user_idxs[-0]`` is ``user_idxs[0]``, so
+    # without this the smallest value a user can pick keeps the *whole*
+    # transcript -- the opposite of what it says.
+    if keep_turns <= 0:
+        return []
     user_idxs = [i for i, m in enumerate(messages) if m.role == "user"]
     if len(user_idxs) <= keep_turns:
         return list(messages)

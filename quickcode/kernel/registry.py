@@ -26,11 +26,20 @@ from quickcode.kernel.spec import (
     LockedSetting,
     NeedsConfirmation,
     PluginSpec,
+    Recourse,
     UnknownPlugin,
     UnknownSetting,
 )
 
 log = logging.getLogger("quickcode.kernel.registry")
+
+
+def _recourse_json(recourse: Recourse | None) -> dict[str, str] | None:
+    """A recourse is a button, so it crosses the wire as one or not at all."""
+    if recourse is None or recourse.action == "none":
+        return None
+    return {"action": recourse.action, "label": recourse.label,
+            "target": recourse.target}
 
 
 class PluginRegistry:
@@ -179,6 +188,17 @@ class PluginRegistry:
             "enabled": self.is_enabled(spec.id),
             "tier": spec.tier(),
             "metadata": spec.metadata,
+            # The six questions, in the order the UI asks them. Written once in
+            # manifest.py and carried through verbatim -- a card that explained
+            # itself differently from the registry would be describing an app
+            # that does not exist.
+            "summary": spec.summary,
+            "affects": list(spec.affects),
+            "audience": spec.audience,
+            "consequence": spec.consequence,
+            "locked_because": spec.locked_because,
+            "recourse": _recourse_json(spec.recourse),
+            "docs_anchor": spec.docs_anchor,
             "settings": [
                 {
                     "key": s.key,
@@ -187,11 +207,20 @@ class PluginRegistry:
                     "help": s.help,
                     "risk": s.risk,
                     "tier": s.tier,
+                    "fact": s.fact,
                     "choices": list(s.choices),
                     "minimum": s.minimum,
                     "maximum": s.maximum,
                     "default": s.default,
                     "value": values.get(s.key, s.default),
+                    "affects": list(s.affects),
+                    "effect_detail": s.effect_detail,
+                    "example": s.example,
+                    # Most settings carry no reason of their own and inherit the
+                    # plugin's, so these go through the fallback helpers rather
+                    # than reading the raw fields.
+                    "locked_because": spec.locked_because_for(s),
+                    "recourse": _recourse_json(spec.recourse_for(s)),
                 }
                 for s in spec.settings
             ],

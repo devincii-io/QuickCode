@@ -52,13 +52,13 @@ from quickcode.kernel.composition import (
     narrower_mode,
 )
 from quickcode.kernel.resolve import default_mode as resolved_default_mode
-from quickcode.kernel.resolve import resolve_composition, session_pool
+from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.base import ModelInfo, Provider, ProviderError
 from quickcode.server.serialization import event_to_json, loggable
 from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import load_defs
-from quickcode.subagents.runner import MAX_DEPTH, SubagentDeps
+from quickcode.subagents.runner import SubagentDeps
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry
 
@@ -320,7 +320,13 @@ class Conversation:
                 log.exception("turn failed")
                 self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
             self._persist_new_messages()
-            if should_compact(self.agent):
+            # ``runtime.compaction.enabled`` gates the automatic path only:
+            # /compact is a thing the user asked for, and switching the
+            # automatic summary off is not a statement about that.
+            limits = self.agent.limits
+            if limits.compaction_enabled and should_compact(
+                self.agent, limits.compaction_threshold
+            ):
                 await self._compact(manual=False)
             self._emit_state()
             # Send the next queued follow-up, if any.
@@ -337,7 +343,9 @@ class Conversation:
     async def _compact(self, *, manual: bool) -> None:
         self.emit({"type": "status", "state": "sending", "detail": "compacting"}, log_it=False)
         try:
-            summary = await run_compaction(self.agent)
+            summary = await run_compaction(
+                self.agent, keep_turns=self.agent.limits.keep_turns
+            )
         except ProviderError as e:
             self.emit({"type": "error", "message": f"compaction failed: {e}"})
             return
@@ -623,6 +631,11 @@ class ConversationManager:
         # sessions, consistent with presets.
         defs = load_defs(self.cwd)
 
+        # Read off disk to resolve with, then re-read from the answer: a
+        # resumed session runs on the limits recorded in its own composition,
+        # so editing max_rounds or the compaction threshold reaches the next
+        # session rather than one already in flight.
+        limits = runtime_limits(self.cwd)
         resolved = self._frozen_composition(store, resuming) or resolve_composition(
             ORCHESTRATOR_ID,
             pool=pool,
@@ -631,9 +644,10 @@ class ConversationManager:
             cwd=self.cwd,
             parent=None,
             depth=0,
-            max_depth=MAX_DEPTH,
+            max_depth=limits.max_depth,
             resolve_model=self._resolve_role,
         )
+        limits = runtime_limits(settings=resolved.settings)
 
         mode_str = (
             self.default_mode
@@ -686,6 +700,7 @@ class ConversationManager:
             model=model,
             permission_cb=None,  # wired below
             context_length=info.context_length if info else None,
+            limits=limits,
         )
 
         if resuming:
@@ -720,6 +735,7 @@ class ConversationManager:
             parent=resolved,
             defs=defs,
             preset=preset,
+            limits=limits,
         )
         if not resuming:
             store.append_meta(
