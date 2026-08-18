@@ -10,6 +10,10 @@
 <link rel="stylesheet" href="css/home.css">
 <link rel="stylesheet" href="css/panels.css">
 <link rel="stylesheet" href="css/panels-git.css">
+<link rel="stylesheet" href="css/chat.css">
+<link rel="stylesheet" href="css/trajectory.css">
+<link rel="stylesheet" href="css/settings.css">
+<link rel="stylesheet" href="css/config.css">
 <link rel="icon" href="assets/favicon.ico">
 <link rel="manifest" href="assets/manifest.webmanifest">
 </head>
@@ -28,7 +32,7 @@
         <div class="home-actions">
           <button id="home-help" class="ghost-btn" title="Help — shortcuts and slash commands">?</button>
           <button id="home-settings" class="ghost-btn" title="Settings">⚙</button>
-          <button id="home-open" class="btn primary">Open folder…</button>
+          <button id="home-open" class="btn primary" title="Open a folder as a project">＋ New project</button>
         </div>
       </header>
 
@@ -73,6 +77,8 @@
                 <button id="mode-pill" class="pill" title="Permission mode">ask ▾</button>
                 <button id="model-pill" class="pill" title="Model">…</button>
                 <button id="btn-compact" class="pill subtle" title="Compact the conversation">⇊ compact</button>
+                <button id="btn-quick-settings" class="pill subtle"
+                        title="Quick settings — endpoint, key, theme">⚙ quick</button>
               </div>
               <div class="composer-right">
                 <span id="queued-count" class="queued-count hidden"></span>
@@ -103,13 +109,38 @@
             <div class="traj-toolbar">
               <div class="traj-filters" id="traj-filters"></div>
               <input id="traj-search" class="traj-search" type="search" placeholder="Search events…">
+              <button id="traj-fit" class="ghost-btn tj-btn" title="Fit the whole session (F)">⤢ Fit</button>
+              <button id="traj-gaps" class="ghost-btn tj-btn is-on" aria-pressed="true"
+                      title="Collapse long idle gaps on the time axis">⋯ Gaps</button>
               <button id="traj-follow" class="ghost-btn traj-follow" aria-pressed="true"
                       title="Following the newest event — click to pause">⏸ Follow</button>
               <button id="traj-export" class="ghost-btn" title="Export event log as JSON">⤓ Export</button>
             </div>
-            <div id="traj-timeline" class="traj-timeline" title="Event timeline"></div>
+
+            <!-- Time axis + lanes. The gutter and the plot share one width so
+                 ticks, bars, crosshair and playhead all line up. -->
+            <div id="traj-timeline" class="tj-timeline">
+              <div class="tj-head">
+                <div class="tj-gutter-pad">time</div>
+                <div id="tj-axis" class="tj-axis"></div>
+              </div>
+              <div class="tj-lanes">
+                <div id="tj-gutter" class="tj-gutter"></div>
+                <div id="tj-plot" class="tj-plot" tabindex="0" role="application"
+                     aria-label="Event timeline — drag to pan, wheel to zoom, click to place the playhead">
+                  <div id="tj-bands" class="tj-bands"></div>
+                  <div id="tj-cursor" class="tj-cursor hidden"></div>
+                  <div id="tj-playhead" class="tj-playhead hidden"></div>
+                </div>
+              </div>
+              <div id="tj-hover" class="tj-hover hidden" role="tooltip"></div>
+            </div>
+
             <div class="traj-body">
-              <div id="traj-table" class="traj-table" role="table"></div>
+              <div id="traj-table" class="tj-table" role="table">
+                <div id="tj-spacer" class="tj-spacer"></div>
+                <div id="tj-rows" class="tj-rows"></div>
+              </div>
               <aside id="traj-detail" class="traj-detail hidden">
                 <div class="traj-detail-head">
                   <span id="traj-detail-title">—</span>
@@ -138,11 +169,42 @@
       <span id="st-state" class="st-seg st-state">idle</span>
       <span id="st-model" class="st-seg" title="Model"></span>
       <span id="st-ctx" class="st-seg" title="Context window usage"></span>
+      <span id="st-work" class="st-seg" title="Turns and tool calls this session"></span>
+      <span id="st-time" class="st-seg" title="Model time / tool time this session"></span>
+      <span id="st-speed" class="st-seg" title="Time to first token · output tokens per second (last turn)"></span>
+      <span id="st-cache" class="st-seg" title="Share of input tokens served from cache"></span>
       <span id="st-tokens" class="st-seg" title="Session tokens (in/out)"></span>
       <span id="st-cost" class="st-seg" title="Session cost"></span>
       <span class="st-spacer"></span>
       <span id="st-conn" class="st-seg st-conn" title="Connection">●</span>
     </footer>
+  </section>
+
+  <!-- ========================= CONFIGURATION ========================= -->
+  <!-- A third top-level view, not a dialog: every page here has a URL, the
+       workbench needs three columns, and opening it must never cost the
+       workspace its socket. -->
+  <section id="view-config" class="view view-config">
+    <header id="config-top">
+      <button id="config-brand" class="brand" title="Back to what you were doing">
+        <span class="brand-mark"><img src="assets/icon.svg" alt="" width="18" height="18"></span>
+        <span class="brand-name">QuickCode</span>
+      </button>
+      <span class="cfg-where">Configuration</span>
+      <div class="cfg-search-wrap">
+        <input id="cfg-search" type="search" spellcheck="false"
+               placeholder="Search everything — plugins, settings, sections, compositions…">
+        <div id="cfg-results" class="cfg-results hidden"></div>
+      </div>
+      <div class="cfg-top-actions">
+        <button id="cfg-reload" class="ghost-btn" title="Re-read the plugin kernel">⟳ Reload</button>
+        <button id="cfg-done" class="ghost-btn" title="Back to the session">Done ✕</button>
+      </div>
+    </header>
+    <div class="cfg-body">
+      <nav id="cfg-rail" class="cfg-rail" aria-label="Configuration sections"></nav>
+      <main id="cfg-page" class="cfg-page"></main>
+    </div>
   </section>
 
   <!-- Modal root -->

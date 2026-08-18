@@ -1,6 +1,7 @@
-// Boot and routing. QuickCode is a two-view single-page app: a Home view that
-// lists projects, and a workspace (chat + side panel) bound to exactly one
-// project and one conversation.
+// Boot and routing. QuickCode is a three-view single-page app: a Home view
+// that lists projects, a workspace (chat + side panel) bound to exactly one
+// project and one conversation, and Configuration — a peer view rather than a
+// dialog, addressed by `#/config/…` so every page in it has a URL.
 //
 // The launch fragment carries the token and, when the CLI opened a directory,
 // the project id — api.initAuth() strips it immediately, so navigation after
@@ -11,21 +12,30 @@ import { api, currentProject, initAuth, setProject } from "./api.js";
 import { initChat } from "./chat.js";
 import { initComposer } from "./composer.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
-import { initReviews, openHelp, openSessionMenu, openSettings } from "./modals.js";
+import { initReviews, openHelp, openQuickSettings, openSessionMenu } from "./modals.js";
+import {
+  DEFAULT_ROUTE, initConfig, isConfigRoute, lastConfigRoute, render as renderConfig,
+} from "./config/view.js";
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
+import { setInspector } from "./inspect.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
-import { applyTheme, debounce, esc, fmtCost, fmtTokens, oneLine, wireLogo } from "./util.js";
+import { applyTheme, debounce, esc, fmtCost, fmtMs, fmtTokens, oneLine, wireLogo } from "./util.js";
 import { connect, disconnect } from "./ws.js";
 
 const $ = (id) => document.getElementById(id);
 
 // ---- view switching ----
 
+// Which view was showing before Configuration took over, so "Done" goes back
+// to what the user was doing rather than to an arbitrary home.
+let cameFrom = "home";
+
 function showHome() {
+  leaveConfig();
   disconnect();
-  // No project is "current" on Home, so the global modals (settings, help)
-  // fall back to the unscoped routes, which address the launch project.
+  // No project is "current" on Home, so the global modals (quick settings,
+  // help) fall back to the unscoped routes, which address the launch project.
   setProject(null);
   document.getElementById("app").classList.add("showing-home");
   document.title = "QuickCode";
@@ -33,7 +43,43 @@ function showHome() {
 }
 
 function showWorkspace() {
-  document.getElementById("app").classList.remove("showing-home");
+  leaveConfig();
+  const app = document.getElementById("app");
+  app.classList.remove("showing-home");
+  // The transcript grew while it was hidden, where every scroll measurement
+  // reads zero; put it back at the bottom rather than at an accidental offset.
+  const t = $("transcript");
+  if (t) t.scrollTop = t.scrollHeight;
+}
+
+/** Configuration is a view, and this is the whole reason it is one:
+ *  it never calls disconnect(). The workspace stays mounted and hidden with
+ *  its socket open, so changing a setting does not cost the session. */
+function showConfig(route) {
+  const app = document.getElementById("app");
+  if (!app.classList.contains("showing-config")) {
+    cameFrom = app.classList.contains("showing-home") ? "home" : "workspace";
+  }
+  app.classList.add("showing-config");
+  document.title = "QuickCode — Configuration";
+  if (route && location.hash !== route) { location.hash = route; return; }
+  renderConfig();
+}
+
+function leaveConfig() {
+  const app = document.getElementById("app");
+  if (!app.classList.contains("showing-config")) return;
+  app.classList.remove("showing-config");
+  if (isConfigRoute(location.hash)) {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+}
+
+function closeConfig() {
+  if (cameFrom === "home") { showHome(); return; }
+  showWorkspace();
+  document.title = store.bootstrap?.project
+    ? `QuickCode — ${store.bootstrap.project}` : "QuickCode";
 }
 
 // ---- status bar + pills ----
@@ -70,10 +116,28 @@ function refreshState() {
   $("st-tokens").textContent =
     `▲${fmtTokens(s.ledger.input_tokens)} ▼${fmtTokens(s.ledger.output_tokens)}`;
   $("st-cost").textContent = fmtCost(s.ledger.cost_usd);
+  refreshMetrics(s);
   $("btn-interrupt").classList.toggle("hidden", !s.busy);
   const qc = $("queued-count");
   qc.classList.toggle("hidden", !s.queued);
   qc.textContent = s.queued ? `${s.queued} queued` : "";
+}
+
+// Measured numbers only. A timing this client never watched reads "–" rather
+// than a plausible-looking zero.
+function refreshMetrics(s) {
+  const m = store.metrics;
+  $("st-work").textContent = `${m.turns} turn${m.turns === 1 ? "" : "s"} · ${m.steps} step${
+    m.steps === 1 ? "" : "s"}`;
+  const llm = m.llmMs ? fmtMs(m.llmMs) : "–";
+  const tools = m.toolMs ? fmtMs(m.toolMs) : "–";
+  $("st-time").textContent = `LLM ${llm} · tools ${tools}`;
+  const ttft = m.ttftMs == null ? "–" : fmtMs(m.ttftMs);
+  const tps = m.tps == null ? "–" : `${m.tps.toFixed(0)} tok/s`;
+  $("st-speed").textContent = `TTFT ${ttft} · ${tps}`;
+  const inTok = s.ledger.input_tokens || 0;
+  const cached = s.ledger.cached_tokens || 0;
+  $("st-cache").textContent = inTok ? `cache ${((cached / inTok) * 100).toFixed(0)}%` : "cache –";
 }
 
 function refreshStatus(state) {
@@ -149,24 +213,44 @@ async function openConversation(resume) {
 // ---- boot ----
 
 async function boot() {
+  // Read before initAuth(), which drops the launch fragment: a reload of a
+  // linked configuration page must land back on that page.
+  const wantsConfig = isConfigRoute(location.hash);
   const { token, project, resumeHint } = initAuth();
 
-  initChat({
-    openTrace: (seq) => { openPanelTab("trajectory"); selectSeq(seq, { scroll: true }); },
-  });
+  // One inspector for every surface: chat, the agents panel and the
+  // trajectory table all land on the same Summary/Payload/Result/Timing view.
+  const openTrace = (seq) => {
+    openPanelTab("trajectory");
+    selectSeq(seq, { scroll: true });
+  };
+  setInspector(openTrace);
+  initChat({ openTrace });
   initTrajectory();
   initPanel();
   initReviews();
   initComposer({ onNewConversation: () => openConversation(null) });
   initHome({ onOpen: (proj, opts) => openProject(proj, opts) });
   wireLogo($("brand-home").querySelector("img"), "brand-mark-fallback");
+  wireLogo($("config-brand").querySelector("img"), "brand-mark-fallback");
 
   $("brand-home").addEventListener("click", showHome);
-  // Settings and help are install-wide, so Home carries them too.
-  $("home-settings").addEventListener("click", () => openSettings());
+  // Configuration and help are install-wide, so Home carries them too.
+  initConfig({ api, onDone: closeConfig });
+  $("config-brand").addEventListener("click", closeConfig);
+  $("home-settings").addEventListener("click", () => showConfig(lastConfigRoute()));
   $("home-help").addEventListener("click", () => openHelp());
   $("btn-new-chat").addEventListener("click", () => openConversation(null));
-  $("btn-settings").addEventListener("click", () => openSettings());
+  $("btn-settings").addEventListener("click", () => showConfig(lastConfigRoute()));
+  $("btn-quick-settings").addEventListener("click", () =>
+    openQuickSettings({ onFull: () => showConfig(DEFAULT_ROUTE) }));
+
+  // Every configuration page is a URL. A hash that names one shows the view;
+  // anything else (including "back" out of it) returns to where we were.
+  window.addEventListener("hashchange", () => {
+    if (isConfigRoute(location.hash)) showConfig();
+    else if (document.getElementById("app").classList.contains("showing-config")) closeConfig();
+  });
   $("session-chip").addEventListener("click", (e) =>
     openSessionMenu(e.currentTarget, {
       onPick: (convId) => openConversation(convId),
@@ -178,6 +262,12 @@ async function boot() {
     if (kind === "status") refreshStatus(ev.state);
     if (kind === "queued") { queuedTexts.push(ev.text); renderQueue(); }
     if (kind === "event" && ev.type === "user_message") bumpSessionChip();
+    // Counts accumulate while a session replays, but the state event that
+    // drives the status bar arrives before the replay does — without this the
+    // bar reads "0 turns" over a fully rendered conversation.
+    if (kind === "replay_done" || kind === "event") {
+      if (store.state) refreshMetrics(store.state);
+    }
     if (kind === "connection") {
       const c = $("st-conn");
       c.classList.toggle("off", store.connection !== "open");
@@ -196,9 +286,10 @@ async function boot() {
   // Only a fragment-carried project skips Home.
   if (project) {
     await openProject({ id: project }, { resume: resumeHint });
-    return;
+  } else {
+    showHome();
   }
-  showHome();
+  if (wantsConfig) showConfig();
 }
 
 boot();

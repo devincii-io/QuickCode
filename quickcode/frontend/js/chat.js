@@ -1,5 +1,6 @@
 // Chat view: incremental transcript renderer over the event store.
 
+import { highlightPayload, isJson } from "./highlight.js";
 import { renderMarkdown } from "./markdown.js";
 import { store, subscribe } from "./store.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
@@ -8,6 +9,10 @@ let transcript, taskStrip;
 let streamNode = null;          // live assistant bubble
 let agentCards = new Map();     // agent_id -> {card, body, textNode}
 let onOpenTrace = () => {};
+// The open step: consecutive tool calls collect into one titled block instead
+// of stacking as loose cards. Closed by anything that is not a tool call.
+let stepNode = null;
+let lastAssistantText = "";
 
 export function initChat({ openTrace }) {
   transcript = document.getElementById("transcript");
@@ -28,6 +33,8 @@ function onStoreChange(kind, ev) {
 function clear() {
   transcript.innerHTML = "";
   streamNode = null;
+  stepNode = null;
+  lastAssistantText = "";
   agentCards = new Map();
   taskStrip = null;
 }
@@ -94,18 +101,56 @@ function renderEvent(ev) {
   }
 }
 
-function addNode(node) { streamNode = null; transcript.appendChild(node); }
+function addNode(node) {
+  streamNode = null;
+  stepNode = null;   // anything that is not a tool call ends the step
+  transcript.appendChild(node);
+}
+
+// ---- steps ----
+
+// A step is one round's worth of tool calls under a heading. The heading
+// names the tools it used: whatever the assistant said is already rendered
+// directly above, and repeating it as a title says nothing twice.
+function stepTitle(step) {
+  const names = [...step.querySelectorAll(".tool-name")].map((n) => n.textContent);
+  const unique = [...new Set(names)];
+  if (!unique.length) return "Working";
+  const shown = unique.slice(0, 4).join(" · ");
+  return unique.length > 4 ? `${shown} +${unique.length - 4}` : shown;
+}
+
+function ensureStep() {
+  if (stepNode) return stepNode;
+  stepNode = el(`<div class="step">
+      <div class="step-head"><span class="step-mark">#</span>
+        <span class="step-title"></span>
+        <span class="step-count"></span></div>
+      <div class="step-body"></div></div>`);
+  streamNode = null;
+  transcript.appendChild(stepNode);
+  return stepNode;
+}
+
+function bumpStepCount(step) {
+  const n = step.querySelectorAll(".tool-card").length;
+  step.querySelector(".step-count").textContent = n === 1 ? "1 call" : `${n} calls`;
+  step.querySelector(".step-title").textContent = stepTitle(step);
+}
 
 function traceLink(seq) {
   return `<span class="trace-link" data-seq="${seq}" title="Open in trajectory">⌕ trace</span>`;
 }
 
 function addUser(ev) {
+  lastAssistantText = "";
   addNode(el(`<div class="msg msg-user"><div class="bubble">${esc(ev.text)}</div></div>`));
 }
 
 function addAssistant(ev) {
   if (streamNode) { streamNode.remove(); streamNode = null; }
+  stepNode = null;
+  lastAssistantText = ev.text || "";
   const node = el(`<div class="msg msg-assistant">
       <div class="reasoning-slot"></div>
       <div class="bubble">${renderMarkdown(ev.text)}</div>
@@ -145,34 +190,74 @@ function diffBody(name, argsRaw) {
   return `<div class="lbl">${esc(a.file_path || "")}</div><pre>${del}\n${add}</pre>`;
 }
 
+// Tools that act on a path: the summary becomes a copyable file reference.
+const PATH_TOOLS = new Set(["read", "write", "edit"]);
+
+function summaryHtml(name, argsRaw) {
+  const summary = argSummary(name, argsRaw);
+  if (!PATH_TOOLS.has(name) || !summary) return esc(summary);
+  return `<span class="file-ref" data-path="${esc(summary)}" title="Copy path"
+    role="button" tabindex="0">${esc(summary)}</span>`;
+}
+
 function toolCardNode(ev, { agent } = {}) {
-  const summary = argSummary(ev.name, ev.arguments);
   const card = el(`<div class="tool-card" data-call="${esc(ev.id)}">
     <div class="tool-head" aria-expanded="false">
       <span class="tool-dot running"></span>
       <span class="tool-name">${esc(ev.name)}</span>
-      <span class="tool-summary">${esc(summary)}</span>
+      <span class="tool-summary">${summaryHtml(ev.name, ev.arguments)}</span>
       <span class="tool-ms"></span>
     </div>
     <div class="tool-body"></div></div>`);
   const body = card.querySelector(".tool-body");
   const diff = diffBody(ev.name, ev.arguments);
-  let pretty = ev.arguments;
-  try { pretty = JSON.stringify(JSON.parse(ev.arguments || "{}"), null, 2); } catch { /* raw */ }
-  body.innerHTML = (diff || `<div class="lbl">Arguments</div><pre>${esc(pretty)}</pre>`) +
+  const input = diff
+    ? `<div class="io-diff">${diff}</div>`
+    : `<pre class="code">${highlightPayload(ev.arguments || "{}")}</pre>`;
+  body.innerHTML =
+    `<details class="io io-in"><summary><span class="io-tag">IN</span>
+       <span class="io-hint">arguments</span></summary>${input}</details>` +
     `<div class="result-slot"></div>` +
-    (ev.seq != null ? `<div class="lbl" style="margin-top:10px">${traceLink(ev.seq)}</div>` : "");
+    (ev.seq != null ? `<div class="io-trace">${traceLink(ev.seq)}</div>` : "");
   const head = card.querySelector(".tool-head");
   clickable(head, () => {
     head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
   });
+  wireFileRefs(card);
   wireTraceLinks(card);
   return card;
 }
 
+function resultHtml(content, isError) {
+  const text = String(content ?? "");
+  const pane = isJson(text)
+    ? `<pre class="code">${highlightPayload(text)}</pre>`
+    : `<pre class="code">${esc(text)}</pre>`;
+  const tag = isError ? "ERR" : "OUT";
+  return `<details class="io io-out${isError ? " io-error" : ""}"${isError ? " open" : ""}>
+      <summary><span class="io-tag">${tag}</span>
+      <span class="io-hint">${isError ? "error" : "result"}</span></summary>${pane}</details>`;
+}
+
+// Clicking a path copies it: there is no editor to open it in, and a link
+// that silently does nothing is worse than one that does something small.
+function wireFileRefs(node) {
+  node.querySelectorAll(".file-ref").forEach((ref) => {
+    clickable(ref, (e) => {
+      e?.stopPropagation?.();
+      const path = ref.dataset.path || "";
+      navigator.clipboard?.writeText(path).then(() => {
+        ref.classList.add("copied");
+        setTimeout(() => ref.classList.remove("copied"), 900);
+      }, () => { /* clipboard blocked: leave the text selectable */ });
+    });
+  });
+}
+
 function addToolCall(ev) {
-  streamNode = null;
-  transcript.appendChild(toolCardNode(ev));
+  const step = ensureStep();
+  step.querySelector(".step-body").appendChild(toolCardNode(ev));
+  bumpStepCount(step);
 }
 
 function attachToolResult(ev) {
@@ -183,10 +268,7 @@ function attachToolResult(ev) {
   dot.classList.add(ev.is_error ? "error" : "ok");
   if (ev.ms) card.querySelector(".tool-ms").textContent = fmtMs(ev.ms);
   const slot = card.querySelector(".result-slot");
-  if (slot) {
-    slot.innerHTML = `<div class="lbl">${ev.is_error ? "Error" : "Result"}</div>
-      <pre>${esc(ev.content)}</pre>`;
-  }
+  if (slot) slot.innerHTML = resultHtml(ev.content, ev.is_error);
   if (ev.is_error) card.classList.add("open");
 }
 
@@ -194,6 +276,7 @@ function attachToolResult(ev) {
 
 function addAgentCard(ev) {
   streamNode = null;
+  stepNode = null;
   const card = el(`<div class="agent-card" data-agent="${esc(ev.agent_id)}">
     <div class="agent-head" aria-expanded="false"><span>⛓</span>
       <strong>${esc(ev.agent_id)}</strong>
@@ -222,8 +305,7 @@ function addAgentEvent(ev) {
       dot.classList.remove("running");
       dot.classList.add(inner.is_error ? "error" : "ok");
       const slot = tc.querySelector(".result-slot");
-      if (slot) slot.innerHTML =
-        `<div class="lbl">${inner.is_error ? "Error" : "Result"}</div><pre>${esc(inner.content)}</pre>`;
+      if (slot) slot.innerHTML = resultHtml(inner.content, inner.is_error);
     }
   } else if (inner.type === "assistant_message") {
     card.querySelector(".agent-text").textContent = inner.text;

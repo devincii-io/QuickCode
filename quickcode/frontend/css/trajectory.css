@@ -1,0 +1,222 @@
+/* Trajectory view: time-axis lanes, playhead, event table.
+ *
+ * Everything here is namespaced under .traj- / .tj- and owns the trajectory
+ * pane only. Loaded after app.css so it may override the older rules it
+ * replaces; design tokens (--bg, --fg, --chip-*) come from app.css:5-36.
+ *
+ * The lanes deliberately use their own .tj- names rather than the retired
+ * .traj-timeline / .tl-block / .trow ones, so the older sizing rules in
+ * app.css and shell.css simply no longer match anything.
+ */
+
+.tj-timeline {
+  --tj-gutter: 58px;
+  --tj-lane-h: 20px;
+  --tj-axis-h: 19px;
+  flex: none; position: relative; z-index: 3;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(to bottom,
+    color-mix(in srgb, var(--surface) 70%, transparent), transparent);
+  user-select: none;
+}
+
+/* ---------- axis ---------- */
+
+.tj-head { display: flex; align-items: stretch; height: var(--tj-axis-h); }
+.tj-gutter-pad {
+  flex: 0 0 var(--tj-gutter); min-width: 0;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .7px;
+  text-transform: uppercase; color: var(--fg-faint);
+  display: flex; align-items: center; padding-left: 10px;
+  border-right: 1px solid var(--line);
+}
+.tj-axis { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+.tj-tick { position: absolute; top: 0; bottom: 0; width: 0; }
+.tj-tick::before {
+  content: ""; position: absolute; left: 0; bottom: 0; width: 1px; height: 5px;
+  background: var(--line-strong);
+}
+.tj-tick b {
+  position: absolute; left: 3px; bottom: 3px; white-space: nowrap;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 400;
+  color: var(--fg-faint);
+}
+
+/* ---------- lanes ---------- */
+
+.tj-lanes { display: flex; align-items: stretch; }
+.tj-gutter { flex: 0 0 var(--tj-gutter); min-width: 0; border-right: 1px solid var(--line); }
+.tj-glabel {
+  height: var(--tj-lane-h); display: flex; align-items: center;
+  padding-left: 10px; font-size: 10px; letter-spacing: .4px;
+  color: var(--fg-faint); border-top: 1px solid var(--line);
+  overflow: hidden;
+}
+.tj-glabel span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tj-glabel[data-lane="input"] { color: color-mix(in srgb, var(--chip-user) 75%, var(--fg-faint)); }
+.tj-glabel[data-lane="model"] { color: color-mix(in srgb, var(--chip-assistant) 75%, var(--fg-faint)); }
+.tj-glabel[data-lane="tools"] { color: color-mix(in srgb, var(--chip-tool) 75%, var(--fg-faint)); }
+.tj-glabel[data-lane="agents"] { color: color-mix(in srgb, var(--chip-agent) 75%, var(--fg-faint)); }
+
+.tj-plot {
+  position: relative; flex: 1; min-width: 0; overflow: hidden;
+  cursor: crosshair; outline: none;
+  height: calc(var(--tj-lane-h) * 4);
+}
+.tj-plot.is-dragging { cursor: grabbing; }
+.tj-plot:focus-visible { box-shadow: inset 0 0 0 1px var(--primary); }
+
+.tj-lane {
+  position: relative; height: var(--tj-lane-h);
+  border-top: 1px solid var(--line);
+}
+.tj-lane:nth-child(even) { background: color-mix(in srgb, var(--fg) 2.5%, transparent); }
+
+/* ---------- bars ---------- */
+
+.tj-bar {
+  position: absolute; top: 4px; bottom: 4px; border-radius: 2px;
+  background: var(--chip-meta); opacity: .82; pointer-events: none;
+  min-width: 3px;
+}
+.tj-bar.r-SYSTEM { background: var(--chip-system); }
+.tj-bar.r-USER { background: var(--chip-user); }
+.tj-bar.r-CONTEXT { background: var(--chip-context); }
+.tj-bar.r-ASSISTANT { background: var(--chip-assistant); }
+.tj-bar.r-TOOL { background: var(--chip-tool); }
+.tj-bar.r-REVIEW { background: var(--chip-review); }
+.tj-bar.r-AGENT { background: var(--chip-agent); }
+.tj-bar.r-ERROR, .tj-bar.is-err { background: var(--chip-error); opacity: 1; }
+.tj-bar.r-META { background: var(--chip-meta); opacity: .6; }
+.tj-bar.is-sel {
+  opacity: 1; top: 2px; bottom: 2px;
+  box-shadow: 0 0 0 1.5px var(--fg), 0 0 8px color-mix(in srgb, var(--fg) 40%, transparent);
+}
+.tj-bar.is-newest { opacity: 1; box-shadow: 0 0 0 1.5px var(--primary); }
+
+/* ---------- collapsed idle gaps ---------- */
+
+.tj-bands { position: absolute; inset: 0; pointer-events: none; }
+.tj-band {
+  position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--fg) 8%, transparent) 0 3px,
+    transparent 3px 7px);
+  border-left: 1px dashed var(--line-strong);
+  border-right: 1px dashed var(--line-strong);
+}
+.tj-band b {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  font-family: var(--mono); font-size: 9px; font-weight: 400; white-space: nowrap;
+  color: var(--fg-faint); background: var(--bg);
+  padding: 0 3px; border-radius: 3px; opacity: .9;
+}
+
+/* ---------- crosshair + playhead ---------- */
+
+.tj-cursor {
+  position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none;
+  background: color-mix(in srgb, var(--fg) 45%, transparent);
+}
+.tj-playhead {
+  position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none;
+  background: var(--primary);
+}
+.tj-playhead::before {
+  content: ""; position: absolute; left: -4px; top: -1px;
+  border: 4px solid transparent; border-top-color: var(--primary); border-bottom: none;
+  height: 0; width: 0;
+}
+
+/* ---------- hover card ---------- */
+
+.tj-hover {
+  position: absolute; top: calc(100% - 4px); z-index: 20;
+  width: min(320px, calc(100% - 12px));
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  padding: 8px 10px; pointer-events: none; font-size: 12px;
+}
+.tj-hover .hc-head { display: flex; align-items: center; gap: 7px; }
+.tj-hover .chip {
+  font-size: 9px; font-weight: 700; letter-spacing: .7px; padding: 1px 7px;
+  border-radius: 4px; color: var(--bg); flex: none;
+}
+.tj-hover .hc-kind {
+  font-family: var(--mono); font-size: 11.5px; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tj-hover .hc-seq { margin-left: auto; color: var(--fg-faint); font-family: var(--mono); font-size: 11px; }
+.tj-hover .hc-prev {
+  margin-top: 5px; color: var(--fg-dim); font-family: var(--mono); font-size: 11px;
+  line-height: 1.4; max-height: 44px; overflow: hidden;
+}
+.tj-hover .hc-time {
+  margin-top: 6px; display: flex; align-items: baseline; gap: 6px;
+  font-family: var(--mono); font-size: 11px; color: var(--fg);
+  border-top: 1px solid var(--line); padding-top: 5px;
+}
+.tj-hover .hc-arrow { color: var(--fg-faint); }
+.tj-hover .hc-dur { margin-left: auto; color: var(--primary); font-weight: 600; }
+.tj-hover .hc-off { margin-top: 3px; font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); }
+
+/* ---------- toolbar extras ---------- */
+
+.tj-btn { flex: none; white-space: nowrap; font-size: 12px; }
+.tj-btn.is-on { color: var(--primary); }
+
+/* ---------- windowed event table ---------- */
+
+.tj-table {
+  --tj-row-h: 24px;
+  flex: 1; min-width: 0; overflow-y: auto; position: relative;
+  font-size: 12.5px;
+}
+.tj-spacer { width: 1px; }
+.tj-rows { position: absolute; inset: 0 0 auto 0; }
+.tj-row {
+  position: absolute; left: 0; right: 0; height: var(--tj-row-h);
+  display: flex; gap: 10px; align-items: center; padding: 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
+  cursor: pointer; font-family: var(--mono); overflow: hidden;
+}
+.tj-row:hover { background: var(--panel); }
+.tj-row.selected { background: var(--boost); box-shadow: inset 2px 0 0 var(--primary); }
+.tj-row .seq { color: var(--fg-faint); width: 42px; flex: none; text-align: right; font-size: 11px; }
+.tj-row .chip {
+  flex: none; width: 78px; text-align: center; font-size: 9.5px; font-weight: 700;
+  letter-spacing: .7px; padding: 1px 0; border-radius: 4px; color: var(--bg);
+}
+.tj-row .preview {
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--fg-dim);
+}
+.tj-row .tj-res {
+  flex: 0 1 34%; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--fg-faint); font-size: 11.5px;
+}
+.tj-row .t-ms { flex: none; color: var(--fg-faint); font-size: 11px; }
+.tj-row.is-error .preview { color: var(--error); }
+
+/* ---------- narrow panel (down to 320px) ---------- */
+
+@container (max-width: 430px) {
+  .tj-timeline { --tj-gutter: 44px; --tj-lane-h: 18px; }
+  .tj-gutter-pad { padding-left: 6px; font-size: 8.5px; letter-spacing: .3px; }
+  .tj-glabel { padding-left: 6px; font-size: 9px; }
+  .tj-row { gap: 7px; padding: 0 8px; }
+  .tj-row .seq { width: 30px; }
+  .tj-row .chip { width: 60px; font-size: 8.5px; letter-spacing: .3px; }
+  .tj-row .tj-res { display: none; }
+  .tj-hover { width: calc(100% - 12px); }
+}
+
+/* ---------- maximized panel: more room per lane and per row ---------- */
+
+#main.panel-max .tj-timeline { --tj-gutter: 74px; --tj-lane-h: 26px; --tj-axis-h: 22px; }
+#main.panel-max .tj-glabel { font-size: 11px; }
+#main.panel-max .tj-table { --tj-row-h: 26px; font-size: 13px; }
+#main.panel-max .tj-row { padding: 0 16px; }
+#main.panel-max .tj-row .seq { width: 54px; }
+#main.panel-max .tj-row .chip { width: 88px; font-size: 10px; }
+#main.panel-max .tj-hover { width: 360px; }

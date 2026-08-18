@@ -63,12 +63,35 @@ async function req(method, path, body) {
 export const api = {
   // ---- current project ----
   bootstrap: () => req("GET", P("/bootstrap")),
-  sessions: () => req("GET", P("/sessions")),
+  // `archived: true` folds the archive back into the list; every row carries
+  // an `archived` flag either way.
+  sessions: (archived = false) => req("GET", P(`/sessions?archived=${archived}`)),
+  archiveSession: (convId, on = true) =>
+    req("POST", P(`/sessions/${encodeURIComponent(convId)}/${on ? "archive" : "unarchive"}`)),
+  removeSession: (convId) => req("DELETE", P(`/sessions/${encodeURIComponent(convId)}`)),
+  // Bulk paths answer per row: {deleted, skipped:[{conv_id, reason}], …}.
+  removeSessions: (convIds) => req("POST", P("/sessions/delete"), { conv_ids: convIds }),
+  cleanupSessions: (dryRun = false) => req("POST", P("/sessions/cleanup"), { dry_run: dryRun }),
   openConversation: (resume) => req("POST", P("/conversations"), resume ? { resume } : {}),
   models: (refresh = false) => req("GET", P(`/models?refresh=${refresh}`)),
   plugins: () => req("GET", P("/plugins")),
   gitStatus: () => req("GET", P("/git/status")),
   gitDiff: (path) => req("GET", P(`/git/diff?path=${encodeURIComponent(path)}`)),
+
+  // ---- plugin kernel ----
+  // The whole inventory: plugins + their groups + the MCP servers + the
+  // preset the next session will run on.
+  kernel: () => req("GET", P("/kernel")),
+  // One plugin, including its `view` — the raw truth behind it. Fetched on
+  // demand because rendering every schema up front would be wasteful.
+  plugin: (id) => req("GET", P(`/kernel/plugins/${encodeURIComponent(id)}`)),
+  // `patch` is {enabled?, settings?, confirmed?}. A rejection is meaningful:
+  // 403 = locked, 409 = the detail is the risk to put in front of the user.
+  updatePlugin: (id, patch) => req("PUT", P(`/kernel/plugins/${encodeURIComponent(id)}`), patch),
+  presets: () => req("GET", P("/presets")),
+  setPreset: (preset) => req("PUT", P("/presets/active"), { preset }),
+  // The composed system prompt with each section's byte range.
+  prompt: () => req("GET", P("/prompt")),
 
   // ---- project registry (never scoped) ----
   projects: () => req("GET", "/api/projects"),
@@ -76,9 +99,15 @@ export const api = {
   dir: (path) => req("GET", "/api/dir" + (path ? `?path=${encodeURIComponent(path)}` : "")),
 
   // ---- another project than the current one (the Home view) ----
-  sessionsOf: (pid) => req("GET", `/api/projects/${encodeURIComponent(pid)}/sessions`),
+  sessionsOf: (pid, archived = false) =>
+    req("GET", `/api/projects/${encodeURIComponent(pid)}/sessions?archived=${archived}`),
   deleteSession: (pid, convId) =>
     req("DELETE", `/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(convId)}`),
+  archiveSessionOf: (pid, convId, on = true) =>
+    req("POST", `/api/projects/${encodeURIComponent(pid)}/sessions/${
+      encodeURIComponent(convId)}/${on ? "archive" : "unarchive"}`),
+  cleanupSessionsOf: (pid, dryRun = false) =>
+    req("POST", `/api/projects/${encodeURIComponent(pid)}/sessions/cleanup`, { dry_run: dryRun }),
 
   // ---- per install ----
   putConfig: (cfg) => req("PUT", "/api/config", cfg),

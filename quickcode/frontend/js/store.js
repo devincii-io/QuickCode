@@ -20,7 +20,25 @@ export const store = {
   agentStatus: "idle",
   connection: "connecting", // connecting | open | closed
   replaying: false,
+  // Measured session metrics for the status bar. Counts come from the event
+  // log (so they survive replay); the timings can only be measured live, and
+  // stay null until this client has actually watched a turn.
+  metrics: emptyMetrics(),
 };
+
+function emptyMetrics() {
+  return {
+    turns: 0,          // user messages
+    steps: 0,          // tool calls
+    toolMs: 0,         // summed tool wall-clock
+    llmMs: 0,          // summed time from request to round end (live only)
+    ttftMs: null,      // time to first token of the last turn (live only)
+    tps: null,         // output tokens/sec over the last turn (live only)
+    _turnStart: 0,
+    _firstToken: 0,
+    _outputAtTurnStart: 0,
+  };
+}
 
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 
@@ -36,6 +54,7 @@ export function resetConversation() {
   store.runningTools = new Map();
   store.agents = new Map();
   store.agentStatus = "idle";
+  store.metrics = emptyMetrics();
   notify("reset");
 }
 
@@ -61,6 +80,7 @@ export function ingest(ev) {
     if (store.seenSeq.has(ev.seq)) return;
     store.seenSeq.add(ev.seq);
     store.events.push(ev);
+    countMetric(ev);
     // An assembled record supersedes live buffers.
     if (t === "assistant_message") {
       store.streamText = "";
@@ -83,6 +103,7 @@ export function ingest(ev) {
   // Live-only events.
   switch (t) {
     case "text_delta":
+      markFirstToken();
       store.streamText += ev.text; notify("stream"); break;
     case "reasoning_delta":
       store.streamReasoning += ev.text; notify("stream"); break;
@@ -105,10 +126,55 @@ export function ingest(ev) {
       notify("agent_stream", ev); break;
     }
     case "round_done":
+      endTurnTiming();
       notify("stream"); break;
     default:
       notify("misc", ev);
   }
+}
+
+// ---- metrics ----
+
+// Counts are derived from logged events, so a replayed session reports the
+// same numbers a live one did. Timings cannot work that way -- the log has no
+// record of how long the model took to start talking -- so they are measured
+// only while this client is watching, and read as "–" until then.
+
+function countMetric(ev) {
+  const m = store.metrics;
+  if (ev.type === "user_message") {
+    m.turns += 1;
+    if (!store.replaying) {
+      m._turnStart = performance.now();
+      m._firstToken = 0;
+      m._outputAtTurnStart = store.state?.ledger?.output_tokens || 0;
+    }
+  } else if (ev.type === "tool_call") {
+    m.steps += 1;
+  } else if (ev.type === "tool_result") {
+    m.toolMs += ev.ms || 0;
+  }
+}
+
+function markFirstToken() {
+  const m = store.metrics;
+  if (m._turnStart && !m._firstToken) {
+    m._firstToken = performance.now();
+    m.ttftMs = m._firstToken - m._turnStart;
+  }
+}
+
+function endTurnTiming() {
+  const m = store.metrics;
+  if (!m._turnStart) return;
+  const now = performance.now();
+  m.llmMs += now - m._turnStart;
+  // Tokens per second is measured from the first token, not from the request:
+  // including the wait to first token would report a rate the model never ran at.
+  const produced = (store.state?.ledger?.output_tokens || 0) - m._outputAtTurnStart;
+  const seconds = (now - (m._firstToken || m._turnStart)) / 1000;
+  if (produced > 0 && seconds > 0.05) m.tps = produced / seconds;
+  m._turnStart = 0;
 }
 
 // ---- derived helpers ----

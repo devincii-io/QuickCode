@@ -1,7 +1,14 @@
 // Modals and dropdown menus: permission review, plan review, mode menu,
-// model picker, sessions, settings (General / Models / Plugins).
+// model picker, sessions, and quick settings.
+//
+// Configuration is no longer a dialog — it is #view-config, routed by
+// `#/config/…` (js/config/). What stays a modal is the small set of
+// install-level things people change mid-conversation without wanting to leave
+// the chat: the provider endpoint, the API key and the theme. It is a shortcut
+// into that view and says so.
 
 import { api } from "./api.js";
+import { sheetOpen } from "./settings/ui.js";
 import { store, subscribe } from "./store.js";
 import { actions } from "./ws.js";
 import { applyTheme, el, esc, fmtTokens, oneLine, relTime } from "./util.js";
@@ -36,7 +43,9 @@ function modal(title, bodyHtml, footHtml = "") {
   root().appendChild(m);
   modalEsc = (e) => {
     if (e.key !== "Escape") return;
-    if (document.querySelector(".menu")) return;   // a menu on top closes first
+    // A menu or a Settings sheet sits on top: those peel off first, one layer
+    // per keystroke, instead of the dialog closing from underneath them.
+    if (document.querySelector(".menu") || sheetOpen()) return;
     e.preventDefault();
     // Capture phase plus stopImmediatePropagation: the composer's Escape
     // (interrupt) and the panel's un-maximize must not also fire.
@@ -211,7 +220,7 @@ function menuAt(anchor, contentHtml, { searchable = false, below = false } = {})
   return m;
 }
 
-const MODES = [
+export const MODES = [
   ["plan", "Plan mode", "Read-only exploration; the agent submits a plan for your review before touching anything."],
   ["ask", "Ask mode", "Every mutating action (writes, edits, shell) asks for permission first."],
   ["auto-edit", "Auto-edit mode", "File edits inside the project run automatically; shell commands still ask."],
@@ -355,29 +364,145 @@ export function openHelp() {
 
 // ---- sessions ----
 
+/** Arm-then-act on one button: the first click relabels it, the second runs.
+ *  A `confirm()` here would block the window while the agent is streaming. */
+function armButton(btn, prompt, resting) {
+  if (btn.dataset.armed === "1") return true;
+  btn.dataset.armed = "1";
+  btn.classList.add("armed");
+  btn.textContent = prompt;
+  setTimeout(() => {
+    if (!btn.isConnected || btn.dataset.armed !== "1") return;
+    delete btn.dataset.armed;
+    btn.classList.remove("armed");
+    btn.textContent = resting;
+  }, 4000);
+  return false;
+}
+
 /** Session switcher hanging off the top bar: the sessions of the current
- *  project plus "new session". Resolves nothing — it calls back. */
+ *  project plus "new session", each row deletable and archivable in place.
+ *  Resolves nothing — it calls back. */
 export async function openSessionMenu(anchor, { onPick, onNew }) {
   let sessions = [];
-  try { sessions = await api.sessions(); } catch { /* server gone */ }
+  // The archive comes along on every fetch so the footer can say how much is
+  // filed away before anyone asks to see it.
+  try { sessions = await api.sessions(true); } catch { /* server gone */ }
+  let revealed = false;
   const cur = store.convId;
-  const rows = sessions.map((s) => `
-    <button class="menu-item" data-conv="${esc(s.conv_id)}" title="${esc(oneLine(s.title, 200))}">
-      <div class="mi-title"><span class="mi-name">${esc(oneLine(s.title, 90))}</span>${
-        s.conv_id === cur ? '<span class="check">✓</span>' : ""}</div>
-      <div class="mi-meta">${s.live ? "● live · " : ""}${esc(oneLine(s.model, 28))} ·
-        ${s.message_count} msgs · ${relTime(s.mtime)}</div>
-    </button>`).join("");
-  const empty = `<div class="menu-note">No saved sessions in this project yet.</div>`;
+
   const m = menuAt(
     anchor,
     `<button class="menu-item" data-new><div class="mi-title">＋ New session</div>
        <div class="mi-desc">Start an empty conversation in this project.</div></button>
-     <div class="menu-sep"></div>${rows || empty}`,
+     <div class="menu-sep"></div><div class="menu-rows"></div>`,
     { below: true },
   );
-  m.addEventListener("click", (e) => {
+  const rowsEl = m.querySelector(".menu-rows");
+  const foot = el(`<div class="menu-foot menu-tools"></div>`);
+  m.appendChild(foot);
+
+  const row = (s) => `
+    <div class="menu-row${s.archived ? " archived" : ""}">
+      <button class="menu-item" data-conv="${esc(s.conv_id)}"
+              title="${esc(oneLine(s.title, 200))}">
+        <div class="mi-title"><span class="mi-name">${esc(oneLine(s.title, 90))}</span>${
+          s.archived ? '<span class="mi-tag">archived</span>' : ""}${
+          s.conv_id === cur ? '<span class="check">✓</span>' : ""}</div>
+        <div class="mi-meta">${s.live ? "● live · " : ""}${esc(oneLine(s.model, 28))} ·
+          ${s.message_count} msgs · ${relTime(s.mtime)}</div>
+      </button>
+      <button class="mi-act" data-arch="${esc(s.conv_id)}" data-on="${!s.archived}"
+        title="${s.archived ? "Restore to the list" : "Archive: keep the file, hide the row"}"
+        >${s.archived ? "⇧" : "⇩"}</button>
+      <button class="mi-act mi-del" data-del="${esc(s.conv_id)}"
+        title="Delete this session and its task board">✕</button>
+    </div>`;
+
+  function render() {
+    const archivedCount = sessions.filter((s) => s.archived).length;
+    const emptyIds = sessions
+      .filter((s) => !s.archived && !s.live && !s.message_count)
+      .map((s) => s.conv_id);
+    const visible = sessions.filter((s) => revealed || !s.archived);
+    rowsEl.innerHTML = visible.length
+      ? visible.map(row).join("")
+      : `<div class="menu-note">${archivedCount && !revealed
+          ? "Nothing here but the archive." : "No saved sessions in this project yet."}</div>`;
+    foot.innerHTML = `
+      ${emptyIds.length ? `<button class="menu-tool" data-sweep
+         >clean up ${emptyIds.length} empty</button>` : ""}
+      ${archivedCount ? `<button class="menu-tool" data-toggle-arch
+         aria-pressed="${revealed}">${revealed ? "hide" : "show"} archived
+         (${archivedCount})</button>` : ""}
+      <div class="menu-err"></div>`;
+    // Nothing to sweep and nothing archived: no footer rule, no empty strip.
+    foot.style.display = emptyIds.length || archivedCount ? "" : "none";
+  }
+
+  const fail = (err) => {
+    foot.style.display = "";
+    const box = foot.querySelector(".menu-err");
+    if (box) box.textContent = err.message;
+  };
+
+  async function refresh() {
+    try { sessions = await api.sessions(true); } catch (err) { fail(err); return; }
+    render();
+  }
+
+  render();
+
+  m.addEventListener("click", async (e) => {
     if (e.target.closest("[data-new]")) { m.closeMenu(); onNew(); return; }
+
+    const toggle = e.target.closest("[data-toggle-arch]");
+    if (toggle) { revealed = !revealed; render(); return; }
+
+    const sweep = e.target.closest("[data-sweep]");
+    if (sweep) {
+      const n = sessions.filter((s) => !s.archived && !s.live && !s.message_count).length;
+      if (!armButton(sweep, `delete ${n}?`, `clean up ${n} empty`)) return;
+      sweep.textContent = "…";
+      // Re-render only on success: it rewrites the footer, which is where the
+      // failure would have been shown.
+      try { await api.cleanupSessions(); } catch (err) { fail(err); return; }
+      await refresh();
+      return;
+    }
+
+    const arch = e.target.closest("[data-arch]");
+    if (arch) {
+      const on = arch.dataset.on === "true";
+      arch.textContent = "…";
+      try {
+        await api.archiveSession(arch.dataset.arch, on);
+      } catch (err) {
+        arch.textContent = on ? "⇩" : "⇧";
+        fail(err);
+        return;
+      }
+      await refresh();
+      return;
+    }
+
+    const del = e.target.closest("[data-del]");
+    if (del) {
+      if (!armButton(del, "delete?", "✕")) return;
+      del.textContent = "…";
+      try {
+        await api.removeSession(del.dataset.del);
+      } catch (err) {
+        delete del.dataset.armed;
+        del.classList.remove("armed");
+        del.textContent = "✕";
+        fail(err);
+        return;
+      }
+      await refresh();
+      return;
+    }
+
     const b = e.target.closest("[data-conv]");
     if (b) { m.closeMenu(); onPick(b.dataset.conv); }
   });
@@ -460,165 +585,88 @@ export function openDirBrowser(onPick) {
   return m;
 }
 
-// ---- settings ----
+// ---- quick settings ----
 
-export function openSettings() {
+/** The three install-level things worth changing without leaving the chat.
+ *  Everything else — plugins, prompt, agents, compositions — lives in the
+ *  configuration view, and the footer link is how you get there. */
+export function openQuickSettings({ onFull } = {}) {
   const m = modal(
-    "Settings",
-    `<div class="settings-layout">
-      <nav class="settings-nav">
-        <button data-page="general" class="active">General</button>
-        <button data-page="appearance">Appearance</button>
-        <button data-page="models">Models</button>
-        <button data-page="plugins">Plugins</button>
-      </nav>
-      <div class="settings-content" id="settings-content"></div>
-    </div>`
+    "Quick settings",
+    `<div class="qs-note">Per install, applied to new sessions. Everything else
+       — tools, the prompt, agents, compositions — is in the full configuration
+       view.</div>
+     <div class="set-field"><label>Provider endpoint (base URL)</label>
+       <input id="qs-baseurl" spellcheck="false" placeholder="loading…" disabled></div>
+     <div class="set-field"><label>API key <span id="qs-key-state"></span></label>
+       <input id="qs-apikey" type="password" placeholder="sk-… (stored encrypted at rest)"></div>
+     <div class="set-field"><label>Theme</label>
+       <div class="qs-themes" id="qs-themes"></div></div>
+     <span class="set-flash" id="qs-msg"></span>`,
+    `<button class="btn" id="qs-full">Open full configuration →</button>
+     <button class="btn primary" id="qs-save">Save</button>`,
   );
-  m.querySelector(".modal-body").style.padding = "0";
-  const nav = m.querySelector(".settings-nav");
-  nav.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-page]");
-    if (!b) return;
-    nav.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
-    renderPage(b.dataset.page);
-  });
-  renderPage("general");
 
-  async function renderPage(page) {
-    const c = m.querySelector("#settings-content");
-    if (page === "general") {
-      // Settings is reachable from Home, where no conversation has ever been
-      // opened and nothing has filled store.bootstrap — fetch it on demand
-      // (unscoped, so it describes the launch project).
-      let bs = store.bootstrap;
-      if (!bs) {
-        c.innerHTML = `<div style="color:var(--fg-dim);font-size:13px">Loading…</div>`;
-        try {
-          bs = await api.bootstrap();
-          store.bootstrap = bs;
-        } catch {
-          bs = {};
-        }
-      }
-      c.innerHTML = `
-        <div class="set-field"><label>Project</label>
-          <input value="${esc(bs.cwd || "")}" disabled></div>
-        <div class="set-field"><label>Provider endpoint (base URL)</label>
-          <input id="set-baseurl" value="${esc(bs.base_url || "")}"></div>
-        <div class="set-field"><label>API key ${bs.has_api_key
-          ? '<span style="color:var(--success)">· saved</span>'
-          : `<span style="color:var(--warning)">· not set (or $${esc(bs.api_key_env || "")})</span>`}</label>
-          <input id="set-apikey" type="password" placeholder="sk-… (stored encrypted at rest)"></div>
-        <div class="set-field"><label>Default permission mode (new sessions)</label>
-          <select id="set-mode">${MODES.map(([id, t]) =>
-            `<option value="${id}" ${bs.default_mode === id ? "selected" : ""}>${t}</option>`).join("")}
-          </select></div>
-        <button class="btn primary" id="set-save">Save</button>
-        <span id="set-msg" style="margin-left:10px;font-size:12px;color:var(--fg-dim)"></span>`;
-      c.querySelector("#set-save").addEventListener("click", async () => {
-        const msg = c.querySelector("#set-msg");
-        try {
-          await api.putConfig({
-            base_url: c.querySelector("#set-baseurl").value.trim(),
-            default_mode: c.querySelector("#set-mode").value,
-          });
-          const key = c.querySelector("#set-apikey").value.trim();
-          if (key) await api.putApiKey(key);
-          msg.textContent = "Saved. New sessions pick this up.";
-        } catch (err) { msg.textContent = "Save failed: " + err.message; }
-      });
-    } else if (page === "appearance") {
-      // Presets arrive from the backend so the palettes live in one place.
-      let bs = store.bootstrap;
-      if (!bs) {
-        try { bs = await api.bootstrap(); store.bootstrap = bs; } catch { bs = {}; }
-      }
-      const presets = bs.theme_presets || {};
-      const current = bs.theme || {};
-      const swatch = (colors) => ["background", "surface", "panel", "boost", "primary", "accent"]
-        .map((k) => `<i style="background:${esc(colors[k] || "#000")}"></i>`).join("");
-      const cards = Object.entries(presets).map(([name, colors]) => `
-        <button class="theme-card" data-theme="${esc(name)}"
-                ${colors.background === current.background ? 'data-current="1"' : ""}>
-          <div class="tc-swatch">${swatch(colors)}</div>
-          <div class="tc-name">${esc(name)}${
-            colors.background === current.background ? '<span class="check">✓</span>' : ""}</div>
-        </button>`).join("");
-      c.innerHTML = `<div style="color:var(--fg-dim);font-size:13px;margin-bottom:12px">
-          Surfaces stay neutral in the dark palettes — colour is reserved for
-          what it marks. Picking one applies it immediately and saves it.</div>
-        <div class="theme-grid">${cards || "<div>No presets available.</div>"}</div>
-        <span id="theme-msg" style="font-size:12px;color:var(--fg-dim)"></span>`;
-      c.querySelector(".theme-grid")?.addEventListener("click", async (e) => {
-        const b = e.target.closest("[data-theme]");
-        if (!b) return;
-        const colors = presets[b.dataset.theme];
-        applyTheme(colors);
-        store.bootstrap = { ...(store.bootstrap || {}), theme: colors };
-        const msg = c.querySelector("#theme-msg");
-        try {
-          await api.putConfig({ theme: colors });
-          msg.textContent = `Saved “${b.dataset.theme}”.`;
-          renderPage("appearance");
-        } catch (err) { msg.textContent = "Save failed: " + err.message; }
-      });
-    } else if (page === "models") {
-      c.innerHTML = `<div style="color:var(--fg-dim);font-size:13px;margin-bottom:10px">
-        The session model is switched from the composer's model pill. This list
-        comes from the provider's catalog.</div>
-        <input id="set-model-filter" class="set-filter" spellcheck="false"
-               placeholder="Filter models…" disabled>
-        <div id="set-models" class="set-scroll">Loading…</div>`;
-      const filter = c.querySelector("#set-model-filter");
-      try {
-        const models = await api.models();
-        const card = (mo) => `
-          <div class="plugin-card" style="margin-bottom:6px">
-            <div class="p-name">${esc(mo.id)}
-              ${store.state?.model === mo.id ? '<span class="p-badge">active</span>' : ""}</div>
-            <div class="p-desc">ctx ${fmtTokens(mo.context_length)}
-              ${mo.prompt_price != null ? ` · $${mo.prompt_price}/M in · $${mo.completion_price}/M out` : ""}</div>
-          </div>`;
-        // The whole catalog is listed; the filter is what keeps it usable.
-        const paint = (list) => {
-          c.querySelector("#set-models").innerHTML = list.length
-            ? `<div class="set-count">${list.length} of ${models.length} models</div>`
-              + list.map(card).join("")
-            : `<div class="set-count">No model matches that filter.</div>`;
-        };
-        filter.disabled = false;
-        filter.addEventListener("input", () => {
-          const q = filter.value.trim().toLowerCase();
-          paint(models.filter((mo) => (mo.id + " " + (mo.name || "")).toLowerCase().includes(q)));
-        });
-        paint(models);
-      } catch (err) {
-        c.querySelector("#set-models").textContent = "Could not load models: " + err.message;
-      }
-    } else if (page === "plugins") {
-      c.innerHTML = `<div style="color:var(--fg-dim);font-size:13px;margin-bottom:10px">
-        Agent capabilities are pluggable: tools (entry point <code>quickcode.tools</code>),
-        providers (<code>quickcode.providers</code>), and MCP servers
-        (<code>mcpServers</code> in .quickcode/settings.json).</div>
-        <div id="set-plugins">Loading…</div>`;
-      try {
-        const inv = await api.plugins();
-        const cards = inv.tools.map((t) => `
-          <div class="plugin-card">
-            <div class="p-name">${esc(t.name)}
-              <span class="p-badge ${t.source === "mcp" ? "mcp" : ""}">${esc(t.source)}</span>
-              ${t.read_only ? '<span class="p-badge ro">read-only</span>' : ""}</div>
-            <div class="p-desc" title="${esc(t.description)}">${esc(t.description)}</div>
-          </div>`).join("");
-        const mcpNote = inv.mcp_servers.length
-          ? `<div style="margin:10px 0 6px;font-size:12px;color:var(--fg-dim)">
-               MCP servers connected: ${inv.mcp_servers.map(esc).join(", ")}</div>` : "";
-        c.querySelector("#set-plugins").outerHTML =
-          `${mcpNote}<div class="plugin-grid">${cards}</div>`;
-      } catch (err) {
-        c.querySelector("#set-plugins").textContent = "Could not load plugins: " + err.message;
-      }
+  const msg = m.querySelector("#qs-msg");
+  const url = m.querySelector("#qs-baseurl");
+  const flashMsg = (text, kind = "ok") => {
+    msg.className = `set-flash ${kind}`;
+    msg.textContent = text;
+  };
+
+  (async () => {
+    let bs = store.bootstrap;
+    if (!bs) {
+      try { bs = await api.bootstrap(); store.bootstrap = bs; } catch { bs = {}; }
     }
-  }
+    if (!m.isConnected) return;
+    url.disabled = false;
+    url.value = bs.base_url || "";
+    url.placeholder = "https://…";
+    m.querySelector("#qs-key-state").innerHTML = bs.has_api_key
+      ? '<span class="ok-note">· saved</span>'
+      : `<span class="warn-note">· not set (or $${esc(bs.api_key_env || "")})</span>`;
+    const presets = bs.theme_presets || {};
+    const current = bs.theme || {};
+    m.querySelector("#qs-themes").innerHTML = Object.entries(presets).map(([name, colors]) => `
+      <button class="qs-theme" data-theme="${esc(name)}"
+              ${colors.background === current.background ? 'data-current="1"' : ""}
+              title="${esc(name)}">
+        ${["background", "panel", "primary", "accent"].map(
+          (k) => `<i style="background:${esc(colors[k] || "#000")}"></i>`).join("")}
+        <span>${esc(name)}</span>
+      </button>`).join("");
+    m.querySelector("#qs-themes").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-theme]");
+      if (!b) return;
+      const colors = presets[b.dataset.theme];
+      applyTheme(colors);
+      store.bootstrap = { ...(store.bootstrap || {}), theme: colors };
+      m.querySelectorAll("[data-theme]").forEach((x) =>
+        x.toggleAttribute("data-current", x === b));
+      try {
+        await api.putConfig({ theme: colors });
+        flashMsg(`Theme “${b.dataset.theme}” saved.`);
+      } catch (err) {
+        flashMsg("Theme not saved: " + err.message, "err");
+      }
+    });
+  })();
+
+  m.querySelector("#qs-save").addEventListener("click", async () => {
+    try {
+      await api.putConfig({ base_url: url.value.trim() });
+      const key = m.querySelector("#qs-apikey").value.trim();
+      if (key) await api.putApiKey(key);
+      store.bootstrap = { ...(store.bootstrap || {}), base_url: url.value.trim() };
+      flashMsg("Saved. New sessions pick this up.");
+    } catch (err) {
+      flashMsg("Save failed: " + err.message, "err");
+    }
+  });
+  m.querySelector("#qs-full").addEventListener("click", () => {
+    closeModal();
+    onFull?.();
+  });
+  return m;
 }

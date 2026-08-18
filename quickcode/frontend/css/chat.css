@@ -1,0 +1,135 @@
+/* Chat transcript: steps, tool IN/OUT blocks, payload highlighting.
+ *
+ * Loaded after app.css so it may override the older tool-card rules it
+ * replaces. Tokens (--panel, --line, --fg-dim, --chip-*, --mono) come from
+ * app.css:5-36 — nothing here hardcodes a colour, because the palette is
+ * user-swappable at runtime.
+ */
+
+/* ---- one content column ----
+ *
+ * Every block in the transcript centres itself in an 860px column
+ * (app.css). Nested blocks broke that: a card inside a step centred itself
+ * inside the *step*, and as a flex item with `margin: 0 auto` it shrank to
+ * its own content — so every card landed on a different left edge. Inside a
+ * step, children fill the step instead, and the step is the column element.
+ */
+
+.step {
+  max-width: 860px;
+  margin: 12px auto 14px;
+}
+
+.step-body > .tool-card,
+.step-body > .agent-card {
+  max-width: none;
+  margin: 0 0 6px;
+}
+
+.step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.step-mark {
+  color: var(--fg-faint);
+  font-family: var(--mono);
+}
+
+.step-title {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-count {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* Deliberately not a flex column: block layout keeps `margin: 0 auto` from
+   collapsing a card to its content width. */
+.step-body { display: block; }
+
+/* ---- IN / OUT blocks ---- */
+
+.io {
+  margin: 4px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.io > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+}
+
+.io > summary::-webkit-details-marker { display: none; }
+.io > summary::marker { content: ""; }
+
+.io-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--boost);
+  color: var(--fg-dim);
+}
+
+.io-out .io-tag { color: var(--secondary); }
+.io-error .io-tag { color: var(--error); }
+.io-hint { color: var(--fg-faint); }
+
+.io pre.code {
+  margin: 0;
+  padding: 9px 11px;
+  border-top: 1px solid var(--line);
+  max-height: 420px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.io-diff { border-top: 1px solid var(--line); padding: 9px 11px; }
+.io-trace { margin-top: 8px; }
+
+/* ---- payload highlighting ---- */
+
+.hl-key { color: var(--primary); }
+.hl-str { color: var(--secondary); }
+.hl-num { color: var(--accent); }
+.hl-lit { color: var(--warning); }
+
+/* ---- file references ---- */
+
+.file-ref {
+  font-family: var(--mono);
+  border-bottom: 1px dotted var(--line-strong);
+  cursor: pointer;
+}
+
+.file-ref:hover { border-bottom-color: var(--primary); color: var(--fg); }
+.file-ref.copied { color: var(--success); border-bottom-color: var(--success); }
+.file-ref:focus-visible { outline: 1px solid var(--primary); outline-offset: 2px; }
+
+/* Notes sat centred while everything around them was left-aligned, which read
+   as a third margin. One left edge for the whole column. */
+.sys-note { text-align: left; }

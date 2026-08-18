@@ -16,6 +16,7 @@
 //     `store` and re-renders on every relevant notification, so mounting it
 //     hidden and revealing it later needs no extra call.
 
+import { inspectLink, wireInspect } from "../inspect.js";
 import { store, subscribe } from "../store.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
 
@@ -24,8 +25,32 @@ const openIds = new Set();     // agent_id -> card expanded
 const openCalls = new Set();   // "agent_id::call_id" -> tool card expanded
 const autoOpened = new Set();  // error cards already auto-expanded once
 const times = new Map();       // agent_id -> {start, end}
+const shownCap = new Map();    // agent_id -> how many of its events are rendered
+const scrollTops = new Map();  // agent_id -> body scrollTop, kept across rebuilds
 let ticker = null;
 let frame = 0;
+
+// Stacked reads better for one agent at a time; columns are the point when
+// several run in parallel, which is the normal case for a fan-out.
+const LAYOUT_KEY = "qc-agents-layout";
+let layout = readLayout();
+
+// A long-running agent can accumulate hundreds of calls. Rendering all of
+// them turns the panel into a scroll of noise and costs real frame time, so
+// each card shows its most recent slice and offers the rest on request.
+const EVENT_WINDOW = 60;
+
+function readLayout() {
+  try {
+    return localStorage.getItem(LAYOUT_KEY) === "columns" ? "columns" : "stacked";
+  } catch { return "stacked"; }
+}
+
+function setLayout(next) {
+  layout = next;
+  try { localStorage.setItem(LAYOUT_KEY, next); } catch { /* private mode */ }
+  render();
+}
 
 export const panel = {
   id: "agents",
@@ -34,7 +59,15 @@ export const panel = {
   init(container) {
     root = container;
     root.classList.add("panel-agents");
-    root.innerHTML = `<div class="pa-summary"></div><div class="pa-list"></div>`;
+    root.innerHTML = `<div class="pa-bar">
+        <div class="pa-summary"></div>
+        <div class="pa-layout" role="group" aria-label="Layout">
+          <button type="button" class="pa-lay" data-layout="stacked" title="Stacked">▤</button>
+          <button type="button" class="pa-lay" data-layout="columns" title="Side by side">▥</button>
+        </div>
+      </div><div class="pa-list"></div>`;
+    root.querySelectorAll(".pa-lay").forEach((b) =>
+      b.addEventListener("click", () => setLayout(b.dataset.layout)));
     subscribe(onStoreChange);
     render();
   },
@@ -43,6 +76,7 @@ export const panel = {
 function onStoreChange(kind, ev) {
   if (kind === "reset") {
     openIds.clear(); openCalls.clear(); autoOpened.clear(); times.clear();
+    shownCap.clear(); scrollTops.clear();
     return schedule();
   }
   if (kind === "replay_done") return schedule();
@@ -77,7 +111,7 @@ function buildAgents() {
     if (ev.type === "agent_spawned") {
       get(ev.agent_id, ev.definition, ev.ts).ts ??= ev.ts;
     } else if (ev.type === "agent_event" && ev.ev) {
-      get(ev.agent_id).events.push({ ...ev.ev, ts: ev.ts });
+      get(ev.agent_id).events.push({ ...ev.ev, ts: ev.ts, seq: ev.seq });
     } else if (ev.type === "agent_done" && ev.agent_id) {
       // Not emitted by the server today, but loggable — honour it as terminal.
       const a = get(ev.agent_id);
@@ -142,7 +176,12 @@ function render() {
   if (!root) return;
   const list = root.querySelector(".pa-list");
   const keep = list.scrollTop;
+  rememberScrolls(list);
   const agents = buildAgents();
+
+  list.classList.toggle("pa-cols", layout === "columns");
+  root.querySelectorAll(".pa-lay").forEach((b) =>
+    b.classList.toggle("on", b.dataset.layout === layout));
 
   const running = agents.filter((a) => !a.done).length;
   root.querySelector(".pa-summary").innerHTML = agents.length
@@ -167,11 +206,30 @@ function render() {
   }
   for (const a of agents) list.appendChild(cardNode(a));
   list.scrollTop = keep;
+  restoreScrolls(list);
   setTicking(agents.some((a) => !a.done));
 }
 
+// Each agent's transcript scrolls on its own, and a rebuild must not throw
+// the reader back to the top of the one they were reading.
+function rememberScrolls(list) {
+  list.querySelectorAll(".pa-body").forEach((body) => {
+    const id = body.dataset.body;
+    if (id && body.scrollTop) scrollTops.set(id, body.scrollTop);
+  });
+}
+
+function restoreScrolls(list) {
+  list.querySelectorAll(".pa-body").forEach((body) => {
+    const saved = scrollTops.get(body.dataset.body);
+    if (saved) body.scrollTop = saved;
+  });
+}
+
 function cardNode(a) {
-  const open = openIds.has(a.id);
+  // In columns every agent is open: a column of collapsed headers would be a
+  // worse version of the stacked view, not a different one.
+  const open = layout === "columns" ? true : openIds.has(a.id);
   const card = el(`<div class="pa-card ${open ? "open" : ""}" data-agent="${esc(a.id)}">
     <div class="pa-head" role="button" tabindex="0" aria-expanded="${open}">
       <span class="pa-caret">▸</span>
@@ -181,7 +239,7 @@ function cardNode(a) {
       <span class="pa-count">${a.toolCount} ${a.toolCount === 1 ? "call" : "calls"}</span>
       <span class="pa-dur" data-dur="${esc(a.id)}">${esc(durText(a))}</span>
     </div>
-    <div class="pa-body"></div></div>`);
+    <div class="pa-body" data-body="${esc(a.id)}"></div></div>`);
 
   fillBody(card.querySelector(".pa-body"), a);
   const head = card.querySelector(".pa-head");
@@ -199,7 +257,21 @@ function cardNode(a) {
 }
 
 function fillBody(body, a) {
-  for (const e of a.events) {
+  const cap = shownCap.get(a.id) || EVENT_WINDOW;
+  const hidden = Math.max(0, a.events.length - cap);
+  if (hidden) {
+    const more = el(`<button type="button" class="pa-more">show ${hidden} earlier ${
+      hidden === 1 ? "step" : "steps"}</button>`);
+    // Raising the cap rather than clearing it keeps the next click bounded too.
+    more.addEventListener("click", () => {
+      shownCap.set(a.id, cap + EVENT_WINDOW * 4);
+      render();
+    });
+    body.appendChild(more);
+  }
+  // A tool_result must not be dropped while its tool_call survives, so the
+  // window is applied to the tail and results are matched inside it.
+  for (const e of a.events.slice(hidden)) {
     if (e.type === "tool_call") body.appendChild(toolNode(a.id, e));
     else if (e.type === "tool_result") applyResult(body, a.id, e);
     else if (e.type === "assistant_message") {
@@ -250,7 +322,9 @@ function toolNode(agentId, ev) {
     <div class="pa-tool-body">
       <div class="pa-lbl">Arguments</div><pre>${esc(pretty(ev.arguments))}</pre>
       <div class="pa-result"></div>
+      ${ev.seq != null ? `<div class="pa-lbl pa-trace">${inspectLink(ev.seq)}</div>` : ""}
     </div></div>`);
+  wireInspect(node);
   const head = node.querySelector(".pa-tool-head");
   const toggle = () => {
     const nowOpen = !node.classList.contains("open");

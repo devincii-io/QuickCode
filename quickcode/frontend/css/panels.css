@@ -241,3 +241,47 @@
 .panel-tasks .pt-st-completed { color: var(--fg-faint); }
 .panel-tasks .pt-st-completed .pt-mark { color: var(--success); }
 .panel-tasks .pt-st-completed .pt-subject { text-decoration: line-through; }
+
+/* ---- agents: layout bar, columns, windowed transcripts ---- */
+
+.panel-agents .pa-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding-right: 8px;
+}
+.panel-agents .pa-bar .pa-summary { flex: 1; min-width: 0; }
+
+.panel-agents .pa-layout { display: flex; gap: 2px; flex: none; }
+.panel-agents .pa-lay {
+  border: 1px solid transparent; background: none; cursor: pointer;
+  color: var(--fg-faint); font-size: 12px; line-height: 1;
+  padding: 3px 6px; border-radius: 6px;
+}
+.panel-agents .pa-lay:hover { color: var(--fg-dim); }
+.panel-agents .pa-lay.on {
+  color: var(--fg); background: var(--boost); border-color: var(--line);
+}
+
+/* Side-by-side: one column per agent, each scrolling on its own, so a fast
+   agent's output cannot push a slow one's off the screen. */
+.panel-agents .pa-list.pa-cols {
+  flex-direction: row; align-items: stretch;
+  overflow-x: auto; overflow-y: hidden;
+}
+.panel-agents .pa-list.pa-cols .pa-card {
+  flex: 0 0 340px; max-width: 340px;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.panel-agents .pa-list.pa-cols .pa-body {
+  flex: 1; min-height: 0; overflow: auto;
+}
+
+.panel-agents .pa-more {
+  display: block; width: 100%; margin-bottom: 6px;
+  border: 1px dashed var(--line-strong); border-radius: var(--radius);
+  background: none; color: var(--fg-dim); cursor: pointer;
+  padding: 5px; font-size: 11px; font-family: var(--mono);
+}
+.panel-agents .pa-more:hover { color: var(--fg); border-color: var(--primary); }
+
+/* The inspector affordance inside a subagent's tool card. */
+.panel-agents .pa-trace { margin-top: 8px; }

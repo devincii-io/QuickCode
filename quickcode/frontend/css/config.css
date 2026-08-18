@@ -1,0 +1,404 @@
+/* The configuration view: the shell (#view-config), the rail, the per-kind
+ * visual language, the explanation block and the Fixed-by-design block.
+ *
+ * The rule everything below follows:
+ *
+ *     kind owns the hue · tier owns the badge and the stripe texture
+ *
+ * Tier already owns colour elsewhere (free is --success, confirm is --warning,
+ * locked is neutral, settings.css:56-66). If kind owned colour too, an amber
+ * tool card would read as a pending confirmation. So a card's 3px stripe is
+ * always its kind's hue and only its *texture* changes with tier: solid for
+ * free, solid under a 3px notch for confirm, a 45° hatch for locked. Locked
+ * never uses --error or --warning: it is structure, not breakage.
+ *
+ * Nothing here hardcodes a colour. Every --kind-* value is an existing theme
+ * token or a color-mix of one, so swapping the theme at runtime swaps these.
+ */
+
+:root {
+  --kind-tool:     var(--chip-tool);        /* amber   — a thing the model calls */
+  --kind-prompt:   var(--chip-system);      /* violet  — words in the context    */
+  --kind-provider: var(--chip-user);        /* blue    — where tokens come from  */
+  --kind-agent:    var(--chip-agent);       /* cyan    — someone who acts        */
+  --kind-mcp:      var(--accent);           /* orange  — an external process     */
+  --kind-hook:     var(--chip-context);     /* teal    — the loop's lifecycle    */
+  --kind-policy:   color-mix(in srgb, var(--chip-review) 82%, var(--fg));
+  --kind-storage:  color-mix(in srgb, var(--chip-user) 45%, var(--fg-dim));
+  --kind-panel:    var(--fg-dim);           /* neutral — it is only UI           */
+}
+
+/* One assignment, inherited by everything inside the element that carries the
+   kind: the stripe, the sigil tile, the header rule. */
+[data-kind="tool"]           { --kind-hue: var(--kind-tool); }
+[data-kind="prompt_section"] { --kind-hue: var(--kind-prompt); }
+[data-kind="provider"]       { --kind-hue: var(--kind-provider); }
+[data-kind="agent"]          { --kind-hue: var(--kind-agent); }
+[data-kind="mcp_server"]     { --kind-hue: var(--kind-mcp); }
+[data-kind="hook"]           { --kind-hue: var(--kind-hook); }
+[data-kind="policy"]         { --kind-hue: var(--kind-policy); }
+[data-kind="storage"]        { --kind-hue: var(--kind-storage); }
+[data-kind="panel"]          { --kind-hue: var(--kind-panel); }
+
+/* ---------- shell ---------- */
+
+#config-top {
+  flex: none; display: flex; align-items: center; gap: 14px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+#config-top .brand { flex: none; padding: 3px 8px 3px 4px; border-radius: 8px; }
+#config-top .brand:hover { background: var(--panel); }
+.cfg-where {
+  flex: none; font-size: 12.5px; color: var(--fg-dim); letter-spacing: .02em;
+  border-left: 1px solid var(--line-strong); padding-left: 14px;
+}
+.cfg-top-actions { flex: none; display: flex; gap: 6px; }
+
+.cfg-body { flex: 1; min-height: 0; display: flex; }
+
+.cfg-rail {
+  flex: 0 0 232px; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
+  border-right: 1px solid var(--line); padding: 12px 10px 24px;
+  background: var(--surface);
+}
+.cfg-page { flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
+.cfg-page-inner { padding: 20px 26px 60px; max-width: 1080px; }
+.cfg-detail { padding: 20px 26px 60px; max-width: 1080px; }
+
+/* ---------- the rail ---------- */
+
+.rail-sec { margin-bottom: 18px; }
+.rail-sec h3 {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--fg-faint); margin: 0 0 6px 8px;
+}
+.rail-sec h3 a { color: inherit; text-decoration: none; }
+.rail-sec h3 a:hover { color: var(--fg-dim); }
+.rail-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 9px;
+  border-radius: 8px; color: var(--fg-dim); font-size: 12.5px; text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.rail-item:hover { background: var(--panel); color: var(--fg); }
+.rail-item.active {
+  background: var(--boost); color: var(--fg); border-left-color: var(--primary);
+}
+.rail-sigil {
+  flex: none; width: 16px; font-family: var(--mono); font-size: 11px;
+  color: var(--fg-faint); text-align: center;
+}
+.rail-item.active .rail-sigil { color: var(--primary); }
+.rail-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-count {
+  flex: none; font-size: 10px; font-family: var(--mono); color: var(--fg-faint);
+  background: var(--boost); border-radius: 9px; padding: 0 6px;
+}
+.rail-tick { flex: none; font-size: 10px; color: var(--success); }
+.rail-add { color: var(--fg-faint); }
+.rail-add .rail-label::before { content: "+ "; }
+
+/* ---------- header search ---------- */
+
+.cfg-search-wrap { flex: 1 1 auto; min-width: 0; position: relative; }
+#cfg-search {
+  width: 100%; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 9px; padding: 6px 12px; font-size: 13px; outline: none;
+}
+#cfg-search:focus { border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
+.cfg-results {
+  position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.5); max-height: 60vh; overflow-y: auto;
+  overscroll-behavior: contain; padding: 4px;
+}
+.cfg-result {
+  display: grid; grid-template-columns: auto max-content minmax(0,1fr) auto;
+  gap: 8px; align-items: baseline; padding: 6px 9px; border-radius: 8px;
+  color: var(--fg); text-decoration: none; font-size: 12.5px;
+}
+.cfg-result:hover, .cfg-result.first { background: var(--panel); }
+.cfg-result.empty { display: block; color: var(--fg-dim); }
+.cr-title { font-weight: 600; white-space: nowrap; }
+.cr-id { font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); }
+.cr-sub {
+  color: var(--fg-faint); font-size: 11px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; text-align: right;
+}
+
+/* ---------- page furniture ---------- */
+
+.cfg-head { margin-bottom: 12px; }
+.cfg-crumbs { font-size: 11px; color: var(--fg-faint); margin-bottom: 6px; }
+.cfg-crumbs a { color: var(--fg-dim); text-decoration: none; }
+.cfg-crumbs a:hover { color: var(--fg); }
+.cfg-head-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cfg-head-main h2 { font-size: 18px; font-weight: 600; }
+.cfg-id { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); }
+.cfg-head-badges, .cfg-head-actions { display: flex; align-items: center; gap: 6px; }
+.cfg-head-actions { margin-left: auto; }
+.cfg-head-actions .btn { text-decoration: none; }
+.cfg-count {
+  font-size: 10.5px; font-family: var(--mono); color: var(--fg-faint);
+  background: var(--boost); border-radius: 10px; padding: 1px 8px;
+}
+.cfg-lede {
+  font-size: 12.5px; line-height: 1.6; color: var(--fg-dim); max-width: 78ch;
+  margin-bottom: 16px;
+}
+.cfg-lede.small { font-size: 12px; margin-bottom: 10px; }
+.cfg-lede em { color: var(--fg); font-style: normal; }
+.cfg-lede code, .cfg-note code, .cfg-soon code {
+  font-family: var(--mono); font-size: 11.5px; background: var(--panel);
+  padding: 1px 5px; border-radius: 4px;
+}
+.cfg-sub {
+  font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--fg-dim); margin: 26px 0 8px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px;
+}
+.cfg-sec { margin: 22px 0; }
+.cfg-sec > h4 {
+  font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint); margin-bottom: 8px;
+}
+.cfg-note { font-size: 12px; color: var(--fg-dim); line-height: 1.6; max-width: 78ch; }
+.cfg-filter-note {
+  font-size: 12px; color: var(--fg-dim); margin-bottom: 10px;
+  background: var(--panel); border-radius: 8px; padding: 6px 10px; display: inline-block;
+}
+.cfg-part-filter { margin-bottom: 12px; }
+.cfg-tabs { display: inline-flex; margin-bottom: 16px; }
+.cfg-tabs a {
+  padding: 5px 12px; border-radius: 7px; font-size: 12px; color: var(--fg-dim);
+  text-decoration: none;
+}
+.cfg-tabs a.active { background: var(--boost); color: var(--fg); }
+.cfg-install-body .set-page { padding: 0; }
+.k-link { color: var(--accent); text-decoration: none; }
+.k-link:hover { text-decoration: underline; }
+
+/* ---------- the sigil tile ---------- */
+
+/* Two ASCII/Latin-1 characters in a mono tile, never an icon font and never an
+   emoji: app.css:133 records that ▸ collapses to a dot in several of the mono
+   stacks we fall back to, and a sigil that can fail to render is not a sigil. */
+.k-sigil {
+  flex: none; display: inline-grid; place-items: center;
+  width: 22px; height: 20px; border-radius: 6px;
+  font-family: var(--mono); font-size: 11px; line-height: 1;
+  color: var(--kind-hue, var(--fg-dim));
+  background: color-mix(in srgb, var(--kind-hue, var(--fg-dim)) 15%, transparent);
+}
+.k-sigil.big { width: 28px; height: 26px; font-size: 13px; border-radius: 8px; }
+
+/* ---------- cards ---------- */
+
+.k-list { display: flex; flex-direction: column; gap: 7px; }
+.k-card {
+  position: relative; display: flex; align-items: stretch; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden;
+}
+.k-card:hover { border-color: var(--line-strong); background: var(--surface); }
+.k-card[data-off] { opacity: .6; }
+/* The stripe: kind's hue always, tier's texture only. */
+.k-card::before, .cfg-head[data-kind]::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--kind-hue, var(--fg-faint));
+}
+.k-card[data-tier="confirm"]::before {
+  background: linear-gradient(to bottom,
+    transparent 0 3px, var(--kind-hue, var(--fg-faint)) 3px);
+}
+.k-card[data-tier="locked"]::before {
+  background: repeating-linear-gradient(45deg,
+    var(--kind-hue, var(--fg-faint)) 0 2px, transparent 2px 5px);
+}
+.k-card-main {
+  flex: 1; min-width: 0; display: block; padding: 9px 12px 10px 14px;
+  color: inherit; text-decoration: none;
+}
+.k-card-side {
+  flex: none; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 0;
+}
+.k-card-side .ghost-btn { font-size: 11px; padding: 3px 8px; }
+.k-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.k-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
+.k-id {
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.k-badges { margin-left: auto; display: flex; gap: 4px; align-items: center; flex: none; }
+.k-summary {
+  font-size: 11.5px; color: var(--fg-dim); line-height: 1.5; margin: 4px 0 0 30px;
+  max-width: 84ch;
+}
+.k-body {
+  margin: 5px 0 0 30px; font-size: 12px; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.k-body.mono { font-family: var(--mono); font-size: 11.5px; }
+.k-excerpt {
+  margin: 6px 0 0 30px; font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  color: var(--fg-dim); max-height: 3.1em; overflow: hidden;
+  white-space: pre-wrap; word-break: break-word;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.k-facts {
+  display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 6px 0 0 30px;
+  font-size: 10.5px; color: var(--fg-faint); align-items: center;
+}
+.k-fact {
+  background: var(--boost); border-radius: 9px; padding: 1px 7px; white-space: nowrap;
+}
+.k-fact.mono { font-family: var(--mono); }
+.k-fact.k-fixed { border: 1px solid var(--line-strong); background: transparent; }
+a.k-fact { color: var(--accent); text-decoration: none; }
+.k-dim { color: var(--fg-faint); }
+.k-flag {
+  font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 9px;
+  border: 1px solid var(--line-strong); color: var(--fg-dim); white-space: nowrap;
+}
+.k-flag.ro { color: var(--secondary); border-color: color-mix(in srgb, var(--secondary) 40%, transparent); }
+.k-flag.rw { color: var(--fg-dim); }
+
+/* A card in the detail header carries the same stripe as its card did. */
+.cfg-head[data-kind] { position: relative; padding-left: 14px; }
+.cfg-head[data-kind][data-tier="confirm"]::before {
+  background: linear-gradient(to bottom, transparent 0 3px, var(--kind-hue) 3px);
+}
+.cfg-head[data-kind][data-tier="locked"]::before {
+  background: repeating-linear-gradient(45deg, var(--kind-hue) 0 2px, transparent 2px 5px);
+}
+.cfg-summary { margin-bottom: 14px; }
+.cfg-summary .k-body, .cfg-summary .k-facts, .cfg-summary .k-excerpt { margin-left: 0; }
+
+/* ---------- the six-question block ---------- */
+
+.k-explain {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 14px;
+  margin: 4px 0 20px; font-size: 12.5px; line-height: 1.6; max-width: 86ch;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel);
+}
+.k-explain dt {
+  font-size: 10px; letter-spacing: .09em; color: var(--fg-faint);
+  text-transform: uppercase; padding-top: 3px;
+}
+.k-explain dd { margin: 0; color: var(--fg); }
+.k-explain dd.detail { color: var(--fg-dim); font-size: 12px; }
+.inferred-text { border-bottom: 1px dotted var(--line-strong); cursor: help; }
+.k-affect {
+  display: inline-block; font-size: 10.5px; font-family: var(--mono);
+  background: var(--boost); color: var(--fg-dim); border-radius: 6px;
+  padding: 1px 7px; margin-right: 4px;
+}
+.k-affect.inferred { border: 1px dashed var(--line-strong); background: transparent; cursor: help; }
+
+/* ---------- fixed by design ---------- */
+
+/* Neutral, never the danger colour. The value is a legible, selectable fact
+   rather than a disabled input, and the block always ends in a real action. */
+.k-fixed-block {
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--boost); padding: 12px 14px; margin: 20px 0; max-width: 86ch;
+}
+.k-fixed-block > h4 {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-dim); margin-bottom: 10px;
+}
+.k-fixed-row { padding: 8px 0; border-top: 1px solid var(--line); }
+.k-fixed-row:first-of-type { border-top: 0; padding-top: 0; }
+.k-fixed-head { display: flex; align-items: baseline; gap: 8px; }
+.k-fixed-title { font-size: 12.5px; font-weight: 600; }
+.k-fixed-key { font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); margin-left: auto; }
+.k-fixed-value { margin: 5px 0; user-select: text; }
+.k-lit { font-family: var(--mono); font-size: 13px; color: var(--fg); user-select: all; }
+.k-fixed-body { max-height: 300px; margin: 0; }
+.k-fixed-help { font-size: 11.5px; color: var(--fg-dim); line-height: 1.5; }
+.k-fixed-why { font-size: 11.5px; color: var(--fg-dim); line-height: 1.6; margin-top: 6px; }
+.k-why {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint); margin-right: 6px;
+}
+.k-recourse {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.k-recourse-lead {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-faint);
+}
+.k-recourse .btn { font-size: 12px; padding: 4px 12px; }
+.k-recourse .btn:disabled { opacity: .5; cursor: help; }
+
+/* A setting arrived at from search flashes once, then stops. */
+.set-f.hl, .k-fixed-row.hl {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 50%, transparent);
+  border-radius: 8px;
+}
+
+/* ---------- placeholders for the next passes ---------- */
+
+.cfg-soon {
+  border: 1px dashed var(--line-strong); border-radius: var(--radius);
+  padding: 12px 14px; margin: 22px 0; max-width: 86ch; background: var(--panel);
+}
+.cfg-soon h4 {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint); margin-bottom: 8px;
+}
+.cfg-soon p { font-size: 12.5px; line-height: 1.6; color: var(--fg-dim); margin-bottom: 8px; }
+.cfg-soon p:last-child { margin-bottom: 0; }
+
+/* ---------- machine-room index ---------- */
+
+.mr-index { display: flex; flex-direction: column; gap: 4px; }
+.mr-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 8px; text-decoration: none;
+  color: inherit; font-size: 12.5px; background: var(--panel);
+}
+.mr-row:hover { border-color: var(--line-strong); background: var(--surface); }
+.mr-key { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+.mr-title { color: var(--fg-dim); font-size: 12px; }
+.mr-owner { margin-left: auto; color: var(--fg-faint); font-size: 11px; }
+
+/* ---------- compositions ---------- */
+
+.comp-card.is-active { border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
+.comp-card .pv-comp { margin: 8px 0 0 30px; }
+.comp-card .k-card-side .btn { font-size: 12px; padding: 4px 12px; }
+
+/* ---------- quick settings (the one thing that stays a modal) ---------- */
+
+.qs-note { font-size: 12.5px; color: var(--fg-dim); line-height: 1.6; margin-bottom: 14px; }
+.qs-themes { display: flex; flex-wrap: wrap; gap: 6px; }
+.qs-theme {
+  display: flex; align-items: center; gap: 6px; padding: 4px 9px 4px 5px;
+  border: 1px solid var(--line); border-radius: 9px; font-size: 12px;
+  color: var(--fg-dim); text-transform: capitalize; background: var(--panel);
+}
+.qs-theme:hover { border-color: var(--line-strong); color: var(--fg); }
+.qs-theme[data-current] { border-color: var(--primary); color: var(--fg); }
+.qs-theme i { width: 9px; height: 16px; border-radius: 3px; display: block; }
+
+/* ---------- narrow windows ---------- */
+
+@media (max-width: 1000px) {
+  .cfg-rail { flex-basis: 190px; }
+  .cfg-page-inner, .cfg-detail { padding: 16px 18px 48px; }
+}
+@media (max-width: 820px) {
+  /* The rail becomes a strip across the top: still every destination, still
+     one glance, without eating half a narrow window. */
+  .cfg-body { flex-direction: column; }
+  .cfg-rail {
+    flex: none; display: flex; gap: 14px; overflow-x: auto; padding: 8px 10px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  .rail-sec { margin: 0; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .rail-sec h3 { margin: 0 4px 0 0; }
+  .cfg-where { display: none; }
+}

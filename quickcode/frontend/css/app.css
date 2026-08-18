@@ -91,8 +91,11 @@ textarea, input { font: inherit; color: inherit; }
   font-size: 11px; color: var(--fg-faint); margin-top: 3px;
   display: flex; gap: 8px; align-items: center;
 }
-.msg .meta .trace-link { cursor: pointer; color: var(--fg-faint); }
-.msg .meta .trace-link:hover { color: var(--accent); }
+/* The same affordance wherever an event can be opened in the inspector:
+   chat messages, tool cards, subagent steps. */
+.trace-link { cursor: pointer; color: var(--fg-faint); font-size: 11px; }
+.trace-link:hover { color: var(--accent); }
+.trace-link:focus-visible { outline: 1px solid var(--primary); outline-offset: 2px; }
 
 .reasoning {
   color: var(--fg-dim); font-size: 13px; border-left: 2px solid var(--line-strong);
@@ -261,38 +264,10 @@ textarea, input { font: inherit; color: inherit; }
 .traj-follow { flex: none; white-space: nowrap; color: var(--primary); }
 .traj-follow.paused { color: var(--fg-faint); }
 
-.traj-timeline {
-  display: flex; gap: 2px; padding: 8px 12px; flex-wrap: wrap; align-content: flex-start;
-  border-bottom: 1px solid var(--line); max-height: 64px; overflow-y: auto; flex: none;
-}
-.tl-block {
-  width: 14px; height: 14px; border-radius: 3px; cursor: pointer; opacity: .85;
-}
-.tl-block:hover { outline: 1px solid var(--fg); opacity: 1; }
-/* The live edge, marked only while follow is on. */
-.tl-block.newest { outline: 2px solid var(--primary); opacity: 1; }
-.tl-block.selected { outline: 2px solid var(--fg); }
-
+/* The wrapping grid of 14px blocks and the flat .trow table that used to live
+   here are gone: the trajectory is a real time-axis timeline now, styled in
+   css/trajectory.css under .tj-* names. */
 .traj-body { flex: 1; display: flex; min-height: 0; }
-.traj-table { flex: 1; overflow-y: auto; font-size: 12.5px; }
-.trow {
-  display: flex; gap: 10px; align-items: baseline; padding: 4px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--fg) 4%, transparent);
-  cursor: pointer; font-family: var(--mono);
-}
-.trow:hover { background: var(--panel); }
-.trow.selected { background: var(--boost); }
-.trow .seq { color: var(--fg-faint); width: 42px; flex: none; text-align: right; font-size: 11px; }
-.trow .chip {
-  flex: none; width: 84px; text-align: center; font-size: 10px; font-weight: 700;
-  letter-spacing: .8px; padding: 1px 0; border-radius: 4px; color: var(--bg);
-}
-.trow .preview {
-  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  color: var(--fg-dim);
-}
-.trow .t-ms { flex: none; color: var(--fg-faint); font-size: 11px; }
-.trow.is-error .preview { color: var(--error); }
 
 .chip-SYSTEM { background: var(--chip-system); }
 .chip-USER { background: var(--chip-user); }
@@ -445,20 +420,8 @@ textarea, input { font: inherit; color: inherit; }
   width: 100%; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none;
 }
-.plugin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.plugin-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  padding: 9px 12px; font-size: 12.5px;
-}
-.plugin-card .p-name { font-family: var(--mono); font-weight: 600; display: flex; align-items: center; gap: 8px; }
-.plugin-card .p-desc { color: var(--fg-dim); font-size: 11.5px; margin-top: 3px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.p-badge {
-  margin-left: auto; font-size: 10px; padding: 1px 8px; border-radius: 10px;
-  background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success);
-}
-.p-badge.mcp { background: color-mix(in srgb, var(--chip-agent) 18%, transparent); color: var(--chip-agent); }
-.p-badge.ro { background: var(--boost); color: var(--fg-dim); }
+/* The old flat plugin list lived here; Settings now renders plugins from the
+   kernel API and styles them in css/settings.css. */
 
 /* sessions modal list */
 .session-row {
@@ -524,6 +487,43 @@ textarea, input { font: inherit; color: inherit; }
 /* menus: separator and inert note rows */
 .menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
 .menu-note { padding: 9px 12px; font-size: 12.5px; color: var(--fg-dim); }
+
+/* A menu entry that carries its own actions: the label still fills the row,
+   the buttons sit beside it (nesting them inside would be invalid markup). */
+.menu-row { display: flex; align-items: stretch; border-radius: 8px; }
+.menu-row:hover { background: var(--panel); }
+.menu-row .menu-item { flex: 1; min-width: 0; }
+.menu-row.archived .mi-name, .menu-row.archived .mi-meta { opacity: .62; }
+.mi-tag {
+  flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: .4px;
+  color: var(--fg-faint); border: 1px solid var(--line); border-radius: 9px;
+  padding: 0 6px; font-weight: 400;
+}
+.mi-act {
+  flex: none; padding: 0 9px; color: var(--fg-faint); font-size: 12px;
+  border-radius: 8px; opacity: 0; transition: opacity .1s;
+}
+.menu-row:hover .mi-act, .mi-act:focus-visible, .mi-act.armed { opacity: 1; }
+.mi-act:hover { color: var(--fg); background: var(--surface); }
+.mi-del:hover { color: var(--error); }
+.mi-act.armed {
+  color: var(--error); font-family: var(--mono); font-size: 11px;
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+
+/* Footer tools: sweeping abandoned sessions and revealing the archive. */
+.menu-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 8px; }
+.menu-tool {
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+  padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line);
+}
+.menu-tool:hover { color: var(--fg-dim); border-color: var(--line-strong); }
+.menu-tool[aria-pressed="true"] { color: var(--fg-dim); background: var(--panel); }
+.menu-tool.armed {
+  color: var(--error); border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+.menu-err { flex: 1 0 100%; font-size: 11px; color: var(--error); }
 
 /* Keyboard focus has to be visible — several inputs clear the UA outline on
    purpose, so this comes last and only fires for keyboard focus. */

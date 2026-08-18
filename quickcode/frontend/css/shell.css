@@ -4,9 +4,16 @@
 
 /* ---------- views ---------- */
 
+/* Three views, one at a time. Configuration wins over both of the others
+   because it is shown *over* whichever one you came from — the workspace keeps
+   its socket and its transcript while it is hidden, which is the whole point of
+   it being a view rather than a dialog. */
 #app > .view { flex: 1; min-height: 0; display: none; }
-#app.showing-home #view-home { display: block; overflow-y: auto; }
-#app:not(.showing-home) #view-workspace { display: flex; flex-direction: column; }
+#app.showing-home:not(.showing-config) #view-home { display: block; overflow-y: auto; }
+#app:not(.showing-home):not(.showing-config) #view-workspace {
+  display: flex; flex-direction: column;
+}
+#app.showing-config #view-config { display: flex; flex-direction: column; }
 
 /* ---------- top bar ---------- */
 
@@ -114,16 +121,10 @@ body.resizing-panel { cursor: col-resize; user-select: none; }
 /* Maximized, the trajectory gets the reading layout it was designed for: the
    whole timeline strip across the top, then a roomier table beside a wider
    inspector. Narrow-panel rules above are left exactly as they are. */
+/* The lanes size themselves from their own tokens (css/trajectory.css), so
+   the old per-block and per-row overrides here are gone with them. */
 #main.panel-max .traj-toolbar { flex-wrap: nowrap; padding: 8px 16px; }
 #main.panel-max .traj-search { flex: 0 0 260px; width: auto; }
-#main.panel-max .traj-timeline {
-  max-height: 132px; padding: 10px 16px; gap: 3px;
-}
-#main.panel-max .tl-block { width: 18px; height: 18px; border-radius: 4px; }
-#main.panel-max .traj-table { font-size: 13px; }
-#main.panel-max .trow { padding: 5px 16px; }
-#main.panel-max .trow .seq { width: 54px; }
-#main.panel-max .trow .chip { width: 92px; }
 #main.panel-max .traj-detail { flex: 0 0 clamp(380px, 36%, 620px); }
 #main.panel-max .detail-body { padding: 16px 18px; }
 
