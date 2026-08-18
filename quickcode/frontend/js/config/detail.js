@@ -20,6 +20,7 @@ import { explainHtml, fixedBlockHtml, recourseHtml } from "./explain.js";
 import { bodyHtml, duplicateRefusal, kindLabel, sigilHtml, signatureOf } from "./kinds.js";
 import { duplicatePlugin } from "./create/scaffold.js";
 import { dryRunHtml, wireDryRun } from "./create/tool.js";
+import { usedByHtml } from "./usedby.js";
 
 function num(n) { return Number(n || 0).toLocaleString(); }
 
@@ -144,6 +145,7 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
           ${recourseHtml(plugin)}
         </section>` : ""}
     ${resolvedHtml(plugin, ctx.facts)}
+    ${usedByHtml(plugin, ctx)}
   </div>`;
 
   const headFlash = host.querySelector("[data-head-flash]");

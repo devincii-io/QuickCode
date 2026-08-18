@@ -24,8 +24,8 @@ import { renderParts } from "./parts.js";
 import { renderProblems } from "./problems.js";
 import { renderRail } from "./rail.js";
 import { renderEditor, renderNew } from "./create/scaffold.js";
-import { PARTS, canonicalHref, kindLabel, sigilHtml } from "./kinds.js";
-import { summaryOf } from "./explain.js";
+import { PARTS, canonicalHref } from "./kinds.js";
+import { initSearch } from "./search.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -223,47 +223,6 @@ function applyHighlight(page) {
 // instrument belongs behind a search box, not in the navigation where it
 // competes with the pages that teach.
 
-function searchAll(q) {
-  const needle = q.trim().toLowerCase();
-  if (!needle || !ctx) return [];
-  const out = [];
-  for (const p of ctx.kernel.plugins) {
-    const hay = `${p.id} ${p.title} ${p.description} ${p.group} ${p.kind}`.toLowerCase();
-    if (hay.includes(needle)) {
-      out.push({ kind: p.kind, title: p.title, id: p.id, sub: summaryOf(p),
-                 href: canonicalHref(p), plugin: p });
-    }
-    for (const s of p.settings || []) {
-      const shay = `${s.key} ${s.title} ${s.help}`.toLowerCase();
-      if (!shay.includes(needle)) continue;
-      out.push({ kind: p.kind, title: `${s.title || s.key}`, id: `${p.id}.${s.key}`,
-                 sub: `setting on ${p.title} · ${s.tier}`,
-                 href: canonicalHref(p), plugin: p, key: s.key });
-    }
-  }
-  for (const p of ctx.presets?.presets || []) {
-    if (`${p.id} ${p.title} ${p.description}`.toLowerCase().includes(needle)) {
-      out.push({ kind: "agent", title: p.title, id: p.id,
-                 sub: "composition", href: `#/config/compositions/${encodeURIComponent(p.id)}` });
-    }
-  }
-  return out.slice(0, 40);
-}
-
-function paintResults(box, rows, q) {
-  if (!q.trim()) { box.classList.add("hidden"); box.innerHTML = ""; return; }
-  box.classList.remove("hidden");
-  box.innerHTML = rows.length
-    ? rows.map((r, i) => `<a class="cfg-result${i === 0 ? " first" : ""}"
-        href="${r.href}" data-key="${esc(r.key || "")}" data-id="${esc(r.plugin?.id || "")}">
-        ${sigilHtml(r.kind)}
-        <span class="cr-title">${esc(r.title)}</span>
-        <code class="cr-id">${esc(r.id)}</code>
-        <span class="cr-sub">${esc(r.sub || kindLabel(r.kind))}</span>
-      </a>`).join("")
-    : `<div class="cfg-result empty">Nothing matches “${esc(q)}”.</div>`;
-}
-
 // ---- wiring ---------------------------------------------------------------
 
 let currentApi = null;
@@ -273,37 +232,19 @@ export function initConfig({ api, onDone }) {
   if (wired) return;
   wired = true;
 
-  const search = $("cfg-search");
-  const results = $("cfg-results");
-
   $("cfg-done").addEventListener("click", onDone);
   $("cfg-reload").addEventListener("click", () => { invalidate(); render(); });
 
-  const runSearch = () => paintResults(results, searchAll(search.value), search.value);
-  search.addEventListener("input", runSearch);
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      search.value = ""; paintResults(results, [], "");
-      search.blur();
-      return;
-    }
-    if (e.key !== "Enter") return;
-    const first = results.querySelector(".cfg-result[href]");
-    if (first) first.click();
-  });
-  results.addEventListener("click", (e) => {
-    const row = e.target.closest(".cfg-result[href]");
-    if (!row) return;
-    if (row.dataset.id) pendingHighlight = { id: row.dataset.id, key: row.dataset.key };
-    search.value = "";
-    paintResults(results, [], "");
-    // The href does the navigation and the hashchange listener renders — except
-    // when the result is on the page already, where nothing would fire.
-    if (row.getAttribute("href") === location.hash) applyHighlight($("cfg-page"));
-  });
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".cfg-search-wrap")) paintResults(results, [], "");
+  initSearch({
+    input: $("cfg-search"),
+    results: $("cfg-results"),
+    getCtx: () => ctx,
+    onPick: ({ id, key, href }) => {
+      if (id) pendingHighlight = { id, key };
+      // The href does the navigation and the hashchange listener renders —
+      // except when the result is on the page already, where nothing fires.
+      if (href === location.hash) applyHighlight($("cfg-page"));
+    },
   });
 }
 

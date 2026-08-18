@@ -24,6 +24,7 @@ import { sigilHtml } from "./kinds.js";
 import { mountPreview } from "./preview.js";
 import { openToolPicker } from "./toolpicker.js";
 import { duplicatePlugin } from "./create/scaffold.js";
+import { usedByHtml } from "./usedby.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
@@ -311,6 +312,7 @@ export async function renderWorkbench(host, ctx, id, query = {}) {
       ${limitsHtml(data)}
       ${delegationHtml(data)}
       ${problemsHtml(data)}
+      ${plugin ? usedByHtml(plugin, ctx) : ""}
     </div>
     <div class="wb-preview-slot"></div>
   </div>`;
