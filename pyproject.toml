@@ -1,11 +1,23 @@
 [project]
 name = "quickcode"
-version = "1.0.0"
+version = "2.0.0"
 description = "A local-first coding agent with a traceable web UI, in the spirit of Claude Code and DeepSeek Harness."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Fichtel Systems", email = "kontakt@fichtelsystems.de" }]
+keywords = ["agent", "coding-agent", "llm", "openrouter", "fastapi", "plugin"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Environment :: Win32 (MS Windows)",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
@@ -13,28 +25,38 @@ dependencies = [
     "openai>=1.40",
     "pydantic>=2.7",
     "httpx>=0.27",
+    # Native app window (WebView2 on Windows, which ships with Edge).
+    "pywebview>=5.0",
 ]
 
 [project.optional-dependencies]
 pty = ["pywinpty>=2.0; sys_platform == 'win32'"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.scripts]
 quickcode = "quickcode.cli:main"
 qc = "quickcode.cli:main"
 
 # Launched by the Start-Menu/Desktop shortcut: pythonw, so no console window
-# flashes up behind the browser.
+# flashes up behind the app window.
 [project.gui-scripts]
 quickcode-app = "quickcode.cli:main_app"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.urls]
+Homepage = "https://github.com/devincii-io/QuickCode"
+Repository = "https://github.com/devincii-io/QuickCode"
+Issues = "https://github.com/devincii-io/QuickCode/issues"
+Changelog = "https://github.com/devincii-io/QuickCode/blob/main/CHANGELOG.md"
 
-[tool.hatch.build.targets.wheel]
-packages = ["quickcode"]
-artifacts = ["quickcode/frontend/**"]
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "quickcode"
+module-root = ""
 
 [tool.ruff]
 line-length = 100

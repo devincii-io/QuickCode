@@ -25,7 +25,7 @@ fan-out, usage tracking, session resume, and the trajectory inspector.
 
 ```bash
 uv venv --python 3.12
-uv pip install -e ".[dev,pty]"
+uv sync --all-extras --dev
 export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (encrypted)
 uv run quickcode                        # start the web app  (qc also works)
 qc .                                    # open the app on this directory
@@ -57,11 +57,12 @@ Plugins · messages sent while the agent is busy are queued. Tests:
 
 ### Installation
 
-QuickCode 1.0 installs three ways. All of them give you the same local web app.
+QuickCode installs three ways. All of them give you the same local web app.
 
 **Windows installer (`.exe`)** — the turnkey path. Build
 `packaging\quickcode.iss` with the [Inno Setup](https://jrsoftware.org/isinfo.php)
-compiler, then run the resulting `QuickCode-Setup-1.0.0.exe`. It installs
+compiler (or run `scripts\release.py --build`), then run the resulting
+`QuickCode-Setup-<version>.exe`. It installs
 per-user, ensures Git and Python 3.12+ (installing them silently if missing),
 creates a private venv, puts `quickcode`/`qc` on your `PATH`, and adds a Start
 Menu shortcut — plus optional desktop and *"Open QuickCode here"* folder
@@ -114,3 +115,20 @@ The full plan lives in `docs/`:
 3. **Provider-agnostic core** — the agent loop speaks a normalized event stream; adapters translate.
 4. **Every run is traceable** — the append-only event log is the source of truth; the trajectory view shows everything the model saw, and replay/resume derive from the same stream.
 5. **Agent capabilities are plugins; the UI is not** — tools, providers, and MCP servers are swappable, the built-in web UI stays coherent.
+
+## Development
+
+```bash
+uv sync --all-extras --dev
+.venv\Scripts\python.exe scripts\release.py --check   # tests + ruff + JS syntax + clean-diff
+```
+
+See [AGENTS.md](AGENTS.md) for the architecture conventions agents (and
+humans) working in this repo should follow, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow. Release
+artifacts (wheel, sdist, Windows installer) are built locally with
+`scripts\release.py --build`; see [SECURITY.md](SECURITY.md) for the
+vulnerability-reporting process. Release history is in
+[CHANGELOG.md](CHANGELOG.md).
+
+MIT licensed.

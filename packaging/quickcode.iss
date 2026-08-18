@@ -17,7 +17,12 @@
 ; ============================================================================
 
 #define MyAppName "QuickCode"
-#define MyAppVersion "1.0.0"
+; Override at compile time with /DMyAppVersion=<version> (scripts/release.py
+; does this, reading pyproject.toml, so the two never drift apart). Falls
+; back to this literal for a manual "Compile" from the Inno Setup IDE.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "Fichtel Systems"
 #define MyAppURL "https://fichtelsystems.de"
 #define MyAppContact "kontakt@fichtelsystems.de"
