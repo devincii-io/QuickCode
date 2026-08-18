@@ -196,6 +196,16 @@
   text-overflow: ellipsis; color: var(--fg-faint); font-size: 11.5px;
 }
 .tj-row .t-ms { flex: none; color: var(--fg-faint); font-size: 11px; }
+/* The link to the config page that governs this event. Colour and size still
+   come from `.t-ms` beside it, deliberately — a link that shouted would compete
+   with the row's own text — and this rule owns everything else. The cap and the
+   ellipsis are the point: the label can be an id as long as
+   `mcp__some_server__some_long_tool`, and `.t-ms` is `flex: none`, so without
+   them one long name pushes the duration off the end of the row. */
+.tj-row .tj-cfg {
+  flex: 0 1 auto; min-width: 0; max-width: 22ch;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .tj-row.is-error .preview { color: var(--error); }
 
 /* ---------- narrow panel (down to 320px) ---------- */

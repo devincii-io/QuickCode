@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from quickcode.kernel import build_registry
+from quickcode.kernel.authoring import argv as argv_rules
 from quickcode.kernel.authoring import discovery, schema, store
 from quickcode.kernel.authoring.format import parse_document
 from quickcode.tools.base import ReadRegistry, ToolCtx
@@ -928,3 +929,152 @@ def test_every_authoring_route_has_a_project_scoped_twin(client, sandbox):
 def test_an_unknown_authored_id_is_a_404(client):
     assert client.get("/api/kernel/authored/tool.nope/source").status_code == 404
     assert client.delete("/api/kernel/authored/tool.nope").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# 17. the dry run: one substitution, and it is the one that runs
+# --------------------------------------------------------------------------
+#
+# The panel beside the editor shows the resolved argv while you type. These
+# tests exist to keep that answer and the runtime's answer the same object
+# rather than two implementations that happen to agree: every case below is
+# asserted against ``argv.render_argv`` itself, the function
+# ``CommandTool.resolve_argv`` calls. And the route resolves only -- a
+# configuration page that could run a command would be a second path around the
+# permission gate.
+
+DRY_RUN = "/api/kernel/authored/dry-run"
+
+# One template covering all four rules: an in-element replacement, the same
+# parameter alone in an element, a list, and a bool.
+DRY_RUN_TOOL = echo_tool(
+    [*ECHO, "--msg={message}", "{message}", "{files}", "{verbose}"],
+    [{"name": "message", "type": "string"},
+     {"name": "files", "type": "list"},
+     {"name": "verbose", "type": "bool"}],
+)
+
+
+def expected_argv(text: str, values: dict) -> list[str]:
+    """What the runtime would build, from the runtime's own code."""
+    plugin, problems = store.validate_text(text, kind="tool")
+    assert plugin is not None, problems
+    return argv_rules.render_argv(plugin.argv, plugin.params_by_name(), values)
+
+
+@pytest.mark.parametrize("values", [
+    {"message": "hello world", "files": ["a.txt", "b.txt"], "verbose": True},
+    {"message": "hello world", "files": ["a.txt"], "verbose": False},
+    {"message": "", "files": [], "verbose": False},
+    {"message": "; rm -rf /", "files": ["$(whoami)", "a b"], "verbose": True},
+    {},
+])
+def test_the_dry_run_route_agrees_with_argv_py(client, values):
+    resolved = client.post(DRY_RUN, json={"text": DRY_RUN_TOOL, "values": values})
+    assert resolved.status_code == 200
+    body = resolved.json()
+    assert body["loadable"] is True
+    assert body["argv"] == expected_argv(DRY_RUN_TOOL, values)
+
+
+def test_the_dry_run_shows_each_substitution_rule(client):
+    def run(**values):
+        res = client.post(DRY_RUN, json={"text": DRY_RUN_TOOL, "values": values})
+        assert res.status_code == 200
+        return res.json()["argv"]
+
+    # 1. in-element replacement: one element whatever the value contains, and
+    #    the whole-element twin carries the same value as one more element.
+    assert run(message="hello world", files=[], verbose=False) == [
+        *ECHO, "--msg=hello world", "hello world"]
+
+    # 2. a list owns its element and expands to one argument per item.
+    assert run(message="", files=["a.txt", "b c.txt"], verbose=False) == [
+        *ECHO, "--msg=", "a.txt", "b c.txt"]
+
+    # 3. an empty whole element is dropped; the mixed element beside it stays.
+    assert run(message="", files=[], verbose=False) == [*ECHO, "--msg="]
+
+    # 4. a true bool emits its flag, a false one drops the element.
+    assert run(message="", files=[], verbose=True) == [*ECHO, "--msg=", "--verbose"]
+    assert "--verbose" not in run(message="", files=[], verbose=False)
+
+
+def test_the_dry_run_keeps_a_shell_payload_as_exactly_one_argument(client):
+    payload = "; rm -rf /"
+    argv = client.post(DRY_RUN, json={
+        "text": DRY_RUN_TOOL,
+        "values": {"message": payload, "files": [], "verbose": False},
+    }).json()["argv"]
+    assert argv == [*ECHO, f"--msg={payload}", payload]
+    # The point restated as the property: the value is never split, so it is
+    # one element and it is the element the runtime would have built.
+    assert argv.count(payload) == 1
+    assert argv == expected_argv(DRY_RUN_TOOL, {"message": payload, "files": [],
+                                                "verbose": False})
+
+
+def test_the_dry_run_resolves_and_never_executes(client, sandbox):
+    marker = sandbox / "the-dry-run-ran.txt"
+    text = echo_tool(
+        ["python", "-c", f"open(r'{marker}', 'w').write('x')", "{message}"],
+        [{"name": "message", "type": "string"}],
+    )
+    body = client.post(DRY_RUN, json={"text": text,
+                                      "values": {"message": "hi"}}).json()
+    assert body["argv"][-1] == "hi"       # it resolved
+    assert not marker.exists()            # and nothing ran
+
+
+def test_the_dry_run_works_for_source_that_was_never_saved(client, sandbox):
+    body = client.post(DRY_RUN, json={"text": DRY_RUN_TOOL,
+                                      "values": {"message": "x"}}).json()
+    assert body["argv"][-2:] == ["--msg=x", "x"]
+    assert [p["name"] for p in body["params"]] == ["message", "files", "verbose"]
+    # The panel is live while you type, so nothing may be written to answer it.
+    assert list((sandbox / ".quickcode" / "plugins").glob("*.md")) == []
+
+
+def test_the_dry_run_reads_a_saved_plugin_by_id_and_has_a_project_twin(client, sandbox):
+    from quickcode.server.projects import project_id
+
+    write(sandbox, "echo-args", DRY_RUN_TOOL)
+    values = {"message": "a b", "files": ["x"], "verbose": True}
+    payload = {"id": "tool.echo-args", "values": values}
+    by_id = client.post(DRY_RUN, json=payload).json()
+    twin = client.post(
+        f"/api/projects/{project_id(sandbox)}/kernel/authored/dry-run", json=payload,
+    ).json()
+    assert by_id["argv"] == twin["argv"] == expected_argv(DRY_RUN_TOOL, values)
+
+
+def test_a_draft_the_validator_rejects_resolves_to_nothing(client):
+    broken = echo_tool(["git", "log", "{oops}"], [])
+    body = client.post(DRY_RUN, json={"text": broken,
+                                      "values": {"oops": "x"}}).json()
+    assert body["loadable"] is False
+    # Not "git log": a template with a typo in it is refused at load time, and a
+    # preview that substituted the value anyway would show an array no tool will
+    # ever run.
+    assert body["argv"] == []
+    assert schema.UNKNOWN_PLACEHOLDER in [p["code"] for p in body["problems"]]
+
+
+def test_the_dry_run_also_resolves_a_template_given_inline(client):
+    """The shape a caller holding an already-validated template sends."""
+    body = client.post(DRY_RUN, json={
+        "argv": ["git", "log", "{n}", "{all}"],
+        "params": [{"name": "n", "type": "string"},
+                   {"name": "all", "type": "bool", "flag": "--all"}],
+        "values": {"n": "", "all": True},
+    }).json()
+    assert body["argv"] == ["git", "log", "--all"]
+
+
+def test_the_dry_run_refuses_a_body_it_cannot_resolve(client):
+    assert client.post(DRY_RUN, json={"values": {}}).status_code == 400
+    assert client.post(DRY_RUN, json={"text": DRY_RUN_TOOL,
+                                      "values": ["not", "a", "map"]}).status_code == 400
+    # An agent file has no argv to resolve, and saying so beats an empty array.
+    agent = ("---\nkind: agent\nname: helper\ndescription: x\n---\n\nbody\n")
+    assert client.post(DRY_RUN, json={"text": agent, "values": {}}).status_code == 400

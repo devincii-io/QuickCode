@@ -14,89 +14,60 @@
 // path the whole design is built to keep single. To run it, ask an agent to,
 // and approve it there.
 //
-// The substitution below mirrors `kernel/authoring/argv.py` rule for rule.
-// Being a second implementation it can drift, so it is labelled a preview and
-// the four rules are printed next to it; the authority is the argv the
-// permission prompt shows, which comes from the Python.
+// **The substitution is not implemented here.** `POST .../kernel/authored/
+// dry-run` resolves the template with `kernel/authoring/argv.py` — literally
+// the function `CommandTool.resolve_argv` calls — and this file renders the
+// array it sends back. There is no local fallback, deliberately: a fallback
+// only ever runs when the server disagrees or is unreachable, which is exactly
+// when a second implementation would be believed and wrong. When the request
+// fails the panel says the preview is unavailable and shows nothing.
+//
+// The four rules are still printed beside the panel. They are documentation of
+// what the Python does, not a specification this file implements.
 
 import { esc } from "../../util.js";
+import { authToken, currentProject } from "../../api.js";
 import { fencedJson, parseFrontmatter, patchFrontmatter } from "./scaffold.js";
 
-const TOKEN = () => /\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-
-function placeholders(element) {
-  const out = [];
-  const re = TOKEN();
-  let m;
-  while ((m = re.exec(element)) !== null) if (m[1] !== undefined) out.push(m[1]);
-  return out;
-}
-
-function wholePlaceholder(element) {
-  const names = placeholders(element);
-  return names.length === 1 && element === `{${names[0]}}` ? names[0] : "";
-}
-
-function scalar(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  return String(value);
-}
-
-function renderElement(element, values) {
-  const out = [];
-  const re = TOKEN();
-  let cursor = 0;
-  let m;
-  while ((m = re.exec(element)) !== null) {
-    out.push(element.slice(cursor, m.index));
-    if (m[1] === undefined) out.push(m[0] === "{{" ? "{" : "}");
-    else out.push(scalar(values[m[1]]));
-    cursor = m.index + m[0].length;
+// `api.js` owns the REST client, but the dry run is one route it does not
+// expose, so the two lines of plumbing live here. The project scoping is the
+// same rule its `P()` follows: a scoped route when a project is selected, the
+// launch-directory route otherwise.
+async function resolveArgv(body) {
+  const pid = currentProject();
+  const base = pid ? `/api/projects/${encodeURIComponent(pid)}` : "/api";
+  const res = await fetch(`${base}/kernel/authored/dry-run`, {
+    method: "POST",
+    headers: { "x-quickcode-token": authToken(), "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* keep */ }
+    throw new Error(`${res.status}: ${detail}`);
   }
-  out.push(element.slice(cursor));
-  return out.join("");
+  return res.json();
 }
 
-/** `argv.py:render_argv`, in the browser. `params` is {name: {type, flag}}. */
-export function renderArgv(template, params, values) {
-  const out = [];
-  for (const element of template || []) {
-    const name = wholePlaceholder(element);
-    if (name && params[name]) {
-      const type = params[name].type || "string";
-      const value = values[name];
-      if (type === "list") {
-        const items = Array.isArray(value)
-          ? value : String(value ?? "").split("\n");
-        for (const item of items) if (scalar(item).trim() !== "") out.push(scalar(item));
-        continue;
-      }
-      if (type === "bool") {
-        if (value === true || value === "true") {
-          out.push(params[name].flag || `--${name.replace(/_/g, "-")}`);
-        }
-        continue;
-      }
-      const text = scalar(value);
-      if (text === "") continue;             // rule 3: the whole element drops
-      out.push(text);
-      continue;
+/** The form's reading of its own controls: a list textarea is one item per
+ *  line, a checkbox is a real boolean. This is not substitution — it is what
+ *  the fields *hold* — and the resolver on the other end decides what any of
+ *  it means for the argv. */
+function valuesForRequest(params, values) {
+  const out = {};
+  for (const p of params || []) {
+    const raw = values[p.name];
+    if (p.type === "list") {
+      out[p.name] = Array.isArray(raw)
+        ? raw
+        : String(raw ?? "").split("\n").filter((line) => line.trim() !== "");
+    } else if (p.type === "bool") {
+      out[p.name] = raw === true || raw === "true";
+    } else {
+      out[p.name] = raw ?? "";
     }
-    out.push(renderElement(element, values));
   }
   return out;
-}
-
-/** Every `{name}` the template mentions that no parameter declares. The
- *  validator refuses these outright, so a dry run showing one has to say the
- *  file will not load rather than quietly substituting an empty string. */
-export function unknownNames(template, params) {
-  const seen = new Set();
-  for (const element of template || []) {
-    for (const name of placeholders(element)) if (!params[name]) seen.add(name);
-  }
-  return [...seen];
 }
 
 const RULES = `<ul class="dr-rules">
@@ -135,16 +106,18 @@ function fieldHtml(param, value) {
   </label>`;
 }
 
-function argvHtml(template, paramsByName, values) {
-  const unknown = unknownNames(template, paramsByName);
-  if (unknown.length) {
-    return `<div class="dr-unknown">The template mentions
-      ${unknown.map((n) => `<code>{${esc(n)}}</code>`).join(", ")}, which
-      ${unknown.length === 1 ? "is not a declared parameter" : "are not declared parameters"}.
-      That is refused at load time rather than substituted empty, so this file
-      will not produce a tool until the names match.</div>`;
+/** What the server sent, rendered. `res` is {loadable, argv, problems}. */
+function argvHtml(res) {
+  const errors = (res.problems || []).filter((p) => p.severity === "error");
+  if (!res.loadable) {
+    return `<div class="dr-unknown">${errors.length
+      ? errors.map((p) => `${esc(p.message)}${p.fix ? ` <b>${esc(p.fix)}</b>` : ""}`)
+          .join("<br>")
+      : "The validator rejected this file, so there is no template to resolve."}
+      <br>Refused at load time rather than substituted, so this file produces no
+      tool until it is fixed.</div>`;
   }
-  const argv = renderArgv(template, paramsByName, values);
+  const argv = res.argv || [];
   if (!argv.length) {
     return `<div class="dr-empty">Every element resolved away. A template that
       can resolve to nothing runs nothing.</div>`;
@@ -156,9 +129,40 @@ function argvHtml(template, paramsByName, values) {
   <div class="dr-line"><code>${esc(argv.join(" "))}</code></div>`;
 }
 
-/** The dry run on its own — used by the editor panel and by a tool's card. */
+/** The one thing shown when the resolver cannot be reached. Guessing at the
+ *  array here is the bug this panel exists to avoid, so it guesses nothing. */
+function unavailableHtml(err) {
+  return `<div class="dr-unknown">The dry run is unavailable: ${esc(err.message)}.
+    <br>The array is resolved by the same code that runs it, so there is nothing
+    to show while that answer is missing — a locally reconstructed one would
+    agree with what actually runs only by luck.</div>`;
+}
+
+const DEBOUNCE_MS = 150;
+
+// One dry run is on screen at a time, so the in-flight request and its debounce
+// are module state: the editor rebuilds this panel on *every* keystroke, and a
+// timer scoped to one mount would debounce nothing across the rebuilds.
+let seq = 0;
+let timer = 0;
+// The last array the server sent, so those rebuilds do not blink through
+// "Resolving…" while the answer already on screen is still the true one. Keyed
+// by the template it describes — a different tool, or an edited argv line,
+// starts from the placeholder rather than showing the previous tool's command.
+let lastKey = "";
+let lastHtml = "";
+
+const PENDING = `<div class="dr-empty">Resolving…</div>`;
+
+function keyOf(template, params) {
+  return JSON.stringify([template || [], (params || []).map((p) => [p.name, p.type])]);
+}
+
+/** The dry run on its own — used by the editor panel and by a tool's card.
+ *  The output slot is filled by `wireDryRun`: the array comes from the server
+ *  and this function is synchronous. */
 export function dryRunHtml(template, params, values, { lede = "" } = {}) {
-  const byName = Object.fromEntries((params || []).map((p) => [p.name, p]));
+  const known = keyOf(template, params) === lastKey && lastHtml;
   return `<section class="wb-sec dr">
     <h4>Dry run <span class="wb-count">${(template || []).length} elements</span></h4>
     ${lede ? `<p class="wb-note block">${lede}</p>` : ""}
@@ -167,28 +171,63 @@ export function dryRunHtml(template, params, values, { lede = "" } = {}) {
           (p) => fieldHtml(p, values[p.name])).join("")}</div>`
       : `<p class="wb-note block">No parameters — this tool always runs the same
           command.</p>`}
-    <div class="dr-out" data-dr-out>${argvHtml(template, byName, values)}</div>
-    <p class="wb-note block">Resolved, not executed. To run it, ask an agent to
-      call it: the approval prompt shows this same array before anything starts,
-      and that is the only path to running it. A configuration page that could
-      run a command would be a second path around the permission gate.</p>
+    <div class="dr-out" data-dr-out>${known ? lastHtml : PENDING}</div>
+    <p class="wb-note block">Resolved by the server, not executed — the same
+      <code>argv.py</code> the runtime calls, so this array cannot disagree with
+      the one that runs. To run it, ask an agent to call it: the approval prompt
+      shows this same array before anything starts, and that is the only path to
+      running it. A configuration page that could run a command would be a
+      second path around the permission gate.</p>
     ${RULES}
   </section>`;
 }
 
-/** Re-resolve in place as the fields are typed in, without repainting the
- *  fields themselves — otherwise the caret jumps on every keystroke. */
-export function wireDryRun(host, template, params, values) {
-  const byName = Object.fromEntries((params || []).map((p) => [p.name, p]));
+/** Re-resolve as the fields are typed in, without repainting the fields
+ *  themselves — otherwise the caret jumps on every keystroke.
+ *
+ *  `source` (when given) is a getter for the file as it currently stands in the
+ *  editor, unsaved included: sending the text means the problems come back from
+ *  the validator the runtime uses rather than from a second reading of the file
+ *  here. Without it the already-validated template is sent as it is. Either way
+ *  the substitution happens once, on the server. */
+export function wireDryRun(host, template, params, values, { source = null } = {}) {
   const out = host.querySelector("[data-dr-out]");
   if (!out) return;
-  const repaint = () => { out.innerHTML = argvHtml(template, byName, values); };
+  const key = keyOf(template, params);
+
+  const body = () => (source
+    ? { text: source(), values: valuesForRequest(params, values) }
+    : { argv: template || [], params: params || [],
+        values: valuesForRequest(params, values) });
+
+  const resolve = async () => {
+    const mine = ++seq;
+    let html;
+    try {
+      html = argvHtml(await resolveArgv(body()));
+    } catch (err) {
+      html = unavailableHtml(err);
+    }
+    // A stale answer must never land on top of a fresher one.
+    if (mine !== seq) return;
+    lastKey = key;
+    lastHtml = html;
+    if (out.isConnected) out.innerHTML = html;
+  };
+
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(resolve, DEBOUNCE_MS);
+  };
+
   for (const el of host.querySelectorAll("[data-dr]")) {
     const name = el.dataset.dr;
     const read = () => (el.type === "checkbox" ? el.checked : el.value);
-    el.addEventListener("input", () => { values[name] = read(); repaint(); });
-    el.addEventListener("change", () => { values[name] = read(); repaint(); });
+    const changed = () => { values[name] = read(); schedule(); };
+    el.addEventListener("input", changed);
+    el.addEventListener("change", changed);
   }
+  schedule();
 }
 
 // ---- the editor's side panel ---------------------------------------------
@@ -248,8 +287,12 @@ export function toolPanel({ read, write }) {
     mount(node) {
       const { argv, params } = parse();
       if (Array.isArray(argv.value)) {
+        // `source` sends the file as typed, unsaved and all: the fences are
+        // parsed here only to build the *fields*, while what the argv means is
+        // decided once, by the validator and `argv.py` on the other end.
         wireDryRun(node, argv.value,
-                   Array.isArray(params.value) ? params.value : [], values);
+                   Array.isArray(params.value) ? params.value : [], values,
+                   { source: read });
       }
       for (const el of node.querySelectorAll("[data-fm]")) {
         el.addEventListener("change", () => {

@@ -10,6 +10,7 @@ import { chip, openPluginView, tierBadge } from "../settings/ui.js";
 import { summaryOf } from "./explain.js";
 import { renderWorkbench } from "./agent.js";
 import { bodyHtml, sigilHtml } from "./kinds.js";
+import { duplicatePlugin } from "./create/scaffold.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
@@ -72,14 +73,34 @@ export function renderAgentsIndex(host, ctx) {
           </a>
           <div class="k-card-side">
             <button class="ghost-btn" data-raw title="Read its instructions">Raw</button>
+            ${p.metadata?.builtin
+              ? `<button class="ghost-btn" data-dup title="Write an editable
+                   markdown copy of this agent under .quickcode/plugins/ with
+                   derived_from set. Every line that is fixed here becomes plain
+                   text there; this one is untouched and stays available."
+                   >⧉ Duplicate</button>`
+              : `<a class="ghost-btn" href="#/config/edit/${encodeURIComponent(p.id)}"
+                   title="Open the file this agent is">Edit file</a>`}
           </div>
         </article>`).join("")}
     </div>
   </div>`;
 
+  // Duplicate is offered on the index for the same reason the workbench offers
+  // it: duplicating *reads*, and reading was never restricted, so a built-in
+  // agent is exactly the case the button exists for. A refusal — the server's,
+  // never a guess made here — replaces the button with its reason and its
+  // recourse, which is what `parts.js` and `detail.js` do.
   host.querySelector(".k-list").addEventListener("click", (e) => {
     const card = e.target.closest(".k-card");
-    if (!card || !e.target.closest("[data-raw]")) return;
+    if (!card) return;
+    const dup = e.target.closest("[data-dup]");
+    if (dup) {
+      e.preventDefault();
+      duplicatePlugin(ctx, card.dataset.id, dup);
+      return;
+    }
+    if (!e.target.closest("[data-raw]")) return;
     e.preventDefault();
     openPluginView(ctx.api, ctx.kernel.plugins.find((p) => p.id === card.dataset.id));
   });
