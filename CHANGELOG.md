@@ -47,6 +47,26 @@ coupling that used to live in name lists moves onto the tools themselves.
   and project-scoped route shapes; a live session refuses all of them with a
   409 rather than having its file moved out from under its writer.
 
+- **Configuration is a view, organised around agents.** Settings was a modal
+  holding a flat list of 38 plugin cards ordered by implementation
+  neighbourhood. It is now a third top-level view routed by URL, whose spine
+  is Agents → Compositions → Parts → Machine room → Install: the primary
+  object is the agent, and plugins are parts you attach to one. The flat list
+  becomes a search box. Kind owns the card's hue and tier owns its badge, so
+  an amber tool never reads as pending confirmation; a locked setting shows
+  no control at all, keeping the value legible and selectable alongside the
+  reason it is fixed and a real way forward.
+- **Every plugin and setting explains itself in the same shape** — what it
+  is, what it affects, who it affects, what changes if you change it, why it
+  is fixed, and what to do instead. Written once in the manifest for all 37
+  internal plugins, so a reader who learns one card can read them all.
+- **One composition model for the orchestrator and its subagents.**
+  Capability fields (tools, spawnable agents, model set, permission ceiling)
+  combine by intersection, so resolution order cannot change the answer;
+  value fields resolve last-writer-wins over named layers. Every resolved
+  value carries the provenance that set it. Resolution is total and reports
+  problems; spawning stays fallible and refuses before an agent id is minted.
+
 ### Changed
 
 - **Tools declare their own permission shape.** `Tool.permission` is now a
@@ -88,6 +108,20 @@ coupling that used to live in name lists moves onto the tools themselves.
   with no title, despite having a full event log; titles and counts now fall
   back to the event log.
 - `PUT /api/kernel/plugins/{unknown-id}` returned 500 instead of 404.
+- **Six settings did nothing.** `max_rounds`, all three compaction knobs and
+  both subagent limits rendered, accepted edits and saved while the runtime
+  read module constants. They now decide what they claim to decide, read
+  through one declaration so the card and the runtime cannot drift. The two
+  subagent limits remain backstops: a settings file asking for `max_depth:
+  99` gets the 4 its own card promises.
+- `keep_turns` declared a minimum of 0 and computed `user_idxs[-0]` — which
+  is `user_idxs[0]` — so the smallest value a user could choose kept the
+  entire transcript verbatim, the opposite of the control's meaning.
+- `max_depth: 0` did nothing, because the depth check exempted the
+  orchestrator. Zero now means no delegation at all.
+- Every tool card badged "locked", because a tool's only setting is the
+  read-only flag it declares about itself. A declared fact is now
+  distinguished from a knob withheld to defend an invariant.
 
 ### Security
 
@@ -100,6 +134,21 @@ coupling that used to live in name lists moves onto the tools themselves.
   still held for files and shell (a subagent's callback denies), but the
   task tools declare `mutates=False` and did execute. A child's delegation
   pool is now the tools that child was itself granted.
+- **Opening a project executed its MCP servers.** A project's
+  `.quickcode/settings.json` could declare `mcpServers`, and
+  `POST /api/projects/open` spawned them with no prompt — cloning a
+  repository and opening it to look at it was arbitrary code execution.
+  Project-scope servers are now inert until that project is trusted once.
+  Trust is recorded at user scope, never inside the project (a project must
+  not be able to declare itself trustworthy), and each grant is bound to a
+  hash of the `mcpServers` block, so adding a server later re-prompts instead
+  of riding the old approval. The launch directory is not implicitly trusted:
+  cloning a repository and running `qc .` in it is precisely the attack.
+  User-scope servers stay ungated — they are the user's own files, and
+  prompting for them would train the reflex that makes the project prompt
+  worthless. The refusal is loud: the project opens and reports which servers
+  it did not start, and the prompt shows each full command line before you
+  approve it, because approving a command you cannot read is not consent.
 
 ## [1.0.0] — 2026-08-17
 
