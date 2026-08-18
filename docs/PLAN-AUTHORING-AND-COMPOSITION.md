@@ -1368,3 +1368,59 @@ Everything below is judged against that sentence.
 
 The cut removes roughly half the surface the three documents describe and none
 of the sentence the pass is judged against.
+
+---
+
+## Addendum: session-scoped switching
+
+Requested after the plan was written: switching composition inside a running
+project session, plus other quick session-scoped controls.
+
+### Switching is allowed, at a turn boundary only
+
+The frozen-composition invariant exists for two reasons, and neither one is
+"the composition may never change":
+
+1. The model has been told what tools it has. Changing them underneath a
+   conversation mid-turn produces calls to tools that no longer exist.
+2. The prompt cache breakpoint sits on the system message, which must stay
+   byte-stable *within* a cached span.
+
+Both survive a switch taken between turns. So the rule is:
+
+- **Refused while the agent is busy.** Not queued, not applied on the next
+  idle — refused, with the reason. A switch that lands invisibly three
+  seconds later is worse than one that does not happen.
+- **On switch**: re-resolve the composition, re-render the system prompt from
+  the new bodies, write a `composition` meta record, and emit a transcript
+  marker so the trajectory shows exactly where the agent's capabilities
+  changed. Reading a session later without that marker would be misleading —
+  the same conversation genuinely had two different agents in it.
+- **The cache breakpoint moves once**, and the next turn pays a full
+  uncached input. That is the honest cost of the feature; it is paid at a
+  moment the user chose, not silently.
+- **Resume replays the record**, so reopening a session restores the
+  composition it ended with, not the one it started with.
+
+### What is session-scoped and switchable
+
+Three controls belong on the composer, next to the existing mode and model
+pills, because they are the three things a user changes mid-conversation:
+
+| Control     | Scope   | Live? | Notes                                   |
+|-------------|---------|-------|-----------------------------------------|
+| Mode        | session | yes   | already exists; now clamped to ceiling  |
+| Model       | session | yes   | already exists; must stay in the set    |
+| Composition | session | turn boundary | new                             |
+
+Everything else (authoring a plugin, editing an agent, changing a preset's
+definition) stays in the configuration view and takes effect on the next
+session. A setting whose blast radius is every future session does not belong
+on a pill next to the send button.
+
+### One-click derivation
+
+The switcher's last entry is "Customise this…", which duplicates the active
+composition into a project-scoped one and opens it in the workbench. This is
+the on-ramp: most people discover they want a custom composition at the
+moment an existing one is nearly right.
