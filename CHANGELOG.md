@@ -20,6 +20,20 @@ follows [Semantic Versioning](https://semver.org/).
   selected, where its key resolved from, and what is missing — as a warning,
   never a failure, because search is optional and an unconfigured one breaks
   nothing else.
+- **The search provider is configurable from the app.** Install gains a "Web
+  search" tab — not Settings → General, because General is about the *model*
+  endpoint and two unrelated things both called "provider" in one form is how a
+  search key ends up pasted into the model key field. The page is driven
+  entirely from each provider's own declaration, so Brave, Serper, Tavily and
+  Exa render a key field, SearXNG renders a base URL and no key field at all
+  because it is keyless, and Google CSE renders a key plus its engine id. Keys
+  and settings travel by separate routes: the config route refuses an API key
+  *by name*, naming the right one, rather than dropping it silently — a key
+  quietly ignored is a key you believe is set. No key, or any part of one,
+  appears in any response; the field is never populated. And because an
+  environment variable outranks a key saved from this page, the page now says
+  where the key actually in use came from, sharing its exact wording with
+  `quickcode doctor` so the two cannot drift.
 - **`web_fetch` refuses to be turned inward.** It is the first tool that sends
   a request from the user's machine, chosen by the model, so the address is
   classified before every hop: no schemes but http and https, no embedded
