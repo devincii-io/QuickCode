@@ -11,6 +11,7 @@ import { api } from "./api.js";
 import { KEYS, PANEL_NOTE, SLASH } from "./help/shortcuts.js";
 import { sheetOpen } from "./settings/ui.js";
 import { store, subscribe } from "./store.js";
+import { toastOk } from "./toast.js";
 import { actions } from "./ws.js";
 import { applyTheme, el, esc, fmtTokens, oneLine, relTime } from "./util.js";
 
@@ -27,33 +28,41 @@ function closeModal() {
     modalEsc = null;
   }
   root().innerHTML = "";
+  // Anything that opens a modal wipes the one on screen. If that was a review,
+  // the agent is still blocked on it, so hand it back to the queue instead of
+  // losing it — it reopens on top of whatever displaced it.
+  reclaimReview();
 }
 
-function modal(title, bodyHtml, footHtml = "") {
+// A review dialog is the agent waiting on an answer, so it does not close on
+// Escape, the backdrop, or a ✕ — "no" is the Deny button, which the agent hears.
+function modal(title, bodyHtml, footHtml = "", { dismissible = true } = {}) {
   closeModal();
   const m = el(`<div class="modal-backdrop"><div class="modal" tabindex="-1"
        role="dialog" aria-modal="true" aria-label="${esc(String(title))}">
     <div class="modal-head"><span>${title}</span>
-      <button class="ghost-btn" data-close>✕</button></div>
+      ${dismissible ? `<button class="ghost-btn" data-close>✕</button>` : ""}</div>
     <div class="modal-body">${bodyHtml}</div>
     ${footHtml ? `<div class="modal-foot">${footHtml}</div>` : ""}
   </div></div>`);
-  m.addEventListener("click", (e) => {
-    if (e.target === m || e.target.closest("[data-close]")) closeModal();
-  });
+  if (dismissible) {
+    m.addEventListener("click", (e) => {
+      if (e.target === m || e.target.closest("[data-close]")) closeModal();
+    });
+    modalEsc = (e) => {
+      if (e.key !== "Escape") return;
+      // A menu or a Settings sheet sits on top: those peel off first, one layer
+      // per keystroke, instead of the dialog closing from underneath them.
+      if (document.querySelector(".menu") || sheetOpen()) return;
+      e.preventDefault();
+      // Capture phase plus stopImmediatePropagation: the composer's Escape
+      // (interrupt) and the panel's un-maximize must not also fire.
+      e.stopImmediatePropagation();
+      closeModal();
+    };
+    document.addEventListener("keydown", modalEsc, true);
+  }
   root().appendChild(m);
-  modalEsc = (e) => {
-    if (e.key !== "Escape") return;
-    // A menu or a Settings sheet sits on top: those peel off first, one layer
-    // per keystroke, instead of the dialog closing from underneath them.
-    if (document.querySelector(".menu") || sheetOpen()) return;
-    e.preventDefault();
-    // Capture phase plus stopImmediatePropagation: the composer's Escape
-    // (interrupt) and the panel's un-maximize must not also fire.
-    e.stopImmediatePropagation();
-    closeModal();
-  };
-  document.addEventListener("keydown", modalEsc, true);
   // Move focus into the dialog: Escape and Tab should belong to it from the
   // first keystroke, not to whatever button opened it.
   m.querySelector(".modal").focus();
@@ -61,33 +70,115 @@ function modal(title, bodyHtml, footHtml = "") {
 }
 
 // ---- permission review ----
+//
+// Reviews are a QUEUE, not a single slot. Read-only tool calls in one assistant
+// message run concurrently, so four of them can hit a protected path at once and
+// the server opens four futures, each awaiting its own decision
+// (server/manager.py: `await fut`). Showing them one dialog at a time and
+// dropping the rest left those futures pending forever: the tool calls hung and
+// the turn never ended. Every request is now either answered or still queued.
 
-const shownReviews = new Set();
+const queue = [];              // reviews waiting for an answer, oldest first
+const queued = new Set();      // req_ids in `queue`, so replay cannot double-add
+const decided = new Set();     // req_ids already answered from here
+let current = null;            // the queue entry currently on screen
 
 export function initReviews() {
   subscribe((kind, ev) => {
-    if (kind === "event" && ev.type === "permission_request") maybeShowPermission(ev);
-    if (kind === "event" && ev.type === "plan_request") maybeShowPlan(ev);
+    if (kind === "reset") return resetReviews();
+    if (kind === "event" && ev.type === "permission_request") enqueue("permission", ev);
+    if (kind === "event" && ev.type === "plan_request") enqueue("plan", ev);
     if (kind === "state" && ev.pending) {
-      for (const p of ev.pending) {
-        if (p.kind === "permission") maybeShowPermission(p);
-        if (p.kind === "plan") maybeShowPlan(p);
-      }
+      // The authoritative list of what the server is still blocked on: it
+      // recovers anything a reconnect or a lost frame would otherwise strand.
+      for (const p of ev.pending) enqueue(p.kind, p);
     }
     if (kind === "event" && (ev.type === "permission_resolved" || ev.type === "plan_resolved")) {
-      if (shownReviews.has(ev.req_id)) { shownReviews.delete(ev.req_id); closeModal(); }
+      drop(ev.req_id);
     }
   });
 }
 
-function maybeShowPermission(ev) {
-  if (shownReviews.has(ev.req_id)) return;
+function resetReviews() {
+  queue.length = 0;
+  queued.clear();
+  decided.clear();
+  current = null;
+  closeModal();
+}
+
+function enqueue(kind, ev) {
+  if (!ev?.req_id || queued.has(ev.req_id) || decided.has(ev.req_id)) return;
   // During replay only surface requests the server still reports as pending.
   if (store.replaying && !(store.state?.pending || []).some((p) => p.req_id === ev.req_id)) return;
-  shownReviews.add(ev.req_id);
+  queue.push({ kind, ev });
+  queued.add(ev.req_id);
+  showNext();
+  refreshWaiting();
+}
+
+// Answered, or resolved by something other than this dialog (another tab, an
+// interrupt): forget it either way.
+function drop(reqId) {
+  const i = queue.findIndex((q) => q.ev.req_id === reqId);
+  if (i >= 0) queue.splice(i, 1);
+  queued.delete(reqId);
+  if (current?.ev.req_id === reqId) {
+    current = null;
+    closeModal();
+  }
+  showNext();
+  refreshWaiting();
+}
+
+// Something else opened a modal over a live review. The agent is still waiting,
+// so the review goes back on screen once the displacing dialog has settled.
+function reclaimReview() {
+  if (!current) return;
+  current = null;
+  queueMicrotask(showNext);
+}
+
+function showNext() {
+  if (current || !queue.length) return;
+  const item = queue[0];   // stays queued while on screen; only a decision pops it
+  if (item.kind === "permission") permissionModal(item.ev);
+  else planModal(item.ev);
+  current = item;
+  refreshWaiting();
+}
+
+function answered(reqId) {
+  decided.add(reqId);
+  queued.delete(reqId);
+  const i = queue.findIndex((q) => q.ev.req_id === reqId);
+  if (i >= 0) queue.splice(i, 1);
+  current = null;
+  closeModal();
+  showNext();
+}
+
+// "2 more waiting" is the difference between "the agent asked" and "the agent is
+// blocked on four things"; with a fan-out of subagents that is the whole story.
+// The node is always rendered and filled in afterwards: the requests that pile
+// up behind this one arrive *after* its dialog is on screen.
+const WAITING_NODE =
+  `<div data-rv-waiting style="font-size:12px;color:var(--warning);margin-bottom:8px"></div>`;
+
+function refreshWaiting() {
+  const node = root().querySelector("[data-rv-waiting]");
+  if (!node) return;
+  const more = queue.length - 1;
+  node.textContent = more > 0
+    ? `${more} more request${more === 1 ? "" : "s"} waiting behind this one`
+    : "";
+}
+
+function permissionModal(ev) {
   const m = modal(
     "Permission required",
-    `<div>The agent wants to run
+    `${WAITING_NODE}
+     <div>The agent wants to run
        <span class="perm-tool">${esc(ev.tool)}</span>
        ${ev.agent && ev.agent !== "main" ? `(subagent ${esc(ev.agent)})` : ""}</div>
      <div class="perm-preview">${esc(ev.preview || ev.arg)}</div>
@@ -96,7 +187,8 @@ function maybeShowPermission(ev) {
      <input class="deny-input hidden" placeholder="Why not? (optional — steers the agent)">`,
     `<button class="btn danger" data-act="deny">Deny</button>
      <button class="btn" data-act="always">Always allow</button>
-     <button class="btn primary" data-act="allow">Allow once</button>`
+     <button class="btn primary" data-act="allow">Allow once</button>`,
+    { dismissible: false }
   );
   const denyInput = m.querySelector(".deny-input");
   m.querySelector(".modal-foot").addEventListener("click", (e) => {
@@ -111,22 +203,21 @@ function maybeShowPermission(ev) {
     if (act === "allow") actions.permissionDecision(ev.req_id, true, false);
     if (act === "always") actions.permissionDecision(ev.req_id, true, true);
     if (act === "deny") actions.permissionDecision(ev.req_id, false, false, denyInput.value.trim());
-    closeModal();
-    shownReviews.delete(ev.req_id);
+    answered(ev.req_id);
   });
+  return m;
 }
 
-function maybeShowPlan(ev) {
-  if (shownReviews.has(ev.req_id)) return;
-  if (store.replaying && !(store.state?.pending || []).some((p) => p.req_id === ev.req_id)) return;
-  shownReviews.add(ev.req_id);
+function planModal(ev) {
   const m = modal(
     "Plan review",
-    `<div class="perm-preview" style="max-height:52vh">${esc(ev.plan)}</div>
+    `${WAITING_NODE}
+     <div class="perm-preview" style="max-height:52vh">${esc(ev.plan)}</div>
      <input class="deny-input hidden" placeholder="Feedback for the next iteration…">`,
     `<button class="btn" data-act="revise">Keep planning</button>
      <button class="btn" data-act="approve-ask">Approve · ask mode</button>
-     <button class="btn primary" data-act="approve-auto">Approve · auto-edit</button>`
+     <button class="btn primary" data-act="approve-auto">Approve · auto-edit</button>`,
+    { dismissible: false }
   );
   const fb = m.querySelector(".deny-input");
   m.querySelector(".modal-foot").addEventListener("click", (e) => {
@@ -140,9 +231,9 @@ function maybeShowPlan(ev) {
     if (act === "approve-ask") actions.planDecision(ev.req_id, true, "ask");
     if (act === "approve-auto") actions.planDecision(ev.req_id, true, "auto-edit");
     if (act === "revise") actions.planDecision(ev.req_id, false, null, fb.value.trim());
-    closeModal();
-    shownReviews.delete(ev.req_id);
+    answered(ev.req_id);
   });
+  return m;
 }
 
 // ---- dropdown menus ----
@@ -386,9 +477,67 @@ function armButton(btn, prompt, resting) {
   return false;
 }
 
+/** Rename one session.
+ *
+ *  Shared by the two places a session is listed — the switcher popover and the
+ *  Home view — which differ only in which project the write is addressed to,
+ *  hence `save`. The dialog keeps its own failure under the field rather than
+ *  raising a toast: the form is still on screen, so the message has a home, and
+ *  the toast is for the success, which arrives after the form is gone.
+ *
+ *  A rename is broadcast on `window` because the session being renamed may be
+ *  the one that is open, and the chip and the tab strip in the top bar have to
+ *  stop showing the old name. */
+export function openRenameSession({ convId, title = "", save, onDone }) {
+  const m = modal(
+    "Rename session",
+    `<div style="font-size:13px;color:var(--fg-dim);margin-bottom:10px">
+       A name of your own, instead of the first thing you typed. Clear the field
+       to go back to that derived name.</div>
+     <input class="deny-input" id="rename-title" spellcheck="false" maxlength="200"
+            placeholder="e.g. flaky auth test" value="${esc(title)}">
+     <div class="rn-err"></div>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" data-save>Save name</button>`,
+  );
+  const input = m.querySelector("#rename-title");
+  const err = m.querySelector(".rn-err");
+  const btn = m.querySelector("[data-save]");
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    err.textContent = "";
+    let result;
+    try {
+      result = await save(input.value);
+    } catch (e) {
+      btn.disabled = false;
+      err.textContent = e.message;
+      input.focus();
+      return;
+    }
+    const named = result?.title || input.value.trim();
+    closeModal();
+    toastOk(`Renamed to “${oneLine(named, 60)}”.`);
+    window.dispatchEvent(new CustomEvent("qc:session-renamed", {
+      detail: { convId, title: named },
+    }));
+    if (onDone) onDone(named);
+  };
+
+  btn.addEventListener("click", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+  });
+  return m;
+}
+
 /** Session switcher hanging off the top bar: the sessions of the current
- *  project plus "new session", each row deletable and archivable in place.
- *  Resolves nothing — it calls back. */
+ *  project plus "new session", each row renamable, deletable and archivable in
+ *  place. Resolves nothing — it calls back. */
 export async function openSessionMenu(anchor, { onPick, onNew }) {
   let sessions = [];
   // The archive comes along on every fetch so the footer can say how much is
@@ -418,6 +567,8 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
         <div class="mi-meta">${s.live ? "● live · " : ""}${esc(oneLine(s.model, 28))} ·
           ${s.message_count} msgs · ${relTime(s.mtime)}</div>
       </button>
+      <button class="mi-act" data-rename="${esc(s.conv_id)}"
+        title="Rename this session">✎</button>
       <button class="mi-act" data-arch="${esc(s.conv_id)}" data-on="${!s.archived}"
         title="${s.archived ? "Restore to the list" : "Archive: keep the file, hide the row"}"
         >${s.archived ? "⇧" : "⇩"}</button>
@@ -452,9 +603,13 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
     if (box) box.textContent = err.message;
   };
 
+  // Called after every write in here, so it is also where the rest of the UI
+  // hears about one: the top bar's tab strip is drawn from the same list and
+  // would otherwise keep offering a session that was just deleted.
   async function refresh() {
     try { sessions = await api.sessions(true); } catch (err) { fail(err); return; }
     render();
+    window.dispatchEvent(new CustomEvent("qc:sessions-changed"));
   }
 
   render();
@@ -474,6 +629,22 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
       // failure would have been shown.
       try { await api.cleanupSessions(); } catch (err) { fail(err); return; }
       await refresh();
+      return;
+    }
+
+    // Renaming opens a dialog, and a menu cannot stay under one, so the
+    // popover closes. The name it was showing is refreshed from the top bar
+    // instead — which is where the renamed session is, if it is the open one.
+    const ren = e.target.closest("[data-rename]");
+    if (ren) {
+      const convId = ren.dataset.rename;
+      const current = sessions.find((s) => s.conv_id === convId)?.title || "";
+      m.closeMenu();
+      openRenameSession({
+        convId,
+        title: current,
+        save: (title) => api.renameSession(convId, title),
+      });
       return;
     }
 

@@ -146,6 +146,12 @@ class Conversation:
         self.input_queue: list[str] = []
         self._inbox: asyncio.Queue[str] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
+        # Detached subagent jobs. Kept apart from ``_tasks`` -- which holds the
+        # two pumps that *are* the conversation -- because interrupt cancels
+        # these and must not touch those. A task nobody holds is collected at
+        # the end of the turn that created it, so this list is what makes a
+        # background job a background job.
+        self._jobs: list[asyncio.Task] = []
         # The session log itself — turn/seq stamping, assembly of the streamed
         # events, message persistence. Shared verbatim with the headless CLI so
         # `-p` and the UI cannot write two different kinds of session.
@@ -155,6 +161,11 @@ class Conversation:
             on_usage=self._emit_state,
             on_tasks_changed=self._emit_tasks,
             persisted=len(agent.history.messages),
+            # Subagents each own a ``Ledger``; this is the one that adds up to
+            # the session, so the recorder rolls their usage into it as it logs
+            # it. Handed over as the object, not copied: a resume has already
+            # replaced ``agent.ledger`` by the time we get here.
+            ledger=agent.ledger,
         )
 
     # ---- lifecycle ----
@@ -165,9 +176,76 @@ class Conversation:
     async def close(self) -> None:
         self.agent.cancel()
         children = list(self.rec.child_pumps.values())
-        for t in [*self._tasks, *children]:
+        jobs = list(self._jobs)
+        for t in [*self._tasks, *children, *jobs]:
             t.cancel()
-        await asyncio.gather(*self._tasks, *children, return_exceptions=True)
+        await asyncio.gather(*self._tasks, *children, *jobs, return_exceptions=True)
+
+    # ---- detached subagent jobs ----
+    def adopt_job(self, task: asyncio.Task) -> None:
+        """Take ownership of a background subagent task.
+
+        Handed to the runner as ``SubagentDeps.adopt_task``. Finished tasks are
+        dropped on the way in so a long conversation's list stays the set of
+        jobs that are actually live.
+        """
+        self._jobs = [t for t in self._jobs if not t.done()]
+        self._jobs.append(task)
+
+    def _subagent_deps(self):
+        return self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
+
+    def cancel_jobs(self) -> int:
+        """Cancel every background job still in flight. Returns how many."""
+        deps = self._subagent_deps()
+        cancelled = deps.cancel_jobs() if deps is not None else 0
+        for t in self._jobs:
+            if not t.done():
+                t.cancel()
+        self._jobs = []
+        return cancelled
+
+    def _note_jobs_in_flight(self) -> None:
+        """Never let a turn end with detached work silently outstanding.
+
+        Two audiences, one moment. The user gets a transcript note, because a
+        turn that looks finished while two subagents are still spending money
+        is the surprise this whole feature could have shipped with. The model
+        gets a queued reminder, delivered the way every other between-turn
+        change is -- once, at the top of the next turn -- so the jobs it forgot
+        about are the first thing it reads.
+        """
+        deps = self._subagent_deps()
+        if deps is None:
+            return
+        running = deps.running_jobs()
+        uncollected = deps.uncollected_jobs()
+        if not running and not uncollected:
+            return
+        if running:
+            ids = ", ".join(j.agent_id for j in running)
+            self.agent.queue_reminder(
+                f"{len(running)} background subagent job(s) are still running "
+                f"({ids}). Call agent_status to check them and agent_result to "
+                "collect each report; do not report the work as finished until "
+                "you have."
+            )
+        if uncollected:
+            ids = ", ".join(j.agent_id for j in uncollected)
+            self.agent.queue_reminder(
+                f"{len(uncollected)} background subagent job(s) have finished and "
+                f"their reports are still uncollected ({ids}). Call agent_result "
+                "on each one."
+            )
+        parts = []
+        if running:
+            parts.append(f"{len(running)} still running")
+        if uncollected:
+            parts.append(f"{len(uncollected)} finished, report uncollected")
+        self.emit({
+            "type": "system_note",
+            "text": f"(background subagent jobs: {'; '.join(parts)})",
+        })
 
     # ---- event fan-out ----
     def emit(self, ev: dict[str, Any], *, log_it: bool | None = None) -> dict[str, Any]:
@@ -204,6 +282,12 @@ class Conversation:
                 "output_tokens": a.ledger.output_tokens,
                 "cached_tokens": a.ledger.cached_tokens,
                 "cost_usd": a.ledger.cost_usd,
+                # The part of the four numbers above that subagents spent —
+                # already included in them, reported separately so the Usage
+                # panel can say what a fan-out cost without re-deriving it.
+                "subagent_input_tokens": a.ledger.subagent_input_tokens,
+                "subagent_output_tokens": a.ledger.subagent_output_tokens,
+                "subagent_cost_usd": a.ledger.subagent_cost_usd,
             },
             "pending": [
                 {"req_id": p.req_id, "kind": p.kind, **p.payload}
@@ -231,6 +315,12 @@ class Conversation:
     def on_subagent(self, agent_id: str, definition: str, bus: EventBus) -> None:
         self.rec.on_subagent(agent_id, definition, bus)
 
+    def on_subagent_done(
+        self, agent_id: str, definition: str, status: str, seconds: float = 0.0
+    ) -> None:
+        self.rec.on_subagent_done(agent_id, definition, status, seconds)
+        self._emit_state()
+
     # ---- user input ----
     def submit(self, text: str) -> None:
         text = text.strip()
@@ -248,9 +338,18 @@ class Conversation:
         self.input_queue.clear()
         if self.agent.busy:
             self.agent.cancel()
-        note = "(interrupt requested)"
+        # Detached jobs are the whole point of the feature and exactly what an
+        # interrupt is for: stopping the agent while its background children
+        # kept spending would make Esc a lie.
+        jobs = self.cancel_jobs()
+        bits = []
         if cleared:
-            note = f"(interrupt requested; {cleared} queued message{'s' if cleared != 1 else ''} cleared)"
+            bits.append(f"{cleared} queued message{'s' if cleared != 1 else ''} cleared")
+        if jobs:
+            bits.append(f"{jobs} background job{'s' if jobs != 1 else ''} cancelled")
+        note = "(interrupt requested)"
+        if bits:
+            note = f"(interrupt requested; {'; '.join(bits)})"
         self.emit({"type": "system_note", "text": note})
         self._emit_state()
 
@@ -265,6 +364,7 @@ class Conversation:
                 log.exception("turn failed")
                 self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
             self.rec.persist_new_messages(self.agent)
+            self._note_jobs_in_flight()
             # ``runtime.compaction.enabled`` gates the automatic path only:
             # /compact is a thing the user asked for, and switching the
             # automatic summary off is not a statement about that.
@@ -906,6 +1006,11 @@ class ConversationManager:
             cwd=self.cwd,
             depth=0,
             on_pane=conv.on_subagent,
+            on_done=conv.on_subagent_done,
+            # What makes a detached job survive the turn that started it, and
+            # what lets interrupt and close reach it afterwards.
+            adopt_task=conv.adopt_job,
+            owner=agent,
             # The depth-0 carve-out. Children at depth 0 are intersected
             # against the session POOL, not the orchestrator's GRANT: the
             # orchestrator's restriction says what it does with its own hands,

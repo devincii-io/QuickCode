@@ -10,14 +10,20 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from quickcode import cli
 from quickcode.config import Config
 from quickcode.core.events import TextDelta, ToolCallEnd, TurnDone, Usage
+from quickcode.kernel.composition import RuntimeLimits
 from quickcode.session.store import SessionStore
 from tests.test_server import FakeProvider
+
+
+async def _refuse():
+    raise RuntimeError("no catalog reachable")
 
 
 class CallbackProvider(FakeProvider):
@@ -267,3 +273,42 @@ def test_starting_the_app_does_not_import_the_openai_sdk():
         "something re-introduced a module-level `import openai`; import it "
         "inside the function that needs it instead"
     )
+
+
+async def test_the_headless_run_learns_its_context_window_without_delaying_the_turn():
+    """The end-of-turn compaction check needs a context window to compare against.
+
+    `-p` built its agent with `context_length=None`, so the check could never
+    fire and a `--continue` chain grew without bound. The catalog is fetched
+    alongside the turn rather than before it: a one-shot CLI must not pay a
+    network round trip before it starts working.
+    """
+    provider = FakeProvider([])
+    agent = SimpleNamespace(
+        context_length=None, provider=provider, model="test/model",
+        limits=RuntimeLimits(),
+    )
+    await cli._warm_context_length(agent)
+    assert agent.context_length == 100_000
+
+
+async def test_a_context_window_is_not_fetched_when_compaction_is_switched_off():
+    provider = FakeProvider([])
+    provider.list_models = _refuse
+    agent = SimpleNamespace(
+        context_length=None, provider=provider, model="test/model",
+        limits=RuntimeLimits(compaction_enabled=False),
+    )
+    await cli._warm_context_length(agent)          # must not raise
+    assert agent.context_length is None
+
+
+async def test_a_provider_with_no_catalog_leaves_the_meter_exactly_as_it_was():
+    provider = FakeProvider([])
+    provider.list_models = _refuse
+    agent = SimpleNamespace(
+        context_length=None, provider=provider, model="test/model",
+        limits=RuntimeLimits(),
+    )
+    await cli._warm_context_length(agent)          # a dead catalog is not an error
+    assert agent.context_length is None

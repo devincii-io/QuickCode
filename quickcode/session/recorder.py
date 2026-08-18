@@ -3,9 +3,10 @@
 An ``AgentInstance`` fans its events out on a bus. This turns that stream into
 the append-only records a session log is made of -- streamed deltas assembled
 into whole assistant messages, tool calls and their results, usage, context
-injections, subagent activity -- stamping each with ``turn``/``seq`` and
-appending it whenever ``loggable()`` accepts it. It also persists the
-model-context messages that a resume reads back.
+injections, subagent activity (including what each child spent) -- stamping
+each with ``turn``/``seq`` and appending it whenever ``loggable()`` accepts it.
+It also persists the model-context messages that a resume reads back, and rolls
+subagent usage into the session ledger as it goes.
 
 Both callers drive this same object. The server's ``Conversation`` adds the
 live fan-out to attached WebSockets and the UI state it keeps in step; the
@@ -20,6 +21,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from quickcode.core.compact import run_compaction, should_compact
 from quickcode.core.events import (
     AgentStatus,
     ReasoningDelta,
@@ -29,10 +31,11 @@ from quickcode.core.events import (
     TurnDone,
     Usage,
 )
+from quickcode.providers.base import ProviderError
 from quickcode.server.serialization import event_to_json, loggable
 
 if TYPE_CHECKING:
-    from quickcode.core.agent import AgentInstance, EventBus
+    from quickcode.core.agent import AgentInstance, EventBus, Ledger
     from quickcode.session.store import SessionStore
 
 Handler = Callable[[Any], None]
@@ -45,6 +48,10 @@ class TranscriptRecorder:
     which is what the web path pushes to its clients. ``on_usage`` and
     ``on_tasks_changed`` are the two live-only side effects the UI needs; a
     headless run leaves both unset and the log comes out the same.
+
+    ``ledger`` is the session ledger subagent spend is rolled into. The web
+    path hands it in at construction; the headless CLI builds the recorder
+    before it has an agent, so ``record_turn`` adopts the agent's ledger there.
     """
 
     def __init__(
@@ -55,11 +62,13 @@ class TranscriptRecorder:
         on_usage: Callable[[], None] | None = None,
         on_tasks_changed: Callable[[], None] | None = None,
         persisted: int = 0,
+        ledger: Ledger | None = None,
     ) -> None:
         self.store = store
         self.broadcast = broadcast
         self.on_usage = on_usage
         self.on_tasks_changed = on_tasks_changed
+        self.ledger = ledger
         # How many of the agent's history messages are already on disk.
         self.persisted = persisted
         self.turn = 0
@@ -187,6 +196,25 @@ class TranscriptRecorder:
         q = self.subscribe(bus, handler, maxsize=None)
         self.child_pumps[agent_id] = asyncio.create_task(self._consume(q, handler))
 
+    def on_subagent_done(
+        self, agent_id: str, definition: str, status: str, seconds: float = 0.0
+    ) -> None:
+        """The closing bracket of ``on_subagent``, for a detached job.
+
+        A blocking delegation needs no such record: its result lands in the
+        transcript as the spawner's tool result, in the right place, at the
+        right time. A detached one finishes at a moment nothing else in the log
+        marks, so without this a reader sees a subagent start and then simply
+        stop having events.
+        """
+        self.emit({
+            "type": "agent_done",
+            "agent_id": agent_id,
+            "definition": definition,
+            "status": status,
+            "seconds": seconds,
+        })
+
     def _child_handler(self, agent_id: str) -> Handler:
         acc_text: list[str] = []
 
@@ -196,7 +224,10 @@ class TranscriptRecorder:
                 return
             if isinstance(ev, TextDelta):
                 acc_text.append(ev.text)
-            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent))
+            # A child's usage is logged like its calls and results: a subagent
+            # owns its own ``Ledger``, so its tokens reach this session only
+            # here, and a fan-out that is not written down replays as free.
+            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent, Usage))
             if isinstance(ev, TurnDone) and acc_text:
                 self.emit(
                     {
@@ -216,8 +247,49 @@ class TranscriptRecorder:
                 {"type": "agent_event", "agent_id": agent_id, "ev": wire},
                 log_it=logged,
             )
+            if isinstance(ev, Usage):
+                # Cumulative session spend, never the parent's context
+                # footprint — see ``Ledger.add_subagent``. Emitted first so a
+                # client reads the child's usage before the state event that
+                # already counts it.
+                if self.ledger is not None:
+                    self.ledger.add_subagent(ev)
+                if self.on_usage is not None:
+                    self.on_usage()
 
         return handle_child
+
+    # ---- compaction (the headless driver's half of it) ----
+    async def maybe_compact(self, agent: AgentInstance) -> bool:
+        """Compact when the turn just ended above the declared threshold.
+
+        The web path runs this check in its worker after every turn; ``-p`` had
+        no equivalent at all, so a long headless run simply grew until the
+        provider refused it. Same function, same setting, same fix-up of
+        ``persisted`` — the one thing that differs is that the web path also
+        owns the manual ``/compact`` entry point and the live "compacting"
+        status event, which a headless run has nobody to show.
+
+        ``runtime.compaction.enabled`` gates the automatic path only.
+        """
+        limits = agent.limits
+        if not limits.compaction_enabled:
+            return False
+        if not should_compact(agent, limits.compaction_threshold):
+            return False
+        try:
+            summary = await run_compaction(agent, keep_turns=limits.keep_turns)
+        except ProviderError as e:
+            self.emit({"type": "error", "message": f"compaction failed: {e}"})
+            return False
+        # History was rebuilt wholesale; without this the summary seed and the
+        # kept tail would be appended a second time on the next persist.
+        self.persisted = len(agent.history.messages)
+        self.emit({"type": "compacted", "summary_chars": len(summary), "manual": False})
+        self.emit(
+            {"type": "system_note", "text": "(conversation compacted — earlier turns summarized)"}
+        )
+        return True
 
     # ---- one recorded turn (the headless driver) ----
     async def record_turn(self, agent: AgentInstance, text: str) -> str:
@@ -229,13 +301,23 @@ class TranscriptRecorder:
         still cancels the pumps, drains what they had not read, flushes any
         half-streamed assistant text and persists the messages — so the log is
         parseable and the session is resumable either way.
+
+        A turn that lands over the compaction threshold is compacted here, the
+        way the web worker compacts one: ``-p`` sessions resume, so "one turn
+        and then the process is gone" is true of the process, never of the
+        conversation.
         """
+        # Where a headless recorder meets its ledger: the CLI has to build the
+        # recorder before the agent exists, so subagent spend would land
+        # nowhere if this waited for the constructor.
+        if self.ledger is None:
+            self.ledger = agent.ledger
         q = self.subscribe(agent.bus, self.handle)
         pump = asyncio.create_task(self._consume(q, self.handle))
         self.emit({"type": "user_message", "text": text})
         note: dict[str, Any] | None = None
         try:
-            return await agent.run_turn(text)
+            out = await agent.run_turn(text)
         except asyncio.CancelledError:
             note = {"type": "system_note", "text": "(interrupted)"}
             raise
@@ -256,3 +338,8 @@ class TranscriptRecorder:
             if note is not None:
                 self.emit(note)
             self.persist_new_messages(agent)
+        # After the messages are on disk (compaction replaces them in memory)
+        # and outside the ``finally``, so a turn that raised propagates its own
+        # failure instead of waiting on a summarization request.
+        await self.maybe_compact(agent)
+        return out

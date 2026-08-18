@@ -45,6 +45,12 @@
 .panel-agents .pa-card {
   border: 1px solid var(--line-strong); border-radius: var(--radius);
   background: var(--surface); overflow: hidden;
+  position: relative;   /* anchor for the jump-to-latest pill */
+  /* The list is a flex column, and `overflow: hidden` above resolves this
+     card's automatic minimum size to zero — so with forty agents the browser
+     squeezed every one of them into a 14px sliver of empty border, text and
+     all. The list scrolls; the cards keep their natural height. */
+  flex: none;
 }
 .panel-agents .pa-card.open { border-color: var(--chip-agent); }
 
@@ -81,7 +87,15 @@
   display: none; padding: 8px 10px 10px;
   border-top: 1px solid var(--line);
 }
-.panel-agents .pa-card.open .pa-body { display: block; }
+/* Stacked: each transcript scrolls inside its own card, so one chatty agent
+   cannot push the rest of the roster off the screen — and so following its
+   newest line means something. */
+/* Deliberately not `scroll-behavior: smooth`: following a live transcript means
+   moving on every delta, and an animated scroll reports intermediate positions
+   that are indistinguishable from the reader scrolling away. */
+.panel-agents .pa-card.open .pa-body {
+  display: block; max-height: 42vh; overflow: auto;
+}
 
 .panel-agents .pa-waiting {
   color: var(--fg-faint); font-size: 12px; font-style: italic;
@@ -242,24 +256,64 @@
 .panel-tasks .pt-st-completed .pt-mark { color: var(--success); }
 .panel-tasks .pt-st-completed .pt-subject { text-decoration: line-through; }
 
-/* ---- agents: layout bar, columns, windowed transcripts ---- */
+/* ---- agents: layout bar, columns, grid, windowed transcripts ---- */
 
 .panel-agents .pa-bar {
   display: flex; align-items: center; gap: 8px;
-  padding-right: 8px;
+  padding-right: 8px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--line); background: var(--surface);
 }
-.panel-agents .pa-bar .pa-summary { flex: 1; min-width: 0; }
+.panel-agents .pa-bar .pa-summary {
+  flex: 1 1 160px; min-width: 0; border-bottom: 0; background: none;
+}
 
+.panel-agents .pa-search {
+  flex: 0 1 150px; min-width: 90px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--fg);
+  font: 11.5px var(--mono); padding: 3px 7px;
+}
+.panel-agents .pa-search::placeholder { color: var(--fg-faint); }
+.panel-agents .pa-search:focus { outline: none; border-color: var(--primary); }
+
+.panel-agents .pa-filters,
 .panel-agents .pa-layout { display: flex; gap: 2px; flex: none; }
-.panel-agents .pa-lay {
+
+.panel-agents .pa-filt,
+.panel-agents .pa-lay,
+.panel-agents .pa-back {
   border: 1px solid transparent; background: none; cursor: pointer;
   color: var(--fg-faint); font-size: 12px; line-height: 1;
   padding: 3px 6px; border-radius: 6px;
 }
-.panel-agents .pa-lay:hover { color: var(--fg-dim); }
+.panel-agents .pa-filt { font: 11px var(--mono); padding: 3px 5px; }
+.panel-agents .pa-filt:hover,
+.panel-agents .pa-lay:hover,
+.panel-agents .pa-back:hover { color: var(--fg-dim); }
+.panel-agents .pa-filt.on,
 .panel-agents .pa-lay.on {
   color: var(--fg); background: var(--boost); border-color: var(--line);
 }
+.panel-agents .pa-sum-err { color: var(--error); font-weight: 600; }
+.panel-agents .pa-sum-filt { color: var(--fg-dim); }
+
+/* The solo view is a different question ("what is this one doing?"), so the
+   roster controls step aside and only the way back remains. */
+.panel-agents .pa-back { display: none; flex: none; font-family: var(--mono); }
+.panel-agents.pa-soloing .pa-back { display: block; }
+.panel-agents.pa-soloing .pa-search,
+.panel-agents.pa-soloing .pa-filters,
+.panel-agents.pa-soloing .pa-layout { display: none; }
+
+.panel-agents .pa-solo {
+  flex: none; border: 1px solid var(--line); border-radius: 5px;
+  background: none; color: var(--fg-faint); cursor: pointer;
+  font: 10px var(--mono); padding: 2px 5px; line-height: 1.4;
+  opacity: 0; transition: opacity .12s ease-out;
+}
+.panel-agents .pa-card:hover .pa-solo,
+.panel-agents .pa-solo:focus-visible { opacity: 1; }
+.panel-agents .pa-solo:hover { color: var(--fg); border-color: var(--primary); }
 
 /* Side-by-side: one column per agent, each scrolling on its own, so a fast
    agent's output cannot push a slow one's off the screen. */
@@ -267,12 +321,71 @@
   flex-direction: row; align-items: stretch;
   overflow-x: auto; overflow-y: hidden;
 }
+/* Columns size to the panel rather than to a fixed 340px: at the default panel
+   width that constant showed one column and a sliver of the next, which reads
+   as a rendering fault rather than as "scroll for more". */
 .panel-agents .pa-list.pa-cols .pa-card {
-  flex: 0 0 340px; max-width: 340px;
+  flex: 0 0 min(340px, 47%); max-width: min(340px, 47%);
   display: flex; flex-direction: column; min-height: 0;
 }
-.panel-agents .pa-list.pa-cols .pa-body {
-  flex: 1; min-height: 0; overflow: auto;
+
+/* Grid: columns *and* rows. Side-by-side runs out of screen at about four
+   agents; a fan-out of fifty needs to wrap, with each transcript boxed to a
+   readable height and scrolling inside its own card. */
+.panel-agents .pa-list.pa-grid {
+  display: grid; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-auto-rows: clamp(180px, 32vh, 320px);
+  overflow: auto;
+}
+.panel-agents .pa-list.pa-grid .pa-card {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+}
+
+/* Solo: one agent, the whole panel. */
+.panel-agents .pa-list.pa-solo-view .pa-card {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+}
+.panel-agents .pa-list.pa-solo-view .pa-solo { opacity: 1; }
+
+.panel-agents .pa-list.pa-cols .pa-card.open .pa-body,
+.panel-agents .pa-list.pa-grid .pa-card.open .pa-body,
+.panel-agents .pa-list.pa-solo-view .pa-card.open .pa-body {
+  flex: 1; min-height: 0; max-height: none; overflow: auto;
+}
+
+/* Dense: past ~18 agents the chrome costs more than it explains. */
+.panel-agents .pa-list.pa-dense { gap: 6px; padding: 8px; }
+.panel-agents .pa-list.pa-dense.pa-grid {
+  grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+  grid-auto-rows: clamp(150px, 26vh, 260px);
+}
+.panel-agents .pa-list.pa-dense .pa-head { padding: 5px 8px; gap: 6px; }
+.panel-agents .pa-list.pa-dense .pa-body { padding: 6px 8px 8px; }
+
+/* What this agent is doing right now, for a card whose transcript is closed
+   or scrolled away — fifty identical headers say nothing on their own. */
+.panel-agents .pa-last {
+  display: none; padding: 0 10px 7px 26px;
+  font: 11px var(--mono); color: var(--fg-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-agents .pa-card:not(.open) .pa-last:not(:empty) { display: block; }
+
+/* Follow is implicit: a transcript sticks to its newest line until the reader
+   scrolls away from the bottom, and this offers the way back. */
+.panel-agents .pa-jump {
+  display: none; position: absolute; right: 12px; bottom: 8px;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: var(--panel); color: var(--fg-dim); cursor: pointer;
+  font: 10.5px var(--mono); padding: 3px 9px;
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.panel-agents .pa-card.open.unpinned .pa-jump { display: block; }
+.panel-agents .pa-jump:hover { color: var(--fg); border-color: var(--primary); }
+
+.panel-agents .pa-nomatch {
+  margin: 18px auto; color: var(--fg-faint); font-size: 12px; text-align: center;
 }
 
 .panel-agents .pa-more {

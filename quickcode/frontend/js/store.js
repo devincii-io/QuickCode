@@ -95,6 +95,13 @@ export function ingest(ev) {
     } else if (t === "agent_event") {
       const a = store.agents.get(ev.agent_id);
       if (a && ev.ev?.type === "assistant_message") { a.streamText = ""; a.done = true; }
+    } else if (t === "agent_done") {
+      // A detached job's closing bracket. A blocking subagent goes terminal on
+      // its assistant_message above; a background one finishes at a moment
+      // nothing else in the stream marks, so this is the only signal the
+      // roster gets that the row is over.
+      const a = store.agents.get(ev.agent_id);
+      if (a) { a.streamText = ""; a.done = true; a.status = ev.status; }
     }
     notify("event", ev);
     return;
@@ -147,13 +154,21 @@ function countMetric(ev) {
     if (!store.replaying) {
       m._turnStart = performance.now();
       m._firstToken = 0;
-      m._outputAtTurnStart = store.state?.ledger?.output_tokens || 0;
+      m._outputAtTurnStart = mainOutput();
     }
   } else if (ev.type === "tool_call") {
     m.steps += 1;
   } else if (ev.type === "tool_result") {
     m.toolMs += ev.ms || 0;
   }
+}
+
+// Output tokens this client actually watched arrive. Subagents run their own
+// loops off-screen, so counting their output here would report a tokens/second
+// the streaming model never ran at — a fan-out of four would read as 4× fast.
+function mainOutput() {
+  const l = store.state?.ledger;
+  return (l?.output_tokens || 0) - (l?.subagent_output_tokens || 0);
 }
 
 function markFirstToken() {
@@ -171,7 +186,7 @@ function endTurnTiming() {
   m.llmMs += now - m._turnStart;
   // Tokens per second is measured from the first token, not from the request:
   // including the wait to first token would report a rate the model never ran at.
-  const produced = (store.state?.ledger?.output_tokens || 0) - m._outputAtTurnStart;
+  const produced = mainOutput() - m._outputAtTurnStart;
   const seconds = (now - (m._firstToken || m._turnStart)) / 1000;
   if (produced > 0 && seconds > 0.05) m.tps = produced / seconds;
   m._turnStart = 0;

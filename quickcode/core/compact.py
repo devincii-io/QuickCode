@@ -72,8 +72,13 @@ async def run_compaction(agent: AgentInstance, *, keep_turns: int = 2) -> str:
     tail = _select_tail(agent.history.messages, keep_turns)
     agent.history.replace_with_summary(summary, tail)
     agent.mark_compacted()
-    # Reset the ledger's running input estimate; the next real request will
-    # re-measure from the smaller history.
-    agent.ledger.input_tokens = 0
-    agent.ledger.output_tokens = 0
+    # Drop the context footprint: history was just rebuilt, so the last
+    # request's size describes a transcript that no longer exists, and the
+    # meter would sit pinned at the threshold that triggered this until the
+    # next request re-measures. The cumulative fields are *not* touched --
+    # compacting a conversation does not un-spend what it already cost, and
+    # zeroing them here made the status bar and a resumed session (which
+    # rebuilds from the log) disagree about the same conversation.
+    agent.ledger.last_input_tokens = 0
+    agent.ledger.last_output_tokens = 0
     return summary

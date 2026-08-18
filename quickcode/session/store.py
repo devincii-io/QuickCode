@@ -55,6 +55,13 @@ TRANSCRIPT_EVENT_TYPES = frozenset(
 
 _REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTALL)
 
+# The longest name a rename may give a session. Titles derived from the first
+# user message are cut at 60; a chosen one may be a sentence, because it is the
+# only handle on a conversation whose first message says "continue" — but it is
+# drawn in a chip, a tab and a menu row, all of which truncate, so a paragraph
+# would only be a paragraph on disk.
+MAX_TITLE = 200
+
 
 def message_to_dict(msg: ChatMessage) -> dict[str, Any]:
     """Serialize a ``ChatMessage`` to a plain JSON-able dict."""
@@ -240,6 +247,23 @@ class SessionStore:
     def append_meta(self, **fields: Any) -> None:
         self._append_line({"kind": "meta", **fields})
 
+    def rename(self, title: str) -> str:
+        """Give this session a name of its own; returns the name it now shows.
+
+        An append like every other write here, which is what makes it safe on a
+        conversation that is running: nothing is rewritten and nothing moves, so
+        the live writer keeps appending to the same file behind it. (Archiving
+        and deleting cannot say that — they move or unlink the log — which is
+        why those two refuse a live session and this does not.)
+
+        Whitespace is collapsed because the title is rendered on one line in
+        three places, and a blank title is a request to go back to the derived
+        name rather than to display nothing.
+        """
+        cleaned = " ".join(str(title).split())[:MAX_TITLE]
+        self.append_meta(title=cleaned)
+        return self.title()
+
     def append_event(self, ev: dict[str, Any]) -> int:
         """Append one trace event; returns the sequence number assigned."""
         if self._next_seq is None:
@@ -329,9 +353,18 @@ class SessionStore:
         return merged
 
     def title(self) -> str:
+        # The *last* meta title wins, not the first. Renaming is an append —
+        # there is no other kind of write this format has — so a log that has
+        # been renamed twice carries two titles, and reading the first one back
+        # would show the name the user just replaced. Empty is not a title: a
+        # session is opened with ``title=""``, and a rename to nothing is a
+        # request to go back to the derived name below, not to display blank.
+        chosen = ""
         for rec in self._iter_records():
-            if rec.get("kind") == "meta" and rec.get("title"):
-                return str(rec["title"])
+            if rec.get("kind") == "meta" and "title" in rec:
+                chosen = str(rec["title"] or "").strip()
+        if chosen:
+            return chosen
         # The event before the message, because the event carries what the user
         # typed and the persisted message carries what the model was sent —
         # which has `<system-reminder>` blocks spliced into it. Titling a

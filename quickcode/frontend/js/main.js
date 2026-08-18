@@ -199,23 +199,86 @@ function refreshStatus(state) {
   stEl.className = "st-seg st-state s-" + state;
 }
 
-// The chip shows the session's own title, which the backend derives from the
-// first user message — so it only becomes meaningful after that message lands.
-async function refreshSessionChip() {
-  const chip = $("session-chip");
-  const convId = store.convId;
-  let title = "New session";
-  try {
-    const sessions = await api.sessions();
-    const mine = sessions.find((s) => s.conv_id === convId);
-    if (mine?.title) title = oneLine(mine.title, 42);
-  } catch { /* offline: keep the placeholder */ }
-  if (store.convId !== convId) return;   // switched while we were asking
-  chip.textContent = title + " ▾";
-  chip.title = `Session ${convId} — click to switch`;
+// ---- the session bar: the chip, and the tab strip beside it ----
+//
+// The chip shows the open session's own title — derived from the first user
+// message unless it has been renamed — and opens the full list. The strip is
+// the recently-used conversations as tabs, so switching is one click and you
+// can see what else is there.
+//
+// The strip is emphatically a list of *shortcuts*. js/ws.js allows exactly one
+// live socket and connect() resets the event store, so an inactive tab is an
+// id and nothing more: clicking it leaves the conversation you are in. The
+// titles say so, and no tab ever shows a running indicator.
+
+const TAB_LIMIT = 6;          // beyond this the overflow button opens the list
+
+// A session with nothing in it yet is listed as "(empty)", which is the right
+// word for a row in a list of many and the wrong one for the session you are
+// sitting in. Here it is the one you just started.
+function label(s, n = 90) {
+  const title = s?.title && s.title !== "(empty)" ? s.title : "New session";
+  return oneLine(title, n);
 }
 
-const bumpSessionChip = debounce(refreshSessionChip, 800);
+function tabHint(s, active) {
+  if (active) return `This session: ${label(s)}`;
+  return `Switch to “${label(s)}” — QuickCode runs one conversation at a time, `
+    + "so this leaves the one you are in.";
+}
+
+function renderSessionTabs(sessions, convId, mine) {
+  const strip = $("session-tabs");
+  if (!strip) return;
+  // The archive is deliberately absent: a filed-away session is not a recent
+  // one, and it is one click away in the popover, which does list it.
+  const listed = sessions.filter((s) => !s.archived);
+  const shown = listed.slice(0, TAB_LIMIT);
+  // Whatever else has been touched more recently, the open session is a tab:
+  // a switcher that cannot show you where you are is not a switcher. A brand
+  // new conversation may not be in the list yet, so it gets a placeholder.
+  if (convId && !shown.some((s) => s.conv_id === convId)) {
+    if (shown.length >= TAB_LIMIT) shown.pop();
+    shown.push(mine || { conv_id: convId, title: "New session" });
+  }
+  const hidden = Math.max(0, listed.length - shown.length);
+  const tab = (s) => {
+    const active = s.conv_id === convId;
+    return `<button class="session-tab${active ? " active" : ""}"
+      data-conv="${esc(s.conv_id)}" ${active ? 'aria-current="page"' : ""}
+      title="${esc(tabHint(s, active))}">${esc(label(s, 22))}</button>`;
+  };
+  strip.innerHTML = shown.map(tab).join("") + (hidden
+    ? `<button class="session-tab stab-more" data-more
+         title="${hidden} more session${hidden === 1 ? "" : "s"} — the whole list, with
+                rename, archive and delete">+${hidden}</button>`
+    : "");
+  // One tab and nothing hidden is the chip said twice; the strip stays away.
+  strip.classList.toggle("hidden", shown.length < 2 && !hidden);
+}
+
+async function refreshSessionBar() {
+  const chip = $("session-chip");
+  const convId = store.convId;
+  let sessions = [];
+  try {
+    sessions = await api.sessions();
+  } catch { /* offline: keep whatever is on screen */ }
+  if (store.convId !== convId) return;   // switched while we were asking
+  const mine = sessions.find((s) => s.conv_id === convId);
+  chip.textContent = label(mine, 42) + " ▾";
+  chip.title = `Session ${convId} — click for the full list`;
+  renderSessionTabs(sessions, convId, mine);
+}
+
+const bumpSessionBar = debounce(refreshSessionBar, 800);
+
+// One set of hooks for both ways into the switcher — the chip's popover and
+// the strip's overflow button — so they can never come to mean two things.
+const switcher = {
+  onPick: (convId) => openConversation(convId),
+  onNew: () => openConversation(null),
+};
 
 // ---- the update chip ----
 //
@@ -254,6 +317,10 @@ async function openProject(project, { resume = null } = {}) {
 
   $("project-chip").textContent = project.name || "…";
   $("session-chip").textContent = "New session ▾";
+  // The tabs belong to the project being left; blank them rather than let the
+  // wrong project's sessions sit there until the new list arrives.
+  $("session-tabs").innerHTML = "";
+  $("session-tabs").classList.add("hidden");
 
   let bs;
   try {
@@ -292,7 +359,7 @@ async function openConversation(resume) {
       `<div class="err-note">Could not start a conversation (${err.message}).</div>`;
     return;
   }
-  refreshSessionChip();
+  refreshSessionBar();
 }
 
 // ---- boot ----
@@ -354,16 +421,35 @@ async function boot() {
     else if (app.classList.contains("showing-help")) closeHelp();
   });
   $("session-chip").addEventListener("click", (e) =>
-    openSessionMenu(e.currentTarget, {
-      onPick: (convId) => openConversation(convId),
-      onNew: () => openConversation(null),
-    }));
+    openSessionMenu(e.currentTarget, switcher));
+
+  // The strip switches; it does not manage. Everything else a session can have
+  // done to it lives one click away, in the popover the overflow button opens.
+  $("session-tabs").addEventListener("click", (e) => {
+    const more = e.target.closest("[data-more]");
+    if (more) { openSessionMenu(more, switcher); return; }
+    const tab = e.target.closest("[data-conv]");
+    if (!tab || tab.dataset.conv === store.convId) return;
+    openConversation(tab.dataset.conv);
+  });
+
+  // A rename can happen in the popover or in a Home row, and either may name
+  // the session that is open; archiving and deleting happen in the popover and
+  // change which sessions there are to switch to. Either way the bar re-reads
+  // rather than guessing what the list now looks like.
+  for (const ev of ["qc:session-renamed", "qc:sessions-changed"]) {
+    window.addEventListener(ev, () => {
+      if (!document.getElementById("app").classList.contains("showing-home")) {
+        refreshSessionBar();
+      }
+    });
+  }
 
   subscribe((kind, ev) => {
     if (kind === "state") refreshState();
     if (kind === "status") { refreshStatus(ev.state); refreshCompositionPill(); }
     if (kind === "queued") { queuedTexts.push(ev.text); renderQueue(); }
-    if (kind === "event" && ev.type === "user_message") bumpSessionChip();
+    if (kind === "event" && ev.type === "user_message") bumpSessionBar();
     // A switch changes what every configuration page would say about this
     // session, and the view caches the kernel for the life of a visit.
     if (kind === "event" && ev.type === "composition_changed") invalidateConfig();

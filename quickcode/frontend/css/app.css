@@ -492,6 +492,9 @@ textarea, input { font: inherit; color: inherit; }
   width: 100%; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; margin-top: 8px;
 }
+/* A rename that was refused says so under the field it was typed in — the form
+   is still on screen, so the message has a home and does not need a toast. */
+.rn-err:not(:empty) { margin-top: 8px; font-size: 12px; color: var(--error); }
 
 /* dropdown menus (mode / model) */
 .menu {
@@ -658,6 +661,46 @@ textarea, input { font: inherit; color: inherit; }
   background: color-mix(in srgb, var(--error) 14%, transparent);
 }
 .menu-err { flex: 1 0 100%; font-size: 11px; color: var(--error); }
+
+/* ---------- toasts (js/toast.js) ---------- */
+/* Bottom-right, above the composer's menus in z-order but out of the click
+   path: the host itself never takes a pointer event, only the cards do. */
+.toast-host {
+  position: fixed; right: 16px; bottom: 16px; z-index: 90;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  max-width: min(420px, calc(100vw - 32px)); pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px 9px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line-strong); background: var(--panel);
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+  font-size: 12.5px; line-height: 1.45;
+  animation: toast-in .16s ease-out;
+}
+.toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-x {
+  flex: none; color: var(--fg-faint); font-size: 12px; line-height: 1;
+  padding: 2px 3px; border-radius: 5px;
+}
+.toast-x:hover { color: var(--fg); background: var(--boost); }
+.toast-ok {
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, var(--panel));
+}
+.toast-info { border-color: var(--line-strong); }
+.toast-err {
+  border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, var(--panel));
+  color: var(--fg);
+}
+.toast-out { opacity: 0; transition: opacity .15s ease-in; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* @path rows reuse the slash menu, but a path is long where a command is
+   short, so its label wraps instead of stretching the popover. */
+.slash-menu .sm-cmd { overflow-wrap: anywhere; }
 
 /* Keyboard focus has to be visible — several inputs clear the UA outline on
    purpose, so this comes last and only fires for keyboard focus. */

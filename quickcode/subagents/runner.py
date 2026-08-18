@@ -3,10 +3,20 @@
 A subagent is the same ``AgentInstance`` as everything else — the differences
 are a fresh prompt/history, a bounded toolset, a capped permission mode, and an
 auto-deny permission callback (a headless child cannot prompt the user).
+
+Two spawn shapes share every line of that. ``spawn_subagent`` awaits the child
+and hands back its report, which is what the ``agent`` tool has always done.
+``spawn_subagent_background`` runs the identical preparation, then puts the
+same finishing coroutine on a task the *conversation* owns and returns a
+``JobRecord`` immediately -- so the model keeps its turn and collects later
+through ``agent_status`` / ``agent_result``. The child, its ceiling, its
+sanitization and its artifact offload are the same either way; only who waits
+differs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -34,6 +44,7 @@ from quickcode.prompts.subagent import render_subagent_prompt
 from quickcode.providers.base import Provider
 from quickcode.subagents.artifacts import maybe_offload
 from quickcode.subagents.definitions import AgentDef, load_defs
+from quickcode.subagents.jobs import CANCELLED, DONE, ERROR, JobRecord
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry, build_registry, core_tools
 
@@ -47,6 +58,12 @@ if TYPE_CHECKING:
 # past the number its own card promises.
 MAX_DEPTH = RuntimeLimits().max_depth
 MAX_AGENTS = RuntimeLimits().max_agents
+# How many detached jobs may be *in flight* at once. ``max_agents`` bounds the
+# total a conversation may ever spawn; it says nothing about how many run
+# together, and a tool that returns immediately makes an unbounded fan-out one
+# cheap loop away. Blocking spawns are bounded by the number of tool calls in a
+# single assistant message and are deliberately not counted here.
+MAX_PARALLEL = RuntimeLimits().max_parallel
 
 # Kept as module names because callers import them from here. The definitions
 # moved into ``kernel/composition.py`` so the resolver can narrow a ceiling
@@ -56,12 +73,27 @@ _PRIV = MODE_PRIVILEGE
 __all__ = [
     "MAX_AGENTS",
     "MAX_DEPTH",
+    "MAX_PARALLEL",
+    "BackgroundUnavailable",
+    "JobRecord",
     "SubagentDeps",
     "cap_mode",
     "resume_subagent",
     "sanitize_report",
     "spawn_subagent",
+    "spawn_subagent_background",
 ]
+
+
+class BackgroundUnavailable(ValueError):
+    """This session has nowhere to park a detached job.
+
+    A ``ValueError`` so a caller that does not care still turns it into an
+    error result, but its own type so the ``agent`` tool can do the useful
+    thing instead: run the delegation inline and say that it did. A headless
+    ``-p`` run is the case that matters -- the process ends with the turn, so a
+    task nobody awaits is a report nobody reads.
+    """
 
 
 @dataclass
@@ -85,10 +117,30 @@ class SubagentDeps:
     # Every spawned child, keyed by agent_id, so ``send_message`` can resume one
     # by id from anywhere in the tree. Shared down the tree like counter/spawned.
     roster: dict[str, AgentInstance] = field(default_factory=dict)
+    # Detached runs, keyed by the same agent_id. Shared down the tree for the
+    # same reason the roster is: a job started three levels down is still this
+    # conversation's job to cap, cancel and clean up.
+    jobs: dict[str, JobRecord] = field(default_factory=dict)
     # UI hook: called synchronously at spawn with (agent_id, definition name,
     # the child's EventBus) so a live pane can subscribe to the child's stream.
     # Optional — headless runs leave it None.
     on_pane: Callable[[str, str, EventBus], None] | None = None
+    # The other end of ``on_pane``: called once, on the task, when a detached
+    # job reaches a terminal state, with (agent_id, definition name, status,
+    # seconds). It is what emits ``agent_done``. Blocking spawns do not fire it
+    # -- their completion is the tool result, and a roster row that goes
+    # terminal twice is worse than one that goes terminal once.
+    on_done: Callable[[str, str, str, float], None] | None = None
+    # Where a detached job's task goes to be owned. A task nobody holds is
+    # garbage-collected at the end of the turn that created it, so this is not
+    # bookkeeping -- it is the difference between a background job and a
+    # cancelled one. None means this session cannot detach at all (see
+    # ``BackgroundUnavailable``).
+    adopt_task: Callable[[Any], None] | None = None
+    # The agent these deps belong to -- the one that calls the ``agent`` tool,
+    # and so the one to wake when one of its jobs finishes. Set per level, not
+    # shared down: a nested agent's jobs are news for the nested agent.
+    owner: AgentInstance | None = None
     # The tools this session actually has, including plugin and MCP ones. A
     # definition's ``tools:`` list is selected from this. None falls back to
     # the built-in core tools, which is what a bare embedder gets.
@@ -142,7 +194,10 @@ class SubagentDeps:
             counter=self.counter,
             spawned=self.spawned,
             roster=self.roster,
+            jobs=self.jobs,
             on_pane=self.on_pane,
+            on_done=self.on_done,
+            adopt_task=self.adopt_task,
             tool_pool=self.tool_pool if tool_pool is None else tool_pool,
             allowed_agents=self.allowed_agents,
             pool=self.pool,
@@ -164,6 +219,32 @@ class SubagentDeps:
 
     def definitions(self) -> dict[str, AgentDef]:
         return self.defs if self.defs is not None else load_defs(self.cwd)
+
+    # -- detached jobs ----------------------------------------------------
+
+    def background_available(self) -> bool:
+        """Whether a detached job would have an owner to outlive the turn."""
+        return self.adopt_task is not None
+
+    def running_jobs(self) -> list[JobRecord]:
+        return [j for j in self.jobs.values() if j.running]
+
+    def uncollected_jobs(self) -> list[JobRecord]:
+        """Finished jobs whose report the spawner has not read yet."""
+        return [j for j in self.jobs.values() if not j.running and not j.collected]
+
+    def cancel_jobs(self) -> int:
+        """Cancel every job still in flight. Returns how many were cancelled.
+
+        Called by the conversation on interrupt and on close. The tasks mark
+        themselves ``cancelled`` as they unwind, so the registry stays truthful
+        without this having to guess.
+        """
+        live = self.running_jobs()
+        for job in live:
+            if job.task is not None and not job.task.done():
+                job.task.cancel()
+        return len(live)
 
 
 async def _deny_cb(_req: PermissionRequest) -> PermissionOutcome:
@@ -192,17 +273,18 @@ def sanitize_report(text: str) -> str:
     return "[quickcode: sanitized subagent report]\n" + text.strip()
 
 
-async def spawn_subagent(
+def _prepare_child(
     deps: SubagentDeps,
     *,
     agent_type: str,
-    prompt: str,
     model_override: str | None = None,
-) -> tuple[str, str]:
-    """Run one subagent to completion. Returns ``(agent_id, sanitized_report)``.
+) -> tuple[str, AgentInstance]:
+    """Everything a spawn does before the child's first turn.
 
-    Raises ValueError for an unknown agent_type or when a spawn limit is hit —
-    the tool wrapper turns those into an error ToolResult.
+    Split out so a detached spawn refuses *synchronously*: an unknown agent
+    type, an exhausted budget or a refused composition comes back as a tool
+    error the model can act on, instead of as a job that exists only to report
+    that it should never have been started.
     """
     max_agents = deps.limits.max_agents
     if len(deps.spawned) >= max_agents:
@@ -268,6 +350,9 @@ async def spawn_subagent(
                    tool_pool=list(registry.tools.values()), parent=resolved)
         if include_agent else None
     )
+    # ``defn.name`` follows the child around: the pane, the done event and the
+    # job record all name the definition rather than the id's prefix.
+    child_definition = defn.name
 
     child_ctx = ToolCtx(
         cwd=deps.cwd,
@@ -292,17 +377,130 @@ async def spawn_subagent(
     # Registered immediately so the agent is resumable via send_message even if
     # this first run errors out below.
     deps.roster[agent_id] = child
+    # The child's own deps point at the child, so a job *it* starts wakes it
+    # rather than whoever is three levels up. Set here because the deps have to
+    # exist before the ``ToolCtx`` that carries them, and the child after that.
+    if child_deps is not None:
+        child_deps.owner = child
 
     # Surface a live pane before the child starts streaming. A UI failure here
     # must never break the subagent run, so it is fully isolated.
     if deps.on_pane is not None:
         try:
-            deps.on_pane(agent_id, defn.name, child.bus)
+            deps.on_pane(agent_id, child_definition, child.bus)
         except Exception:  # noqa: BLE001 — the pane is best-effort telemetry
             pass
 
+    return agent_id, child
+
+
+async def spawn_subagent(
+    deps: SubagentDeps,
+    *,
+    agent_type: str,
+    prompt: str,
+    model_override: str | None = None,
+) -> tuple[str, str]:
+    """Run one subagent to completion. Returns ``(agent_id, sanitized_report)``.
+
+    Raises ValueError for an unknown agent_type or when a spawn limit is hit —
+    the tool wrapper turns those into an error ToolResult.
+    """
+    agent_id, child = _prepare_child(
+        deps, agent_type=agent_type, model_override=model_override
+    )
     report = await _run_and_finish(deps, agent_id, child, prompt)
     return agent_id, report
+
+
+def spawn_subagent_background(
+    deps: SubagentDeps,
+    *,
+    agent_type: str,
+    prompt: str,
+    description: str = "",
+    model_override: str | None = None,
+) -> JobRecord:
+    """Start a subagent and hand back its job handle without waiting for it.
+
+    Synchronous on purpose: everything that can be refused is refused before
+    the caller's tool result is written, and the only thing the caller gets
+    back is a handle to something already running.
+
+    Raises ``BackgroundUnavailable`` when this session has no owner for the
+    task, and ``ValueError`` for every refusal a blocking spawn would raise
+    plus the live-parallelism cap.
+    """
+    if not deps.background_available():
+        raise BackgroundUnavailable(
+            "this session cannot run detached subagent jobs (nothing here "
+            "outlives the turn to own them)"
+        )
+    cap = deps.limits.max_parallel
+    live = deps.running_jobs()
+    if len(live) >= cap:
+        names = ", ".join(j.agent_id for j in live)
+        raise ValueError(
+            f"background job limit reached ({cap} running at once: {names}). "
+            "Collect one with agent_result before starting another, or spawn "
+            "this one without background."
+        )
+
+    agent_id, child = _prepare_child(
+        deps, agent_type=agent_type, model_override=model_override
+    )
+    job = JobRecord(
+        agent_id=agent_id, agent_type=agent_type, description=description
+    )
+    deps.jobs[agent_id] = job
+    job.task = asyncio.ensure_future(_run_job(deps, job, child, prompt))
+    deps.adopt_task(job.task)
+    return job
+
+
+async def _run_job(
+    deps: SubagentDeps, job: JobRecord, child: AgentInstance, prompt: str
+) -> None:
+    """One detached run: the same finishing path, then announce the result.
+
+    Never raises anything but ``CancelledError`` — a background task that
+    raises has nobody to catch it, and its traceback would surface as an
+    unretrieved-exception warning long after the turn that started it.
+    """
+    try:
+        report = await _run_and_finish(deps, job.agent_id, child, prompt)
+    except asyncio.CancelledError:
+        job.finish(CANCELLED, sanitize_report(
+            "[did not finish] the background job was cancelled."
+        ))
+        _announce(deps, job)
+        raise
+    except Exception as e:  # noqa: BLE001 — a job failure must not escape
+        job.finish(ERROR, sanitize_report(
+            f"[did not finish] the background job errored: {e}"
+        ))
+        _announce(deps, job)
+        return
+    job.finish(DONE, report)
+    _announce(deps, job)
+
+
+def _announce(deps: SubagentDeps, job: JobRecord) -> None:
+    """Tell the UI and the spawner that a job reached a terminal state.
+
+    Both halves are isolated: telemetry and a queued reminder are the two
+    things least entitled to break a job that has already done its work.
+    """
+    if deps.on_done is not None:
+        try:
+            deps.on_done(job.agent_id, job.agent_type, job.status, job.seconds())
+        except Exception:  # noqa: BLE001 — the event is best-effort telemetry
+            pass
+    if deps.owner is not None:
+        try:
+            deps.owner.queue_reminder(job.reminder())
+        except Exception:  # noqa: BLE001 — so is the nudge
+            pass
 
 
 async def _run_and_finish(

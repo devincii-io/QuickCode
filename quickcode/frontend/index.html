@@ -55,6 +55,13 @@
       </button>
       <span class="project-chip" id="project-chip" title="project directory">…</span>
       <button class="session-chip" id="session-chip" title="Switch session">New session ▾</button>
+      <!-- The recently-used conversations, one click each. They are shortcuts,
+           not running sessions: QuickCode streams exactly one conversation at a
+           time (js/ws.js keeps one socket and resets the event store on
+           connect), so clicking a tab leaves the one you are in. Managing
+           sessions — rename, archive, delete, sweep — stays in the chip's
+           popover, which is also where the tabs that did not fit are. -->
+      <nav class="session-tabs hidden" id="session-tabs" aria-label="Recent sessions"></nav>
 
       <div class="topbar-actions">
         <!-- Shown only when a newer release exists, and never any other time:

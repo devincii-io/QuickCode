@@ -210,6 +210,27 @@ def _protected(path: str, root: Path) -> bool:
     return False
 
 
+def _is_subagent_artifact(path: str, root: Path) -> bool:
+    """True for a path inside ``<root>/.quickcode/artifacts/``.
+
+    A subagent's large report is offloaded there and the parent is told, in the
+    tool result, to read that file for the rest — so the session prompts for a
+    file it wrote itself moments earlier, in every mode including yolo. There is
+    no decision behind that prompt: the content is already the agent's own.
+
+    Resolved exactly as ``_protected`` resolves, so a symlink or a ``..`` that
+    lands outside the directory does not qualify. Callers apply this to *reads*
+    only; writing here still goes through the ordinary ``.quickcode`` prompt.
+    """
+    try:
+        candidate = Path(path).expanduser()
+        rp = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        artifacts = (root / ".quickcode" / "artifacts").resolve()
+    except Exception:
+        return False
+    return rp == artifacts or artifacts in rp.parents
+
+
 _SPEC_CACHE: dict[str, PermissionSpec] | None = None
 
 
@@ -273,11 +294,13 @@ class PermissionEngine:
         is_write = spec.mutates
         is_read = not spec.mutates
 
-        # 1. Protected paths always prompt (before any allow rule).
+        # 1. Protected paths always prompt (before any allow rule). The one
+        #    exception is reading back the session's own subagent artifacts.
         if spec.path_target and _protected(arg, self.root):
-            if self.mode in (Mode.dontask,):
-                return Decision.deny
-            return Decision.ask
+            if not (is_read and _is_subagent_artifact(arg, self.root)):
+                if self.mode in (Mode.dontask,):
+                    return Decision.deny
+                return Decision.ask
 
         # 2. Shell tools get decomposed and evaluated per subcommand (handles
         #    plan mode itself — read-only builtins stay allowed, rest denied).

@@ -339,6 +339,9 @@ def select_tools(preset: Preset, pool: list) -> list:
 
     tools = select(pool, preset.tools)
     if not preset.spawns:
-        # No subagents means the delegation tools would only ever fail.
-        tools = [t for t in tools if t.name not in ("agent", "send_message")]
+        # No subagents means the delegation tools would only ever fail. Read
+        # off the one list, so a tool added to the set is covered here too.
+        from quickcode.kernel.composition import DELEGATION_TOOLS
+
+        tools = [t for t in tools if t.name not in DELEGATION_TOOLS]
     return tools

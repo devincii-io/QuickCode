@@ -42,8 +42,14 @@ from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
+from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectHub, list_dirs
-from quickcode.session.store import SESSIONS_DIRNAME, SessionStore, purge_sessions
+from quickcode.session.store import (
+    MAX_TITLE,
+    SESSIONS_DIRNAME,
+    SessionStore,
+    purge_sessions,
+)
 
 log = logging.getLogger("quickcode.server")
 
@@ -609,6 +615,46 @@ def create_app(
             raise HTTPException(500, f"could not delete session: {e}") from e
         return Response(status_code=204)
 
+    async def _rename_session(
+        manager: ConversationManager, conv_id: str, request: Request
+    ) -> dict:
+        """Give a session a name of its own.
+
+        Deliberately allowed on a *live* conversation, where deleting and
+        archiving are refused. Those two move or unlink the log out from under
+        its own writer; this appends one ``meta`` record to it, which is what
+        every other write to a session log already is — the model change at
+        manager.py's ``append_meta(model=…)`` does it mid-conversation too. So
+        the answer is 200 and the new name is in effect immediately, for the
+        list and for the session that is open.
+
+        A blank title is not an error: it clears a name that was chosen and
+        hands the session back to the one derived from its first message. The
+        response therefore carries the title the listings will now show, not
+        the string that was sent.
+        """
+        if not _valid_conv_id(conv_id):
+            raise HTTPException(404, "unknown conversation")
+        store = SessionStore(manager.cwd, conv_id)
+        if not store.path.exists():
+            raise HTTPException(404, "unknown conversation")
+        body = await _read_json(request)
+        title = body.get("title") if isinstance(body, dict) else None
+        if not isinstance(title, str):
+            raise HTTPException(
+                400,
+                "body must be {'title': <string>}; an empty title clears the "
+                "name and the session goes back to the one taken from its "
+                "first message",
+            )
+        if len(title.strip()) > MAX_TITLE:
+            raise HTTPException(400, f"title is longer than {MAX_TITLE} characters")
+        try:
+            effective = store.rename(title)
+        except OSError as e:
+            raise HTTPException(500, f"could not rename session: {e}") from e
+        return {"conv_id": conv_id, "title": effective}
+
     def _set_archived(
         manager: ConversationManager, conv_id: str, archived: bool
     ) -> dict:
@@ -707,6 +753,10 @@ def create_app(
     @app.delete("/api/sessions/{conv_id}")
     def delete_session(conv_id: str) -> Response:
         return _delete_session(hub.default, conv_id)
+
+    @app.patch("/api/sessions/{conv_id}")
+    async def rename_session(conv_id: str, request: Request) -> dict:
+        return await _rename_session(hub.default, conv_id, request)
 
     @app.post("/api/sessions/{conv_id}/archive")
     def archive_session(conv_id: str) -> dict:
@@ -860,6 +910,10 @@ def create_app(
     @app.delete("/api/projects/{pid}/sessions/{conv_id}")
     def project_delete_session(pid: str, conv_id: str) -> Response:
         return _delete_session(_project(pid), conv_id)
+
+    @app.patch("/api/projects/{pid}/sessions/{conv_id}")
+    async def project_rename_session(pid: str, conv_id: str, request: Request) -> dict:
+        return await _rename_session(_project(pid), conv_id, request)
 
     @app.post("/api/projects/{pid}/sessions/{conv_id}/archive")
     def project_archive_session(pid: str, conv_id: str) -> dict:
@@ -1208,6 +1262,7 @@ def create_app(
     # Both git shapes resolve their manager lazily, so the hub's default is
     # read per request and a project opened after startup is addressable.
     register_git_routes(app, lambda: hub.default, _project)
+    register_path_routes(app, lambda: hub.default, _project)
     # Authored plugins: list, create, read, save, delete, validate, duplicate,
     # and the problems array. Registered from their own module for the same
     # reason the git routes are -- app.py's diff for a whole feature is two

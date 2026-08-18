@@ -91,6 +91,19 @@ today.
   is the ordinary three-button one; there is no "allow self-config edits for
   this session" option — an always-allow on a `.quickcode/` path writes an
   ordinary persisted rule like any other.
+- **One exception, read-only:** a tool declaring `mutates=False` may *read*
+  under `<project>/.quickcode/artifacts/` without the protected-path prompt.
+  That directory is where a subagent's oversized report is offloaded
+  (`subagents/artifacts.py`), and the parent is told in the same tool result to
+  read the file for the rest — so the prompt was for content the session had
+  just written itself. The exception is that directory and nothing else:
+  `write` and `edit` on the very same path still prompt, `.quickcode/`
+  elsewhere still prompts, and `.git/`, `.ssh/` and `.env*` are untouched. The
+  path is resolved first, so a symlink or a `..` that leaves the directory is
+  protected again. Skipping the prompt is not an allow: the read falls through
+  to ordinary rule evaluation, so a `deny` rule covering the file still denies
+  it. A shell `cat` of an artifact still prompts — `bash` declares itself
+  mutating and the bash pipeline's own scan is unchanged.
 - **Subagent capping:** a child agent's mode is `min(parent mode, its spawn-time cap)` — a yolo orchestrator does not imply yolo workers. Detail in docs/AGENTS.md.
 
 ## Rules

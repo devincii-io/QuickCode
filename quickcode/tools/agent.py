@@ -4,6 +4,14 @@ The tool is stateless — it reads the ambient ``SubagentDeps`` from
 ``ctx.extra['subagent']`` (installed by the CLI for the main agent, and by the
 runner for nested children) and hands off to ``spawn_subagent``. The subagent
 runs to completion; only its sanitized final report returns to the parent.
+
+With ``background: true`` the hand-off is to ``spawn_subagent_background``
+instead: the child starts on a task the conversation owns and the tool returns
+a job handle immediately, so the model keeps working and collects the report
+later with ``agent_result``. Sessions with nothing to own such a task — a
+headless ``-p`` run ends when its single turn does — run the delegation inline
+and say so, rather than handing back a handle to a job that will be
+garbage-collected before it finishes.
 """
 
 from __future__ import annotations
@@ -31,6 +39,14 @@ class AgentInput(BaseModel):
         default=None,
         description="Optional model slug override (defaults to the definition's role).",
     )
+    background: bool = Field(
+        default=False,
+        description=(
+            "Start the subagent and return a job handle immediately instead of "
+            "waiting for its report. Use it when you have other work to do "
+            "meanwhile; you MUST collect the report later with agent_result."
+        ),
+    )
 
 
 class AgentTool(Tool[AgentInput]):
@@ -43,7 +59,9 @@ class AgentTool(Tool[AgentInput]):
         "doing simple things yourself; delegate for context isolation or genuine "
         "parallelism. Give each subagent a distinct, non-overlapping scope. The "
         "returned agent id can be resumed later via send_message instead of "
-        "respawning a fresh subagent."
+        "respawning a fresh subagent. Set background=true to get a job handle "
+        "back at once and keep working — then collect the report with "
+        "agent_result before you finish."
     )
     # Classified read-only so multiple spawns in one turn fan out CONCURRENTLY
     # (the loop batches read-only calls with asyncio.gather). Delegation is
@@ -59,7 +77,8 @@ class AgentTool(Tool[AgentInput]):
     Input = AgentInput
 
     def render_call(self, input: AgentInput) -> str:  # noqa: A002
-        return f"⏺ agent[{input.agent_type}]: {input.description}"
+        suffix = " (background)" if input.background else ""
+        return f"⏺ agent[{input.agent_type}]: {input.description}{suffix}"
 
     async def run(self, input: AgentInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
         deps = ctx.extra.get("subagent")
@@ -70,7 +89,39 @@ class AgentTool(Tool[AgentInput]):
                 is_error=True,
             )
         # Imported lazily to avoid a config/provider import at module load.
-        from quickcode.subagents.runner import spawn_subagent
+        from quickcode.subagents.runner import (
+            BackgroundUnavailable,
+            spawn_subagent,
+            spawn_subagent_background,
+        )
+
+        inline_note = ""
+        if input.background:
+            try:
+                job = spawn_subagent_background(
+                    deps,
+                    agent_type=input.agent_type,
+                    prompt=input.prompt,
+                    description=input.description,
+                    model_override=input.model,
+                )
+            except BackgroundUnavailable:
+                # Not an error the model can do anything about, and re-issuing
+                # the call without the flag would cost a round trip to reach
+                # the identical report. Run it inline and say which happened.
+                inline_note = (
+                    "\n(This session cannot detach subagent jobs, so this one ran "
+                    "to completion inline. The report above is final — there is "
+                    "nothing to collect.)"
+                )
+            except ValueError as e:
+                return ToolResult(str(e), is_error=True)
+            else:
+                return ToolResult(
+                    f"{job.to_tag()}\nStarted in the background. Carry on with other "
+                    f'work, then call agent_result with agent_id="{job.agent_id}" to '
+                    "read the report. Do not end your turn with it uncollected."
+                )
 
         try:
             agent_id, report = await spawn_subagent(
@@ -81,4 +132,4 @@ class AgentTool(Tool[AgentInput]):
             )
         except ValueError as e:
             return ToolResult(str(e), is_error=True)
-        return ToolResult(f"<subagent id=\"{agent_id}\">\n{report}\n</subagent>")
+        return ToolResult(f"<subagent id=\"{agent_id}\">\n{report}\n</subagent>{inline_note}")

@@ -35,6 +35,34 @@
 }
 .session-chip:hover { background: var(--boost); color: var(--fg); }
 
+/* The recently-used conversations, as tabs. Same idiom as the side panel's
+   .panel-tabs — a horizontal strip that scrolls without a scrollbar and marks
+   the current one with --boost — because it is the same gesture, and a second
+   invented tab strip in the same window would only be a second one to learn.
+   It sits between the chip and the actions and is the part of the top bar that
+   gives up its width first: overflowing tabs scroll, they never push the
+   buttons off the end. */
+.session-tabs {
+  display: flex; gap: 2px; flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+/* …and it is the *only* thing that gives: without these, a bar too narrow for
+   the tabs shrinks the project chip to one letter and wraps the action labels
+   onto a second line, which grows the bar rather than the strip scrolling. */
+#topbar .project-chip, #topbar .topbar-actions { flex: none; }
+.session-tabs::-webkit-scrollbar { height: 0; }
+.session-tab {
+  flex: none; max-width: 170px; padding: 3px 10px; border-radius: 7px;
+  color: var(--fg-dim); font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-tab:hover { background: var(--panel); color: var(--fg); }
+.session-tab.active { background: var(--boost); color: var(--fg); cursor: default; }
+.session-tab:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+.stab-more {
+  font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
+}
+
 #btn-panel-toggle.on { background: var(--boost); color: var(--fg); }
 
 /* ---------- workspace layout ---------- */
@@ -129,6 +157,14 @@ body.resizing-panel { cursor: col-resize; user-select: none; }
 #main.panel-max .detail-body { padding: 16px 18px; }
 
 /* ---------- narrow windows ---------- */
+
+@media (max-width: 900px) {
+  /* The brand, the project, the session and five buttons already fill this
+     bar. The tab strip is the redundant one — every session in it is in the
+     chip's popover — so it is what goes, rather than everything getting
+     squeezed to nothing. */
+  #session-tabs { display: none; }
+}
 
 @media (max-width: 820px) {
   /* Not enough room for both: the panel takes over while it is open. */

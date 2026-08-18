@@ -69,6 +69,12 @@ export const api = {
   archiveSession: (convId, on = true) =>
     req("POST", P(`/sessions/${encodeURIComponent(convId)}/${on ? "archive" : "unarchive"}`)),
   removeSession: (convId) => req("DELETE", P(`/sessions/${encodeURIComponent(convId)}`)),
+  // Name a session yourself. Unlike delete and archive this is allowed while
+  // the conversation is live — it appends to the log rather than moving it.
+  // `""` clears the chosen name; the response carries the title the listings
+  // will now show, which for a cleared one is the derived one again.
+  renameSession: (convId, title) =>
+    req("PATCH", P(`/sessions/${encodeURIComponent(convId)}`), { title }),
   // Bulk paths answer per row: {deleted, skipped:[{conv_id, reason}], …}.
   removeSessions: (convIds) => req("POST", P("/sessions/delete"), { conv_ids: convIds }),
   cleanupSessions: (dryRun = false) => req("POST", P("/sessions/cleanup"), { dry_run: dryRun }),
@@ -77,6 +83,11 @@ export const api = {
   plugins: () => req("GET", P("/plugins")),
   gitStatus: () => req("GET", P("/git/status")),
   gitDiff: (path) => req("GET", P(`/git/diff?path=${encodeURIComponent(path)}`)),
+  // Path completion for the composer's @ token: relative paths under *this*
+  // project only, never the machine. `q` is a partial relative path;
+  // "dir/" lists a directory, "compo" searches. 400 = the query escaped.
+  paths: (q = "", limit = 40) =>
+    req("GET", P(`/paths?q=${encodeURIComponent(q)}&limit=${limit}`)),
 
   // ---- plugin kernel ----
   // The whole inventory: plugins + their groups + the MCP servers + the
@@ -196,6 +207,9 @@ export const api = {
   archiveSessionOf: (pid, convId, on = true) =>
     req("POST", `/api/projects/${encodeURIComponent(pid)}/sessions/${
       encodeURIComponent(convId)}/${on ? "archive" : "unarchive"}`),
+  renameSessionOf: (pid, convId, title) =>
+    req("PATCH", `/api/projects/${encodeURIComponent(pid)}/sessions/${
+      encodeURIComponent(convId)}`, { title }),
   cleanupSessionsOf: (pid, dryRun = false) =>
     req("POST", `/api/projects/${encodeURIComponent(pid)}/sessions/cleanup`, { dry_run: dryRun }),
 

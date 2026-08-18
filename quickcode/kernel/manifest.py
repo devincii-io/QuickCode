@@ -375,6 +375,20 @@ def core_specs(*, prompt_view=None) -> list[PluginSpec]:
                     example="20",
                 ),
                 SettingSpec(
+                    key="max_parallel", type="int", default=4, tier="confirm",
+                    minimum=1, maximum=16, title="Maximum background jobs at once",
+                    risk="Every job in flight is a model running at full cost, "
+                         "and none of them is visible in the turn that started it.",
+                    affects=("loop",),
+                    effect_detail="Applies to agent(background=true) only. A "
+                                  "blocking delegation is bounded by the number of "
+                                  "calls in one model turn; a detached one is not, "
+                                  "so this is the ceiling on how many run together. "
+                                  "Asking past it is an error the spawner reads, "
+                                  "never a queue it waits in.",
+                    example="2",
+                ),
+                SettingSpec(
                     key="sanitize_reports", type="bool", default=True, tier="locked",
                     title="Neutralize control tags in subagent output",
                     help="Control tags in a returning report are rewritten so a file "
@@ -787,7 +801,7 @@ def _tool_group(tool: Any) -> str:
         return "Web"
     if name.startswith("task"):
         return "Tasks"
-    if name in ("agent", "send_message"):
+    if name in ("agent", "send_message", "agent_status", "agent_result"):
         return "Subagents"
     return "Tools"
 
@@ -866,7 +880,26 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
         "consequence": "Granted by depth rather than by an allowlist: an agent at the "
                        "depth limit never receives it and a preset cannot hand it out. "
                        "Spawning never prompts; the child's own ceiling gates what the "
-                       "child then does.",
+                       "child then does. With background=true the call returns a job "
+                       "handle instead of a report and the child runs on past the turn "
+                       "-- capped by Maximum background jobs at once, cancelled by "
+                       "interrupt, collected with agent_result.",
+    },
+    "agent_status": {
+        "affects": ("tool_list", "loop"),
+        "summary": "Lists the background subagent jobs and where each one got to.",
+        "consequence": "Reads a registry this conversation already owns: no model call, "
+                       "no filesystem, nothing to prompt about. Granted by depth "
+                       "alongside the spawn tool, because an agent that can start a "
+                       "detached job has to be able to ask after it.",
+    },
+    "agent_result": {
+        "affects": ("tool_list", "loop"),
+        "summary": "Collects a background subagent's report once the job has finished.",
+        "consequence": "Returns exactly what a blocking spawn would have returned -- the "
+                       "same sanitized, offloaded report, because a detached run goes "
+                       "through the same finishing path. A job still running yields a "
+                       "status and no report unless wait_s is passed.",
     },
     "send_message": {
         "affects": ("tool_list", "loop"),
@@ -916,6 +949,8 @@ _TOOL_DOCS: dict[str, str] = {
     "web_search": "docs/TOOLS.md#web_search",
     "agent": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
     "send_message": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
+    "agent_status": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
+    "agent_result": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
     "plan": "docs/PERMISSIONS.md#plan-mode",
 }
 

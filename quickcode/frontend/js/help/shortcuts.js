@@ -12,8 +12,12 @@ export const KEYS = [
   ["Enter", "Send the message"],
   ["Shift + Enter", "Newline inside the composer"],
   ["Esc", "Close the topmost menu or dialog — and, when none is open, interrupt the agent"],
-  ["↑ / ↓", "Walk back and forward through sent-message history"],
+  ["↑ / ↓", "Walk back and forward through sent-message history — filtered by "
+    + "what you have already typed, so \"git\" then ↑ recalls only the messages "
+    + "that start with it"],
   ["/", "Open the slash-command menu; Tab completes, Enter runs, Esc closes"],
+  ["@", "Complete a file path from this project; Tab or Enter inserts it, and a "
+    + "directory keeps the menu open on its contents"],
 ];
 
 export const SLASH = [
@@ -22,6 +26,8 @@ export const SLASH = [
   ["/mode", "<plan|ask|auto-edit|dontask|yolo>", "Switch the permission mode"],
   ["/model", "", "Pick the model for this session"],
   ["/composition", "", "Switch this session's composition (at a turn boundary)"],
+  ["/profile", "", "Switch this session's permission profile (takes effect now)"],
+  ["/init", "", "Have the agent survey this project and write QUICKCODE.md"],
   ["/help", "", "The quick reference"],
 ];
 

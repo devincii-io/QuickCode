@@ -81,6 +81,16 @@ class EventBus:
                 self.overflowed.add(id(q))
 
 
+def _usage_from_json(d: dict) -> Usage:
+    """A logged usage record back into the event the ledger counts."""
+    return Usage(
+        input_tokens=int(d.get("input_tokens") or 0),
+        output_tokens=int(d.get("output_tokens") or 0),
+        cached_tokens=int(d.get("cached_tokens") or 0),
+        cost_usd=d.get("cost_usd"),
+    )
+
+
 @dataclass
 class Ledger:
     input_tokens: int = 0
@@ -91,6 +101,12 @@ class Ledger:
     # (the cumulative fields above measure session spend, not context).
     last_input_tokens: int = 0
     last_output_tokens: int = 0
+    # How much of the cumulative totals above was spent by subagents. Kept
+    # apart only so the UI can attribute a fan-out; the money is already
+    # counted in the totals.
+    subagent_input_tokens: int = 0
+    subagent_output_tokens: int = 0
+    subagent_cost_usd: float = 0.0
 
     def add(self, u: Usage) -> None:
         self.input_tokens += u.input_tokens
@@ -101,6 +117,25 @@ class Ledger:
         if u.cost_usd:
             self.cost_usd += u.cost_usd
 
+    def add_subagent(self, u: Usage) -> None:
+        """Count a child's usage as session spend, but never as context.
+
+        Money spent is money spent, so the cumulative fields take it. The
+        ``last_*`` pair does not: it is the live footprint of *this* agent's
+        last request, and a subagent's request went into a different context
+        window entirely. Folding a fan-out into it would make the context meter
+        (``context_pct``) read full while the parent's history is short, and
+        would hand ``should_compact`` a number the parent never sent.
+        """
+        self.input_tokens += u.input_tokens
+        self.output_tokens += u.output_tokens
+        self.cached_tokens += u.cached_tokens
+        self.subagent_input_tokens += u.input_tokens
+        self.subagent_output_tokens += u.output_tokens
+        if u.cost_usd:
+            self.cost_usd += u.cost_usd
+            self.subagent_cost_usd += u.cost_usd
+
     @classmethod
     def from_events(cls, events: list[dict]) -> Ledger:
         """Rebuild a session's spend from its logged ``usage`` events.
@@ -108,17 +143,21 @@ class Ledger:
         What a session cost is a fact about the session, not about the process
         that happened to be running it — reopening one and being told it cost
         nothing is simply wrong.
+
+        Subagent usage is logged one level down, inside the ``agent_event``
+        wrapper that carries everything a child emitted, and is replayed
+        through ``add_subagent`` so a resumed session splits spend from context
+        exactly the way the live one did.
         """
         ledger = cls()
         for ev in events:
-            if ev.get("type") != "usage":
-                continue
-            ledger.add(Usage(
-                input_tokens=int(ev.get("input_tokens") or 0),
-                output_tokens=int(ev.get("output_tokens") or 0),
-                cached_tokens=int(ev.get("cached_tokens") or 0),
-                cost_usd=ev.get("cost_usd"),
-            ))
+            kind = ev.get("type")
+            if kind == "usage":
+                ledger.add(_usage_from_json(ev))
+            elif kind == "agent_event":
+                inner = ev.get("ev") or {}
+                if inner.get("type") == "usage":
+                    ledger.add_subagent(_usage_from_json(inner))
         return ledger
 
 

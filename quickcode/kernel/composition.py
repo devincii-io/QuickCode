@@ -43,10 +43,13 @@ Role = Literal["orchestrator", "subagent"]
 # ordinary agent name can collide with it.
 ORCHESTRATOR_ID = "@orchestrator"
 
-# The delegation pair is granted by depth, never by allowlist
+# The delegation set is granted by depth, never by allowlist
 # (tools/registry.py). Naming it here keeps the resolver honest about which
-# tools it is allowed to have an opinion on.
-DELEGATION_TOOLS = ("agent", "send_message")
+# tools it is allowed to have an opinion on. Four, not two: an agent that may
+# start a detached job must be able to ask after it and collect it, and a
+# preset that granted the spawn tool but not the collectors would strand
+# every background report it produced.
+DELEGATION_TOOLS = ("agent", "send_message", "agent_status", "agent_result")
 
 # plan < ask < auto-edit < dontask < yolo (least -> most privileged).
 MODE_PRIVILEGE: dict[Mode, int] = {
@@ -239,7 +242,7 @@ EMPTY = Composition()
 class RuntimeLimits:
     """The runtime's numbers, resolved once per session and then frozen.
 
-    These six were declared in the manifest, rendered by the Settings UI,
+    These were declared in the manifest, rendered by the Settings UI,
     written to disk -- and read by nobody: the loop, the compactor and the
     spawner each used a module constant instead. They live here, next to
     ``Resolved``, because they are the same kind of thing: a derived answer a
@@ -260,6 +263,10 @@ class RuntimeLimits:
     keep_turns: int = 2
     max_depth: int = 2
     max_agents: int = 50
+    # How many detached subagent jobs may run at the same time. ``max_agents``
+    # is a lifetime total and says nothing about simultaneity, which only
+    # became reachable when spawning stopped blocking the turn.
+    max_parallel: int = 4
 
 
 # --------------------------------------------------------------------------

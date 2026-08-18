@@ -1,6 +1,6 @@
 # Tool Surface
 
-Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
+Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `agent_status`, `agent_result`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
 
 Every tool implements:
 
@@ -315,10 +315,20 @@ The tool also **registers even with no key configured**, matching how the OpenRo
 
 | Tool | Purpose |
 |---|---|
-| `agent` | Spawn a subagent (own pane, own model, capped permissions); background by default. |
+| `agent` | Spawn a subagent (own pane, own model, capped permissions). Blocking by default; `background: true` returns a job handle instead of a report. |
 | `send_message` | Message/resume a subagent or teammate by name/id. |
+| `agent_status` | List the background jobs and their state (`running`/`done`/`error`/`cancelled`), or ask about one by id. |
+| `agent_result` | Collect a finished background job's report; `wait_s` blocks for one still running. |
 | `task_create` / `task_update` / `task_list` / `task_get` | The task board — solo checklist *and* teammate coordination backbone (dependencies, file-locked claiming). No separate todo tool. |
 | `plan` | Present a plan for approval and exit plan mode (docs/PERMISSIONS.md §Plan mode). |
+
+All four are granted **by depth, never by allowlist** (`kernel/composition.py::DELEGATION_TOOLS`): an agent that may spawn receives the whole set, and an agent at the depth limit receives none of it. Granting `agent` without the collectors would make `background: true` a way to start work nobody can read.
+
+**Detached jobs, end to end.** `agent(background: true, …)` prepares the child synchronously — an unknown `agent_type`, an exhausted budget or a refused composition still comes back as a tool error — then runs it on a task the *conversation* owns and returns `<agent_job id="explore-3" type="explore" status="running" seconds="0.0"/>`. The model keeps its turn. When the job ends it emits an `agent_done` event into the session log and queues a reminder that the spawner reads at the top of its next turn; `agent_result` returns the same sanitized, artifact-offloaded report a blocking call would have (a detached run and a blocking one share `_run_and_finish`). Turn end is not a way out: a turn that finishes with a job running or a report uncollected leaves both a transcript note and a queued reminder. Interrupt (`Esc`) and closing the conversation cancel every job still in flight; the record survives with status `cancelled` and a `[did not finish]` report, so a later `agent_result` on that id says what happened rather than failing to recognise it.
+
+`runtime.subagents.max_parallel` (default 4, max 16) caps how many jobs run **at once** — `max_agents` is a lifetime total and says nothing about simultaneity, which only became reachable when spawning stopped blocking the turn. Asking past the cap is an error naming the jobs in flight, never a queue.
+
+**Headless (`quickcode -p`) runs the delegation inline instead.** The process ends with its single turn, so there is nothing to own a detached task; `background: true` there returns the finished report with a note saying it ran inline. Degrading rather than erroring is deliberate — the model gets the identical report, and refusing would only buy a round trip to re-issue the same call without the flag.
 
 `ask_user` — a structured question with options, rendered as a modal — used to
 be listed here as if it shipped. It does **not** exist: there is no

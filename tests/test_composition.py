@@ -18,7 +18,12 @@ import pytest
 from quickcode.config import Config, Environment
 from quickcode.core.permissions import Mode
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import ORCHESTRATOR_ID, Composition, Resolved
+from quickcode.kernel.composition import (
+    DELEGATION_TOOLS,
+    ORCHESTRATOR_ID,
+    Composition,
+    Resolved,
+)
 from quickcode.kernel.resolve import resolve_composition, session_pool
 from quickcode.providers.base import ModelInfo
 from quickcode.server.manager import ConversationManager
@@ -78,8 +83,8 @@ def test_intersection_is_independent_of_layer_order():
 
     one, other = resolve_with(wide, narrow), resolve_with(narrow, wide)
     assert one == other
-    # The delegation pair rides along by depth, never by allowlist.
-    assert one - {"agent", "send_message"} == {"read", "write"}
+    # The delegation set rides along by depth, never by allowlist.
+    assert one - set(DELEGATION_TOOLS) == {"read", "write"}
 
 
 # --------------------------------------------------------------------------
@@ -235,11 +240,11 @@ def test_a_legacy_preset_body_still_resolves(tmp_path):
 
     orch = resolve_composition(ORCHESTRATOR_ID, pool=pool(), preset=preset,
                                defs=builtin_defs(), cwd=tmp_path)
-    # The same tools ``select_tools`` picks, plus the delegation pair, which is
+    # The same tools ``select_tools`` picks, plus the delegation set, which is
     # granted by depth rather than by allowlist.
     selected = {t.name for t in preset_module.select_tools(preset, pool())}
     assert selected == {"read", "glob", "grep"}
-    assert names(orch) == selected | {"agent", "send_message"}
+    assert names(orch) == selected | set(DELEGATION_TOOLS)
     assert orch.spawns == ("explore",)
     assert orch.section_bodies["prompt.tone"] == "Terse."
 

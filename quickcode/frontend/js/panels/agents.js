@@ -27,22 +27,42 @@ const autoOpened = new Set();  // error cards already auto-expanded once
 const times = new Map();       // agent_id -> {start, end}
 const shownCap = new Map();    // agent_id -> how many of its events are rendered
 const scrollTops = new Map();  // agent_id -> body scrollTop, kept across rebuilds
+const follow = new Map();      // agent_id -> stick this transcript to its newest line
+const index = new Map();       // agent_id -> agent, for the lazy-fill observer
 let ticker = null;
 let frame = 0;
+let io = null;
 
 // Stacked reads better for one agent at a time; columns are the point when
-// several run in parallel, which is the normal case for a fan-out.
+// several run in parallel, and the grid is what a fan-out of dozens needs —
+// it wraps into rows instead of running off the right-hand edge.
 const LAYOUT_KEY = "qc-agents-layout";
 let layout = readLayout();
+
+// Roster filters. A fan-out of fifty is only readable if you can ask it a
+// question: who is still running, who failed, which one was searching CSS.
+let statusFilter = "all";      // all | running | done | error
+let query = "";
+let soloId = null;             // one agent, full panel
 
 // A long-running agent can accumulate hundreds of calls. Rendering all of
 // them turns the panel into a scroll of noise and costs real frame time, so
 // each card shows its most recent slice and offers the rest on request.
 const EVENT_WINDOW = 60;
 
+// Past this many agents, building every transcript up front costs more frame
+// time than it can possibly be worth: bodies are then filled as they scroll
+// into view.
+const LAZY_AT = 12;
+
+// Past this many, the cards themselves tighten up so more of the fleet fits
+// on one screen.
+const DENSE_AT = 18;
+
 function readLayout() {
   try {
-    return localStorage.getItem(LAYOUT_KEY) === "columns" ? "columns" : "stacked";
+    const v = localStorage.getItem(LAYOUT_KEY);
+    return v === "columns" || v === "grid" ? v : "stacked";
   } catch { return "stacked"; }
 }
 
@@ -60,14 +80,38 @@ export const panel = {
     root = container;
     root.classList.add("panel-agents");
     root.innerHTML = `<div class="pa-bar">
+        <button type="button" class="pa-back" title="Back to all agents">← all</button>
         <div class="pa-summary"></div>
+        <input type="search" class="pa-search" placeholder="filter agents…"
+               aria-label="Filter agents" spellcheck="false">
+        <div class="pa-filters" role="group" aria-label="Status filter">
+          <button type="button" class="pa-filt" data-status="all">all</button>
+          <button type="button" class="pa-filt" data-status="running">running</button>
+          <button type="button" class="pa-filt" data-status="done">done</button>
+          <button type="button" class="pa-filt" data-status="error">errors</button>
+        </div>
         <div class="pa-layout" role="group" aria-label="Layout">
           <button type="button" class="pa-lay" data-layout="stacked" title="Stacked">▤</button>
           <button type="button" class="pa-lay" data-layout="columns" title="Side by side">▥</button>
+          <button type="button" class="pa-lay" data-layout="grid" title="Grid">▦</button>
         </div>
       </div><div class="pa-list"></div>`;
     root.querySelectorAll(".pa-lay").forEach((b) =>
       b.addEventListener("click", () => setLayout(b.dataset.layout)));
+    root.querySelectorAll(".pa-filt").forEach((b) =>
+      b.addEventListener("click", () => { statusFilter = b.dataset.status; render(); }));
+    root.querySelector(".pa-back").addEventListener("click", () => { soloId = null; render(); });
+
+    const search = root.querySelector(".pa-search");
+    search.addEventListener("input", () => { query = search.value.trim().toLowerCase(); render(); });
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { search.value = ""; query = ""; render(); }
+    });
+    // Escape leaves the solo view from anywhere in the panel.
+    root.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && soloId && e.target !== search) { soloId = null; render(); }
+    });
+
     subscribe(onStoreChange);
     render();
   },
@@ -76,7 +120,8 @@ export const panel = {
 function onStoreChange(kind, ev) {
   if (kind === "reset") {
     openIds.clear(); openCalls.clear(); autoOpened.clear(); times.clear();
-    shownCap.clear(); scrollTops.clear();
+    shownCap.clear(); scrollTops.clear(); follow.clear();
+    soloId = null;
     return schedule();
   }
   if (kind === "replay_done") return schedule();
@@ -126,17 +171,33 @@ function buildAgents() {
     let lastResult = null;
     let toolCount = 0;
     let hasText = false;
+    let lastLine = "";
     for (const e of a.events) {
-      if (e.type === "tool_call") toolCount++;
-      else if (e.type === "tool_result") lastResult = e;
-      else if (e.type === "assistant_message") hasText = true;
+      if (e.type === "tool_call") {
+        toolCount++;
+        lastLine = `${e.name} ${argSummary(e.name, e.arguments)}`;
+      } else if (e.type === "tool_result") {
+        lastResult = e;
+      } else if (e.type === "assistant_message") {
+        hasText = true;
+        if (e.text) lastLine = e.text;
+      }
     }
     a.toolCount = toolCount;
     a.done = a.closed || (store.agents.get(a.id)?.done ?? hasText);
     a.status = lastResult?.is_error ? "error" : a.done ? "done" : "running";
+    // What this agent is doing right now, for the collapsed card. A roster of
+    // fifty identical headers says nothing; one live line each says a lot.
+    a.lastLine = oneLine(store.agents.get(a.id)?.streamText || lastLine, 120);
     stamp(a);
   }
   return list;
+}
+
+function matches(a) {
+  if (statusFilter !== "all" && a.status !== statusFilter) return false;
+  if (!query) return true;
+  return `${a.id} ${a.definition} ${a.lastLine}`.toLowerCase().includes(query);
 }
 
 function parseTs(ts) {
@@ -175,25 +236,33 @@ function durText(a) {
 function render() {
   if (!root) return;
   const list = root.querySelector(".pa-list");
-  const keep = list.scrollTop;
   rememberScrolls(list);
-  const agents = buildAgents();
+  const listWasPinned = atBottom(list);
+  const keep = list.scrollTop;
 
-  list.classList.toggle("pa-cols", layout === "columns");
+  const all = buildAgents();
+  index.clear();
+  for (const a of all) index.set(a.id, a);
+  if (soloId && !index.has(soloId)) soloId = null;
+  const shown = soloId ? [index.get(soloId)] : all.filter(matches);
+
+  const mode = soloId ? "solo" : layout;
+  list.classList.toggle("pa-cols", mode === "columns");
+  list.classList.toggle("pa-grid", mode === "grid");
+  list.classList.toggle("pa-solo-view", mode === "solo");
+  list.classList.toggle("pa-dense", !soloId && all.length >= DENSE_AT);
+  root.classList.toggle("pa-soloing", !!soloId);
   root.querySelectorAll(".pa-lay").forEach((b) =>
     b.classList.toggle("on", b.dataset.layout === layout));
+  root.querySelectorAll(".pa-filt").forEach((b) =>
+    b.classList.toggle("on", b.dataset.status === statusFilter));
 
-  const running = agents.filter((a) => !a.done).length;
-  root.querySelector(".pa-summary").innerHTML = agents.length
-    ? `<span class="pa-sum-n">${agents.length}</span> total
-       <span class="pa-sep">·</span>
-       <span class="pa-sum-run">${running}</span> running
-       <span class="pa-sep">·</span>
-       <span class="pa-sum-done">${agents.length - running}</span> done`
-    : `<span class="pa-sum-idle">no subagents yet</span>`;
+  renderSummary(all, shown);
 
+  // Rebuilding the list orphans every observed card, so start the watch over.
+  observer(list).disconnect();
   list.innerHTML = "";
-  if (!agents.length) {
+  if (!all.length) {
     list.appendChild(el(`<div class="pa-empty">
       <div class="pa-empty-mark">⛓</div>
       <div class="pa-empty-title">No subagents running</div>
@@ -204,14 +273,70 @@ function render() {
     setTicking(false);
     return;
   }
-  for (const a of agents) list.appendChild(cardNode(a));
-  list.scrollTop = keep;
-  restoreScrolls(list);
-  setTicking(agents.some((a) => !a.done));
+  if (!shown.length) {
+    list.appendChild(el(`<div class="pa-nomatch">No agent matches this filter.</div>`));
+    setTicking(all.some((a) => !a.done));
+    return;
+  }
+
+  const lazy = !soloId && shown.length > LAZY_AT;
+  for (const a of shown) {
+    const card = cardNode(a, lazy);
+    list.appendChild(card);
+    if (lazy) observer(list).observe(card);
+  }
+  // A card filled during the loop above could not measure itself yet, so the
+  // follow/restore pass runs once the whole list is in the document.
+  list.querySelectorAll(".pa-body[data-filled]").forEach(applyScroll);
+  list.scrollTop = listWasPinned && mode === "stacked" ? list.scrollHeight : keep;
+  setTicking(all.some((a) => !a.done));
+}
+
+function renderSummary(all, shown) {
+  const bar = root.querySelector(".pa-summary");
+  if (soloId) {
+    const a = index.get(soloId);
+    bar.innerHTML = `<span class="pa-sum-n">${esc(a.id)}</span>
+      <span class="pa-sep">·</span> ${esc(a.definition || "agent")}`;
+    return;
+  }
+  if (!all.length) { bar.innerHTML = `<span class="pa-sum-idle">no subagents yet</span>`; return; }
+  const running = all.filter((a) => !a.done).length;
+  const failed = all.filter((a) => a.status === "error").length;
+  const filtered = shown.length !== all.length
+    ? ` <span class="pa-sep">·</span> <span class="pa-sum-filt">${shown.length} shown</span>`
+    : "";
+  bar.innerHTML = `<span class="pa-sum-n">${all.length}</span> total
+     <span class="pa-sep">·</span>
+     <span class="pa-sum-run">${running}</span> running
+     <span class="pa-sep">·</span>
+     <span class="pa-sum-done">${all.length - running - failed}</span> done${
+       failed ? ` <span class="pa-sep">·</span>
+         <span class="pa-sum-err">${failed}</span> failed` : ""}${filtered}`;
+}
+
+// Fill a transcript only once it can actually be seen. With fifty agents the
+// difference is a panel that opens instantly and one that stalls for a second.
+function observer(list) {
+  if (io) return io;
+  io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const card = e.target;
+      const body = card.querySelector(".pa-body");
+      const a = index.get(card.dataset.agent);
+      if (!body || body.dataset.filled || !a) continue;
+      if (!card.classList.contains("open")) continue;
+      fillBody(body, a);
+      applyScroll(body);
+    }
+  }, { root: list, rootMargin: "300px" });
+  return io;
 }
 
 // Each agent's transcript scrolls on its own, and a rebuild must not throw
-// the reader back to the top of the one they were reading.
+// the reader back to the top of the one they were reading — nor unstick one
+// they had left pinned to its newest line.
 function rememberScrolls(list) {
   list.querySelectorAll(".pa-body").forEach((body) => {
     const id = body.dataset.body;
@@ -219,17 +344,30 @@ function rememberScrolls(list) {
   });
 }
 
-function restoreScrolls(list) {
-  list.querySelectorAll(".pa-body").forEach((body) => {
-    const saved = scrollTops.get(body.dataset.body);
-    if (saved) body.scrollTop = saved;
-  });
+function atBottom(node, slack = 24) {
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= slack;
 }
 
-function cardNode(a) {
-  // In columns every agent is open: a column of collapsed headers would be a
-  // worse version of the stacked view, not a different one.
-  const open = layout === "columns" ? true : openIds.has(a.id);
+// Auto-scroll, but only while the reader has not scrolled away: a transcript
+// that yanks itself downward under someone reading it is worse than one that
+// never moves.
+function applyScroll(body) {
+  const id = body.dataset.body;
+  if (follow.get(id) === false) body.scrollTop = scrollTops.get(id) || 0;
+  else body.scrollTop = body.scrollHeight;
+  markPinned(body);
+}
+
+function markPinned(body) {
+  const pinned = atBottom(body);
+  follow.set(body.dataset.body, pinned);
+  body.closest(".pa-card")?.classList.toggle("unpinned", !pinned);
+}
+
+function cardNode(a, lazy) {
+  // In columns, grid, and solo every agent is open: a column of collapsed
+  // headers would be a worse version of the stacked view, not a different one.
+  const open = layout === "stacked" && !soloId ? openIds.has(a.id) : true;
   const card = el(`<div class="pa-card ${open ? "open" : ""}" data-agent="${esc(a.id)}">
     <div class="pa-head" role="button" tabindex="0" aria-expanded="${open}">
       <span class="pa-caret">▸</span>
@@ -238,16 +376,45 @@ function cardNode(a) {
       <span class="pa-def">${esc(a.definition || "agent")}</span>
       <span class="pa-count">${a.toolCount} ${a.toolCount === 1 ? "call" : "calls"}</span>
       <span class="pa-dur" data-dur="${esc(a.id)}">${esc(durText(a))}</span>
+      <button type="button" class="pa-solo"
+        title="${soloId ? "Back to all agents" : "Show only this agent"}"
+        aria-label="${soloId ? "Back to all agents" : "Show only this agent"}"
+        >${soloId ? "exit" : "solo"}</button>
     </div>
-    <div class="pa-body" data-body="${esc(a.id)}"></div></div>`);
+    <div class="pa-last">${esc(a.lastLine || "")}</div>
+    <div class="pa-body" data-body="${esc(a.id)}"></div>
+    <button type="button" class="pa-jump" title="Jump to the newest line">↓ latest</button>
+    </div>`);
 
-  fillBody(card.querySelector(".pa-body"), a);
+  const body = card.querySelector(".pa-body");
+  if (open && !lazy) fillBody(body, a);
+  body.addEventListener("scroll", () => {
+    scrollTops.set(a.id, body.scrollTop);
+    markPinned(body);
+  });
+  card.querySelector(".pa-jump").addEventListener("click", (e) => {
+    e.stopPropagation();
+    follow.set(a.id, true);
+    body.scrollTop = body.scrollHeight;
+    markPinned(body);
+  });
+  card.querySelector(".pa-solo").addEventListener("click", (e) => {
+    e.stopPropagation();
+    soloId = soloId ? null : a.id;
+    render();
+  });
+
   const head = card.querySelector(".pa-head");
   const toggle = () => {
     const nowOpen = !card.classList.contains("open");
     card.classList.toggle("open", nowOpen);
     head.setAttribute("aria-expanded", String(nowOpen));
-    if (nowOpen) openIds.add(a.id); else openIds.delete(a.id);
+    if (nowOpen) {
+      openIds.add(a.id);
+      if (!body.dataset.filled) { fillBody(body, index.get(a.id) || a); applyScroll(body); }
+    } else {
+      openIds.delete(a.id);
+    }
   };
   head.addEventListener("click", toggle);
   head.addEventListener("keydown", (e) => {
@@ -257,6 +424,7 @@ function cardNode(a) {
 }
 
 function fillBody(body, a) {
+  body.dataset.filled = "1";
   const cap = shownCap.get(a.id) || EVENT_WINDOW;
   const hidden = Math.max(0, a.events.length - cap);
   if (hidden) {
@@ -361,10 +529,19 @@ function renderAgentStream(agentId) {
   if (!root) return;
   const rec = store.agents.get(agentId);
   if (!rec || rec.done) return;
-  const node = root.querySelector(`.pa-text[data-live="${CSS.escape(String(agentId))}"]`);
+  const card = root.querySelector(`.pa-card[data-agent="${CSS.escape(String(agentId))}"]`);
+  if (!card) return schedule();
+  const last = card.querySelector(".pa-last");
+  if (last) last.textContent = oneLine(rec.streamText, 120);
+  const body = card.querySelector(".pa-body");
+  // Not filled yet (collapsed, or scrolled out of view): nothing to paint, and
+  // forcing a rebuild for an invisible agent is exactly what we are avoiding.
+  if (!body?.dataset.filled) return;
+  const node = body.querySelector(`.pa-text[data-live="${CSS.escape(String(agentId))}"]`);
   if (!node) return schedule();
   node.textContent = rec.streamText;
-  if (rec.streamText) node.parentElement?.querySelector(".pa-waiting")?.remove();
+  if (rec.streamText) body.querySelector(".pa-waiting")?.remove();
+  if (follow.get(agentId) !== false) body.scrollTop = body.scrollHeight;
 }
 
 // ---- duration ticker ----

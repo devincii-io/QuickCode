@@ -192,7 +192,8 @@ def test_the_footer_counts_what_a_person_actually_asks(tmp_path):
     assert payload["footer"].endswith(
         "0 that change files · 0 that run shell commands"
     )
-    assert payload["footer"].startswith("5 tools · 5 read-only")
+    # read/glob/grep, plus the four delegation tools granted by depth.
+    assert payload["footer"].startswith("7 tools · 7 read-only")
 
 
 # --------------------------------------------------------------------------

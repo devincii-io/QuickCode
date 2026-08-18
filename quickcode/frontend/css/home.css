@@ -126,10 +126,10 @@
 .hs-meta {
   flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
 }
-.hs-arch, .hs-del {
+.hs-ren, .hs-arch, .hs-del {
   flex: none; padding: 0 10px; color: var(--fg-faint); font-size: 12px;
 }
-.hs-arch:hover { color: var(--fg); background: var(--surface); }
+.hs-ren:hover, .hs-arch:hover { color: var(--fg); background: var(--surface); }
 .hs-del:hover { color: var(--error); }
 .hs-del.armed {
   color: var(--error); font-family: var(--mono); font-size: 11px;

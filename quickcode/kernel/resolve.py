@@ -713,6 +713,7 @@ _LIMIT_SETTINGS: tuple[tuple[str, str, str], ...] = (
     ("keep_turns", "runtime.compaction", "keep_turns"),
     ("max_depth", "runtime.subagents", "max_depth"),
     ("max_agents", "runtime.subagents", "max_agents"),
+    ("max_parallel", "runtime.subagents", "max_parallel"),
 )
 
 
@@ -746,7 +747,7 @@ def runtime_limits(
     *,
     settings: dict[str, dict[str, Any]] | None = None,
 ) -> RuntimeLimits:
-    """The six runtime numbers a session runs on.
+    """The runtime numbers a session runs on.
 
     Pass ``settings`` -- a resolved composition's settings map -- to read them
     out of a session's frozen snapshot, which is what a running conversation

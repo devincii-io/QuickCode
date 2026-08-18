@@ -252,6 +252,26 @@ def _build_agent(args: argparse.Namespace):
     return agent, config, env, store, recorder
 
 
+async def _warm_context_length(agent: AgentInstance) -> None:
+    """Learn the model's context window while the turn is already running.
+
+    The end-of-turn compaction check is a no-op without it (``context_pct()``
+    returns ``None``), but asking the provider for its catalog up front would
+    put a network round trip in front of every ``-p`` invocation. So it is
+    fetched alongside the turn, and a failure leaves things exactly as they
+    were: no meter, no compaction.
+    """
+    if agent.context_length is not None or not agent.limits.compaction_enabled:
+        return
+    try:
+        for info in await agent.provider.list_models():
+            if info.id == agent.model:
+                agent.context_length = info.context_length
+                return
+    except Exception:
+        return
+
+
 async def _run_headless(
     agent: AgentInstance, recorder: TranscriptRecorder, prompt: str
 ) -> str:
@@ -260,7 +280,11 @@ async def _run_headless(
     # The trace has to show everything the model sees, and a resumed run may
     # have re-rendered the prompt — same reason the server logs it at open.
     recorder.emit({"type": "system_prompt", "text": agent.history.system_prompt})
-    return await recorder.record_turn(agent, prompt)
+    warm = asyncio.create_task(_warm_context_length(agent))
+    try:
+        return await recorder.record_turn(agent, prompt)
+    finally:
+        warm.cancel()
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -1,10 +1,10 @@
 # Multi-Agent Design — subagents, teammate mode, task board
 
 > **Design document:** this describes the intended end state. See
-> [ROADMAP.md](ROADMAP.md) for the exact implemented status. In `0.1.0`, an
-> individual `agent` call waits for its report, while multiple agent calls in
-> one model turn run concurrently. Detached/background collection and teammate
-> mode are not implemented yet.
+> [ROADMAP.md](ROADMAP.md) for the exact implemented status. An `agent` call
+> blocks by default and multiple calls in one model turn run concurrently;
+> `background: true` detaches one and `agent_status` / `agent_result` collect
+> it (§1.1). Teammate mode is not implemented yet.
 
 One runtime, three shapes. Every agent is the same `AgentInstance` (loop + history + ledger + event bus); the differences are prompt, model, permission cap, and who reads its results.
 
@@ -24,7 +24,7 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
   "prompt": "full task description — the ONLY context the child receives from the parent",
   "agent_type": "explore | general | <custom name>",
   "model": "optional override (worker_model default for explore)",
-  "background": "bool — default true; false when the parent needs the result to continue"
+  "background": "bool — default false; true returns a job handle and keeps your turn"
 }
 ```
 
@@ -36,7 +36,19 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 - **Read-only by default (single-writer principle).** Subagents contribute *intelligence* — reading, searching, analyzing — in parallel; write access is a deliberate promotion requiring a bounded, non-overlapping file scope in the delegation. Parallel readers are free wins; parallel writers are how you get incoherent artifacts (Cognition's core argument, and why coding parallelizes worse than research).
 - **Artifacts to disk, references in reports.** Large outputs (generated code, long reports, logs) get written to files; the report carries the *path* plus a short summary — never the full content through the parent's context (Anthropic's "game of telephone" mitigation).
 - **Worktree isolation (later):** a write-promoted subagent can get its own git worktree so parallel edits can't collide by construction.
-- **Limits:** depth 2 (a subagent may spawn subagents once; below that the `agent` tool is withheld), 50 per conversation (configurable). Cheap, predictable — revisit if real use hits the wall.
+- **Limits:** depth 2 (a subagent may spawn subagents once; below that the `agent` tool is withheld), 50 per conversation, 4 background jobs in flight at once (all configurable under `runtime.subagents`). Cheap, predictable — revisit if real use hits the wall.
+
+### 1.1 Detached jobs (`background: true`)
+
+`background: true` starts the child on a task the **conversation** owns and returns a handle immediately — `<agent_job id="explore-3" type="explore" status="running" seconds="0.0"/>` — so the model spends the rest of its turn on other work instead of blocking on a report it does not need yet.
+
+- **Refusals stay synchronous.** Preparation (definition lookup, composition resolve, budget and depth checks, id minting) runs before the tool result is written, so an unknown `agent_type` or an exhausted budget is still a tool error rather than a job that exists only to report that it should not.
+- **Collection:** `agent_status` (all jobs, or one by id) and `agent_result(agent_id, wait_s?)`. The report is the same one a blocking call returns — sanitized and artifact-offloaded through the same `_run_and_finish` path — so collecting is exactly as safe as reading the spawn result. `wait_s` (max 600) turns `agent_result` into a bounded join for the moment the parent genuinely needs the answer.
+- **Completion is an event.** A finished job emits `agent_done` (`{agent_id, definition, status, seconds}`) into the session log — the roster row's terminal signal — and queues a reminder the spawner reads at the top of its next turn.
+- **A turn cannot end quietly with work outstanding.** If a turn finishes with a job running or a report uncollected, the conversation emits a transcript note and queues a reminder naming the ids. The model is prompted (`<orchestration>`) never to summarize findings or call a task done with a job uncollected.
+- **Cancellation:** `Esc` (interrupt) and closing the conversation cancel every job in flight. The record survives with status `cancelled` and a `[did not finish]` report, so a later `agent_result` says what happened instead of 404-ing on an id the model was handed.
+- **The parallelism cap is a separate number.** `max_agents` bounds the lifetime total; `max_parallel` (default 4, max 16) bounds how many run together, which is only reachable at all once spawning stops blocking. Asking past it is an error naming the live jobs, never a silent queue.
+- **Headless (`-p`) runs it inline.** A `-p` process ends with its single turn, so nothing there can own a detached task. `background: true` runs the delegation to completion inline and says so in the result; the model gets the identical report, which is why this degrades rather than erroring.
 
 ### Permission capping
 

@@ -29,7 +29,7 @@ RESERVED_ID_PREFIXES = (
 # would be called in place of the real one.
 RESERVED_WIRE_NAMES = frozenset({
     "read", "write", "edit", "glob", "grep", "bash", "plan",
-    "agent", "send_message",
+    "agent", "send_message", "agent_status", "agent_result",
 })
 
 RESERVED_WIRE_PREFIXES = ("mcp__", "task_")

@@ -8,7 +8,7 @@
 // /api/projects/open first, which is idempotent and returns the same id.
 
 import { api } from "./api.js";
-import { openDirBrowser } from "./modals.js";
+import { openDirBrowser, openRenameSession } from "./modals.js";
 import { armed, trustSummary } from "./trust.js";
 import { el, esc, oneLine, relTime, wireLogo } from "./util.js";
 
@@ -209,6 +209,7 @@ function sessionRow(p, s, reload) {
       <span class="hs-meta">${esc(oneLine(s.model, 26))} · ${s.message_count} msgs ·
         ${esc(relTime(s.mtime))}</span>
     </button>
+    <button class="hs-ren" title="Rename this session">✎</button>
     <button class="hs-arch" title="${s.archived
       ? "Restore this session to the list" : "Archive: keep the file, hide the row"}">${
       s.archived ? "⇧" : "⇩"}</button>
@@ -225,6 +226,15 @@ function sessionRow(p, s, reload) {
     note.textContent = err.message;
     row.appendChild(note);
   };
+
+  // Renaming is not destructive and does not move the file, so it is the one
+  // row action that is also offered for a session that is live somewhere.
+  row.querySelector(".hs-ren").addEventListener("click", () => openRenameSession({
+    convId: s.conv_id,
+    title: s.title,
+    save: (title) => api.renameSessionOf(p.id, s.conv_id, title),
+    onDone: reload,
+  }));
 
   const arch = row.querySelector(".hs-arch");
   arch.addEventListener("click", async () => {

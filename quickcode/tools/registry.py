@@ -16,6 +16,7 @@ from fnmatch import fnmatchcase
 
 from quickcode.providers.base import ToolSchema
 from quickcode.tools.agent import AgentTool
+from quickcode.tools.agent_jobs import AgentResultTool, AgentStatusTool
 from quickcode.tools.base import Tool
 from quickcode.tools.bash import BashTool
 from quickcode.tools.edit import EditTool
@@ -57,8 +58,8 @@ def core_tools(*, include_plan: bool = True, include_agent: bool = True) -> list
     """Fresh instances of every tool QuickCode ships.
 
     ``plan`` is for interactive sessions only -- a subagent has no one to show
-    a plan to. ``agent``/``send_message`` are the delegation pair, withheld at
-    the depth floor.
+    a plan to. ``agent``, ``send_message``, ``agent_status`` and
+    ``agent_result`` are the delegation set, withheld at the depth floor.
     """
     tools: list[Tool] = [
         ReadTool(),
@@ -78,9 +79,18 @@ def core_tools(*, include_plan: bool = True, include_agent: bool = True) -> list
     if include_plan:
         tools.append(PlanTool())
     if include_agent:
-        tools.append(AgentTool())
-        tools.append(SendMessageTool())
+        tools.extend(_delegation_tools())
     return tools
+
+
+def _delegation_tools() -> list[Tool]:
+    """Fresh instances of the four tools granted by depth.
+
+    One list, so the main agent and every subagent that may delegate receive
+    the same set. Handing out ``agent`` without the collectors would make
+    ``background=true`` a way to start work nobody can read.
+    """
+    return [AgentTool(), SendMessageTool(), AgentStatusTool(), AgentResultTool()]
 
 
 def select(pool: Iterable[Tool], patterns: Iterable[str]) -> list[Tool]:
@@ -120,12 +130,13 @@ def build_registry(
         include_plan=False, include_agent=False
     )
     available = [t for t in available if t.name != "plan"]
-    # The delegation pair is granted by depth, not by the allowlist, so it is
+    # The delegation set is granted by depth, not by the allowlist, so it is
     # never selectable and never inherited.
-    delegation = {"agent", "send_message"}
-    available = [t for t in available if t.name not in delegation]
+    from quickcode.kernel.composition import DELEGATION_TOOLS
+
+    available = [t for t in available if t.name not in DELEGATION_TOOLS]
 
     chosen = available if tool_names is None else select(available, tool_names)
     if include_agent:
-        chosen = [*chosen, AgentTool(), SendMessageTool()]
+        chosen = [*chosen, *_delegation_tools()]
     return ToolRegistry(chosen)

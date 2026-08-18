@@ -122,3 +122,15 @@
   background: var(--surface);
   position: sticky; bottom: 0;
 }
+
+/* The two views stacked in the one scroll region: by turn, then by agent. */
+.panel-usage .pu-head {
+  padding: 10px 10px 4px; font-size: 11px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--fg-faint);
+}
+/* The subagent share of a turn — the number that answers "why was that turn
+   expensive", so it is coloured rather than left as another dim cell. */
+.panel-usage .pu-grid td.pu-share { color: var(--accent); }
+.panel-usage .pu-grid tbody tr.pu-is-sub td.pu-turn {
+  padding-left: 20px; color: var(--fg-dim);
+}
