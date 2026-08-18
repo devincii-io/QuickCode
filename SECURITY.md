@@ -18,5 +18,11 @@ Particularly relevant reports:
   event log in plaintext.
 - Any path by which a remote page or process (not the local user) can reach
   the loopback API.
+- A way for a project's own committed files — `.quickcode/settings.json`,
+  `.quickcode/plugins/`, or anything else read from the project tree — to run
+  a program without the trust prompt, or to survive a grant they were not
+  covered by. Opening a repository to read it must not execute it.
+- A subagent obtaining a tool, a permission mode, or a model its parent was
+  not granted. Delegation narrows; it must never widen.
 
 Security fixes are provided for the latest published release.

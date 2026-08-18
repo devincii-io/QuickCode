@@ -60,6 +60,42 @@ coupling that used to live in name lists moves onto the tools themselves.
   is, what it affects, who it affects, what changes if you change it, why it
   is fixed, and what to do instead. Written once in the manifest for all 37
   internal plugins, so a reader who learns one card can read them all.
+- **Plugins you can write as markdown files.** Three of the five kinds are now
+  authorable without Python: a **command tool**, a **subagent**, and a **prompt
+  section**, dropped in `~/.quickcode/plugins/*.md` for every project or
+  `<project>/.quickcode/plugins/*.md` for one, with the kind in the
+  frontmatter and the interesting part in the body. Command tools are
+  argv-first — the argv is a JSON array and parameters substitute into
+  elements, so a value can never become two arguments and there is no shell to
+  quote against; `shell:` is refused rather than quietly ignored. A declared
+  `read_only: true` is recorded and grants nothing, because the only available
+  check for "does this program write" is that there is none: the card says so,
+  and an argv containing something like `push` or `rm` raises a warning against
+  the claim. Ids are refused on collision rather than shadowed, with Duplicate
+  offered as the way forward — `.quickcode/` is committed, so letting a
+  project's file stand in for `tool.bash` would be a supply-chain hole — and
+  the reserved set is read off the live objects, so a new built-in is reserved
+  the moment it exists. Validation runs twice: authoritative on load, advisory
+  on save, and saving a file that does not yet parse is allowed and returns its
+  problems, because refusing to save work in progress is how an editor loses
+  it.
+- **An agent workbench.** Every agent, including `@orchestrator`, has a page
+  that answers what it will actually be sent and who decided each part: the
+  resolved composition with provenance in place, the composed prompt with its
+  section boundaries drawn and its *absences* explained, and the real tool
+  schemas with byte counts and per-tool denial reasons. The preview calls the
+  runner's own resolver and renderers rather than reconstructing anything, and
+  an unsaved draft travels the same path, so what you see before saving is what
+  runs after. The tool picker edits **patterns**: granting a family writes the
+  glob and the rows say they were matched by it, because expanding `task_*`
+  into today's five names silently freezes the set against tomorrow's sixth.
+- **Compositions can be switched inside a session**, at a turn boundary. The
+  composition stays frozen for the duration of a turn, so a switch during one
+  is refused with its reason; a switch that lands re-resolves, rebuilds the
+  registry and permission specs, clamps the mode to the new ceiling, re-renders
+  the prompt from the new bodies, and writes a marker into the transcript so
+  the record shows the agent changed underneath it rather than appearing to
+  contradict itself.
 - **One composition model for the orchestrator and its subagents.**
   Capability fields (tools, spawnable agents, model set, permission ceiling)
   combine by intersection, so resolution order cannot change the answer;

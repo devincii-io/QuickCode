@@ -39,21 +39,45 @@ directory is the default project, and further directories are opened on demand
 through `/api/projects/open`. Recently-opened projects are remembered in
 `~/.quickcode/projects.json`.
 
-In the app: `Enter` send · `Shift+Enter` newline · `Esc` interrupt · mode and
-model pickers live on the composer · `⚙` Settings has General / Models /
-Plugins · messages sent while the agent is busy are queued. Tests:
-`uv run pytest -q`.
+In the app: `Enter` send · `Shift+Enter` newline · `Esc` interrupt · mode,
+model and composition pickers live on the composer · `⚙` opens
+**Configuration**, a view organised around agents (Agents → Compositions →
+Parts → Machine room → Install) rather than a flat list of settings ·
+messages sent while the agent is busy are queued. Tests: `uv run pytest -q`.
 
 ### Plugins (agent capabilities)
 
-- **Tools** — Python entry point group `quickcode.tools` returning `Tool`
-  instances.
+Every capability the agent has — tools, prompt sections, providers, subagents,
+MCP servers — is a declared plugin with its own mutability tier: `free` (change
+it, nothing asks), `confirm` (the dialog names the risk), `locked` (not
+editable, but always **viewable** — locked never means hidden).
+
+**Written as files**, in `~/.quickcode/plugins/*.md` for every project or
+`<project>/.quickcode/plugins/*.md` for one. The kind is in the frontmatter:
+
+- **`kind: tool`** — a command tool. The argv is a JSON array and parameters
+  substitute into elements, so a parameter value can never become two
+  arguments and there is no shell to quote against.
+- **`kind: agent`** — a subagent: its tools, model, permission ceiling and
+  system prompt.
+- **`kind: prompt`** — a section of the system prompt, at an order you choose.
+
+**Written in Python**, for what files cannot express:
+
+- **Tools** — entry point group `quickcode.tools` returning `Tool` instances.
 - **Providers** — entry point group `quickcode.providers`; select per profile
   via `"provider"` in `~/.quickcode/config.json`.
 - **MCP servers** — Claude-compatible `"mcpServers"` config in
   `.quickcode/settings.json` (project) or `~/.quickcode/settings.json` (user);
   stdio transport, tools appear as `mcp__<server>__<tool>` behind the same
   permission gate.
+
+**Opening a project does not run it.** A project's own committed files can name
+programs to execute — `mcpServers`, and `kind: tool` plugins — so both stay
+inert until you trust that project once. The prompt shows every command line
+before you approve it, and the grant is bound to a hash of what you saw, so a
+later edit asks again. Trust is recorded at user scope; a project cannot
+declare itself trustworthy.
 
 ### Installation
 
@@ -107,6 +131,9 @@ The full plan lives in `docs/`:
 | [docs/PROMPTS.md](docs/PROMPTS.md) | System prompt (XML-sectioned), dynamic reminders, compaction + delegation prompts |
 | [docs/TOOLS.md](docs/TOOLS.md) | Tool surface: schemas, description copy, safety rules |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M6 |
+| [docs/design/AUTHORING.md](docs/design/AUTHORING.md) | Writing plugins as files: the five kinds, argv-first command tools, ids, validation, the trust gate |
+| [docs/design/BINDING.md](docs/design/BINDING.md) | Compositions and bindings: how a capability is resolved, why intersection, and the pool-vs-grant split |
+| [docs/design/UX.md](docs/design/UX.md) | Configuration as a view: the visual grammar, and the six questions every plugin answers |
 
 ## Principles
 
