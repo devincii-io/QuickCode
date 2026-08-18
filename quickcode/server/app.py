@@ -21,7 +21,6 @@ import contextlib
 import json
 import logging
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +28,20 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
+from quickcode.kernel import preset as preset_module
+from quickcode.kernel.spec import (
+    LockedSetting,
+    NeedsConfirmation,
+    UnknownPlugin,
+    UnknownSetting,
+)
+from quickcode.kernel.state import prompt_overrides
+from quickcode.prompts.system import render_with_sections
 from quickcode.server import auth
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.projects import ProjectHub, list_dirs
-from quickcode.session.store import SESSIONS_DIRNAME, SessionStore
+from quickcode.session.store import SESSIONS_DIRNAME, SessionStore, purge_sessions
 
 log = logging.getLogger("quickcode.server")
 
@@ -153,10 +161,12 @@ def create_app(
             "api_key_env": profile.api_key_env,
         }
 
-    def _sessions(manager: ConversationManager) -> list[dict]:
+    def _sessions(manager: ConversationManager, include_archived: bool = False) -> list[dict]:
         live = set(manager.conversations)
         out = []
-        for info in SessionStore.list_sessions(manager.cwd):
+        for info in SessionStore.list_sessions(
+            manager.cwd, include_archived=include_archived
+        ):
             out.append(
                 {
                     "conv_id": info.conv_id,
@@ -165,9 +175,19 @@ def create_app(
                     "mtime": info.mtime,
                     "message_count": info.message_count,
                     "live": info.conv_id in live,
+                    "archived": info.archived,
                 }
             )
         return out
+
+    def _revive(manager: ConversationManager, conv_id: str) -> None:
+        """Bring an archived session back into the list before opening it.
+
+        Working in a session is the opposite of having filed it away, and a
+        live-but-hidden conversation would be the worst of both.
+        """
+        if _valid_conv_id(conv_id):
+            SessionStore(manager.cwd, conv_id).unarchive()
 
     async def _open_conversation(manager: ConversationManager, request: Request) -> dict:
         body = await _read_json(request)
@@ -176,6 +196,8 @@ def create_app(
             raise HTTPException(400, "resume must be a conversation id string")
         if conv_id is not None and not _valid_conv_id(conv_id):
             raise HTTPException(400, "invalid conversation id")
+        if conv_id:
+            _revive(manager, conv_id)
         conv = manager.open(conv_id)
         return {"conv_id": conv.conv_id}
 
@@ -194,24 +216,204 @@ def create_app(
             )
         return out
 
+    # ---- plugin kernel helpers ----
+
+    def _registry_for(manager: ConversationManager):
+        """A plugin registry describing what this project actually runs.
+
+        Built per request rather than cached: it reads the settings files, and
+        a Settings page that showed a stale answer would be worse than a few
+        milliseconds of file IO.
+        """
+        from quickcode.kernel import build_registry
+
+        return build_registry(
+            manager.cwd,
+            tools=list(manager.registry_factory().tools.values()),
+            env=manager.env,
+            active_provider=manager.config.profile.provider,
+        )
+
+    def _kernel_payload(manager: ConversationManager) -> dict:
+        registry = _registry_for(manager)
+        payload = registry.to_json()
+        payload["mcp_servers"] = list(manager.mcp_servers)
+        payload["preset"] = preset_module.resolve(manager.cwd).to_dict()
+        return payload
+
+    def _plugin_detail(manager: ConversationManager, plugin_id: str) -> dict:
+        registry = _registry_for(manager)
+        try:
+            return registry.plugin_json(plugin_id, include_view=True)
+        except UnknownPlugin as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    async def _update_plugin(
+        manager: ConversationManager, plugin_id: str, request: Request
+    ) -> dict:
+        body = await _read_json(request)
+        if not isinstance(body, dict):
+            raise HTTPException(400, "request body must be a JSON object")
+        registry = _registry_for(manager)
+        confirmed = bool(body.get("confirmed"))
+        try:
+            if "enabled" in body:
+                registry.set_enabled(plugin_id, bool(body["enabled"]))
+            settings = body.get("settings")
+            if isinstance(settings, dict):
+                for key, value in settings.items():
+                    registry.set_setting(plugin_id, key, value, confirmed=confirmed)
+            # Inside the try as well: an unknown id reaches here when the body
+            # carried nothing to write, and it deserves the same 404 as one
+            # that did rather than an unhandled 500.
+            return registry.plugin_json(plugin_id, include_view=True)
+        except UnknownPlugin as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except UnknownSetting as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except LockedSetting as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except NeedsConfirmation as exc:
+            # 409, not 400: the request is valid, it just needs the user to say
+            # yes to something the UI must spell out first.
+            raise HTTPException(409, exc.reason or str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    def _presets_payload(manager: ConversationManager) -> dict:
+        presets = preset_module.load_presets(manager.cwd)
+        active = preset_module.active_preset_id(manager.cwd)
+        live = {
+            conv_id: conv.store.meta().get("preset", "")
+            for conv_id, conv in manager.conversations.items()
+        }
+        return {
+            "active": active,
+            "presets": [p.to_dict() for p in presets.values()],
+            "live_sessions": live,
+        }
+
+    async def _set_active_preset(manager: ConversationManager, request: Request) -> dict:
+        body = await _read_json(request)
+        preset_id = body.get("preset") if isinstance(body, dict) else None
+        if not isinstance(preset_id, str) or not preset_id.strip():
+            raise HTTPException(400, "body must be {'preset': <id>}")
+        presets = preset_module.load_presets(manager.cwd)
+        if preset_id not in presets:
+            raise HTTPException(404, f"no preset {preset_id!r}")
+        preset_module.set_active(manager.cwd, preset_id)
+        # Running sessions keep the preset they began with; this applies to the
+        # next one that starts.
+        return {"active": preset_id, "applies_to": "new sessions"}
+
+    def _prompt_payload(manager: ConversationManager) -> dict:
+        text, sections = render_with_sections(
+            manager.env,
+            model=manager.config.last_model or manager.config.profile.resolve("orchestrator"),
+            provider=manager.provider_name,
+            orchestration=True,
+            overrides=prompt_overrides(manager.cwd),
+        )
+        return {
+            "text": text,
+            "sections": [
+                {"id": s.id, "title": s.title, "tier": s.tier,
+                 "start": s.start, "end": s.end}
+                for s in sections
+            ],
+        }
+
+    # ---- session management: delete, archive, sweep ----
+
     def _delete_session(manager: ConversationManager, conv_id: str) -> Response:
         if not _valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
         if manager.get(conv_id) is not None:
             raise HTTPException(409, "conversation is live; close it first")
+        if not SessionStore(manager.cwd, conv_id).path.exists():
+            raise HTTPException(404, "unknown conversation")
+        # Everything the session owned goes with it: the transcript, the task
+        # board beside it, and any subagent artifact nothing else references.
+        try:
+            purge_sessions(manager.cwd, [conv_id])
+        except OSError as e:
+            raise HTTPException(500, f"could not delete session: {e}") from e
+        return Response(status_code=204)
+
+    def _set_archived(
+        manager: ConversationManager, conv_id: str, archived: bool
+    ) -> dict:
+        if not _valid_conv_id(conv_id):
+            raise HTTPException(404, "unknown conversation")
         store = SessionStore(manager.cwd, conv_id)
         if not store.path.exists():
             raise HTTPException(404, "unknown conversation")
+        # Archiving moves the file; doing that under a running conversation
+        # would pull the log out from beneath its own writer.
+        if archived and manager.get(conv_id) is not None:
+            raise HTTPException(409, "conversation is live; close it first")
         try:
-            store.path.unlink()
+            store.archive() if archived else store.unarchive()
         except OSError as e:
-            raise HTTPException(500, f"could not delete session: {e}") from e
-        # The task board lives beside the transcript; deleting one orphans the
-        # other, so they go together.
-        board_dir = manager.cwd / ".quickcode" / "tasks" / conv_id
-        if board_dir.is_dir():
-            shutil.rmtree(board_dir, ignore_errors=True)
-        return Response(status_code=204)
+            raise HTTPException(500, f"could not move session: {e}") from e
+        return {"conv_id": conv_id, "archived": store.archived}
+
+    def _selection(body: Any) -> list[str]:
+        ids = body.get("conv_ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(400, "body must be {'conv_ids': [<id>, …]}")
+        if len(ids) > 500:
+            raise HTTPException(400, "too many conversations in one request")
+        out = []
+        for raw in ids:
+            if not isinstance(raw, str) or not _valid_conv_id(raw):
+                raise HTTPException(400, f"invalid conversation id: {raw!r}")
+            out.append(raw)
+        return out
+
+    def _purge_many(manager: ConversationManager, conv_ids: list[str]) -> dict:
+        """Delete what can be deleted; report the rest instead of failing whole.
+
+        A bulk delete that aborted on the first live session would leave the
+        user guessing which of twenty rows went through.
+        """
+        skipped: list[dict] = []
+        targets: list[str] = []
+        for conv_id in conv_ids:
+            if manager.get(conv_id) is not None:
+                skipped.append({"conv_id": conv_id, "reason": "live"})
+            elif not SessionStore(manager.cwd, conv_id).path.exists():
+                skipped.append({"conv_id": conv_id, "reason": "missing"})
+            else:
+                targets.append(conv_id)
+        result = purge_sessions(manager.cwd, targets)
+        for conv_id in result.missing:
+            skipped.append({"conv_id": conv_id, "reason": "missing"})
+        return {
+            "deleted": result.sessions,
+            "boards": result.boards,
+            "artifacts": result.artifacts,
+            "skipped": skipped,
+        }
+
+    async def _bulk_delete(manager: ConversationManager, request: Request) -> dict:
+        body = await _read_json(request)
+        return _purge_many(manager, _selection(body))
+
+    async def _cleanup_empty(manager: ConversationManager, request: Request) -> dict:
+        """Sweep abandoned sessions: no messages *and* no transcript events.
+
+        A launch that was never typed into leaves one of these behind, and
+        they bury the real conversations. An interrupted turn does not qualify
+        — its event log is the transcript — so it is never swept.
+        """
+        body = await _read_json(request)
+        dry_run = bool(body.get("dry_run")) if isinstance(body, dict) else False
+        live = set(manager.conversations)
+        candidates = [c for c in SessionStore.empty_sessions(manager.cwd) if c not in live]
+        if dry_run:
+            return {"candidates": candidates, "deleted": [], "skipped": []}
+        return {"candidates": candidates, **_purge_many(manager, candidates)}
 
     # ---- default-project routes (the original single-project API) ----
 
@@ -220,8 +422,30 @@ def create_app(
         return _bootstrap(hub.default)
 
     @app.get("/api/sessions")
-    def sessions() -> list[dict]:
-        return _sessions(hub.default)
+    def sessions(archived: bool = False) -> list[dict]:
+        return _sessions(hub.default, archived)
+
+    # Registered before the ``{conv_id}`` routes so the literal path segments
+    # can never be read as a conversation id.
+    @app.post("/api/sessions/delete")
+    async def bulk_delete_sessions(request: Request) -> dict:
+        return await _bulk_delete(hub.default, request)
+
+    @app.post("/api/sessions/cleanup")
+    async def cleanup_sessions(request: Request) -> dict:
+        return await _cleanup_empty(hub.default, request)
+
+    @app.delete("/api/sessions/{conv_id}")
+    def delete_session(conv_id: str) -> Response:
+        return _delete_session(hub.default, conv_id)
+
+    @app.post("/api/sessions/{conv_id}/archive")
+    def archive_session(conv_id: str) -> dict:
+        return _set_archived(hub.default, conv_id, True)
+
+    @app.post("/api/sessions/{conv_id}/unarchive")
+    def unarchive_session(conv_id: str) -> dict:
+        return _set_archived(hub.default, conv_id, False)
 
     @app.post("/api/conversations")
     async def open_conversation(request: Request) -> dict:
@@ -264,6 +488,8 @@ def create_app(
             manager = await hub.open(path.strip())
         except NotADirectoryError as e:
             raise HTTPException(400, f"not a directory: {e}") from e
+        # The response shape is a stable contract; the UI learns what was left
+        # inert by calling GET /api/projects/{id}/trust right after open.
         return {
             "id": hub.id_of(manager),
             "path": str(manager.cwd),
@@ -279,6 +505,54 @@ def create_app(
         except OSError as e:
             raise HTTPException(400, f"cannot read directory: {e}") from e
 
+    # ---- project trust gate ----
+    # A project's MCP servers (executable-bearing project-scope config) are
+    # inert until the project is explicitly trusted once. These routes let the
+    # UI report what was refused and grant/revoke that trust. See
+    # docs/TRUST-HANDOFF.md and quickcode/security/trust.py.
+
+    def _trust_status(pid: str) -> dict:
+        try:
+            return hub.trust_status(pid)
+        except KeyError as e:
+            raise HTTPException(404, f"unknown project: {pid}") from e
+
+    async def _grant_trust(pid: str) -> dict:
+        try:
+            return await hub.grant_trust(pid)
+        except KeyError as e:
+            raise HTTPException(404, f"unknown project: {pid}") from e
+
+    def _revoke_trust(pid: str) -> dict:
+        try:
+            return hub.revoke_trust(pid)
+        except KeyError as e:
+            raise HTTPException(404, f"unknown project: {pid}") from e
+
+    @app.get("/api/trust")
+    def trust_status() -> dict:
+        return _trust_status(hub.default_id)
+
+    @app.post("/api/trust")
+    async def grant_trust() -> dict:
+        return await _grant_trust(hub.default_id)
+
+    @app.delete("/api/trust")
+    def revoke_trust() -> dict:
+        return _revoke_trust(hub.default_id)
+
+    @app.get("/api/projects/{pid}/trust")
+    def project_trust_status(pid: str) -> dict:
+        return _trust_status(pid)
+
+    @app.post("/api/projects/{pid}/trust")
+    async def project_grant_trust(pid: str) -> dict:
+        return await _grant_trust(pid)
+
+    @app.delete("/api/projects/{pid}/trust")
+    def project_revoke_trust(pid: str) -> dict:
+        return _revoke_trust(pid)
+
     # ---- project-scoped routes ----
 
     @app.get("/api/projects/{pid}/bootstrap")
@@ -286,12 +560,28 @@ def create_app(
         return {**_bootstrap(_project(pid)), "id": pid}
 
     @app.get("/api/projects/{pid}/sessions")
-    def project_sessions(pid: str) -> list[dict]:
-        return _sessions(_project(pid))
+    def project_sessions(pid: str, archived: bool = False) -> list[dict]:
+        return _sessions(_project(pid), archived)
+
+    @app.post("/api/projects/{pid}/sessions/delete")
+    async def project_bulk_delete_sessions(pid: str, request: Request) -> dict:
+        return await _bulk_delete(_project(pid), request)
+
+    @app.post("/api/projects/{pid}/sessions/cleanup")
+    async def project_cleanup_sessions(pid: str, request: Request) -> dict:
+        return await _cleanup_empty(_project(pid), request)
 
     @app.delete("/api/projects/{pid}/sessions/{conv_id}")
     def project_delete_session(pid: str, conv_id: str) -> Response:
         return _delete_session(_project(pid), conv_id)
+
+    @app.post("/api/projects/{pid}/sessions/{conv_id}/archive")
+    def project_archive_session(pid: str, conv_id: str) -> dict:
+        return _set_archived(_project(pid), conv_id, True)
+
+    @app.post("/api/projects/{pid}/sessions/{conv_id}/unarchive")
+    def project_unarchive_session(pid: str, conv_id: str) -> dict:
+        return _set_archived(_project(pid), conv_id, False)
 
     @app.post("/api/projects/{pid}/conversations")
     async def project_open_conversation(pid: str, request: Request) -> dict:
@@ -304,6 +594,56 @@ def create_app(
     @app.get("/api/projects/{pid}/plugins")
     def project_plugins(pid: str) -> dict:
         return _project(pid).plugin_inventory()
+
+    # ---- plugin kernel: what this install consists of, and what may change ----
+
+    @app.get("/api/projects/{pid}/kernel")
+    def project_kernel(pid: str) -> dict:
+        return _kernel_payload(_project(pid))
+
+    @app.get("/api/kernel")
+    def kernel() -> dict:
+        return _kernel_payload(hub.default)
+
+    @app.get("/api/projects/{pid}/kernel/plugins/{plugin_id}")
+    def project_plugin_detail(pid: str, plugin_id: str) -> dict:
+        return _plugin_detail(_project(pid), plugin_id)
+
+    @app.get("/api/kernel/plugins/{plugin_id}")
+    def plugin_detail(plugin_id: str) -> dict:
+        return _plugin_detail(hub.default, plugin_id)
+
+    @app.put("/api/projects/{pid}/kernel/plugins/{plugin_id}")
+    async def project_plugin_update(pid: str, plugin_id: str, request: Request) -> dict:
+        return await _update_plugin(_project(pid), plugin_id, request)
+
+    @app.put("/api/kernel/plugins/{plugin_id}")
+    async def plugin_update(plugin_id: str, request: Request) -> dict:
+        return await _update_plugin(hub.default, plugin_id, request)
+
+    @app.get("/api/projects/{pid}/presets")
+    def project_presets(pid: str) -> dict:
+        return _presets_payload(_project(pid))
+
+    @app.get("/api/presets")
+    def presets() -> dict:
+        return _presets_payload(hub.default)
+
+    @app.put("/api/projects/{pid}/presets/active")
+    async def project_set_preset(pid: str, request: Request) -> dict:
+        return await _set_active_preset(_project(pid), request)
+
+    @app.put("/api/presets/active")
+    async def set_preset(request: Request) -> dict:
+        return await _set_active_preset(hub.default, request)
+
+    @app.get("/api/projects/{pid}/prompt")
+    def project_prompt(pid: str) -> dict:
+        return _prompt_payload(_project(pid))
+
+    @app.get("/api/prompt")
+    def prompt() -> dict:
+        return _prompt_payload(hub.default)
 
     @app.put("/api/config")
     async def put_config(request: Request) -> Response:
@@ -358,6 +698,7 @@ def create_app(
             if not store.path.exists():
                 await ws.close(code=4404)
                 return
+            _revive(manager, conv_id)
             conv = manager.open(conv_id)
 
         client = Client()
@@ -436,8 +777,38 @@ async def _pump_in(ws: WebSocket, conv: Conversation) -> None:
         _dispatch(conv, msg)
 
 
+# Client message types registered by plugins. Kept separate from the built-in
+# handlers below and checked first, but a plugin cannot claim a built-in type:
+# the frontend's own protocol must keep meaning what it says.
+_CLIENT_HANDLERS: dict[str, Any] = {}
+
+BUILTIN_CLIENT_TYPES = frozenset({
+    "user_message", "interrupt", "set_mode", "set_model", "compact",
+    "permission_decision", "plan_decision",
+})
+
+
+def register_client_message(kind: str, handler) -> None:
+    """Accept a new client → server message type.
+
+    ``handler`` takes ``(conversation, message)``. Registering is additive:
+    an unknown type is ignored rather than an error, so an older build simply
+    does nothing with a message it has never heard of.
+    """
+    if kind in BUILTIN_CLIENT_TYPES:
+        raise ValueError(f"{kind!r} is a built-in client message type")
+    _CLIENT_HANDLERS[kind] = handler
+
+
 def _dispatch(conv: Conversation, msg: dict[str, Any]) -> None:
     t = msg.get("type")
+    handler = _CLIENT_HANDLERS.get(t) if isinstance(t, str) else None
+    if handler is not None:
+        try:
+            handler(conv, msg)
+        except Exception:
+            log.warning("client message handler for %r failed", t, exc_info=True)
+        return
     if t == "user_message":
         text = msg.get("text")
         if isinstance(text, str):

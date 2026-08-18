@@ -37,6 +37,9 @@ def load_tool_plugins() -> list[Tool]:
         found = made if isinstance(made, list) else [made]
         for t in found:
             if isinstance(t, Tool) and t.name:
+                # Stamped here, not guessed later: provenance is the one thing
+                # a plugin cannot be trusted to declare about itself.
+                t.source = "entrypoint"
                 tools.append(t)
             else:
                 log.warning("tool plugin %s returned a non-Tool: %r", ep.name, t)

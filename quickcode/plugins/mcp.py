@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict
 
 from quickcode.providers.base import ToolSchema
-from quickcode.tools.base import Tool, ToolCtx, ToolResult, truncate
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult, truncate
 
 log = logging.getLogger("quickcode.mcp")
 
@@ -168,6 +168,11 @@ class MCPToolAdapter(Tool[_PassthroughInput]):
         annotations = spec.get("annotations") or {}
         if annotations.get("readOnlyHint"):
             self.is_read_only = True
+        # An MCP server's arguments are its own; there is no field we can point
+        # a path or command rule at, so gating is by tool name alone -- and a
+        # tool that has not declared itself read-only is prompted for.
+        self.permission = PermissionSpec(mutates=not self.is_read_only)
+        self.source = "config"
 
     def schema(self) -> ToolSchema:
         return ToolSchema(name=self.name, description=self.description, parameters=self._schema)
@@ -186,48 +191,115 @@ class MCPToolAdapter(Tool[_PassthroughInput]):
         return ToolResult(content=truncate(content, RESULT_LIMIT), is_error=is_error)
 
 
-def load_server_configs(cwd) -> dict[str, dict[str, Any]]:
-    """Merge mcpServers from user config dir and project settings files."""
-    from pathlib import Path
+def _read_mcp_servers(path) -> dict[str, dict[str, Any]]:
+    """The ``mcpServers`` block of one settings file, or ``{}``."""
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return out
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if isinstance(servers, dict):
+        for name, spec in servers.items():
+            if isinstance(spec, dict) and isinstance(spec.get("command"), str):
+                out[str(name)] = spec
+    return out
 
+
+def user_server_configs() -> dict[str, dict[str, Any]]:
+    """mcpServers declared in the user's own config dir. Never gated: these are
+    the user's files, not a cloned repository's."""
     from quickcode.config import CONFIG_DIR
 
-    merged: dict[str, dict[str, Any]] = {}
-    candidates = [
-        CONFIG_DIR / "settings.json",
-        Path(cwd) / ".quickcode" / "settings.json",
-        Path(cwd) / ".quickcode" / "settings.local.json",
-    ]
-    for p in candidates:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        servers = data.get("mcpServers")
-        if isinstance(servers, dict):
-            for name, spec in servers.items():
-                if isinstance(spec, dict) and isinstance(spec.get("command"), str):
-                    merged[str(name)] = spec
-    return merged
+    return _read_mcp_servers(CONFIG_DIR / "settings.json")
 
 
-async def connect_servers(cwd) -> tuple[list[MCPServer], list[Tool]]:
-    """Spawn every configured server; a failing server logs and is skipped."""
+def project_server_configs(cwd) -> dict[str, dict[str, Any]]:
+    """mcpServers declared by the project itself. Executable-bearing config that
+    the trust gate governs — see :mod:`quickcode.security.trust`."""
+    from quickcode.security import trust
+
+    return trust.project_mcp_servers(cwd)
+
+
+def load_server_configs(cwd) -> dict[str, dict[str, Any]]:
+    """Merge mcpServers from user config dir and project settings files.
+
+    This is the *display* view (what the Settings/kernel page lists), and is
+    intentionally scope-blind: it reports every declared server whether or not
+    the trust gate will actually spawn it. Spawning is decided in
+    :func:`connect_servers`, which honours the gate.
+    """
+    return {**user_server_configs(), **project_server_configs(cwd)}
+
+
+async def _spawn(name: str, spec: dict[str, Any]) -> MCPServer | None:
+    server = MCPServer(
+        name=name,
+        command=spec["command"],
+        args=[str(a) for a in spec.get("args", [])],
+        env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
+    )
+    try:
+        await server.start()
+    except Exception as e:
+        log.warning("MCP server %s failed to start: %s", name, e)
+        await server.stop()
+        return None
+    return server
+
+
+async def connect_servers(cwd, *, store=None) -> tuple[list[MCPServer], list[Tool]]:
+    """Spawn configured MCP servers, honouring the project trust gate.
+
+    User-scope servers always start. Project-scope servers start **only if the
+    project is trusted** (:mod:`quickcode.security.trust`); until then they are
+    inert and are reported — never spawned — so that opening an untrusted
+    repository can never be code execution. A failing server logs and is
+    skipped, exactly as before.
+
+    ``store`` is injectable so tests can point the gate at a temp trust file.
+    """
+    from quickcode.security import trust
+
+    store = store if store is not None else trust.default_store()
+
     servers: list[MCPServer] = []
     tools: list[Tool] = []
-    for name, spec in load_server_configs(cwd).items():
-        server = MCPServer(
-            name=name,
-            command=spec["command"],
-            args=[str(a) for a in spec.get("args", [])],
-            env={str(k): str(v) for k, v in (spec.get("env") or {}).items()},
-        )
-        try:
-            await server.start()
-        except Exception as e:
-            log.warning("MCP server %s failed to start: %s", name, e)
-            await server.stop()
-            continue
-        servers.append(server)
-        tools.extend(MCPToolAdapter(server, t) for t in server.tools)
+
+    def _add(server: MCPServer | None) -> None:
+        if server is not None:
+            servers.append(server)
+            tools.extend(MCPToolAdapter(server, t) for t in server.tools)
+
+    for name, spec in user_server_configs().items():
+        _add(await _spawn(name, spec))
+
+    project = project_server_configs(cwd)
+    if project:
+        if store.is_trusted(cwd):
+            for name, spec in project.items():
+                _add(await _spawn(name, spec))
+        else:
+            log.warning(
+                "project %s is not trusted; %d MCP server(s) left inert: %s",
+                cwd, len(project), ", ".join(sorted(project)),
+            )
+    return servers, tools
+
+
+async def connect_project_servers(cwd) -> tuple[list[MCPServer], list[Tool]]:
+    """Spawn only the project-scope servers, unconditionally.
+
+    The caller has already decided the project is trusted (e.g. trust was just
+    granted for an open project). Used to activate MCP servers live without a
+    reopen; user-scope servers are untouched because they are already running.
+    """
+    servers: list[MCPServer] = []
+    tools: list[Tool] = []
+    for name, spec in project_server_configs(cwd).items():
+        server = await _spawn(name, spec)
+        if server is not None:
+            servers.append(server)
+            tools.extend(MCPToolAdapter(server, t) for t in server.tools)
     return servers, tools

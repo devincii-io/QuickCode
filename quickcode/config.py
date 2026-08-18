@@ -80,7 +80,10 @@ THEME_COLOR_ORDER: list[str] = [
 ]
 
 
-Tier = str  # "quality" | "balanced" | "cheap"
+# Model cost band. Deliberately NOT called ``Tier``: ``kernel/spec.py`` owns
+# that name for mutability (free | confirm | locked), and one word meaning
+# two things across modules that import both is a bug waiting for a reader.
+ModelTier = str  # "quality" | "balanced" | "cheap"
 Role = str  # "orchestrator" | "worker"
 
 
@@ -93,7 +96,7 @@ class CatalogEntry:
     """
 
     id: str  # OpenRouter slug, e.g. "anthropic/claude-sonnet-4.5"
-    tier: Tier = "balanced"
+    tier: ModelTier = "balanced"
     roles: list[Role] = field(default_factory=lambda: ["worker"])
     label: str = ""
 
@@ -135,14 +138,14 @@ class Profile:
 
         return load_api_key()
 
-    def models_for(self, role: Role, tier: Tier | None = None) -> list[CatalogEntry]:
+    def models_for(self, role: Role, tier: ModelTier | None = None) -> list[CatalogEntry]:
         """Curated models eligible for a role, optionally filtered by tier."""
         out = [e for e in self.catalog if role in e.roles]
         if tier:
             out = [e for e in out if e.tier == tier]
         return out
 
-    def resolve(self, role: Role, tier: Tier | None = None) -> str:
+    def resolve(self, role: Role, tier: ModelTier | None = None) -> str:
         """Pick a model slug for a role/tier: first catalog match, else the
         configured role default."""
         matches = self.models_for(role, tier)

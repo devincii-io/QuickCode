@@ -170,6 +170,7 @@ class ProjectHub:
         registry: ProjectRegistry | None = None,
         plugin_tools: list[Tool] | None = None,
         mcp_connect=None,
+        trust_store=None,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -177,6 +178,12 @@ class ProjectHub:
         self.default_mode = default_mode
         self.registry = registry if registry is not None else ProjectRegistry()
         self.plugin_tools = list(plugin_tools or [])
+        # Injectable so tests never touch the real ~/.quickcode/trust.json.
+        if trust_store is None:
+            from quickcode.security import trust
+
+            trust_store = trust.default_store()
+        self._trust_store = trust_store
         if mcp_connect is None:
             from quickcode.plugins import mcp
 
@@ -184,6 +191,9 @@ class ProjectHub:
         self._mcp_connect = mcp_connect
         self.managers: dict[str, ConversationManager] = {}
         self._servers: list[Any] = []
+        # Per-project mutable tool list that each manager's registry_factory
+        # closes over, so trust granted after open can inject MCP tools live.
+        self._project_extra: dict[str, list[Tool]] = {}
         self._models: list[ModelInfo] | None = None
         self._default_id: str | None = None
         self._lock = asyncio.Lock()
@@ -258,7 +268,11 @@ class ProjectHub:
         env = env or Environment.detect(path)
         servers, mcp_tools = await self._mcp_connect(path)
         self._servers.extend(servers)
+        pid = project_id(path)
+        # Held by reference: registry_factory reads this list every time it runs,
+        # so appending to it (grant_trust) makes new conversations see new tools.
         extra = [*self.plugin_tools, *mcp_tools]
+        self._project_extra[pid] = extra
 
         def registry_factory() -> ToolRegistry:
             reg = default_registry()
@@ -283,6 +297,62 @@ class ProjectHub:
         else:
             manager._models = list(self._models)
         return manager
+
+    # ---- trust ----
+    def trust_status(self, pid: str) -> dict[str, Any]:
+        """The trust decision for an open project: trusted?, which project-scope
+        MCP servers exist, and whether any are inert (declared but not started)."""
+        manager = self.managers.get(pid)
+        if manager is None:
+            raise KeyError(pid)
+        status = self._trust_store.status(manager.cwd)
+        return {**status.to_json(), "running": list(manager.mcp_servers)}
+
+    async def grant_trust(self, pid: str) -> dict[str, Any]:
+        """Record trust for an open project and connect its (now-permitted)
+        project-scope MCP servers live, so the user need not reopen the project.
+
+        Newly connected tools are appended to the project's shared ``extra``
+        list; conversations opened after this see them. Conversations already
+        running keep the toolset they started with — restart a session to pick
+        up freshly trusted servers.
+        """
+        from quickcode.plugins import mcp as mcp_module
+        from quickcode.security import trust
+
+        manager = self.managers.get(pid)
+        if manager is None:
+            raise KeyError(pid)
+        store = self._trust_store
+        store.grant(manager.cwd)
+
+        connected: list[str] = []
+        # Only start servers not already tracked, so a repeat grant is a no-op.
+        running = set(manager.mcp_servers)
+        pending = [n for n in trust.project_mcp_servers(manager.cwd) if n not in running]
+        if pending:
+            servers, tools = await mcp_module.connect_project_servers(manager.cwd)
+            fresh = [s for s in servers if s.name not in running]
+            self._servers.extend(fresh)
+            extra = self._project_extra.setdefault(pid, [])
+            fresh_names = {s.name for s in fresh}
+            for t in tools:
+                sname = t.name.split("__")[1] if t.name.startswith("mcp__") else ""
+                if sname in fresh_names:
+                    extra.append(t)
+            for s in fresh:
+                manager.mcp_servers.append(s.name)
+                connected.append(s.name)
+        return {**store.status(manager.cwd).to_json(), "connected": connected}
+
+    def revoke_trust(self, pid: str) -> dict[str, Any]:
+        """Forget trust for a project. Governs future connects; servers already
+        running in this session keep running until the project is torn down."""
+        manager = self.managers.get(pid)
+        if manager is None:
+            raise KeyError(pid)
+        existed = self._trust_store.revoke(manager.cwd)
+        return {**self._trust_store.status(manager.cwd).to_json(), "revoked": existed}
 
     # ---- shutdown ----
     async def close(self) -> None:
