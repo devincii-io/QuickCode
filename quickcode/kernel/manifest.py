@@ -833,10 +833,8 @@ _TOOL_DOCS: dict[str, str] = {
     "glob": "docs/TOOLS.md#glob-read-only",
     "grep": "docs/TOOLS.md#grep-read-only",
     "bash": "docs/TOOLS.md#bash",
-    # No fragment: docs/TOOLS.md has no section for these two yet, and a link
-    # promising an anchor that is not there is worse than one that is not.
-    "web_fetch": "docs/TOOLS.md",
-    "web_search": "docs/TOOLS.md",
+    "web_fetch": "docs/TOOLS.md#web_fetch",
+    "web_search": "docs/TOOLS.md#web_search",
     "agent": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
     "send_message": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
     "plan": "docs/PERMISSIONS.md#plan-mode",

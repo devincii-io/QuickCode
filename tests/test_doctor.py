@@ -7,6 +7,7 @@ from quickcode.doctor import (
     check_pty,
     check_python,
     check_ripgrep,
+    check_search,
     format_report,
     main,
     run_checks,
@@ -21,6 +22,7 @@ ALL_CHECK_FNS = [
     check_pty,
     check_api_key,
     check_config,
+    check_search,
 ]
 
 
@@ -71,6 +73,148 @@ def test_check_api_key_ok_when_saved_key_present(monkeypatch):
     result = check_api_key()
     assert result.ok is True
     assert result.level == "ok"
+
+
+# --------------------------------------------------------------------------
+# Web search
+# --------------------------------------------------------------------------
+
+SEARCH_ENV_VARS = [
+    "QUICKCODE_SEARCH_PROVIDER",
+    "QUICKCODE_BRAVE_API_KEY",
+    "QUICKCODE_SERPER_API_KEY",
+    "QUICKCODE_TAVILY_API_KEY",
+    "QUICKCODE_SEARXNG_URL",
+    "QUICKCODE_EXA_API_KEY",
+    "QUICKCODE_GOOGLE_CSE_API_KEY",
+    "QUICKCODE_GOOGLE_CSE_CX",
+]
+
+
+def _isolate_search(monkeypatch, settings=None):
+    """No env vars, no stored keys, and a settings block we control."""
+    from quickcode.search import SearchSettings
+
+    for var in SEARCH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("quickcode.secrets.load_secret", lambda name: None)
+    settings = settings if settings is not None else SearchSettings()
+    monkeypatch.setattr(doctor, "_search_settings", lambda: settings)
+    return settings
+
+
+def test_check_search_never_fails(monkeypatch):
+    _isolate_search(monkeypatch)
+    assert check_search().level != "fail"
+
+
+def test_check_search_unconfigured_warns_with_signup_and_command(monkeypatch):
+    _isolate_search(monkeypatch)
+
+    result = check_search()
+    assert result.ok is False
+    assert result.level == "warn"
+    assert "Brave Search" in result.detail
+    assert "https://api-dashboard.search.brave.com/app/keys" in result.detail
+    assert "QUICKCODE_BRAVE_API_KEY" in result.detail
+    assert "python -m quickcode.search set-key brave" in result.detail
+
+
+def test_check_search_ok_when_key_in_env(monkeypatch):
+    _isolate_search(monkeypatch)
+    monkeypatch.setenv("QUICKCODE_BRAVE_API_KEY", "brave-secret-value")
+
+    result = check_search()
+    assert result.ok is True
+    assert result.level == "ok"
+    assert "QUICKCODE_BRAVE_API_KEY" in result.detail
+    assert "brave-secret-value" not in result.detail
+    assert "secret" not in result.detail
+
+
+def test_check_search_never_prints_a_key_from_config(monkeypatch):
+    from quickcode.search import SearchSettings
+
+    _isolate_search(
+        monkeypatch,
+        SearchSettings(provider="brave", providers={"brave": {"api_key": "cfg-key-abc"}}),
+    )
+
+    result = check_search()
+    assert result.level == "ok"
+    assert "cfg-key-abc" not in result.detail
+    assert "config.json" in result.detail
+
+
+def test_check_search_searxng_reports_the_instance(monkeypatch):
+    from quickcode.search import SearchSettings
+
+    _isolate_search(
+        monkeypatch,
+        SearchSettings(
+            provider="searxng",
+            providers={"searxng": {"base_url": "http://localhost:8080"}},
+        ),
+    )
+
+    result = check_search()
+    assert result.level == "ok"
+    assert "http://localhost:8080" in result.detail
+
+
+def test_check_search_google_cse_wants_key_and_cx(monkeypatch):
+    from quickcode.search import SearchSettings
+
+    _isolate_search(monkeypatch, SearchSettings(provider="google_cse"))
+    monkeypatch.setenv("QUICKCODE_GOOGLE_CSE_API_KEY", "google-key")
+
+    result = check_search()
+    assert result.level == "warn"
+    assert "QUICKCODE_GOOGLE_CSE_CX" in result.detail
+    assert "google-key" not in result.detail
+
+
+def test_check_search_unknown_provider_warns(monkeypatch):
+    from quickcode.search import SearchSettings
+
+    _isolate_search(monkeypatch, SearchSettings(provider="duckduckgo"))
+
+    result = check_search()
+    assert result.level == "warn"
+    assert "duckduckgo" in result.detail
+    assert "brave" in result.detail
+
+
+def test_check_search_names_a_ready_alternative(monkeypatch):
+    from quickcode.search import SearchSettings
+
+    _isolate_search(
+        monkeypatch,
+        SearchSettings(
+            provider="brave",
+            providers={"searxng": {"base_url": "https://searx.example.com"}},
+        ),
+    )
+
+    result = check_search()
+    assert result.level == "warn"
+    assert "SearXNG" in result.detail
+    assert "QUICKCODE_SEARCH_PROVIDER=searxng" in result.detail
+
+
+def test_check_search_survives_a_broken_search_layer(monkeypatch):
+    def boom():
+        raise RuntimeError("config exploded")
+
+    monkeypatch.setattr(doctor, "_search_settings", boom)
+
+    result = check_search()
+    assert result.level == "warn"
+    assert result.ok is False
+
+
+def test_run_checks_includes_search():
+    assert any(c.name == "Web search" for c in run_checks())
 
 
 def test_run_checks_returns_non_empty_list():

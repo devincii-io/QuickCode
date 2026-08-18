@@ -2,7 +2,8 @@
 
 Self-contained health checks for the current environment: interpreter
 version, external tool availability (ripgrep, git), PTY backend
-importability, API key resolution, and user config loadability.
+importability, API key resolution, user config loadability, and whether
+``web_search`` has a provider it can actually reach.
 
 Each check is a small pure function returning a :class:`Check` — no
 printing, no side effects — so they're easy to unit test individually.
@@ -102,6 +103,111 @@ def check_api_key() -> Check:
     )
 
 
+def _search_settings():
+    """The ``search`` block of the user's config, or None if it cannot be read."""
+    try:
+        from quickcode.config import Config
+
+        return Config.load().search
+    except Exception:  # noqa: BLE001 - a broken config is check_config's problem
+        return None
+
+
+def _search_key_source(info, settings) -> str:
+    """Where the key came from — never the key itself, not even truncated."""
+    import os
+
+    configured = settings.for_provider(info.name) if settings else {}
+    if configured.get("api_key"):
+        return "config.json"
+    if os.environ.get(info.api_key_env):
+        return info.api_key_env
+    return "the saved (encrypted) key"
+
+
+def _search_ready_detail(info, credentials, settings) -> str:
+    bits = []
+    if info.needs_key:
+        bits.append(f"API key resolved from {_search_key_source(info, settings)}")
+    if info.needs_base_url and credentials.base_url:
+        bits.append(f"instance {credentials.base_url}")
+    for key, _var, _label in info.extra_fields:
+        if credentials.extra.get(key):
+            bits.append(f"{key} set")
+    return ", ".join(bits) or "configured"
+
+
+def check_search() -> Check:
+    """Web search is optional: an unconfigured provider warns, it never fails.
+
+    QuickCode works without search exactly as it works without ripgrep, so the
+    worst this returns is a warning that names the signup page, the environment
+    variable and the ``set-key`` command for the provider actually selected —
+    never for a provider the user did not pick, and never any part of a key.
+    """
+    name = "Web search"
+    try:
+        from quickcode.search import (
+            PROVIDER_CHOICE_ENV,
+            PROVIDERS,
+            chosen_provider,
+            configured_providers,
+            provider_names,
+            resolve_credentials,
+        )
+
+        settings = _search_settings()
+        chosen = chosen_provider(settings)
+        if chosen not in PROVIDERS:
+            return Check(
+                name,
+                False,
+                "warn",
+                f"unknown provider {chosen!r} selected — known: "
+                f"{', '.join(provider_names())} (set search.provider in "
+                f"~/.quickcode/config.json, or {PROVIDER_CHOICE_ENV})",
+            )
+
+        info = PROVIDERS[chosen].info
+        credentials, missing = resolve_credentials(info, settings)
+        if not missing:
+            return Check(
+                name,
+                True,
+                "ok",
+                f"{info.label} — {_search_ready_detail(info, credentials, settings)}",
+            )
+
+        detail = (
+            f"{info.label} selected but not configured (missing "
+            f"{', and '.join(missing)}) — web_search will fail until it is; "
+            f"nothing else is affected. Get it at {info.signup_url}"
+        )
+        if info.free_tier:
+            detail += f" (free tier: {info.free_tier})"
+        if info.needs_key and not credentials.api_key:
+            detail += (
+                f", then set {info.api_key_env} or run: "
+                f"python -m quickcode.search set-key {info.name}"
+            )
+        if info.needs_base_url and not credentials.base_url:
+            detail += f", then set {info.base_url_env} to the instance URL"
+        for key, var, label in info.extra_fields:
+            if not credentials.extra.get(key):
+                detail += f"; set {var} to {label}"
+        others = [n for n in configured_providers(settings) if n != info.name]
+        if others:
+            labels = ", ".join(PROVIDERS[n].info.label for n in others)
+            detail += (
+                f". Configured and ready instead: {labels} — QuickCode will not "
+                f"switch on its own ({PROVIDER_CHOICE_ENV}={others[0]} if that is "
+                "what you want)"
+            )
+        return Check(name, False, "warn", detail)
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never be the crash
+        return Check(name, False, "warn", f"could not inspect search config: {exc}")
+
+
 def check_config() -> Check:
     """User config (~/.quickcode/config.json) loads without error."""
     from quickcode.config import Config
@@ -122,6 +228,7 @@ def run_checks() -> list[Check]:
         check_pty(),
         check_config(),
         check_api_key(),
+        check_search(),
     ]
 
 
