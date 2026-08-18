@@ -8,6 +8,12 @@
 // hats. That refusal must not be silent: a project that quietly loses its
 // tools is a worse bug than the hole the gate closes.
 //
+// A third kind of committed config runs nothing and gates the same way: a
+// `permissions.allow` list, or a `default_mode` above `ask`, which widen what
+// the agent may do without stopping to ask. The backend reports them under
+// `policy`, and they are shown here as what they are — settings that are not in
+// effect, rather than commands that did not start.
+//
 // This module owns the banner that names what was refused, shows the commands
 // as they are written in the file, and takes the decision. It never guesses —
 // everything it claims comes from GET .../trust, which carries each command
@@ -63,6 +69,11 @@ function entriesOf(status, specs) {
   for (const t of status.tool_detail || []) {
     out[t.name || t.file] = (t.argv || []).join(" ");
   }
+  // Settings gate under the same grant, so a re-prompt caused by one of them
+  // has to be able to say so. The report carries the keys and not the values,
+  // so this notices one appearing or disappearing but not one being edited --
+  // which is the level of accuracy a browser-side convenience can promise.
+  for (const key of status.policy || []) out[key] = "(permission setting)";
   return out;
 }
 
@@ -183,8 +194,8 @@ function ensureMounts() {
 
 const NOTE_BOUND =
   "Trust is recorded for this folder and for the configuration shown here. If " +
-  "the mcpServers block or a command tool is edited later, QuickCode asks " +
-  "again before running it.";
+  "the mcpServers block, a command tool or one of these settings is edited " +
+  "later, QuickCode asks again before acting on it.";
 
 const NOTE_SESSION =
   "The chat that is open now keeps the tool set it started with. Start a new " +
@@ -209,6 +220,31 @@ function declared(status) {
   if (servers) parts.push(`${servers} MCP ${serverWord(servers)}`);
   if (tools) parts.push(`${tools} ${toolWord(tools)}`);
   return { servers, tools, total: servers + tools, phrase: parts.join(" and ") };
+}
+
+// The other half of the gate, which runs nothing. A committed
+// `permissions.allow` entry, or a `default_mode` above `ask`, widens what the
+// agent may do without stopping to ask — so it waits for the same one grant
+// the commands wait for. Kept apart from `declared` because the copy there is
+// about running a program, and none of this does.
+function policyOf(status) {
+  const keys = status.policy || [];
+  const n = keys.length;
+  return {
+    n, keys,
+    phrase: n ? `${n} permission ${n === 1 ? "setting" : "settings"}` : "",
+  };
+}
+
+// Named by the key each is written at: that is what someone opening the file
+// to check the claim will search for.
+function policyList(status) {
+  const p = policyOf(status);
+  if (!p.n) return "";
+  return `<ul class="trust-srvs">${p.keys.map((k) => `<li class="trust-srv">
+      <code class="ts-cmd">${esc(k)}</code>
+      <span class="ts-env">.quickcode/settings.json</span>
+    </li>`).join("")}</ul>`;
 }
 
 // What a refused command tool would run. The backend reads the file for us —
@@ -274,7 +310,7 @@ function changedList(diff) {
 function card() {
   const { status, specs, pid } = current;
   const d = declared(status);
-  const n = d.servers;
+  const p = policyOf(status);
   // `reason` is the backend's own distinction between "never trusted" and
   // "trusted, then the config was edited" — the two cases need different copy,
   // and the report is the only place that knows which one this is.
@@ -285,9 +321,11 @@ function card() {
   const diff = changedSinceGrant ? diffApproved(pid, status, specs) : null;
   const title = changedSinceGrant
     ? "This project's configuration changed"
-    : d.total === 1
-      ? "This project wants to run a command on your machine"
-      : `This project wants to run ${d.total} commands on your machine`;
+    : d.total === 0
+      ? `This project sets ${p.phrase} QuickCode has not applied`
+      : d.total === 1
+        ? "This project wants to run a command on your machine"
+        : `This project wants to run ${d.total} commands on your machine`;
 
   // A server started under the previous grant is still up: the gate governs
   // future starts, it does not kill a running process. Saying "nothing is
@@ -309,8 +347,8 @@ function card() {
         not stop ${stillUp.length === 1 ? "it" : "them"}; ${
   stillUp.length === 1 ? "it stops" : "they stop"} when this project is
         closed.</p>` : ""}`
-    : `<p>This project declares ${d.phrase} in its own files. QuickCode has not
-        started ${d.total === 1 ? "it" : "them"}. ${d.servers
+    : `${d.total ? `<p>This project declares ${d.phrase} in its own files.
+        QuickCode has not started ${d.total === 1 ? "it" : "them"}. ${d.servers
   ? "Starting an MCP server runs its command on this computer, as you, with "
         + "access to your files and your network."
   : ""} ${d.tools
@@ -319,7 +357,13 @@ function card() {
   : ""}</p>
        <p>Read the commands before you decide. If this project came from
         somewhere you do not control, judge them the way you would judge any
-        script you were handed.</p>`;
+        script you were handed.</p>` : ""}
+       ${p.n ? `<p>This project ${d.total ? "also " : ""}sets ${p.phrase} in its
+        own files, and they are not in effect — your own settings apply
+        instead. These run nothing by themselves; they widen what the agent may
+        do without stopping to ask you, which is why they wait for the same
+        decision. A setting that only makes the session more careful is applied
+        without asking and is not listed here.</p>` : ""}`;
 
   const el_ = el(`<section class="trust-card warn" role="region"
       aria-label="Project trust decision">
@@ -333,6 +377,7 @@ function card() {
       ${d.servers ? serverList(status, specs) : ""}
       ${d.servers ? rawDetails(status, specs) : ""}
       ${toolList(status)}
+      ${policyList(status)}
       <p class="trust-note">${esc(NOTE_BOUND)}</p>
       <p class="trust-err hidden"></p>
     </div>
@@ -346,7 +391,13 @@ function card() {
   const grant = el_.querySelector(".trust-grant");
   const resting = grant.textContent;
   grant.addEventListener("click", async () => {
-    if (!armed(grant, "Confirm: run these commands", resting)) return;
+    // The confirmation names what is actually being approved: a project whose
+    // only gated config is settings runs nothing, and saying it does would be
+    // the kind of inaccuracy that teaches people to click past this.
+    const confirm = d.total
+      ? "Confirm: run these commands"
+      : "Confirm: apply these settings";
+    if (!armed(grant, confirm, resting)) return;
     grant.textContent = "…";
     grant.disabled = true;
     try {
@@ -396,10 +447,14 @@ function trustedCard() {
       <button class="trust-collapse" title="Collapse this to the top bar">▴</button>
     </div>
     <div class="trust-body">
-      <p>QuickCode may run the ${declared(status).phrase || "commands"} declared
-        in this project's files, which means running the
-        ${declared(status).total === 1 ? "command" : "commands"} listed below on
-        this computer. ${esc(NOTE_BOUND)}</p>
+      ${declared(status).total ? `<p>QuickCode may run the
+        ${declared(status).phrase} declared in this project's files, which means
+        running the ${declared(status).total === 1 ? "command" : "commands"}
+        listed below on this computer.</p>` : ""}
+      ${policyOf(status).n ? `<p>This project's ${policyOf(status).phrase}
+        ${policyOf(status).n === 1 ? "is" : "are"} in effect, on top of your
+        own.</p>` : ""}
+      <p>${esc(NOTE_BOUND)}</p>
       ${silent.length ? `<p class="trust-muted">${esc(silent.join(", "))} did not
         start. A server whose command does not launch is skipped and the reason
         is written to the QuickCode log; the trust decision itself was
@@ -410,6 +465,7 @@ function trustedCard() {
         running.length ? esc(running.join(", ")) : "none"}.</p>` : ""}
       ${names.length ? rawDetails(status, specs) : ""}
       ${toolList(status)}
+      ${policyList(status)}
       <p class="trust-note">${esc(NOTE_REVOKE)}</p>
       <p class="trust-err hidden"></p>
     </div>
@@ -471,19 +527,24 @@ function render() {
     return;
   }
   const d = declared(status);
-  if (!d.total) { chip.classList.add("hidden"); return; }
+  const p = policyOf(status);
+  // A project whose only gated config is settings still gets the chip and the
+  // card: refusing something and saying nothing is the bug the banner exists
+  // to prevent, and there would otherwise be nowhere to take the decision.
+  if (!d.total && !p.n) { chip.classList.add("hidden"); return; }
 
-  const n = d.total;
+  const both = [d.phrase, p.phrase].filter(Boolean).join(" and ");
   chip.classList.remove("hidden");
   if (status.inert) {
     chip.className = "trust-chip warn";
-    chip.textContent = `△ ${d.phrase} not started`;
-    chip.title = `This project declares ${d.phrase} that will not run because `
-      + "the project is not trusted. Click to review them.";
+    chip.textContent = `△ ${both} ${d.total ? "not started" : "not applied"}`;
+    chip.title = `This project declares ${both} that ${d.total
+      ? "will not run" : "are not in effect"} because the project is not `
+      + "trusted. Click to review them.";
   } else {
     chip.className = "trust-chip ok";
-    chip.textContent = `Trusted (${n})`;
-    chip.title = `This project is trusted to run ${d.phrase}. `
+    chip.textContent = `Trusted (${d.total + p.n})`;
+    chip.title = `This project is trusted for ${both}. `
       + "Click to review or revoke.";
   }
   if (current.revoked && !collapsed) {
@@ -494,9 +555,10 @@ function render() {
         <h2 class="trust-title">Trust revoked</h2>
       </div>
       <div class="trust-body">
-        <p>QuickCode will not run ${d.phrase} in this project again. A server
-          process that is already running keeps running until this project is
-          closed.</p>
+        <p>QuickCode will not ${d.total ? `run ${d.phrase}` : ""}${
+  d.total && p.n ? " or " : ""}${p.n ? `apply ${p.phrase}` : ""} in this
+          project again. A server process that is already running keeps running
+          until this project is closed.</p>
       </div>
       <div class="trust-foot"><button class="btn trust-later">Close</button></div>
     </section>`);

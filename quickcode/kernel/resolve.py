@@ -636,6 +636,7 @@ def resolve_composition(
     chain["color"] = (Provenance(layer="agent", source=agent_id, rule=str(colour)),)
 
     problems.extend(state_store.local_settings_problems(cwd))
+    problems.extend(state_store.untrusted_project_problems(cwd))
 
     return Resolved(
         id=agent_id,
@@ -773,7 +774,8 @@ def runtime_limits(
     return RuntimeLimits(**values)
 
 
-def default_mode(cwd: Path | None, fallback: str = "ask") -> str:
+def default_mode(cwd: Path | None, fallback: str = "ask",
+                 *, trusted: bool | None = None) -> str:
     """The starting permission mode, resolved once.
 
     It used to exist twice -- ``Config.default_mode`` in
@@ -781,8 +783,14 @@ def default_mode(cwd: Path | None, fallback: str = "ask") -> str:
     plugin setting -- with only the first consumed, so the knob the Settings UI
     renders did nothing. The plugin setting wins; the config value is the
     fallback.
+
+    A *project's* value goes through the trust gate: ``state_store`` drops what
+    an untrusted project may not state, so a repository cannot open the session
+    it is cloned into in bypass mode. It can still ask for ``plan``, which asks
+    for less.
     """
-    value = state_store.plugin_setting(cwd, "runtime.permissions", "default_mode")
+    value = state_store.plugin_setting(cwd, "runtime.permissions", "default_mode",
+                                       trusted=trusted)
     if isinstance(value, str) and value.strip():
         try:
             return Mode(value.strip()).value

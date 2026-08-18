@@ -28,12 +28,17 @@ from typing import Any
 
 from quickcode.kernel.composition import Binding, Composition
 from quickcode.kernel.state import _read, project_settings_path, user_settings_path
+from quickcode.security.trust import GATED_PRESET_FIELDS, project_may_state
 
 log = logging.getLogger("quickcode.kernel.preset")
 
 PRESETS_KEY = "presets"
 ACTIVE_KEY = "active_preset"
 DEFAULT_PRESET = "standard"
+
+# Preset fields a project may only state once it is trusted -- the gate's own
+# list, imported rather than restated so the two cannot drift apart.
+_GATED_FIELDS = GATED_PRESET_FIELDS
 
 
 @dataclass(frozen=True)
@@ -215,7 +220,18 @@ def builtin_presets() -> dict[str, Preset]:
     }
 
 
-def _presets_from(raw: dict[str, Any], builtins: dict[str, Preset]) -> dict[str, Preset]:
+def _presets_from(raw: dict[str, Any], builtins: dict[str, Preset],
+                  *, gated: bool = False) -> dict[str, Preset]:
+    """Parse one layer's presets. ``gated`` drops what a project may not set.
+
+    Everything else a preset states is intersected somewhere downstream --
+    tools, spawns and models narrow, the ceiling narrows, section bodies are
+    prompt text the model already reads untrusted. ``default_mode`` is the one
+    field that can *raise* what the session may do on its own, so it is the one
+    field the gate has an opinion about, and only when the value asks for more
+    than ``ask``. Dropping just that leaves the rest of the preset working,
+    which is what the composition is for.
+    """
     section = raw.get(PRESETS_KEY)
     if not isinstance(section, dict):
         return {}
@@ -223,6 +239,12 @@ def _presets_from(raw: dict[str, Any], builtins: dict[str, Preset]) -> dict[str,
     for preset_id, body in section.items():
         if not isinstance(body, dict):
             continue
+        refused = [f for f in _GATED_FIELDS
+                   if body.get(f) and not project_may_state(f, body[f])] if gated else []
+        if refused:
+            log.warning("project is not trusted; ignoring %s on preset %r",
+                        ", ".join(refused), preset_id)
+            body = {k: v for k, v in body.items() if k not in refused}
         base = builtins.get(body.get("base", "")) or builtins.get(DEFAULT_PRESET)
         try:
             out[preset_id] = Preset.from_dict(preset_id, body, base=base)
@@ -231,7 +253,7 @@ def _presets_from(raw: dict[str, Any], builtins: dict[str, Preset]) -> dict[str,
     return out
 
 
-def load_presets(cwd: Path | None) -> dict[str, Preset]:
+def load_presets(cwd: Path | None, *, trusted: bool | None = None) -> dict[str, Preset]:
     """Built-ins, then user presets, then project presets (each shadows).
 
     Note the deliberate asymmetry with ``active_preset_id``, which reads
@@ -239,12 +261,15 @@ def load_presets(cwd: Path | None) -> dict[str, Preset]:
     the most specific file *wins* when defining one. Both are correct; the
     combination is only surprising if you meet it undocumented.
     """
+    from quickcode.security import trust
+
     presets = builtin_presets()
-    layers = [_read(user_settings_path())]
+    presets.update(_presets_from(_read(user_settings_path()), builtin_presets()))
     if cwd is not None:
-        layers.append(_read(project_settings_path(cwd)))
-    for raw in layers:
-        presets.update(_presets_from(raw, builtin_presets()))
+        presets.update(_presets_from(
+            _read(project_settings_path(cwd)), builtin_presets(),
+            gated=not trust.resolve_trust(cwd, trusted),
+        ))
     return presets
 
 
@@ -258,14 +283,15 @@ def active_preset_id(cwd: Path | None) -> str:
     return DEFAULT_PRESET
 
 
-def resolve(cwd: Path | None, preset_id: str = "") -> Preset:
+def resolve(cwd: Path | None, preset_id: str = "", *,
+            trusted: bool | None = None) -> Preset:
     """The preset to run, falling back to the standard one if it is gone.
 
     A session that recorded a preset which has since been deleted must still
     open -- losing the composition is bad, refusing to show the conversation
     is worse.
     """
-    presets = load_presets(cwd)
+    presets = load_presets(cwd, trusted=trusted)
     wanted = preset_id or active_preset_id(cwd)
     preset = presets.get(wanted)
     if preset is None:

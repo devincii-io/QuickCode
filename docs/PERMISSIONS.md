@@ -25,6 +25,19 @@ class BashTool(Tool[BashInput]):
 - `path_target` — the target is a path, so the protected-path check applies.
 - `shell` — the target is a command line and gets decomposed per subcommand.
 
+**Read-only is not the same as unrestricted.** `read`, `grep` and `glob` all
+declare `path_target`, because the protected-path boundary is about *which
+files*, not about writing: `grep(output_mode="content")` returns file contents,
+so a `grep` that skipped the check would be the way to read `~/.ssh` that `read`
+correctly asks about. Any tool whose target is a filesystem path declares
+`path_target`, whatever it does with it.
+
+The gate only sees the path a call *names*, so `grep` also skips `.ssh` and
+`.env*` while walking a directory — both through ripgrep and through the
+pure-Python fallback, which must not disagree about what they will read. A
+search that names one of those files still searches it, after the prompt: the
+rule is reachable, never incidental.
+
 This is what lets a **plugin** tool get the same protection a built-in one
 gets. Previously the engine held name sets (`{"write", "edit", "bash"}`), so a
 third-party tool that wrote files was waved through purely because it was not
@@ -60,7 +73,11 @@ Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fi
     "ask":   ["bash(git push*)"],
     "deny":  ["read(.env)", "read(**/*.pem)", "bash(curl * | *sh)"]
   },
-  "defaultMode": "ask"
+  // The starting mode is a plugin setting, and it is the one the Settings UI
+  // writes. In a project file it is subject to the trust gate below.
+  "plugins": {
+    "runtime.permissions": { "settings": { "default_mode": "ask" } }
+  }
 }
 ```
 
@@ -71,7 +88,40 @@ Syntax:
 - `agent(researcher)` — gate which subagent types may spawn
 - Bare tool name (`write`) matches all uses; as a **deny** it removes the tool from the model's tool list entirely
 
-**Settings scopes & precedence** (rule-kind beats scope, then): CLI flags (session-only) → `./.quickcode/settings.local.json` (gitignored) → `./.quickcode/settings.json` (shared, checked in) → `~/.quickcode/config.json` (user). A project file cannot grant itself `yolo` as `defaultMode` — that's honored from user config or flags only.
+**Settings scopes & precedence** (rule-kind beats scope, then): CLI flags (session-only) → `./.quickcode/settings.local.json` (gitignored) → `./.quickcode/settings.json` (shared, checked in) → `~/.quickcode/config.json` (user).
+
+## A project's own settings go through the trust gate
+
+Both project settings files are files a repository can commit, so what they may
+say on their own is limited. The gate is the one in `security/trust.py` — the
+same single grant that decides whether the project's `mcpServers` and
+`kind: tool` plugins may run, bound to a hash of that configuration.
+
+| Project-scope config | Untrusted project |
+|---|---|
+| `permissions.deny`, `permissions.ask` | applied — they only narrow |
+| `permissions.allow` | **ignored** |
+| `default_mode` (plugin setting or preset) — `plan`, `ask` | applied — they ask for less |
+| `default_mode` — `auto-edit`, `dontask`, `yolo` | **ignored** |
+| other `runtime.permissions` settings | **ignored** |
+| tools, spawns, models, ceilings, prompt text | applied — all of them are intersected downstream and can only narrow |
+
+The rule is one sentence: **a project may make a session more careful without
+being asked; making it less careful is a grant, and grants are consented to
+once.** Anything ignored falls back to your own configuration, so an untrusted
+project opens and works — it just runs on your rules rather than its own.
+
+The fallback is never silent. The trust report names the refused keys
+(`GET /api/trust` → `policy`), the session's problem list carries a
+`project_settings_ignored` warning naming them and how to change the answer, and
+the drop is logged. Trusting the project once applies all of them; editing them
+afterwards re-prompts, because the grant is bound to the values.
+
+`settings.local.json` is gated exactly as `settings.json` is. It is gitignored
+by convention, and the convention is written in a file the repository also
+controls — so "local" says nothing about where the file came from. An "always
+allow" answer therefore holds for the rest of the session either way, and
+persists across sessions once the project is trusted.
 
 ## Bash evaluation pipeline
 
@@ -79,14 +129,16 @@ Syntax:
 command string
   → shell-parse into subcommands (split on && || ; | |& & and newlines)
   → per subcommand:
-      strip harmless wrappers (timeout, time, nice, nohup, env-var prefixes*)
+      strip harmless wrappers (timeout, time, nice, nohup) and env-var prefixes*
       → builtin read-only? (ls cat pwd head tail wc which stat diff cd,
-        read-only git forms, rg) → auto-allow
+        read-only git forms, rg) → auto-allow, unless the subcommand
+        carries an env-var prefix
       → deny rules → ask rules → allow rules → mode default
   → final decision = most restrictive across subcommands
 ```
 
-- *Env-prefix stripping applies for **allow** matching only — `FOO=x rm -rf y` still hits a `rm` deny.
+- *Env-prefix stripping is for **deny** matching: `FOO=x rm -rf y` still hits a `rm` deny. It does **not** buy the read-only auto-allow, and it does not match an allow rule written against the bare command — `PATH=. ls` is not `ls`, and approving `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule that spells the assignment out still matches.
+- Any assignment disqualifies, not a list of dangerous names: such a list would have to be complete, and `PATH`/`LD_PRELOAD` are only the obvious entries next to `BASH_ENV`, `IFS`, `PYTHONSTARTUP`, `NODE_OPTIONS` — and `RIPGREP_CONFIG_PATH`, which points `rg` (a read-only builtin) at a config file that can set `--pre`, which runs a program. The set grows with every program installed on the machine. The cost of the conservative reading is one prompt for `FOO=1 ls`.
 - Exec-style wrappers that smuggle commands (`watch`, `xargs -I`, `find -exec`, `setsid`) are never stripped → always prompt unless the full string matches a rule.
 - Approving a compound command with "always allow" persists **one rule per subcommand**, not one rule for the whole line.
 - Windows: same pipeline for PowerShell with alias canonicalization (`gci|ls|dir → Get-ChildItem`) when the shell is PowerShell.

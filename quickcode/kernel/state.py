@@ -73,7 +73,47 @@ def _entries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in section.items() if isinstance(v, dict)}
 
 
-def load_state(cwd: Path | None) -> dict[str, dict[str, Any]]:
+def _project_entries(cwd: Path, trusted: bool | None) -> dict[str, dict[str, Any]]:
+    """The project layer's plugin state, minus what it may not set on its own.
+
+    A project committing ``runtime.permissions.default_mode: "yolo"`` is asking
+    for the session to open in bypass mode, which is the same grant a committed
+    MCP server asks for and goes through the same gate. What survives the gate
+    is ``trust.project_may_state``'s answer, so this file and the trust report
+    refuse exactly the same values; what is dropped falls back to the user's
+    own setting, which is a safe answer and a working one.
+    """
+    from quickcode.security import trust
+
+    entries = _entries(_read(project_settings_path(cwd)))
+    if trust.resolve_trust(cwd, trusted):
+        return entries
+
+    out: dict[str, dict[str, Any]] = {}
+    refused: list[str] = []
+    for plugin_id, entry in entries.items():
+        if plugin_id not in trust.GATED_PLUGIN_IDS:
+            out[plugin_id] = entry
+            continue
+        settings = entry.get("settings")
+        settings = settings if isinstance(settings, dict) else {}
+        kept = {k: v for k, v in settings.items() if trust.project_may_state(k, v)}
+        refused += [f"{plugin_id}.{k}" for k in settings if k not in kept]
+        # Everything that is not a setting stays: ``enabled`` can only switch a
+        # plugin off, which narrows, and narrowing was never what needed a
+        # grant.
+        rest = {k: v for k, v in entry.items() if k != "settings"}
+        if kept:
+            rest["settings"] = kept
+        if rest:
+            out[plugin_id] = rest
+    if refused:
+        log.warning("project %s is not trusted; ignoring %s",
+                    cwd, ", ".join(sorted(refused)))
+    return out
+
+
+def load_state(cwd: Path | None, *, trusted: bool | None = None) -> dict[str, dict[str, Any]]:
     """Merged plugin state, project overriding user, per plugin id.
 
     The merge is per *field*, not per plugin: a project that pins one knob
@@ -82,7 +122,7 @@ def load_state(cwd: Path | None) -> dict[str, dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     layers = [_entries(_read(user_settings_path()))]
     if cwd is not None:
-        layers.append(_entries(_read(project_settings_path(cwd))))
+        layers.append(_project_entries(cwd, trusted))
 
     for layer in layers:
         for plugin_id, entry in layer.items():
@@ -95,7 +135,9 @@ def load_state(cwd: Path | None) -> dict[str, dict[str, Any]]:
     return merged
 
 
-def layer_states(cwd: Path | None) -> list[tuple[str, Path, dict[str, dict[str, Any]]]]:
+def layer_states(
+    cwd: Path | None, *, trusted: bool | None = None,
+) -> list[tuple[str, Path, dict[str, dict[str, Any]]]]:
     """The plugin state of each configuration layer, kept separate.
 
     ``load_state`` merges them, which is what a consumer asking "what is this
@@ -107,7 +149,7 @@ def layer_states(cwd: Path | None) -> list[tuple[str, Path, dict[str, dict[str, 
     out.append(("user", user, _entries(_read(user))))
     if cwd is not None:
         project = project_settings_path(cwd)
-        out.append(("project", project, _entries(_read(project))))
+        out.append(("project", project, _project_entries(cwd, trusted)))
     return out
 
 
@@ -125,14 +167,15 @@ def disabled_plugin_ids(cwd: Path | None) -> set[str]:
     }
 
 
-def plugin_setting(cwd: Path | None, plugin_id: str, key: str, default: Any = None) -> Any:
+def plugin_setting(cwd: Path | None, plugin_id: str, key: str, default: Any = None,
+                   *, trusted: bool | None = None) -> Any:
     """One persisted plugin setting, without building a registry.
 
     Deliberately no spec coercion: the caller knows the type it wants and the
     registry is the place that validates. Used by the session path, which must
     not pay for a full plugin inventory to read one knob.
     """
-    entry = load_state(cwd).get(plugin_id) or {}
+    entry = load_state(cwd, trusted=trusted).get(plugin_id) or {}
     settings = entry.get("settings")
     if isinstance(settings, dict) and key in settings:
         return settings[key]
@@ -169,6 +212,46 @@ def local_settings_problems(cwd: Path | None) -> list[Problem]:
             subject=str(path),
             field=found[0],
             provenance=Provenance(layer="project", source=path.name, path=str(path)),
+        )
+    ]
+
+
+def untrusted_project_problems(
+    cwd: Path | None, *, trusted: bool | None = None,
+) -> list[Problem]:
+    """What this project asked for that its trust status does not cover.
+
+    The gate's fallback is the user's own configuration, which is a working
+    session -- but a session that quietly runs on different rules than the file
+    in front of you states is the same defect ``local_settings_problems``
+    exists to fix, one layer up. So the refusal is named, with the keys as they
+    are written and the one action that changes the answer.
+    """
+    from quickcode.security import trust
+
+    if cwd is None or trust.resolve_trust(cwd, trusted):
+        return []
+    keys = sorted(trust.project_policy_config(cwd))
+    if not keys:
+        return []
+    return [
+        Problem(
+            code="project_settings_ignored",
+            severity="warning",
+            message=(
+                f"this project sets {len(keys)} permission "
+                f"{'settings' if len(keys) != 1 else 'setting'} "
+                f"({', '.join(keys)}) and is not trusted, so "
+                f"{'they are' if len(keys) != 1 else 'it is'} ignored and your "
+                "own settings apply instead"
+            ),
+            fix=("Read them, then trust this project to let them apply. A "
+                 "committed allowlist or default mode widens what the agent "
+                 "may do without asking, which is the same decision trusting "
+                 "an MCP server is."),
+            subject="project", field="trust",
+            provenance=Provenance(layer="project", source=SETTINGS_FILENAME,
+                                  path=str(project_settings_path(cwd))),
         )
     ]
 

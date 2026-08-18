@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
+# Secret-bearing paths, skipped while *walking*. The permission gate prompts
+# before a search that names one of these, but a search of the whole project
+# names none of them and would otherwise return the contents of every one it
+# passed. Naming the file explicitly still searches it -- with the prompt --
+# which is the same shape ``read`` has: reachable, never incidental.
+SECRET_PARTS = (".ssh", ".env")
+SECRET_GLOBS = ("!.env", "!.env.*", "!.ssh/**")
 BINARY_SNIFF_BYTES = 8192
 MAX_FILE_BYTES = 5_000_000
 MAX_OUTPUT_CHARS = 40_000
@@ -51,7 +58,11 @@ class GrepTool(Tool[GrepInput]):
         "head_limit (default 100)."
     )
     is_read_only: ClassVar[bool] = True
-    permission = PermissionSpec(mutates=False, target_field="path")
+    # ``path`` is a filesystem path, so it is gated exactly as ``read`` is:
+    # ``output_mode="content"`` returns file contents, which makes an ungated
+    # grep a way to read ~/.ssh that the tool asking for the same file by name
+    # would have been prompted for.
+    permission = PermissionSpec(mutates=False, target_field="path", path_target=True)
     Input = GrepInput
 
     def render_call(self, input: GrepInput) -> str:  # noqa: A002
@@ -89,6 +100,9 @@ def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
         args.append("-i")
     if input.glob:
         args += ["--glob", input.glob]
+    if root.is_dir():
+        for pattern in SECRET_GLOBS:
+            args += ["--glob", pattern]
     if input.output_mode == "files_with_matches":
         args.append("-l")
     elif input.output_mode == "count":
@@ -148,6 +162,8 @@ def _iter_files(root: Path, glob_pat: str | None):
         if not p.is_file():
             continue
         if any(part in IGNORED_DIRS for part in p.parts):
+            continue
+        if any(part in SECRET_PARTS or part.startswith(".env.") for part in p.parts):
             continue
         if glob_pat and not p.match(glob_pat):
             continue

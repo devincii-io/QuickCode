@@ -36,7 +36,10 @@ class GlobTool(Tool[GlobInput]):
         "__pycache__, and .venv. Returns up to 200 matches, newest first."
     )
     is_read_only: ClassVar[bool] = True
-    permission = PermissionSpec(mutates=False, target_field="path")
+    # A path target, gated as ``read`` is: listing a directory is a smaller
+    # disclosure than reading it, but it is the same boundary and filenames
+    # alone are worth prompting for outside the project.
+    permission = PermissionSpec(mutates=False, target_field="path", path_target=True)
     Input = GlobInput
 
     def render_call(self, input: GlobInput) -> str:  # noqa: A002

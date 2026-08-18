@@ -11,10 +11,13 @@ into a modal via ``push_screen_wait``; headless turns it into an auto-deny.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+log = logging.getLogger("quickcode.permissions")
 
 # Builtin read-only shell commands that auto-allow (first token).
 READONLY_BUILTINS = {
@@ -23,6 +26,9 @@ READONLY_BUILTINS = {
 }
 # Harmless wrappers stripped before matching (allow-side only).
 WRAPPERS = {"timeout", "time", "nice", "nohup"}
+# ``NAME=value`` in front of a command. Commands run through ``bash -lc``, so
+# the shell applies these to the environment the command executes in.
+_ENV_ASSIGNMENT = re.compile(r"\w+=.*")
 # Splitters that break a command line into subcommands.
 _SPLIT = re.compile(r"&&|\|\||\||;|&|\n")
 # Substitution markers that forbid prefix-matching a rule.
@@ -92,8 +98,26 @@ class Rules:
     deny: list[str] = field(default_factory=list)
 
     @classmethod
-    def load(cls, root: Path) -> Rules:
+    def load(cls, root: Path, *, trusted: bool | None = None) -> Rules:
+        """The project's rules, with its allowlist gated on project trust.
+
+        ``deny`` and ``ask`` load from any project, trusted or not: they only
+        ever narrow, and a project that can only narrow needs no consent.
+        ``allow`` is the half that widens, so it loads only from a project the
+        user has trusted once -- a cloned repository's committed allowlist is
+        otherwise consent nobody gave. Both project settings files are gated:
+        a repository can commit any filename it likes, so ``.local`` is a
+        convention rather than a statement about where the file came from.
+
+        The fallback is an empty allowlist, which is the state a project with
+        no settings file is in -- so an untrusted project prompts, rather than
+        failing to open. ``trusted`` is for tests; see ``trust.resolve_trust``.
+        """
+        from quickcode.security import trust
+
+        allowed = trust.resolve_trust(root, trusted)
         merged = cls()
+        refused = 0
         for rel in (".quickcode/settings.json", ".quickcode/settings.local.json"):
             p = root / rel
             if not p.exists():
@@ -102,13 +126,26 @@ class Rules:
                 data = json.loads(p.read_text(encoding="utf-8")).get("permissions", {})
             except Exception:
                 continue
-            merged.allow += data.get("allow", [])
+            if allowed:
+                merged.allow += data.get("allow", [])
+            else:
+                refused += len(data.get("allow", []) or [])
             merged.ask += data.get("ask", [])
             merged.deny += data.get("deny", [])
+        if refused:
+            log.warning(
+                "project %s is not trusted; %d permission allow rule(s) ignored",
+                root, refused,
+            )
         return merged
 
     def persist_allow(self, root: Path, rule: str) -> None:
-        """Append a rule to settings.local.json (gitignored)."""
+        """Append a rule to settings.local.json (gitignored).
+
+        The rule applies for the rest of this session either way. Whether it
+        applies to the *next* one is the trust gate's answer, same as for every
+        other allow rule -- ``load`` says why.
+        """
         d = root / ".quickcode"
         d.mkdir(parents=True, exist_ok=True)
         p = d / "settings.local.json"
@@ -294,11 +331,15 @@ class PermissionEngine:
 
     def _eval_bash_sub(self, sub: str, full: str, has_sub: bool) -> Decision:
         tokens = sub.split()
-        # strip harmless wrappers and env-var prefixes for allow matching
+        # Strip harmless wrappers and env-var prefixes so a rule written against
+        # the command still matches. Whether an assignment was among them is
+        # remembered, because the two kinds of prefix are not equally harmless.
         idx = 0
+        has_env_prefix = False
         while idx < len(tokens) and (
-            tokens[idx] in WRAPPERS or re.fullmatch(r"\w+=.*", tokens[idx])
+            tokens[idx] in WRAPPERS or _ENV_ASSIGNMENT.fullmatch(tokens[idx])
         ):
+            has_env_prefix = has_env_prefix or bool(_ENV_ASSIGNMENT.fullmatch(tokens[idx]))
             idx += 1
         stripped = " ".join(tokens[idx:])
         first = tokens[idx].split("/")[-1] if idx < len(tokens) else ""
@@ -319,8 +360,23 @@ class PermissionEngine:
             if _rule_matches(r, "bash", sub) or _rule_matches(r, "bash", stripped):
                 return Decision.deny
 
-        # builtin read-only → auto-allow (only when no substitution smuggling)
-        if first in READONLY_BUILTINS and not has_sub:
+        # Builtin read-only → auto-allow (only when no substitution smuggling
+        # and no rewritten environment).
+        #
+        # Every assignment disqualifies, not a blocklist of the dangerous
+        # names. A blocklist here would have to be complete, and it cannot be:
+        # `PATH` and `LD_PRELOAD` are only the obvious entries next to
+        # `BASH_ENV`, `IFS`, `GLOBIGNORE`, `PYTHONSTARTUP`, `NODE_OPTIONS`,
+        # `LESSOPEN` -- and `RIPGREP_CONFIG_PATH`, which points `rg` (a
+        # read-only builtin, right here in the list) at a config file that may
+        # set `--pre`, which runs a program. The set of variables that turn a
+        # harmless command into an arbitrary one grows with every program
+        # installed on the machine, so it is not knowable from here.
+        #
+        # The conservative reading costs one prompt for `FOO=1 ls`, which is
+        # not a command anybody types by hand, and the auto-allow exists to
+        # make the ordinary case frictionless rather than to cover every case.
+        if first in READONLY_BUILTINS and not has_sub and not has_env_prefix:
             # plan mode allows read-only bash
             return Decision.allow
 
@@ -330,10 +386,15 @@ class PermissionEngine:
         for r in self.rules.ask:
             if _rule_matches(r, "bash", sub):
                 return Decision.ask
-        # allow rules never prefix-match a compound/substitution line
+        # Allow rules never prefix-match a compound/substitution line, and the
+        # env-stripped form is not offered to them either: approving
+        # `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule
+        # that spells the assignment out still matches, via ``sub``.
         if not has_sub:
             for r in self.rules.allow:
-                if _rule_matches(r, "bash", sub) or _rule_matches(r, "bash", stripped):
+                if _rule_matches(r, "bash", sub) or (
+                    not has_env_prefix and _rule_matches(r, "bash", stripped)
+                ):
                     return Decision.allow
 
         if self.mode == Mode.yolo:
