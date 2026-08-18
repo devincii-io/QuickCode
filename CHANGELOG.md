@@ -4,9 +4,9 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 2.0.0
+## [2.0.0] — 2026-08-18
 
-Working title for the in-progress plugin overhaul: every agent capability —
+The plugin overhaul: every agent capability —
 tools, prompt sections, providers, subagents, MCP servers — becomes a
 declared plugin with its own mutability tier, and the tool/permission
 coupling that used to live in name lists moves onto the tools themselves.
@@ -200,6 +200,28 @@ coupling that used to live in name lists moves onto the tools themselves.
 - Every tool card badged "locked", because a tool's only setting is the
   read-only flag it declares about itself. A declared fact is now
   distinguished from a knob withheld to defend an invariant.
+- **A headless run recorded nothing.** `quickcode -p` wrote a session file
+  containing one `meta` line: the log is written by whoever subscribes to the
+  agent's event bus, and the headless path subscribed to nothing, so every
+  event was fanned out to zero listeners and dropped. The session looked real
+  and was permanently empty — "every run is traceable" was false for `-p`, and
+  `--continue` resumed an empty conversation. The recorder is now extracted
+  into `session/recorder.py` and used by both entry points, rather than a
+  second implementation that could differ by which one wrote the log.
+- Session titles preferred the persisted message, which carries what the
+  *model* was sent — `<system-reminder>` blocks and all — over the event,
+  which carries what the person typed.
+- The dry run's one-line summary joined the argv unquoted, so a parameter
+  value of `; rm -rf /` rendered as a line that reads exactly like the shell
+  command the panel exists to prove cannot happen.
+- The trust re-prompt could not say what changed for a project whose
+  executable config is command tools: the browser recorded only servers, then
+  reported having no record of what was approved.
+- Refusing to duplicate a built-in tool put the reason in a tooltip, so a
+  reader who never hovered saw one button silently become another.
+- Granting trust changes which tools exist, but a configuration view mounted
+  before the grant kept quoting the pre-grant count beside a picker that had
+  refetched the new one.
 
 ### Security
 
@@ -317,5 +339,6 @@ provider abstraction, tool registry, PTY sessions, plan mode, compaction,
 subagent delegation via the agent tool) before the web UI rewrite replaced
 it. Not published as a release artifact.
 
-[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/devincii-io/QuickCode/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/devincii-io/QuickCode/releases/tag/v1.0.0
