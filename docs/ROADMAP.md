@@ -34,8 +34,10 @@ Each milestone ends in something runnable. Checked items are present in the curr
 - [x] Manual compaction with history rebuild and post-compaction reminder
 - [x] Persistent task create/update/list/get tools, dependencies, owners, and sidebar
 - [x] `QUICKCODE.md` / `AGENTS.md` / `CLAUDE.md` project instructions
-- [x] Slash menu for models, settings, usage, tasks, compact, clear, and help
-- [ ] Conversation tabs/switcher, automatic compaction threshold, `/init`, and path autocomplete
+- [x] Slash menu for `/compact`, `/clear`, `/mode`, `/model`, `/composition`, `/profile`,
+      `/init`, and `/help` (models, usage and tasks are pickers and panels, not commands)
+- [x] Conversation tabs and switcher, session rename, `@` path autocomplete
+- [x] Automatic compaction on a declared threshold, in the web app and in `-p`
 
 ## M4 — Subagents
 
@@ -44,8 +46,8 @@ Each milestone ends in something runnable. Checked items are present in the curr
 - [x] Permission caps, auto-deny boundary, nesting limit, and concurrent fan-out
 - [x] Report sanitization, artifact offload, and `send_message` resume
 - [x] Orchestration prompt and structured delegation guidance
-- [ ] True detached/background jobs with later result collection (current calls block, while
-      multiple agent calls in one model turn execute concurrently)
+- [x] True detached/background jobs (`agent(background: true)`) with `agent_status` /
+      `agent_result` collection, a live-parallelism cap, and an `agent_done` event
 
 ## M5 — Teammate mode
 
@@ -59,11 +61,14 @@ Each milestone ends in something runnable. Checked items are present in the curr
 - [x] `quickcode doctor` environment checks
 - [x] Windows installer/bootstrap and shell/path hardening
 - [x] Mouse-first focus behavior, resizable subagent pane, and theme presets
-- [ ] Native Anthropic adapter, hooks, background bash, toasts, and richer input history
+- [x] Toasts, prefix-filtered input history, and a fleet view that survives fifty subagents
+      (grid layout, per-card follow, filters, solo view)
+- [ ] Native Anthropic adapter, hooks, and background bash
 
 ## Next priorities
 
-1. Detached background agents with explicit status/result tools.
-2. Conversation switcher and automatic compaction.
-3. Background shell jobs and a dedicated PTY panel.
+1. Background shell jobs and a dedicated PTY panel (`bash(run_in_background)` is still a
+   declared-and-refused stub).
+2. Native Anthropic adapter and provider-specific prompt-cache controls.
+3. Hooks.
 4. Teammate mode after task claiming and worktree isolation are designed together.

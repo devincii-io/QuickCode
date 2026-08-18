@@ -4,6 +4,107 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-08-18
+
+### Fixed
+
+- **Four parallel reads could hang the agent forever.** Read-only tool calls in
+  one assistant message run concurrently, so four `read`s against a protected
+  path opened four permission futures at once, each awaiting its own decision.
+  The web UI showed one dialog at a time and let every new request wipe the one
+  on screen — while still recording it as "shown", so it could never be offered
+  again. You answered the last prompt; the other three futures waited on a
+  decision it was no longer possible to give, the round's `asyncio.gather` never
+  completed, and the turn sat at "Running read…" for eight minutes. Reviews are
+  a queue now: one dialog at a time, in arrival order, each answered on its own,
+  with "N more requests waiting behind this one" so a blocked fan-out looks like
+  what it is. `state.pending` re-seeds the queue, so a reconnect or a lost frame
+  recovers instead of stranding. And a review dialog no longer closes on Escape,
+  the backdrop or a ✕ — the agent is waiting on an answer, and "no" is the Deny
+  button, which it hears. If another dialog displaces a live review, the review
+  comes back rather than vanishing.
+- **A subagent's own report needed permission to read back.** QuickCode offloads
+  a large report to `.quickcode/artifacts/<agent_id>.md` and then tells the model
+  to go read it — but `.quickcode` is a protected path, so that read prompted in
+  every mode, yolo included. Reads under the project's own artifacts directory
+  now fall through to normal rule evaluation. Deliberately narrow: writes and
+  edits to the same path still prompt, the rest of `.quickcode`, `.git`, `.ssh`
+  and `.env*` are untouched, and a `..` or symlink that only *starts* inside the
+  directory still asks. Skipping the prompt is not the same as an allow — a deny
+  rule still denies.
+- **Agent cards collapsed into empty slivers once there were enough of them.**
+  The card list is a flex column, and a card sets `overflow: hidden`, which
+  resolves its automatic minimum size to zero — so with forty subagents the
+  browser squeezed every card down to a 14px bordered line with its text clipped
+  out of existence. Nothing was wrong with the markup, which is why it looked
+  like the panel had died. Cards keep their natural height; the list scrolls.
+- **Compaction erased what the session had spent.** `run_compaction` zeroed the
+  cumulative `input_tokens` / `output_tokens` rather than the last request's
+  footprint, so compacting reset the bill to nothing — and a live session then
+  disagreed with the same session reopened from its log, which rebuilds spend
+  from `usage` events. It now clears `last_input_tokens` / `last_output_tokens`,
+  which is what the comment always said it was for and what actually unpins the
+  context meter from the threshold that fired.
+- **Tokens per second read high during a fan-out**, because it was derived from
+  the ledger's output delta and subagent output now lands there. A fan-out of
+  four would have reported four times the rate the streaming model ran at.
+- **The delegation tool set was hardcoded in two more places** than the list that
+  defines it: a preset with no spawns stripped only `agent` and `send_message`,
+  and an authored plugin could still claim the name `agent_status` or
+  `agent_result` and be called in place of the real tool.
+
+### Added
+
+- **Subagent jobs that do not block the turn.** `agent(background: true)` returns
+  an `<agent_job/>` handle immediately; `agent_status` lists what is running and
+  what is uncollected; `agent_result` fetches a finished report — the same
+  sanitized, offloaded report a blocking call returns — and can wait for one the
+  model now needs. A finished job emits `agent_done` and queues a reminder, and a
+  turn that would end with jobs in flight is told so by name. Live parallelism is
+  capped (default 4, settable 1–16) and going over is an error naming the running
+  ids, never a queue that waits forever. Headless `-p` cannot own a detached
+  task — the process ends with its turn — so it runs the delegation inline and
+  says so, rather than failing a call the model would only have to reissue.
+- **A fleet view that survives fifty subagents.** A third layout wraps cards into
+  columns *and* rows; each transcript follows its newest line until you scroll
+  away, then offers "↓ latest" to re-pin. Only the cards you can see build their
+  transcripts, so opening the panel mid-fan-out no longer stalls. Plus a filter
+  box, all/running/done/errors chips, a live one-line summary of what each
+  collapsed agent is doing, denser cards past eighteen, and a solo view for one
+  agent full-panel. Side-by-side columns size to the panel instead of a fixed
+  340px, which at the default width showed one column and a sliver of the next.
+- **Usage counts subagents.** A child's `usage` events are now logged (inside the
+  existing `agent_event` wrapper — the schema widens, nothing is repurposed) and
+  rolled into the session's cumulative tokens and cost, so a fan-out of ten no
+  longer reports as free. They are deliberately kept out of `last_input_tokens` /
+  `last_output_tokens`: that pair is the *parent's* live context footprint, and
+  counting a subagent's request there would show a short conversation as nearly
+  full and could trip an auto-compaction it never needed. The panel gains a
+  subagents pill, a per-turn subagent share, and a per-agent table.
+- **Conversation tabs, and sessions you can name.** `PATCH /api/sessions/{id}`
+  writes a `meta` title; the listing reads the *last* one written, because in an
+  append-only log reading the first would show the name you just replaced.
+  Renaming a live conversation is allowed where deleting and archiving are not —
+  a rename appends one record, it does not move the log out from under its own
+  writer. The topbar shows recent conversations as tabs with a `+N` overflow into
+  the existing switcher. The tabs are honest about being shortcuts: the browser
+  holds one socket, so switching leaves the conversation you are in, and no tab
+  claims background activity it cannot have.
+- **`/init`**, which asks the agent to survey the repo and write `QUICKCODE.md`
+  through the ordinary `write` tool — so the permission engine stays in the loop —
+  and offers to update rather than overwrite when one already exists.
+- **`@` path autocomplete** in the composer, backed by a new project-scoped paths
+  route that clamps every query to the project root and never offers `.git`,
+  `.quickcode`, `.ssh` or `.env*`.
+- **Toasts**, replacing the one raw `window.alert` in the app, and **input history
+  that filters by what you have typed** — type `git`, press ↑, and you walk only
+  the entries that start with it. Slash commands no longer land in history.
+- **Automatic compaction in headless runs.** The web path has checked the
+  threshold after every turn for a while; `-p` never did, so a `--continue` chain
+  grew without bound. The model's context window is fetched alongside the turn
+  rather than before it, because a one-shot CLI should not pay a network round
+  trip before it starts working; if the catalog is unreachable, nothing changes.
+
 ## [2.1.0] — 2026-08-18
 
 ### Added
@@ -612,7 +713,8 @@ provider abstraction, tool registry, PTY sessions, plan mode, compaction,
 subagent delegation via the agent tool) before the web UI rewrite replaced
 it. Not published as a release artifact.
 
-[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/devincii-io/QuickCode/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/devincii-io/QuickCode/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/devincii-io/QuickCode/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/devincii-io/QuickCode/releases/tag/v1.0.0
