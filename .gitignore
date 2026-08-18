@@ -11,3 +11,8 @@ __pycache__/
 .venv/
 *.egg-info/
 .playwright-mcp/
+
+# Local agent/session state — machine-specific, and a project's own
+# .quickcode/settings.json can declare MCP servers, so it is never shared.
+.claude/
+.quickcode/
