@@ -40,6 +40,14 @@ const VERB_MS = 15000;
 // How long a stopped line stays legible before it clears. An interrupt or an
 // error that vanishes instantly reads as "nothing happened".
 const HOLD_MS = 2600;
+// Roughly how many characters the model spends on a token. This is an
+// approximation and nothing more — no tokenizer runs in the browser — and it
+// is only ever used to fill the gap between two authoritative usage figures,
+// which arrive once a *round*. Without it the count would sit frozen for a
+// minute of streaming and then jump, on a line whose entire job is to look
+// alive. The estimate is discarded the moment a real figure lands, so the
+// error resets at every round boundary instead of compounding across the turn.
+const CHARS_PER_TOKEN = 4;
 
 // ---- module state ----
 
@@ -53,7 +61,11 @@ let phase = "";            // the phase currently painted
 let verb = "";
 let verbAt = 0;
 let turnStart = 0;
-let tokenBase = 0;
+let tokenBase = 0;         // ledger output_tokens when this turn started
+let tokenAuth = 0;         // last *authoritative* output tokens for this turn
+let tokenShown = 0;        // what the line last printed; never allowed to fall
+let streamChars = 0;       // assistant characters streamed since tokenAuth
+let streamLen = 0;         // last sampled size of the live stream buffers
 let lastSecs = -1;
 let frame = 0;
 let reducedMq = null;
@@ -82,6 +94,62 @@ function pendingRequests() {
 
 function ledgerOut() {
   return store.state?.ledger?.output_tokens || 0;
+}
+
+// ---- the token count ----
+//
+// The backend only recomputes the ledger once a round, so `ledgerOut()` is
+// truth-but-stale. Everything below turns it into a number that climbs: the
+// last authoritative figure plus a character-count estimate of what has
+// streamed since, snapped back to truth whenever a new figure arrives.
+
+// Everything the model is emitting right now, in characters: visible text,
+// reasoning, and the arguments of a tool call still streaming. All three are
+// output tokens as far as the provider is concerned, and a long file write
+// spends most of a round inside the third.
+function liveChars() {
+  let n = (store.streamText?.length || 0) + (store.streamReasoning?.length || 0);
+  for (const c of store.pendingCalls.values()) n += c.argsBuf?.length || 0;
+  return n;
+}
+
+// The buffers only grow within a round and are emptied when the assembled
+// message (or tool call) supersedes them, so growth is the only signal worth
+// reading: a shrink means a flush, and those characters are already counted.
+function sampleStream() {
+  const n = liveChars();
+  if (n > streamLen) streamChars += n - streamLen;
+  streamLen = n;
+}
+
+// A new usage figure is the truth — adopt it and throw the estimate away.
+// Repeated `state` events that carry no new usage are ignored, or every one of
+// them would wipe an estimate that is still the best thing we have.
+function snapTokens() {
+  const auth = Math.max(0, ledgerOut() - tokenBase);
+  if (auth <= tokenAuth) return;
+  tokenAuth = auth;
+  streamChars = 0;
+  streamLen = liveChars();
+}
+
+function resetTokens() {
+  tokenBase = ledgerOut();
+  tokenAuth = 0;
+  tokenShown = 0;
+  streamChars = 0;
+  streamLen = liveChars();
+}
+
+// The number the line prints. It never goes backwards: when the real figure
+// lands below the estimate the display simply holds until truth overtakes it.
+// A counter that ticks down reads as a bug, which is a worse lie than being a
+// few hundred tokens early.
+function producedTokens() {
+  sampleStream();
+  const est = tokenAuth + Math.round(streamChars / CHARS_PER_TOKEN);
+  if (est > tokenShown) tokenShown = est;
+  return tokenShown;
 }
 
 // The tools this round is running. The logged `tool_call` events are the truth
@@ -152,10 +220,12 @@ function pickVerb() {
 function metaText() {
   if (!turnStart) return "";
   const parts = [fmtElapsed(performance.now() - turnStart)];
-  const produced = Math.max(0, ledgerOut() - tokenBase);
-  // Output tokens for *this* turn. The session total lives in the status bar,
-  // where a number that barely moves is the point; here it would read as
-  // frozen. Suppressed at zero rather than shown as "↓ 0".
+  const produced = producedTokens();
+  // Output tokens for *this* turn, part measured and part estimated. The
+  // session total lives in the status bar, where a number that barely moves is
+  // the point; here it would read as frozen. Suppressed at zero rather than
+  // shown as "↓ 0" — and it stays at zero until something has actually
+  // streamed, so the clause appears when there is something to report.
   if (produced > 0) parts.push(`↓ ${fmtTokens(produced)} tokens`);
   // The hint comes from the binding itself, not from a copy of it: while a
   // permission dialog is open Escape closes the dialog, so the promise is
@@ -198,6 +268,10 @@ function paint() {
 // ---- the clock ----
 
 function tick() {
+  // Sampled every frame, painted once a second: reading the buffers is a
+  // length lookup, and a tool call whose arguments finish between two paints
+  // would otherwise go uncounted.
+  sampleStream();
   if (!reduced()) {
     frame = (frame + 1) % FRAMES.length;
     els.glyph.textContent = FRAMES[frame];
@@ -228,7 +302,7 @@ function clearHold() {
 function start() {
   if (turnStart) return;                 // already running this turn
   turnStart = performance.now();
-  tokenBase = ledgerOut();
+  resetTokens();
   lastSecs = -1;
   frame = 0;
   els.glyph.textContent = FRAMES[0];
@@ -241,6 +315,10 @@ function hide() {
   stopTimer();
   clearHold();
   turnStart = 0;
+  // Every way a turn can end — idle, interrupt, error, reset, a dropped
+  // socket — reaches here, so this is the one place the estimate has to be
+  // cleared. The next turn starts from zero and from a fresh baseline.
+  resetTokens();
   terminal = "";
   phase = "";
   els.root.classList.remove("on");
@@ -294,14 +372,20 @@ export function initActivity() {
       sync();                            // idle
       return;
     }
-    if (kind === "state") { sync(); return; }
+    if (kind === "state") { snapTokens(); sync(); return; }
     // A tool starting or finishing changes what the line names, and neither
     // carries a status flip of its own.
     if (kind === "event" && (ev.type === "tool_call" || ev.type === "tool_result")) {
       if (turnStart) paint();
       return;
     }
-    if (kind === "stream" && phase === "tools" && turnStart) { paint(); return; }
+    // Deltas do not repaint the line — the interval owns that, once a second —
+    // but they are what the estimate is made of, so each one is measured.
+    if (kind === "stream") {
+      sampleStream();
+      if (phase === "tools" && turnStart) paint();
+      return;
+    }
     if (kind === "reset") { status = "idle"; detail = ""; hide(); return; }
     if (kind === "connection" && store.connection !== "open") {
       status = "idle";
