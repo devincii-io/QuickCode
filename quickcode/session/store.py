@@ -290,8 +290,10 @@ class SessionStore:
         """The event stream a freshly attached client should replay.
 
         Normally that is just ``load_events()``. Sessions written before the
-        event log existed — and the ones the headless CLI writes — hold only
-        ``message`` records, so their transcript would replay empty. Those get
+        event log existed hold only ``message`` records, so their transcript
+        would replay empty. (The headless CLI used to write such logs too; it
+        records events like any other run now, but old ones are still out
+        there and still have to open.) Those get
         their messages projected onto the event vocabulary, with negative
         sequence numbers so they can never collide with (or be deduped
         against) the real log. A session that already carries transcript
@@ -323,18 +325,19 @@ class SessionStore:
         for rec in self._iter_records():
             if rec.get("kind") == "meta" and rec.get("title"):
                 return str(rec["title"])
-        for msg in self.load_messages():
-            if msg.role == "user" and msg.content:
-                text = msg.content.strip()
-                return text[:60]
-        # A turn interrupted before `_persist_new_messages()` ran (the process
-        # died mid-turn) leaves the message log empty even though the event
-        # log — written synchronously, per event — has the real transcript.
-        # Without this, such a session reports "(empty)" despite holding a
-        # full conversation.
+        # The event before the message, because the event carries what the user
+        # typed and the persisted message carries what the model was sent —
+        # which has `<system-reminder>` blocks spliced into it. Titling a
+        # session with the runtime's own scaffolding, rather than the sentence
+        # the person wrote, puts internals in the session list.
         for ev in self.load_events():
             if ev.get("type") == "user_message" and ev.get("text"):
                 return str(ev["text"]).strip()[:60]
+        # A turn interrupted before messages were persisted, or a log old
+        # enough to predate user_message events, still has to produce a title.
+        for msg in self.load_messages():
+            if msg.role == "user" and msg.content:
+                return msg.content.strip()[:60]
         return "(empty)"
 
     def is_empty(self) -> bool:

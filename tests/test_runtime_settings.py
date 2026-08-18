@@ -132,7 +132,7 @@ def _preload(conv) -> None:
     for i in range(2):
         conv.agent.history.push_user(f"OLD-MARKER-{i}")
         conv.agent.history.push_assistant(AssistantMessage(text=f"old answer {i}"))
-    conv._persisted = len(conv.agent.history.messages)
+    conv.rec.persisted = len(conv.agent.history.messages)
 
 
 async def test_compaction_threshold_and_keep_turns_take_effect(tmp_path):

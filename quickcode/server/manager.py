@@ -32,15 +32,6 @@ from quickcode.core.agent import (
     PlanOutcome,
 )
 from quickcode.core.compact import run_compaction, should_compact
-from quickcode.core.events import (
-    AgentStatus,
-    ReasoningDelta,
-    TextDelta,
-    ToolCallEnd,
-    ToolResultEvent,
-    TurnDone,
-    Usage,
-)
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.core.tasks import TaskBoard
@@ -55,7 +46,7 @@ from quickcode.kernel.resolve import default_mode as resolved_default_mode
 from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.base import ModelInfo, Provider, ProviderError
-from quickcode.server.serialization import event_to_json, loggable
+from quickcode.session.recorder import TranscriptRecorder
 from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import load_defs
 from quickcode.subagents.runner import SubagentDeps
@@ -138,40 +129,45 @@ class Conversation:
         self.pending: dict[str, PendingReview] = {}
         self.input_queue: list[str] = []
         self._inbox: asyncio.Queue[str] = asyncio.Queue()
-        self._persisted = len(agent.history.messages)
-        self._turn = 0
         self._tasks: list[asyncio.Task] = []
-        # streaming accumulators for the main agent (assemble log records)
-        self._acc_text: list[str] = []
-        self._acc_reasoning: list[str] = []
-        self._child_pumps: dict[str, asyncio.Task] = {}
+        # The session log itself — turn/seq stamping, assembly of the streamed
+        # events, message persistence. Shared verbatim with the headless CLI so
+        # `-p` and the UI cannot write two different kinds of session.
+        self.rec = TranscriptRecorder(
+            store,
+            broadcast=self._broadcast,
+            on_usage=self._emit_state,
+            on_tasks_changed=self._emit_tasks,
+            persisted=len(agent.history.messages),
+        )
 
     # ---- lifecycle ----
     def start(self) -> None:
-        self._tasks.append(asyncio.create_task(self._pump(self.agent.bus)))
+        self._tasks.append(asyncio.create_task(self.rec.pump(self.agent.bus)))
         self._tasks.append(asyncio.create_task(self._worker()))
 
     async def close(self) -> None:
         self.agent.cancel()
-        for t in [*self._tasks, *self._child_pumps.values()]:
+        children = list(self.rec.child_pumps.values())
+        for t in [*self._tasks, *children]:
             t.cancel()
-        await asyncio.gather(
-            *self._tasks, *self._child_pumps.values(), return_exceptions=True
-        )
+        await asyncio.gather(*self._tasks, *children, return_exceptions=True)
 
     # ---- event fan-out ----
     def emit(self, ev: dict[str, Any], *, log_it: bool | None = None) -> dict[str, Any]:
         """Broadcast an event to all clients; persist it when loggable."""
-        if ev.get("type") == "user_message":
-            self._turn += 1
-        if log_it if log_it is not None else loggable(ev):
-            ev = dict(ev)
-            ev.setdefault("turn", self._turn)
-            ev["seq"] = self.store.append_event(ev)
+        return self.rec.emit(ev, log_it=log_it)
+
+    def _broadcast(self, ev: dict[str, Any]) -> None:
         text = json.dumps(ev, ensure_ascii=False)
         for c in list(self.clients):
             c.send(text)
-        return ev
+
+    def _emit_tasks(self) -> None:
+        self.emit(
+            {"type": "tasks", "tasks": [t.to_dict() for t in self.board.list()]},
+            log_it=False,
+        )
 
     def _emit_state(self) -> None:
         self.emit(self.state_event(), log_it=False)
@@ -212,108 +208,9 @@ class Conversation:
             },
         }
 
-    # ---- main-agent bus pump ----
-    async def _pump(self, bus: EventBus) -> None:
-        q = bus.subscribe(maxsize=0)  # unbounded: the sole server-side consumer
-        while True:
-            ev = await q.get()
-            self._handle_bus_event(ev)
-
-    def _handle_bus_event(self, ev: Any) -> None:
-        wire = event_to_json(ev)
-        if wire is None:
-            return
-        if isinstance(ev, TextDelta):
-            self._acc_text.append(ev.text)
-        elif isinstance(ev, ReasoningDelta):
-            self._acc_reasoning.append(ev.text)
-        elif isinstance(ev, ToolCallEnd):
-            # Assembled tool call: flush any streamed text first so transcript
-            # order (text → tool call) survives replay.
-            self._flush_assistant(finish="tool_calls")
-            self.emit(wire)
-            return
-        elif isinstance(ev, ToolResultEvent):
-            self.emit(wire)
-            if ev.ui_meta.get("tasks_changed"):
-                self.emit(
-                    {"type": "tasks", "tasks": [t.to_dict() for t in self.board.list()]},
-                    log_it=False,
-                )
-            return
-        elif isinstance(ev, Usage):
-            self.emit(wire)
-            self._emit_state()
-            return
-        elif isinstance(ev, TurnDone):
-            self._flush_assistant(finish=ev.finish_reason)
-            if ev.error:
-                self.emit({"type": "error", "message": ev.error})
-            return
-        elif isinstance(ev, AgentStatus):
-            if ev.state == "interrupted":
-                self._flush_assistant(finish="interrupted")
-                self.emit({"type": "system_note", "text": "(interrupted)"})
-            self.emit(wire, log_it=False)
-            return
-        # Fallthrough (deltas, context injections): loggable() decides — deltas
-        # stay live-only, context_injection is persisted for the trace.
-        self.emit(wire)
-
-    def _flush_assistant(self, finish: str) -> None:
-        text = "".join(self._acc_text)
-        reasoning = "".join(self._acc_reasoning)
-        self._acc_text.clear()
-        self._acc_reasoning.clear()
-        if text or reasoning:
-            self.emit(
-                {
-                    "type": "assistant_message",
-                    "text": text,
-                    "reasoning": reasoning,
-                    "finish_reason": finish,
-                }
-            )
-
     # ---- subagent bridging ----
     def on_subagent(self, agent_id: str, definition: str, bus: EventBus) -> None:
-        self.emit({"type": "agent_spawned", "agent_id": agent_id, "definition": definition})
-        task = asyncio.create_task(self._pump_child(agent_id, bus))
-        self._child_pumps[agent_id] = task
-
-    async def _pump_child(self, agent_id: str, bus: EventBus) -> None:
-        q = bus.subscribe()
-        acc_text: list[str] = []
-        try:
-            while True:
-                ev = await q.get()
-                wire = event_to_json(ev)
-                if wire is None:
-                    continue
-                if isinstance(ev, TextDelta):
-                    acc_text.append(ev.text)
-                logged = isinstance(ev, (ToolCallEnd, ToolResultEvent))
-                if isinstance(ev, TurnDone) and acc_text:
-                    self.emit(
-                        {
-                            "type": "agent_event",
-                            "agent_id": agent_id,
-                            "ev": {
-                                "type": "assistant_message",
-                                "text": "".join(acc_text),
-                                "reasoning": "",
-                                "finish_reason": ev.finish_reason,
-                            },
-                        },
-                        log_it=True,
-                    )
-                    acc_text.clear()
-                self.emit(
-                    {"type": "agent_event", "agent_id": agent_id, "ev": wire},
-                    log_it=logged,
-                )
-        except asyncio.CancelledError:
-            raise
+        self.rec.on_subagent(agent_id, definition, bus)
 
     # ---- user input ----
     def submit(self, text: str) -> None:
@@ -348,7 +245,7 @@ class Conversation:
             except Exception as e:  # never kill the worker
                 log.exception("turn failed")
                 self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
-            self._persist_new_messages()
+            self.rec.persist_new_messages(self.agent)
             # ``runtime.compaction.enabled`` gates the automatic path only:
             # /compact is a thing the user asked for, and switching the
             # automatic summary off is not a statement about that.
@@ -362,12 +259,6 @@ class Conversation:
             if self.input_queue and not self.agent.busy:
                 self._inbox.put_nowait(self.input_queue.pop(0))
 
-    def _persist_new_messages(self) -> None:
-        msgs = self.agent.history.messages
-        for m in msgs[self._persisted:]:
-            self.store.append_message(m)
-        self._persisted = len(msgs)
-
     # ---- compaction ----
     async def _compact(self, *, manual: bool) -> None:
         self.emit({"type": "status", "state": "sending", "detail": "compacting"}, log_it=False)
@@ -379,7 +270,7 @@ class Conversation:
             self.emit({"type": "error", "message": f"compaction failed: {e}"})
             return
         # History was rebuilt wholesale; future messages persist from here.
-        self._persisted = len(self.agent.history.messages)
+        self.rec.persisted = len(self.agent.history.messages)
         self.emit({"type": "compacted", "summary_chars": len(summary), "manual": manual})
         self.emit(
             {"type": "system_note", "text": "(conversation compacted — earlier turns summarized)"}

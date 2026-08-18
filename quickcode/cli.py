@@ -12,6 +12,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from quickcode.config import Config, Environment
 from quickcode.core.agent import AgentInstance, PermissionOutcome, PermissionRequest
@@ -23,6 +24,9 @@ from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.openai_compat import OpenAICompatProvider
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import default_registry
+
+if TYPE_CHECKING:
+    from quickcode.session.recorder import TranscriptRecorder
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -173,6 +177,13 @@ def _build_agent(args: argparse.Namespace):
     # obeys the same declared limits instead of a second set of constants.
     limits = runtime_limits(cwd)
 
+    # The trace: the same recorder the web path runs on, so a `-p` session log
+    # is the same artefact a UI session leaves behind rather than a second,
+    # thinner shape of one.
+    from quickcode.session.recorder import TranscriptRecorder
+
+    recorder = TranscriptRecorder(store)
+
     ctx.extra["subagent"] = SubagentDeps(
         provider=provider,
         profile=profile,
@@ -180,6 +191,9 @@ def _build_agent(args: argparse.Namespace):
         mode_getter=lambda: permissions.mode,
         cwd=cwd,
         depth=0,
+        # Subagent activity belongs in the log for the same reason it does in
+        # the UI: without it the trace shows a tool call and no worker.
+        on_pane=recorder.on_subagent,
         tool_pool=list(registry.tools.values()),
         limits=limits,
     )
@@ -217,11 +231,20 @@ def _build_agent(args: argparse.Namespace):
     )
     if not conv_id:
         store.append_meta(title="", model=model, cwd=str(cwd))
-    return agent, config, env, store
+    # What the model already carries, so a resumed session re-persists nothing.
+    recorder.persisted = len(history.messages)
+    return agent, config, env, store, recorder
 
 
-async def _run_headless(agent: AgentInstance, prompt: str) -> str:
-    return await agent.run_turn(prompt)
+async def _run_headless(
+    agent: AgentInstance, recorder: TranscriptRecorder, prompt: str
+) -> str:
+    """One traceable headless turn: the log a UI turn would have left, then
+    the final response for stdout."""
+    # The trace has to show everything the model sees, and a resumed run may
+    # have re-rendered the prompt — same reason the server logs it at open.
+    recorder.emit({"type": "system_prompt", "text": agent.history.system_prompt})
+    return await recorder.record_turn(agent, prompt)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -242,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
     _resolve_positionals(args)
 
     if args.print_mode:
-        agent, config, env, store = _build_agent(args)
+        agent, config, env, store, recorder = _build_agent(args)
         prompt = args.prompt
         if not prompt:
             prompt = sys.stdin.read()
@@ -255,7 +278,7 @@ def main(argv: list[str] | None = None) -> None:
                 "or add one in Settings.",
                 file=sys.stderr,
             )
-        result = asyncio.run(_run_headless(agent, prompt))
+        result = asyncio.run(_run_headless(agent, recorder, prompt))
         print(result)
         return
 
