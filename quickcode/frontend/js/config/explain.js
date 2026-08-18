@@ -9,13 +9,15 @@
 //   INSTEAD     locked only: the recourse, as a real button
 //
 // The backend fields this reads (`summary`, `affects`, `audience`,
-// `consequence`, `locked_because`, `recourse`) are the Phase-2 additions to
-// kernel/spec.py. Until they land every one of them degrades to something
-// true rather than to a blank: the summary falls back to the first sentence of
-// `description`, and AFFECTS/WHO are inferred from the plugin's kind and say
-// so on hover. Nothing here invents a consequence it was not told.
+// `consequence`, `locked_because`, `recourse`) are on kernel/spec.py, but each
+// one defaults to empty, so a plugin may simply not have written it. Every
+// field degrades to something true rather than to a blank: the summary falls
+// back to the first sentence of `description`, and AFFECTS/WHO are inferred
+// from the plugin's kind and say so on hover. Nothing here invents a
+// consequence it was not told.
 
 import { esc } from "../util.js";
+import { duplicateRefusal } from "./kinds.js";
 
 const EFFECT_LABEL = {
   prompt: "prompt", tool_list: "tool list", loop: "loop", storage: "storage",
@@ -145,20 +147,51 @@ export function fixedBlockHtml(plugin, settings) {
   </section>`;
 }
 
-/** Never a dead end. `recourse` is the Phase-2 field; until it lands the
- *  fallback is the two things that are true for every locked plugin today:
- *  you can read the whole definition, and Phase 6 will let you duplicate it. */
+/** The duplicate affordance, in the state it is actually in. Three cases, and
+ *  the markup states which one it is in `data-dup` so the page that mounts it
+ *  only has to attach the click:
+ *
+ *    edit       an authored plugin is a file you own — open it
+ *    duplicate  a built-in that copies — write the editable copy
+ *    go / none  a kind that refuses to copy: the recourse where there is one,
+ *               and either way the reason, in prose, not in a tooltip
+ *
+ *  `duplicateRefusal` is the browser-side half of the same table
+ *  `kernel/authoring/store.py` enforces, so the button can only ever be here
+ *  when the press would succeed. */
+function dupHtml(plugin) {
+  if (plugin.source === "authored") {
+    return `<button class="btn" data-dup="edit"
+      title="This plugin is a file you own.">⧉ Edit this file</button>`;
+  }
+  const refused = duplicateRefusal(plugin);
+  if (!refused) {
+    return `<button class="btn" data-dup="duplicate"
+      title="Writes a copy under .quickcode/plugins/ in which nothing is locked.
+             The original is untouched and stays enabled."
+      >⧉ Duplicate for an editable copy</button>`;
+  }
+  // A button that turned into a different button with its explanation hidden
+  // in a tooltip is the wordless refusal this layer exists to stop shipping,
+  // so the reason is rendered next to it and is readable without hovering.
+  return `<button class="btn" ${refused.href
+      ? `data-dup="go" data-dup-href="${esc(refused.href)}"`
+      : `data-dup="none" disabled`} title="${esc(refused.why)}"
+    >${esc(refused.label || "⧉ Duplicate — not for this kind")}</button>
+    <p class="dup-why">${esc(refused.why)}</p>`;
+}
+
+/** Never a dead end. Whatever is fixed here, the block ends in something you
+ *  can do: the plugin's declared `recourse` when the kernel supplies one, the
+ *  duplicate affordance in whichever state it is genuinely in, and the raw
+ *  definition — which every locked plugin has always let you read. */
 export function recourseHtml(plugin) {
   const r = plugin.recourse;
-  const duplicable = plugin.kind === "agent" || plugin.kind === "prompt_section";
   return `<div class="k-recourse">
     <span class="k-recourse-lead">Instead</span>
     ${r ? `<button class="btn" data-recourse="${esc(r.action)}"
              data-target="${esc(r.target || "")}">${esc(r.label)}</button>` : ""}
-    <button class="btn" data-dup disabled
-      title="Duplicate-to-customise arrives in the next pass — it writes an
-             editable copy under .quickcode/plugins/ in which nothing is locked."
-      >⧉ Duplicate ${duplicable ? "for an editable copy" : "— not yet"}</button>
+    ${dupHtml(plugin)}
     <button class="btn" data-raw>Read the full definition →</button>
   </div>`;
 }

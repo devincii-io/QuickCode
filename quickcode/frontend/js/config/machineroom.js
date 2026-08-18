@@ -18,10 +18,13 @@ import { bodyHtml, canonicalHref, kindLabel, sigilHtml } from "./kinds.js";
 
 // A plugin is "in" the machine room when it is locked *and* it is one of the
 // runtime internals — the loop's own machinery. `PluginSpec.tier()` returns
-// the strictest tier among a plugin's settings, so a tool whose only setting
-// is the declared `read_only` flag also comes back `locked`; a tool is not
-// machinery, it is a capability with its own page, and its fixed setting is
-// indexed below instead.
+// the strictest tier among a plugin's *knobs*, skipping settings flagged
+// `fact`, so a tool whose only setting is the declared `read_only` flag comes
+// back `free` and no longer arrives here claiming to be machinery. The kind
+// filter below is therefore no longer load-bearing against tools — it still
+// holds the room to the four runtime internals whatever else locks itself.
+// A tool's `read_only` keeps its own locked tier and is indexed below, on the
+// page the tool already has.
 const MACHINE_KINDS = ["policy", "hook", "storage", "panel"];
 
 export function lockedPlugins(kernel) {

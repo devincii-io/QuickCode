@@ -61,9 +61,12 @@ function dupActionHtml(plugin) {
       under .quickcode/plugins/ with derived_from set. The original is untouched
       and stays enabled.">⧉ Duplicate</button>`;
   }
-  // The header keeps the recourse as a button; the reason is stated in full in
-  // the Fixed-by-design block below, which is where someone asking "why can I
-  // not copy this" is already looking.
+  // The header keeps the recourse as a button and nothing else — a refusal
+  // with no recourse renders nothing here rather than a dead control. The
+  // reason is written out in the Fixed-by-design block below, where someone
+  // asking "why can I not copy this" is already looking, on every plugin that
+  // has one. Provider and MCP pages have no locked settings and so no such
+  // block, and today their header is silent about the refusal.
   return refused.href
     ? `<a class="ghost-btn" href="${refused.href}" title="${esc(refused.why)}"
         >${esc(refused.label)}</a>`
@@ -162,35 +165,18 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
   }
 
   // The Fixed-by-design block ships a Duplicate button of its own
-  // (`explain.js:recourseHtml`) that was disabled with "arrives in the next
-  // pass". It has arrived, and the button is where somebody reading *why* this
-  // is locked will look for the way out — so it is adopted here rather than
-  // left as a stale promise.
+  // (`explain.js:dupHtml`), already in the right state and already carrying
+  // its reason — it is where somebody reading *why* this is locked looks for
+  // the way out. All that is left here is the click, because navigation and
+  // the duplicate call belong to the page, not to a markup helper.
   for (const btn of host.querySelectorAll("[data-dup]")) {
-    const refused = duplicateRefusal(plugin);
-    if (plugin.source === "authored") {
-      btn.disabled = false;
-      btn.textContent = "⧉ Edit this file";
-      btn.title = "This plugin is a file you own.";
+    const action = btn.dataset.dup;
+    if (action === "edit") {
       btn.addEventListener("click", () =>
         ctx.go(`#/config/edit/${encodeURIComponent(plugin.id)}`));
-    } else if (refused) {
-      btn.textContent = refused.label || "⧉ Duplicate — not for this kind";
-      btn.title = refused.why;
-      btn.disabled = !refused.href;
-      if (refused.href) btn.addEventListener("click", () => ctx.go(refused.href));
-      // The reason has to be readable without hovering. A button that changed
-      // into a different button, with the explanation hidden in a tooltip, is
-      // the wordless refusal this whole pass exists to stop shipping.
-      if (!btn.parentElement.querySelector(".dup-why")) {
-        btn.insertAdjacentHTML("afterend",
-          `<p class="dup-why">${esc(refused.why)}</p>`);
-      }
-    } else {
-      btn.disabled = false;
-      btn.textContent = "⧉ Duplicate for an editable copy";
-      btn.title = "Writes a copy under .quickcode/plugins/ in which nothing is "
-        + "locked. The original is untouched and stays enabled.";
+    } else if (action === "go") {
+      btn.addEventListener("click", () => ctx.go(btn.dataset.dupHref));
+    } else if (action === "duplicate") {
       btn.addEventListener("click", () => duplicatePlugin(ctx, plugin.id, btn));
     }
   }
