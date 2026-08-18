@@ -1,6 +1,6 @@
 # Tool Surface
 
-Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `task_*`, `plan`, `ask_user` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
+Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
 
 Every tool implements:
 
@@ -154,15 +154,16 @@ Both take `target_field`, so a rule can name what is being reached rather than o
     ],
     "deny": [
       "web_fetch(http://**)",                     // plaintext http, never
-      "web_search"                                // bare name: removes the tool entirely
+      "web_search"                                // bare name: every search denied
     ]
   }
 }
 ```
 
-- A bare tool name (`web_fetch`) as an **allow** matches every use; as a **deny** it removes the tool from the model's tool list, so the model does not see a capability it cannot use.
-- Deny beats allow from any scope, so `web_fetch(http://**)` in user config cannot be undone by a project file.
-- `web_search(*)` matches any query; a narrower `web_search(python *)` is possible but rarely what anyone wants — the point of a rule on search is usually the quota, not the topic.
+- A bare tool name (`web_fetch`) matches every use of that tool, in whichever list it appears.
+- **Not implemented:** a bare name in `deny` does *not* remove the tool from the model's tool list. Earlier text here said it did. It is an ordinary rule: the tool is still offered, the model still calls it, and the call comes back as an error it can read — correct, but one round trip more expensive than withholding it, and the model does see a capability it cannot use. The only thing that withholds a tool from a request is `PlanModeHook` (docs/PERMISSIONS.md §Plan mode); nothing consults `rules.deny` when building the tool list.
+- Deny beats allow **by rule kind, not by file**: every source is concatenated into one `deny` list and one `allow` list, and any deny match wins. Note that both sources are project files (docs/PERMISSIONS.md §Where rules come from) — there is no user-scope `permissions` block to write the rule above into. To carry a deny across projects, put it in a permission profile.
+- `web_search(*)` matches any query without a `/` in it — `*` stops at a path separator, and a query like `asyncio gather/wait` needs `web_search(**)`. A narrower `web_search(python *)` is possible but rarely what anyone wants — the point of a rule on search is usually the quota, not the topic.
 
 ## web_fetch
 
@@ -318,7 +319,11 @@ The tool also **registers even with no key configured**, matching how the OpenRo
 | `send_message` | Message/resume a subagent or teammate by name/id. |
 | `task_create` / `task_update` / `task_list` / `task_get` | The task board — solo checklist *and* teammate coordination backbone (dependencies, file-locked claiming). No separate todo tool. |
 | `plan` | Present a plan for approval and exit plan mode (docs/PERMISSIONS.md §Plan mode). |
-| `ask_user` | Structured question with options → rendered as a modal. |
+
+`ask_user` — a structured question with options, rendered as a modal — used to
+be listed here as if it shipped. It does **not** exist: there is no
+`tools/ask_user.py` and nothing by that name in `tools/registry.py`. A model
+that needs to ask has only its final message. Worth building; not built.
 
 ## Later candidates (explicitly deferred)
 

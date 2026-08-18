@@ -127,24 +127,26 @@ tools it had, and changing them underneath it would be a lie.
 Per-instance state machine: `idle → sending → streaming → executing_tools → (loop) → idle`.
 
 ```python
-async def run_turn(self, user_input):
-    self.history.push_user(user_input, self.system_reminders())
-    while True:
-        stream = self.provider.stream_chat(self.build_request(), self.cancel_scope)
-        async for ev in stream: self.bus.emit(ev)
-        msg = stream.final()
-        self.history.push_assistant(msg)
-        if not msg.tool_calls: break
-        results = await self.execute_tools(msg.tool_calls)   # permission-gated
-        self.history.push_tool_results(results)              # ALL in ONE message
+async def run_turn(agent, user_input):
+    agent.history.push_user(user_input, reminders)
+    max_rounds = agent.limits.max_rounds          # read once, per turn
+    for round_no in range(max_rounds + 1):
+        if round_no == max_rounds:
+            agent.history.push_user("", [wrap_up_reminder])
+        msg = await _stream_once(agent)           # streams, emits, assembles
+        agent.history.push_assistant(msg)
+        if not msg.tool_calls: return msg.text
+        results = await _execute_tools(agent, msg.tool_calls)  # permission-gated
+        agent.history.push_tool_results(results)  # all of them, in one push
 ```
 
 Rules that matter:
 
-- **All tool results return in a single message** — splitting them trains the model out of parallel calls.
+- **The loop is bounded, not `while True`.** The counter *is* the guard: the budget is a `range`, and the extra iteration at `round_no == max_rounds` exists to deliver the wrap-up reminder and take one last answer.
+- **All tool results for a round are pushed together** — splitting them across turns trains the model out of parallel calls. They go in as *consecutive* `role: "tool"` messages, one per `tool_call_id`, in call order, which is what the wire format requires; there is no single combined message.
 - **Read-only tools run concurrently** (`asyncio.gather`); mutating tools sequentially in call order.
 - **Failed tools still return a result** with `is_error: true` so the model can recover.
-- **Loop guard:** max 50 tool rounds per turn, then a system reminder to wrap up.
+- **Loop guard:** `runtime.agent_loop.max_rounds` tool rounds per turn, then a system reminder to wrap up. 50 is the default (`RuntimeLimits.max_rounds` in `kernel/composition.py`, declared as a setting in `kernel/manifest.py`), not a constant — it is resolved per session by `kernel/resolve.runtime_limits` and frozen for the turn, so editing the setting mid-turn cannot move the budget under a turn already counting.
 - **The loop knows no tool by name.** Which tools are offered is decided by hooks (`visible_tools`), a hook may answer a call itself (`intercept`, which is how plan review works), and how a call is gated comes from the tool's own `PermissionSpec`. Plan mode used to be an `if` in this file; it is now `PlanModeHook` in `core/hooks.py`.
 
 ## Provider layer
@@ -185,11 +187,17 @@ Full design in docs/PERMISSIONS.md; core model:
 |---|---|---|---|---|
 | `plan` | ✅ auto | ❌ blocked | ❌ blocked | research only; exits via plan approval |
 | `ask` (default) | ✅ auto | prompt | prompt | |
-| `auto-edit` | ✅ auto | ✅ auto | prompt | |
+| `auto-edit` | ✅ auto | ✅ auto | prompt | edits only; no file-op command allowlist |
+| `dontask` | ✅ auto | rule-matched, else auto-deny | rule-matched, else auto-deny | never prompts |
 | `yolo` | ✅ auto | ✅ auto | ✅ auto | explicit opt-in, red status bar |
 
+`Mode` has these five members and no others. A four-mode summary that omits
+`dontask` used to sit here, which is how the one mode that silently *denies*
+went undocumented in the architecture overview.
+
 - Prompt choices: **allow once · always allow (persist rule) · deny with message** (deny text returns as the tool result so the model adapts).
-- Rules persist in `./.quickcode/settings.json` (`allow`/`deny`/`ask` arrays, `bash(npm test*)`-style patterns). Deny beats allow. Compound bash commands (`;`, `&&`, `|`, `$(`) never prefix-match — full-string rule or prompt.
+- Rules persist in `./.quickcode/settings.local.json` — "always allow" writes there; `./.quickcode/settings.json` is the shared, checked-in half (`allow`/`deny`/`ask` arrays, `bash(npm test*)`-style patterns). Deny beats allow.
+- A compound line is **split** on `;`, `&&`, `||`, `|` and `&`, and each subcommand is rule-matched on its own — that is the "parse, don't prefix-match" principle, and it means a rule whose pattern spans a splitter can never match. Substitution and redirection are the different case: a line containing `$(`, a backtick, `>` or `<` never matches an allow rule at all and never takes the read-only auto-allow — full-string deny rule or prompt.
 - Mode cycling on a hotkey; per-conversation override; subagents/teammates inherit a *capped* mode (a yolo main agent does not imply yolo workers — see docs/AGENTS.md).
 - Edits outside the project root always prompt.
 
@@ -208,7 +216,7 @@ The `bash` tool runs commands in a real PTY (`pty/session.py`) instead of pipe-o
 - A **ProjectHub** holds one `ConversationManager` per open project; a project id is a stable hash of its resolved path, so it is the same id every run.
 - A **Conversation** = one main AgentInstance + its transcript + its spawned subagents. The manager holds a registry; the **session switcher** (docs/UI.md) jumps between them; every conversation keeps running when unfocused.
 - Subagents and teammates are just more AgentInstances with different system prompts, models, and permission caps — one runtime, no special cases. Coordination (task board, teammate messaging, result hand-back) is specced in docs/AGENTS.md.
-- Session store: every event appends to `./.quickcode/sessions/<conv-id>.jsonl`; `--continue` / `--resume` rebuild conversations, including still-open task boards.
+- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, the permission/plan request-and-resolution pairs, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `system_note`, `error`). Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` / `--resume` rebuild conversations, including still-open task boards.
 
 ## Efficiency checklist
 

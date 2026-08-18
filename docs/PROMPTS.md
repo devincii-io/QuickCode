@@ -10,35 +10,57 @@ All prompts are XML-sectioned. XML tags give the model unambiguous section bound
 
 The text lives in `quickcode/prompts/sections.py` — one `PromptSection` per
 block, each with an id, an order and a mutability tier;
-`prompts/system.py:render_system_prompt` composes them. `${...}` values are
-computed at session start and then frozen.
+`prompts/system.py:render_system_prompt` composes them in `order`, joined by a
+blank line, dropping any section that renders empty. Placeholders are
+`str.format` fields (`{model}`, `{cwd}`, `{shell_name}`, …), filled from the
+`PromptContext` at session start and then frozen.
 
 Two consequences worth knowing:
 
-- **`render_with_sections()` returns byte offsets per section**, so the UI can
-  show which part of the prompt came from where instead of one wall of text.
+- **`render_with_sections()` returns character offsets per section** — `compose`
+  counts with `len()` over the Python `str`, so `start`/`end` on a
+  `RenderedSection` index the string, not its UTF-8 encoding. They differ the
+  moment a section contains a non-ASCII character, and several do (the em
+  dashes throughout the tone and autonomy blocks). Slice the prompt with them;
+  do not seek into a file with them.
 - **Sections are overridable by tier.** `<tone_and_style>`, `<conventions>`,
-  `<task_management>` and `<verification>` are `free`; `<identity>`,
-  `<autonomy>`, orchestration, plan and headless blocks are `confirm`;
-  `<tool_use_policy>` is `locked` — how tools are called is the contract the
-  loop and the trajectory depend on — and `<environment>` /
-  `<project_instructions>` are generated from session facts rather than
-  authored here. Overrides live in `.quickcode/settings.json` under
+  `<task_management>`, `<verification>` and `<project_instructions>` are `free`;
+  `<identity>`, `<autonomy>`, `<orchestration>`, `<send_message_hint>`,
+  `<plan_mode>` and `<headless_mode>` are `confirm`; `<tool_use_policy>` and
+  `<environment>` are `locked` — how tools are called is the contract the loop
+  and the trajectory depend on. `<environment>` and `<project_instructions>` are
+  additionally flagged `generated`: their bodies come from session facts rather
+  than authored prose, so they ignore an override whatever their tier says.
+  Overrides live in `.quickcode/settings.json` under
   `plugins.<section-id>.settings.body`. Locked and generated sections ignore
   an override, and stay fully readable either way.
 
 Composition must stay byte-stable for the session: the cache breakpoint sits
 on the system message, so the same inputs must produce the same bytes.
 
+Sections in composition order. `<orchestration>`, `<send_message_hint>`,
+`<plan_mode>` and `<headless_mode>` render empty — and so are dropped — unless
+the session is orchestrating, in plan mode, or headless.
+
 ```xml
 <identity>
-You are QuickCode, a coding agent running in a terminal. You help the user
-with software engineering: fixing bugs, implementing features, refactoring,
-explaining code, and running project commands.
+You are QuickCode, a local coding agent with a web interface. You help the
+user with software engineering: fixing bugs, implementing features,
+refactoring, explaining code, and running project commands.
+
+You are powered by the model "{model}" served through {provider} (an
+OpenAI-compatible endpoint). When asked which model or agent you are, answer
+plainly with that: you are QuickCode running on {model}. This line is
+authoritative and live — answer identity questions from it directly, without
+running commands or reading config files to "verify" it. If earlier messages
+in the conversation name a different model, the user switched models
+mid-conversation and this line reflects the current one. QuickCode can drive
+different underlying models, so do not assume any capability or vendor beyond
+what "{model}" implies.
 </identity>
 
 <tone_and_style>
-Your output renders as markdown in a terminal. Be concise and direct.
+Your output renders as markdown in the chat pane. Be concise and direct.
 
 - Answer simple questions in 1-4 lines. No preamble ("Great question!"),
   no postamble ("Let me know if..."), no restating the question.
@@ -76,27 +98,11 @@ Your output renders as markdown in a terminal. Be concise and direct.
 </conventions>
 
 <task_management>
-Use the todo tool to plan multi-step work (3+ distinct steps) and mark
+Use the todo/task tools to plan multi-step work (3+ distinct steps) and mark
 progress as you go: exactly one task in_progress at a time, mark completed
-immediately when done — don't batch completions. Skip the todo list for
+immediately when done — don't batch completions. Skip the task list for
 trivial single-step tasks; using it there is noise.
 </task_management>
-
-<orchestration>
-Delegation heuristics (agent tool):
-- Simple fact-finding: no subagents. Handle it yourself in 3-10 tool calls.
-- Direct comparisons / independent multi-part lookups: 2-4 explore subagents,
-  clearly divided, distinct boundaries.
-- Only genuinely complex, decomposable work justifies more. Every agent costs
-  real money; spawn only when parallelism buys wall-clock time or keeps noise
-  out of this context.
-- Write delegations with: objective, context the child cannot discover,
-  boundaries (files owned by others), and required report format.
-- Subagents are readers by default. Grant write scope only for bounded,
-  non-overlapping file sets.
-- Record your plan on the task board BEFORE spawning — children may outlive
-  your context.
-</orchestration>
 
 <tool_use_policy>
 - Batch independent tool calls in a single response — e.g. read three
@@ -105,7 +111,7 @@ Delegation heuristics (agent tool):
   dedicated tool exists — dedicated tools are faster and paginated.
 - Prefer edit over write for existing files. write is for new files only.
 - You must read a file before editing it.
-- Bash runs ${shellName} on ${platform}. Write ${shellName} syntax.
+- Bash runs {shell_name} on {platform}. Write {shell_name} syntax.
 - If a tool result is truncated, use its pagination parameters (offset,
   limit) to fetch the part you need — do not re-run the same call.
 </tool_use_policy>
@@ -118,25 +124,51 @@ untested work is working.
 </verification>
 
 <environment>
-  <cwd>${cwd}</cwd>
-  <platform>${platform}</platform>
-  <os_version>${osVersion}</os_version>
-  <shell>${shellName}</shell>
-  <date>${sessionDate}</date>
-  <is_git_repo>${isGitRepo}</is_git_repo>
-  <git_branch>${gitBranch}</git_branch>
+  <cwd>{cwd}</cwd>
+  <platform>{platform}</platform>
+  <os_version>{os_version}</os_version>
+  <shell>{shell_name}</shell>
+  <date>{session_date}</date>
+  <is_git_repo>{is_git_repo}</is_git_repo>
+  <git_branch>{git_branch}</git_branch>
 </environment>
 
-<project_instructions source="${instructionsFile}">
-${projectInstructions}
+<project_instructions source="{instructions_file}">
+{project_instructions}
 </project_instructions>
+
+<orchestration>
+  ... the delegation playbook: when to spawn, cost/latency reality, the
+  <task><objective>/<context>/<boundaries>/<report> delegation shape.
+  Abridged here on purpose — it is long, and it lives in
+  quickcode/prompts/subagent.py as ORCHESTRATION.
+</orchestration>
+
+<send_message_hint>
+A finished subagent stays resumable: call send_message with its returned id to
+continue the same task with its full context intact, instead of respawning a
+fresh subagent.
+</send_message_hint>
+
+<plan_mode>
+You are in PLAN MODE. Investigate and design; do not mutate anything. The
+editing and mutating tools are withheld. When you have a complete plan, call
+the plan tool with the plan as markdown. Do not attempt to implement yet.
+</plan_mode>
+
+<headless_mode>
+You are running non-interactively. There is no user to answer questions —
+never ask; choose the reasonable option and proceed. Your final message is
+the program's entire output: lead with the result.
+</headless_mode>
 ```
 
 Notes:
 
-- `<environment>` is safe in the system prompt because caching only needs *within-session* stability — cwd/OS/branch don't change mid-session, and `${sessionDate}` is a date, not a timestamp.
+- `<environment>` is safe in the system prompt because caching only needs *within-session* stability — cwd/OS/branch don't change mid-session, and `{session_date}` is a date, not a timestamp.
 - `<project_instructions>` is the spliced content of `QUICKCODE.md`/`AGENTS.md`/`CLAUDE.md`. Empty tag if none — the tag itself stays so the template shape is constant.
-- Order within the prompt is stability-sorted: pure-static sections first, per-session values (`environment`, `project_instructions`) last. If we later support mid-session instruction reload, only the tail re-renders.
+- Order within the prompt is *not* fully stability-sorted, and it was documented as if it were. `<environment>` and `<project_instructions>` carry per-session values and sit at orders 80 and 90, but `<orchestration>`, `<send_message_hint>`, `<plan_mode>` and `<headless_mode>` follow them at 100–130. Those four are static text switched on by a session-long flag, so the prefix is still byte-stable for the session; what it costs is that a hypothetical mid-session instruction reload would re-render more than the tail.
+- A section can be authored from `.quickcode/plugins/*.md` and takes its own slot in this order. Ties on `order` break by `id`, deterministically, because the composed prompt is a cache breakpoint.
 
 ## 2. Dynamic state: `<system-reminder>` blocks
 
@@ -144,22 +176,35 @@ Injected by the harness into the **user message** (never the system prompt), app
 
 ```xml
 <system-reminder>
-Todo list state:
-1. [completed] Locate the failing test
-2. [in_progress] Fix off-by-one in paginate()
-3. [pending] Run full test suite
-Continue with the in_progress task. Do not mention this reminder.
+Permission mode: AUTO-EDIT. File edits within the project apply without
+asking; commands outside the allowlist still prompt. Keep changes tightly
+scoped to the request.
 </system-reminder>
 ```
 
-Reminder types (MVP → later):
+`run_turn` assembles them in this order and pushes them with the user message.
+Only these three sources exist today:
 
 | Trigger | Reminder content |
 |---|---|
-| Todo tool state changed | Current list snapshot (above) |
-| File edited outside the agent since last read | `File src/x.ts changed on disk since you read it; re-read before editing.` |
-| Turn iteration guard hit (≥50 tool rounds) | `You are over the iteration budget. Wrap up: report state and next steps.` |
-| Post-compaction first turn | `Earlier conversation was summarized. Trust the summary; re-read files before editing them.` |
+| Post-compaction first turn | `Earlier conversation was summarized above. Trust the summary; re-read files before editing them.` (`prompts/compact.POST_COMPACTION_REMINDER`) |
+| Permission mode changed since the last turn | One line per mode, from `prompts/system._MODE_REMINDERS`. Sent **only when it is news** — restating the mode every turn was a fixed per-request cost for a sentence the model already had. |
+| Turn iteration guard reached (`runtime.agent_loop.max_rounds`, 50 by default) | `You are over the iteration budget. Wrap up: report state and next steps.` |
+
+Anything else goes through `AgentInstance.queue_reminder`, which delivers each
+queued string once, in order, on the next turn. The server uses it for
+composition changes.
+
+**Not implemented**, though earlier versions of this table listed them: there is
+no todo/task-state reminder — the task board reaches the *UI* through
+`ui_meta.tasks_changed`, and the model only sees the board when it calls
+`task_list` — and no "file changed on disk since you read it" reminder. The
+staleness check exists, but it lives in the `edit` tool and surfaces as an error
+on the call (docs/TOOLS.md §edit), not as a reminder ahead of it.
+
+The auto-edit mode reminder above quotes an "allowlist" of shell commands that
+`core/permissions.py` does not have; see docs/PERMISSIONS.md §Modes. The prompt
+text is wrong, not the documentation of it.
 
 ## 3. Tool description style
 
