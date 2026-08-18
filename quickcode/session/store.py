@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.providers.base import ChatMessage
+from quickcode.workspace import ensure_project_dir
 
 SESSIONS_DIRNAME = Path(".quickcode") / "sessions"
 ARCHIVE_DIRNAME = "archive"
@@ -191,6 +192,7 @@ class SessionStore:
         to archive (or it already is)."""
         if not self.active_path.exists():
             return False
+        ensure_project_dir(self.root)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         if self.archived_path.exists():
             # Two logs for one id is a state we refuse to create; the caller
@@ -203,6 +205,7 @@ class SessionStore:
         """Inverse of :meth:`archive`. False if it was not archived."""
         if not self.archived_path.exists() or self.active_path.exists():
             return False
+        ensure_project_dir(self.root)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.archived_path.replace(self.active_path)
         return True
@@ -217,6 +220,10 @@ class SessionStore:
     # ---- writing ----
     def _append_line(self, obj: dict[str, Any]) -> None:
         target = self.path
+        # The first line of the first session is what creates ``.quickcode/``
+        # in a fresh project, so it is also where the directory gets the
+        # ``.gitignore`` that stops this log from being committed.
+        ensure_project_dir(self.root)
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as f:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")

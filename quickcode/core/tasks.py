@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quickcode.workspace import ensure_project_dir_for
+
 STATUSES = ("pending", "in_progress", "completed", "deleted")
 
 
@@ -166,6 +168,10 @@ class TaskBoard:
     def save(self) -> None:
         if self.path is None:
             return
+        # A board carries the subjects the user asked for, so it is one of the
+        # things ``.quickcode/.gitignore`` exists to cover -- and a board can
+        # in principle be the first thing written into a fresh project.
+        ensure_project_dir_for(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "counter": self._counter,

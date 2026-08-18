@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from quickcode.workspace import ensure_project_dir
+
 ARTIFACT_CHAR_LIMIT = 1500
 ARTIFACT_HEAD_LINES = 40
 
@@ -24,6 +26,7 @@ def write_artifact(cwd: Path, agent_id: str, text: str) -> Path | None:
     """
     path = Path(cwd) / ".quickcode" / "artifacts" / f"{agent_id}.md"
     try:
+        ensure_project_dir(cwd)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     except OSError:
