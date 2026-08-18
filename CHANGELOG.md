@@ -60,6 +60,41 @@ follows [Semantic Versioning](https://semver.org/).
   is printed only when Esc actually interrupts, which it does not while a
   modal is open.
 
+### Security
+
+- **Session transcripts were one `git add -A` away from being published.**
+  QuickCode writes full transcripts — every prompt, every file it read, every
+  line of command output, anything pasted into the chat — to
+  `<project>/.quickcode/sessions/*.jsonl`, and nothing arranged for git to
+  ignore them. Of everything a compliance audit turned up this was the most
+  likely accidental disclosure in the product, because it needs no attacker and
+  no mistake, only the habit everyone already has. A `.gitignore` is now written
+  *inside* `.quickcode/` when that directory is created — deliberately not the
+  user's own `.gitignore`, since silently editing a file they own and have
+  committed is not something this app should do. Transcripts, task boards,
+  subagent artifacts and this machine's permission grants are excluded;
+  `settings.json`, `agents/` and `plugins/` are not, because those are project
+  configuration meant to be reviewed and shared. Written once and never
+  rewritten: if the file is already there, it is yours. A test runs a real
+  `git init` and `git add -A` and asserts the transcript is not staged while
+  `settings.json` is.
+- **The Windows bootstrap ran unverified installers.** `scripts/bootstrap.ps1`
+  downloaded Git for Windows and Python over HTTPS and executed them silently,
+  checking nothing — code execution at setup time for anyone who could answer
+  for those hosts. Both are now Authenticode-verified before they run, checking
+  the signing subject as well as the status, because a valid signature by the
+  wrong publisher is not a pass. A pinned SHA-256 was considered and rejected:
+  it nails one build forever, so a year on the script would install a Git with
+  known CVEs, and a mistyped digest fails identically to an attack. On failure
+  the file is deleted first and the install stops with the observed signer, the
+  expected publisher and three real remedies — never downgraded to a warning,
+  not even for Git, which the script otherwise treats as optional. TLS 1.2 is
+  now forced, since PowerShell 5.1 inherits .NET's legacy default and on older
+  builds still offers TLS 1.0.
+- **The OpenRouter attribution header named someone else.** `HTTP-Referer` was
+  `https://github.com/quickcode`, an unrelated URL that does not resolve, so the
+  app identified itself to a third party as a project that is not this one.
+
 ### Fixed
 
 - **Startup showed nothing at all, then everything at once.** Importing the

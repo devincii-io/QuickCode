@@ -60,7 +60,11 @@ class OpenAICompatProvider:
         default_headers: dict[str, str] | None = None
         if self._is_openrouter:
             default_headers = {
-                "HTTP-Referer": "https://github.com/quickcode",
+                # OpenRouter attributes requests to whatever this names. It
+                # pointed at github.com/quickcode, which is not this project
+                # and does not resolve -- so the app was identifying itself to
+                # a third party as someone else's dead URL.
+                "HTTP-Referer": "https://github.com/devincii-io/QuickCode",
                 "X-Title": app_name,
             }
 
