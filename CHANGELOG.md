@@ -8,6 +8,47 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The agent can read the web, and search it.** Two new tools. `web_fetch`
+  retrieves one URL and hands back readable text, following up to five
+  redirects and revalidating the destination at every hop. `web_search`
+  queries one configured engine — Brave, Serper, Tavily, SearXNG, Exa or
+  Google Programmable Search — and returns titles, URLs and snippets. There is
+  deliberately no `provider` argument: the engine is the user's choice, not
+  the model's, and there is no silent fallback to a second one when the first
+  fails. Neither tool is available until a key is configured (SearXNG needs
+  only an instance URL), and `quickcode doctor` now reports which provider is
+  selected, where its key resolved from, and what is missing — as a warning,
+  never a failure, because search is optional and an unconfigured one breaks
+  nothing else.
+- **`web_fetch` refuses to be turned inward.** It is the first tool that sends
+  a request from the user's machine, chosen by the model, so the address is
+  classified before every hop: no schemes but http and https, no embedded
+  credentials, no loopback or link-local or private or CGNAT ranges, no
+  `.local`/`.internal`-style names, no bare dotless hostname, and no
+  IPv4-mapped or 6to4 or Teredo address smuggling one of those through. A name
+  resolving to several addresses is refused if *any* of them is disallowed.
+  The connection is then made to the address that was checked, with the
+  original hostname kept for SNI and `Host`, so a name cannot resolve
+  differently between the check and the connection. Cookies are dropped
+  between hops. `docs/TOOLS.md` documents the gaps this does **not** close —
+  a public host that proxies inward is invisible at this layer, and a
+  configured `HTTP_PROXY` weakens the guarantee to "a name that passed the
+  checks".
+- **QuickCode tells you when there is a new release.** One unauthenticated
+  `GET` of the GitHub releases API, at most once every six hours, cached under
+  `~/.quickcode`. It carries no key, no cookie, no identifier, no project
+  path, no session data and no version number; the entire request is printed
+  verbatim on its Settings card so the claim can be checked rather than
+  trusted. A failed check is silent — the chip simply does not appear — and
+  the reason waits on Install → Updates for anyone who looks. It can be turned
+  off in two places, and off means nothing is sent at all, including by the
+  "Check now" button. On the Windows installer layout it offers the download:
+  the release's `SHA256SUMS.txt` is fetched *before* any executable byte is
+  written, the bytes are hashed as they stream to a `.part` file, a mismatch
+  deletes the file before reporting it, and the installer is re-hashed from
+  disk immediately before it is launched. Every other install method is told
+  the command to run instead, because a process cannot reliably replace the
+  package it is executing.
 - **You can see that it is working.** A line above the composer shows an
   animated glyph, a verb, the elapsed time and the tokens produced this turn:
   `✳ Nebulizing… (4m 7s · ↓ 5.3k tokens · esc to interrupt)`. The whimsy stops
@@ -33,6 +74,48 @@ follows [Semantic Versioning](https://semver.org/).
   from `sys.modules` until a request needs it — by which point the wait is
   hidden behind model latency. A test pins it in a fresh interpreter, because
   a single stray top-level import would silently undo it.
+- **The permission mode was announced on every single turn.** The same
+  sentence, unchanged, spliced into every request for the life of a session —
+  a fixed tax that told the model nothing it had not already been told, and
+  trained it to skim the block that also carries the things that *did* change.
+  Reminders are edge-triggered now, the way the post-compaction one directly
+  above it in the same function always was: the first turn announces the mode
+  and after that only a change does, and anything else can queue a reminder
+  that is delivered exactly once. Compaction re-announces, because it rewrites
+  the transcript and the sentence may not have survived the summary — and the
+  mode is what tells the model whether it may touch files, so the safe
+  direction to be wrong is to repeat it.
+- **The token count froze mid-answer.** Usage is reported once per round, so
+  during a long streaming reply the number sat still for a minute and then
+  jumped. On a line whose whole job is to show the app is alive, a frozen
+  number argues the opposite. The frontend now estimates between authoritative
+  figures — counting text, reasoning and the arguments of still-streaming tool
+  calls, since a long file write spends most of its round inside tool
+  arguments — and reconciles to truth at every round boundary. The count never
+  goes backwards: when truth lands below the estimate the display holds until
+  truth overtakes it, because a counter that jumps down reads as a bug. No new
+  timer and no extra repaints.
+- **A provider or MCP server page was a dead end.** Those kinds declare no
+  settings, so they rendered no block for a "why can I not change this"
+  explanation to live in — the user got a page with nothing on it and no
+  account of why. They now say so, and say what to do instead.
+- **A settings button shipped in a state it was not in.** `explain.js`
+  rendered the Duplicate button disabled with "arrives in the next pass" and
+  `detail.js` repaired it after render. The repair worked, but the stale
+  promise was what the module shipped, so any other surface rendering that
+  block got the dead version. It is now rendered in its real state to begin
+  with. Two comments describing an app that no longer exists were corrected in
+  the same pass.
+- **CI had never once passed**, including on the v2.0.0 tag — a red mark on
+  what is now a public repository. `dev` is a PEP 735 dependency group rather
+  than an extra, so `pip install -e ".[dev,pty]"` installed neither ruff nor
+  pytest and both steps died on a missing module; and the runs reported
+  `startup_failure` while the repository was private, which is what exhausted
+  Actions minutes look like. The workflow now uses uv, which is how the
+  project is actually developed, and tests 3.12, 3.13 and 3.14 with
+  `fail-fast` off. It also runs `node --check` over every frontend module —
+  the frontend has no build step, so nothing else would catch a syntax error
+  before it failed to load in a browser.
 
 ## [2.0.0] — 2026-08-18
 
