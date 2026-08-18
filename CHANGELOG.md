@@ -76,6 +76,47 @@ follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Four ways past the permission boundary, all reproduced, all closed.** A
+  compliance audit found them and each was verified by hand before and after
+  the fix.
+  - `PATH=. ls` ran **unprompted in every mode, `plan` included**. Environment
+    assignments were stripped before the read-only auto-allow was computed and
+    then never looked at again, so the command read as a harmless `ls` while
+    the environment it would run under had been rewritten. Any assignment now
+    disqualifies the auto-allow, and the stripped form is no longer offered to
+    allow rules — approving `git status` is not approving
+    `LD_PRELOAD=./x.so git status`. Deliberately *any* assignment rather than a
+    blocklist of dangerous names: such a list would have to be complete and
+    cannot be, since `PATH` and `LD_PRELOAD` sit beside `BASH_ENV`, `IFS`,
+    `GLOBIGNORE`, `NODE_OPTIONS`, `LESSOPEN` — and `RIPGREP_CONFIG_PATH`, which
+    points `rg` (itself a read-only builtin) at a config file that can set
+    `--pre`, which runs a program. The set grows with every program installed.
+  - **`grep` and `glob` read any file on the machine, unprompted, in every
+    mode.** Their permission shape omitted the path check that `read` has, so
+    `grep(output_mode="content")` returned the contents of `~/.ssh` and
+    `~/.aws/credentials` while `read` on the same path correctly prompted. A
+    test now asserts no built-in tool targets a path-shaped field without
+    declaring it. Separately, `grep` now skips `.ssh` and `.env*` while
+    *walking* — gating the named path did not stop a project-wide grep
+    returning `.env` contents.
+  - **A cloned repository's committed `permissions.allow` took effect with no
+    consent**, in both project settings files. `.local` is a filename
+    convention, not a statement about where a file came from.
+  - **A committed `default_mode: "yolo"` started the session in bypass mode**,
+    by two separate routes, contradicting `docs/PERMISSIONS.md` explicitly.
+
+  The last two now route through the existing trust gate rather than a second
+  mechanism. The dividing line is *direction*: rules that only narrow — `deny`,
+  `ask`, disabling a plugin, lowering the starting mode — load from any
+  project, because narrowing needs no consent. Anything that widens needs the
+  grant. A project may lower the starting mode without asking and never raise
+  it. Policy config joins the trust hash under its own key and only when
+  non-empty, so grants already on disk stay valid while a project that *later*
+  adds policy config re-prompts — trusting a repository for its MCP servers
+  must not silently bless a `default_mode: yolo` committed afterwards. None of
+  it is silent: every drop is logged, the ignored keys are named, and the trust
+  banner is raised for a settings-only refusal, since otherwise the page would
+  tell you to trust the project with no way to do it.
 - **Session transcripts were one `git add -A` away from being published.**
   QuickCode writes full transcripts — every prompt, every file it read, every
   line of command output, anything pasted into the chat — to
