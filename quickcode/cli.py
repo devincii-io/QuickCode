@@ -2,7 +2,7 @@
 
 Parses arguments, assembles the agent (provider, registry, permissions,
 history), and either runs one headless turn (``-p/--print``) or launches the
-local web app (FastAPI on 127.0.0.1 + the default browser).
+local web app (FastAPI on 127.0.0.1 in a native app window).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from quickcode.config import Config, Environment
 from quickcode.core.agent import AgentInstance, PermissionOutcome, PermissionRequest
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.kernel.state import prompt_overrides
 from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.openai_compat import OpenAICompatProvider
 from quickcode.tools.base import ReadRegistry, ToolCtx
@@ -80,7 +81,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=None,
                          help="local web port (default: 8642, or a free port)")
     parser.add_argument("--no-browser", action="store_true",
-                         help="don't open a browser window (prints the URL)")
+                         help="don't open any window (prints the URL)")
+    parser.add_argument("--browser", action="store_true",
+                         help="open in the default browser instead of the app window")
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     return parser
 
@@ -158,6 +161,7 @@ def _build_agent(args: argparse.Namespace):
         rules=Rules.load(cwd),
         root=cwd,
         yolo_accepted=bool(args.yolo),
+        specs=registry.permission_specs(),
     )
 
     # Subagent delegation: give the main agent (depth 0) everything the `agent`
@@ -171,6 +175,7 @@ def _build_agent(args: argparse.Namespace):
         mode_getter=lambda: permissions.mode,
         cwd=cwd,
         depth=0,
+        tool_pool=list(registry.tools.values()),
     )
 
     # Model precedence: explicit --model, then the last model picked via F2
@@ -186,6 +191,7 @@ def _build_agent(args: argparse.Namespace):
             headless=args.print_mode,
             plan=(mode == Mode.plan),
             orchestration=True,
+            overrides=prompt_overrides(cwd),
         )
     )
     if conv_id:
@@ -263,6 +269,7 @@ def main(argv: list[str] | None = None) -> None:
         default_mode=args.mode,
         port=args.port,
         open_browser=not args.no_browser,
+        native=not args.browser,
         initial_resume=resume,
     )
 
@@ -271,7 +278,7 @@ def main_app() -> None:
     """GUI entry point (``quickcode-app``) for the Start Menu / Desktop shortcut.
 
     Equivalent to ``quickcode --cwd <home>``: the user's home directory is the
-    default project, and the browser opens on the app. Launched through
+    default project, and the app window opens on it. Launched through
     pythonw, so the console streams are patched up before anything writes to
     them. Extra arguments still pass through -- argparse takes the last
     ``--cwd``, so a caller can override the default.
