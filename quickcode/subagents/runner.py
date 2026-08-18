@@ -10,8 +10,9 @@ from __future__ import annotations
 import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from quickcode.config import Environment, Profile
 from quickcode.core.agent import (
@@ -21,12 +22,15 @@ from quickcode.core.agent import (
 )
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.kernel import preset as preset_module
+from quickcode.kernel.composition import MODE_PRIVILEGE, Resolved, cap_mode
+from quickcode.kernel.resolve import resolve_composition
 from quickcode.prompts.subagent import render_subagent_prompt
 from quickcode.providers.base import Provider
 from quickcode.subagents.artifacts import maybe_offload
 from quickcode.subagents.definitions import AgentDef, load_defs
 from quickcode.tools.base import ReadRegistry, ToolCtx
-from quickcode.tools.registry import ToolRegistry, build_registry
+from quickcode.tools.registry import ToolRegistry, build_registry, core_tools
 
 if TYPE_CHECKING:
     from quickcode.core.agent import EventBus
@@ -34,15 +38,20 @@ if TYPE_CHECKING:
 MAX_DEPTH = 2
 MAX_AGENTS = 50
 
-# plan < ask < auto-edit < dontask < yolo (least → most privileged).
-_PRIV = {Mode.plan: 0, Mode.ask: 1, Mode.auto_edit: 2, Mode.dontask: 3, Mode.yolo: 4}
+# Kept as module names because callers import them from here. The definitions
+# moved into ``kernel/composition.py`` so the resolver can narrow a ceiling
+# without importing the runtime that calls it.
+_PRIV = MODE_PRIVILEGE
 
-
-def cap_mode(parent: Mode, cap: Mode) -> Mode:
-    """effective = min(parent, cap); plan collapses to ask (headless children
-    don't do the interactive plan-review dance)."""
-    eff = parent if _PRIV[parent] <= _PRIV[cap] else cap
-    return Mode.ask if eff == Mode.plan else eff
+__all__ = [
+    "MAX_AGENTS",
+    "MAX_DEPTH",
+    "SubagentDeps",
+    "cap_mode",
+    "resume_subagent",
+    "sanitize_report",
+    "spawn_subagent",
+]
 
 
 @dataclass
@@ -70,11 +79,45 @@ class SubagentDeps:
     # the child's EventBus) so a live pane can subscribe to the child's stream.
     # Optional — headless runs leave it None.
     on_pane: Callable[[str, str, EventBus], None] | None = None
+    # The tools this session actually has, including plugin and MCP ones. A
+    # definition's ``tools:`` list is selected from this. None falls back to
+    # the built-in core tools, which is what a bare embedder gets.
+    tool_pool: list | None = None
+    # Which agent definitions this session's preset admits (names or globs).
+    # None means no restriction; an empty list means no delegation at all.
+    # Superseded by ``parent.spawns``; kept for embedders that set it.
+    allowed_agents: list[str] | None = None
 
-    def child(self, depth: int, effective_mode: Mode) -> SubagentDeps:
+    # -- composition ------------------------------------------------------
+    # The session pool: everything this install has, minus the plugins that are
+    # switched off. Set once at open and never narrowed on the way down -- it
+    # is the *session's* capability envelope, not any one agent's grant, and
+    # keeping the two apart is what makes "the orchestrator may not edit files,
+    # but its children may" expressible at all.
+    pool: list | None = None
+    # The spawning agent's resolved composition. Children are intersected
+    # against it from depth 1 down, so narrowing compounds instead of resetting.
+    parent: Resolved | None = None
+    # Agent definitions, snapshotted at session open. Reloading them per spawn
+    # would change an agent's behaviour mid-conversation.
+    defs: dict[str, AgentDef] | None = None
+    # The session's preset, for the layer-3 contribution.
+    preset: Any = None
+    # Delegation turns spent per agent id, against that agent's max_turns.
+    turns: dict[str, int] = field(default_factory=dict)
+    budgets: dict[str, int] = field(default_factory=dict)
+
+    def child(self, depth: int, effective_mode: Mode,
+              *, tool_pool: list | None = None,
+              parent: Resolved | None = None) -> SubagentDeps:
         """A deps object for the next level down, sharing the counter/roster.
 
-        A child's own spawns are capped by the child's fixed effective mode.
+        A child's own spawns are capped by the child's fixed effective mode and
+        narrowed against ``parent`` -- the composition this child was itself
+        given. Passing the session's own composition down instead would make
+        delegation an escalation: a read-only agent could spawn one whose
+        definition says ``tools: null`` and have it inherit write, edit and
+        bash.
         """
         return SubagentDeps(
             provider=self.provider,
@@ -87,7 +130,26 @@ class SubagentDeps:
             spawned=self.spawned,
             roster=self.roster,
             on_pane=self.on_pane,
+            tool_pool=self.tool_pool if tool_pool is None else tool_pool,
+            allowed_agents=self.allowed_agents,
+            pool=self.pool,
+            parent=parent if parent is not None else self.parent,
+            defs=self.defs,
+            preset=self.preset,
+            turns=self.turns,
+            budgets=self.budgets,
         )
+
+    def session_pool(self) -> list:
+        """The pool to resolve against, with the legacy fallbacks in order."""
+        if self.pool is not None:
+            return self.pool
+        if self.tool_pool is not None:
+            return self.tool_pool
+        return core_tools(include_plan=False, include_agent=False)
+
+    def definitions(self) -> dict[str, AgentDef]:
+        return self.defs if self.defs is not None else load_defs(self.cwd)
 
 
 async def _deny_cb(_req: PermissionRequest) -> PermissionOutcome:
@@ -100,15 +162,11 @@ async def _deny_cb(_req: PermissionRequest) -> PermissionOutcome:
     )
 
 
-def _resolve_model(deps: SubagentDeps, defn: AgentDef, override: str | None) -> str:
-    if override:
-        return override
-    spec = defn.model
-    if spec == "worker":
-        return deps.profile.resolve("worker")
-    if spec == "orchestrator":
-        return deps.profile.resolve("orchestrator")
-    return spec  # explicit slug
+ROLES = ("worker", "orchestrator")
+
+
+def _resolve_role(deps: SubagentDeps, spec: str) -> str:
+    return deps.profile.resolve(spec) if spec in ROLES else spec
 
 
 def sanitize_report(text: str) -> str:
@@ -135,25 +193,58 @@ async def spawn_subagent(
     if len(deps.spawned) >= MAX_AGENTS:
         raise ValueError(f"subagent limit reached ({MAX_AGENTS} per conversation)")
 
-    defs = load_defs(deps.cwd)
-    defn = defs.get(agent_type)
-    if defn is None:
-        raise ValueError(
-            f"unknown agent_type '{agent_type}'. Available: {', '.join(sorted(defs))}"
-        )
+    defs = deps.definitions()
+    if deps.allowed_agents is not None:
+        defs = {
+            name: d for name, d in defs.items()
+            if any(fnmatchcase(name, p) for p in deps.allowed_agents)
+        }
+
+    # Resolution is total, so this cannot fail; the refusal comes next, and it
+    # comes before the id is minted -- a refused composition should not burn an
+    # agent slot for a child that never existed.
+    resolved = resolve_composition(
+        agent_type,
+        pool=deps.session_pool(),
+        preset=deps.preset if deps.preset is not None
+        else preset_module.builtin_presets()[preset_module.DEFAULT_PRESET],
+        defs=defs,
+        cwd=deps.cwd,
+        parent=deps.parent,
+        depth=deps.depth,
+        overrides={"model": model_override} if model_override else None,
+        max_depth=MAX_DEPTH,
+        resolve_model=lambda spec: _resolve_role(deps, spec),
+    )
+    if resolved.errors():
+        raise ValueError(resolved.refusal())
+
+    defn = defs[agent_type]
+    model = _resolve_role(deps, resolved.model or defn.model)
 
     child_depth = deps.depth + 1
     agent_id = f"{defn.name}-{next(deps.counter)}"
     deps.spawned.append(agent_id)
+    deps.budgets[agent_id] = resolved.max_turns
+    deps.turns[agent_id] = 0
+    effective_mode = cap_mode(deps.mode_getter(), resolved.ceiling)
 
-    model = _resolve_model(deps, defn, model_override)
-    effective_mode = cap_mode(deps.mode_getter(), defn.mode_cap)
-
-    # Build the child's bounded registry. The agent tool is only granted if the
-    # child is still above the depth floor, so nesting stops at MAX_DEPTH.
-    include_agent = child_depth < MAX_DEPTH
-    child_deps = deps.child(child_depth, effective_mode) if include_agent else None
-    registry: ToolRegistry = build_registry(defn.tools, include_agent=include_agent)
+    # The child's bounded registry is built from the resolved tool list, so the
+    # answer the introspection endpoint gives and the tools the model is handed
+    # come from one computation. The delegation pair is still granted by depth,
+    # never by allowlist -- the resolver decides whether it is in the list, and
+    # ``build_registry`` is what adds the instances.
+    include_agent = "agent" in resolved.tools
+    registry: ToolRegistry = build_registry(
+        list(resolved.tools), include_agent=include_agent, pool=deps.session_pool()
+    )
+    # Built after the registry, because what this child may delegate is bounded
+    # by what this child itself got -- never by what the session has.
+    child_deps = (
+        deps.child(child_depth, effective_mode,
+                   tool_pool=list(registry.tools.values()), parent=resolved)
+        if include_agent else None
+    )
 
     child_ctx = ToolCtx(
         cwd=deps.cwd,
@@ -199,6 +290,7 @@ async def _run_and_finish(
     Shared by ``spawn_subagent`` (first turn) and ``resume_subagent`` (any
     later turn) so both go through identical treatment.
     """
+    deps.turns[agent_id] = deps.turns.get(agent_id, 0) + 1
     try:
         report = await child.run_turn(message)
     except Exception as e:  # a child failure must not crash the parent's loop
@@ -226,6 +318,17 @@ async def resume_subagent(
         raise ValueError(f"unknown agent_id '{agent_id}'. Known: {known}")
     if child.busy:
         raise ValueError(f"agent '{agent_id}' is still running")
+
+    # ``max_turns`` is the child's delegation budget: one turn for the spawn,
+    # one per resume. It was stored and rendered and read nowhere until now, so
+    # a definition asking for a small agent got an unbounded one.
+    budget = deps.budgets.get(agent_id)
+    spent = deps.turns.get(agent_id, 0)
+    if budget is not None and spent >= budget:
+        raise ValueError(
+            f"agent '{agent_id}' has used its {budget}-turn budget. Spawn a "
+            "fresh agent if there is more to do."
+        )
 
     report = await _run_and_finish(deps, agent_id, child, message)
     return agent_id, report
