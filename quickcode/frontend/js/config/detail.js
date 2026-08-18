@@ -73,6 +73,25 @@ function dupActionHtml(plugin) {
     : "";
 }
 
+/** For a kind that has no settings, nothing locked, and nothing to duplicate.
+ *
+ *  Providers and MCP servers land exactly there: they declare no settings, so
+ *  no Settings form renders; nothing about them is `locked`, so no
+ *  Fixed-by-design block renders either; and the header's Duplicate slot comes
+ *  back empty because the refusal for those kinds offers nowhere to go. The
+ *  result was a page that stated no action and gave no reason — the dead end
+ *  UX.md rules out. The reason itself already travels inside `recourseHtml`,
+ *  so this only has to give it somewhere to be seen. */
+function noActionHtml(plugin) {
+  if (!duplicateRefusal(plugin) && !plugin.recourse) return "";
+  return `<section class="k-fixed-block">
+    <h4>Nothing to edit here</h4>
+    ${plugin.locked_because
+      ? `<p class="k-fixed-why">${esc(plugin.locked_because)}</p>` : ""}
+    ${recourseHtml(plugin)}
+  </section>`;
+}
+
 function headHtml(plugin, { crumb }) {
   return `<header class="cfg-head" data-kind="${esc(plugin.kind)}"
       data-tier="${esc(plugin.tier)}">
@@ -149,7 +168,8 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
           <p class="k-fixed-why">${esc(plugin.locked_because
             || "Nothing here is a knob: this plugin is a contract the rest of the app is written against.")}</p>
           ${recourseHtml(plugin)}
-        </section>` : ""}
+        </section>`
+      : noActionHtml(plugin)}
     ${resolvedHtml(plugin, ctx.facts)}
     ${usedByHtml(plugin, ctx)}
   </div>`;
