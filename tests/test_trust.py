@@ -121,6 +121,98 @@ def test_editing_config_reprompts(tmp_path):
     assert store.is_trusted(project) is True
 
 
+# ---- authored command tools gate under the same grant ----
+
+
+def _write_plugin(project: Path, filename: str, kind: str, body: str = "") -> Path:
+    pd = project / ".quickcode" / "plugins"
+    pd.mkdir(parents=True, exist_ok=True)
+    path = pd / filename
+    path.write_text(f"---\nkind: {kind}\ntitle: t\n---\n{body}\n", encoding="utf-8")
+    return path
+
+
+def test_adding_a_command_tool_reprompts(tmp_path):
+    """The gap this closes: a trusted project could add an executable tool.
+
+    Trust was bound to mcpServers alone, so a project already approved for its
+    servers could commit a new command tool and have it run with no prompt —
+    the MCP hole again, through a different file.
+    """
+    project = tmp_path / "proj"
+    _write_settings(project, {"a": {"command": "npx", "args": ["1"]}})
+    store = TrustStore(tmp_path / "trust.json")
+    store.grant(project)
+    assert store.is_trusted(project) is True
+
+    _write_plugin(project, "deploy.md", "tool", "```json argv\n[\"sh\"]\n```")
+    assert store.is_trusted(project) is False, "a new command tool must re-prompt"
+    assert store.status(project).inert is True
+
+
+def test_editing_a_command_tool_reprompts(tmp_path):
+    project = tmp_path / "proj"
+    path = _write_plugin(project, "build.md", "tool", "```json argv\n[\"make\"]\n```")
+    store = TrustStore(tmp_path / "trust.json")
+    store.grant(project)
+    assert store.is_trusted(project) is True
+
+    # Same filename, same kind, different program.
+    path.write_text(path.read_text(encoding="utf-8").replace("make", "curl"),
+                    encoding="utf-8")
+    assert store.is_trusted(project) is False
+
+
+def test_tools_alone_are_gated_and_reported(tmp_path):
+    """A project with no servers but a command tool still has something to gate."""
+    project = tmp_path / "proj"
+    _write_plugin(project, "run.md", "tool")
+    store = TrustStore(tmp_path / "trust.json")
+    status = store.status(project)
+    assert status.has_servers is False
+    assert status.has_tools is True
+    assert status.tool_files == ["run.md"]
+    assert status.inert is True, "an untrusted command tool is a refusal, not a no-op"
+    assert "command tools" in status.reason
+    assert status.to_json()["tools"] == ["run.md"]
+
+
+def test_authored_text_does_not_affect_trust(tmp_path):
+    """Agents and prompt sections are text, and text is not gated.
+
+    Re-prompting when someone edits a prompt section would train the reflex
+    that makes the prompt worthless for the case that matters.
+    """
+    project = tmp_path / "proj"
+    _write_settings(project, {"a": {"command": "npx", "args": ["1"]}})
+    store = TrustStore(tmp_path / "trust.json")
+    store.grant(project)
+
+    _write_plugin(project, "reviewer.md", "agent", "You review code.")
+    _write_plugin(project, "tone.md", "prompt", "Be terse.")
+    assert store.is_trusted(project) is True
+    assert store.status(project).tool_files == []
+
+
+def test_unreadable_kind_is_gated(tmp_path):
+    """A declaration we cannot parse is assumed to be the dangerous one."""
+    project = tmp_path / "proj"
+    pd = project / ".quickcode" / "plugins"
+    pd.mkdir(parents=True, exist_ok=True)
+    (pd / "mystery.md").write_text("no frontmatter at all\n", encoding="utf-8")
+    store = TrustStore(tmp_path / "trust.json")
+    assert store.status(project).tool_files == ["mystery.md"]
+
+
+def test_trash_is_not_scanned(tmp_path):
+    project = tmp_path / "proj"
+    trash = project / ".quickcode" / "plugins" / ".trash"
+    trash.mkdir(parents=True, exist_ok=True)
+    (trash / "old.md").write_text("---\nkind: tool\n---\n", encoding="utf-8")
+    store = TrustStore(tmp_path / "trust.json")
+    assert store.status(project).tool_files == []
+
+
 # ---- cannot self-declare trust ----
 
 
@@ -251,6 +343,32 @@ def test_trust_endpoints_report_grant_revoke(tmp_path):
         assert revoked["revoked"] is True
         assert revoked["trusted"] is False
         assert client.get("/api/trust").json()["inert"] is True
+
+
+def test_trust_report_shows_what_a_command_tool_would_run(tmp_path):
+    """Consent needs the command, not the filename.
+
+    An untrusted tool is dropped from the registry, so the report has to read
+    the file itself — otherwise the banner asks the user to approve 'deploy.md'
+    and the whole point of showing commands is lost.
+    """
+    project = tmp_path / "proj"
+    pd = project / ".quickcode" / "plugins"
+    pd.mkdir(parents=True, exist_ok=True)
+    (pd / "deploy.md").write_text(
+        "---\nkind: tool\nname: deploy\ntitle: Deploy\n"
+        "description: Push the current branch\n---\n"
+        "```json params\n[]\n```\n"
+        '```json argv\n["git", "push", "--force"]\n```\n',
+        encoding="utf-8")
+
+    hub, client = _make_trust_app(tmp_path, project)
+    with client:
+        status = client.get("/api/trust").json()
+        assert status["inert"] is True
+        assert status["tools"] == ["deploy.md"]
+        detail = {t["name"]: t for t in status["tool_detail"]}
+        assert detail["deploy"]["argv"] == ["git", "push", "--force"]
 
 
 def test_trust_endpoint_unknown_project_404(tmp_path):

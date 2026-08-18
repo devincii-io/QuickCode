@@ -11,10 +11,12 @@ Design constraints (all enforced here):
 * Trust is recorded at **user scope** (``~/.quickcode/trust.json``), never
   inside the project — a project cannot declare itself trusted, because we only
   ever read the user-scope store.
-* Trust is bound to a **hash over the executable-bearing project config** (the
-  project-scope ``mcpServers`` blocks). A later edit that adds or changes a
-  server changes the hash, so the old grant no longer matches and the project
-  re-prompts.
+* Trust is bound to a **hash over the executable-bearing project config**: the
+  project-scope ``mcpServers`` blocks *and* the project's authored command-tool
+  files. A later edit that adds or changes either one changes the hash, so the
+  old grant no longer matches and the project re-prompts. Both are the same
+  risk wearing different clothes — a committed file that names a program the
+  agent may run — so one grant must not cover a later edit to the other.
 * **Untrusted is the default** for any path not already recorded — including
   paths that happen to sit in the recent-projects list. Nothing is
   grandfathered.
@@ -33,7 +35,8 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +53,12 @@ PROJECT_SETTINGS_FILES = (
     Path(".quickcode") / "settings.json",
     Path(".quickcode") / "settings.local.json",
 )
+
+# Authored plugins live here. A ``kind: tool`` file names a program and an argv,
+# so it is executable config in exactly the way an mcpServers block is.
+PROJECT_PLUGINS_DIR = Path(".quickcode") / "plugins"
+
+_KIND_RE = re.compile(r"^kind\s*:\s*[\"']?([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
 
 
 def trust_path() -> Path:
@@ -91,14 +100,72 @@ def project_mcp_servers(cwd: str | os.PathLike[str]) -> dict[str, dict[str, Any]
     return merged
 
 
+def _declared_kind(text: str) -> str | None:
+    """The ``kind:`` an authored plugin file declares, or ``None`` if unreadable.
+
+    This reads the frontmatter directly instead of calling the real parser
+    because ``kernel.authoring.discovery`` imports *this* module: security sits
+    below the kernel and cannot import it back. Only enough is read to answer
+    one question — is this a command tool — and ``None`` means "could not tell",
+    which the caller resolves the safe way.
+    """
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    match = _KIND_RE.search(text[:end])
+    return match.group(1).lower() if match else None
+
+
+def project_command_tools(cwd: str | os.PathLike[str]) -> dict[str, str]:
+    """``filename -> sha256`` for each project plugin file that can execute.
+
+    Hashing the file's bytes rather than its parsed argv is deliberate: a
+    change anywhere in a command tool's definition — the argv, a default, the
+    working directory it runs in — is a change to what approving it means.
+
+    A file whose kind cannot be read is **included**. The unreadable case is
+    the one an attacker controls, and the safe reading of a declaration we
+    cannot parse is the one that re-prompts.
+    """
+    directory = Path(cwd) / PROJECT_PLUGINS_DIR
+    out: dict[str, str] = {}
+    try:
+        if not directory.is_dir():
+            return out
+        # Never recursive: .trash/ lives underneath and holds deleted files.
+        files = sorted(directory.glob("*.md"))
+    except OSError:
+        return out
+    for path in files:
+        if path.name.startswith("."):
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        kind = _declared_kind(raw.decode("utf-8", errors="replace"))
+        if kind is not None and kind != "tool":
+            continue  # agents and prompt sections are text; they are not gated
+        out[path.name] = hashlib.sha256(raw).hexdigest()
+    return out
+
+
 def config_hash(cwd: str | os.PathLike[str]) -> str:
     """Stable SHA-256 over the project's executable-bearing config.
 
     Empty config hashes deterministically too; the value only ever matters when
-    servers exist, but a stable hash keeps ``is_trusted`` total.
+    there is something to gate, but a stable hash keeps ``is_trusted`` total.
+
+    The payload is keyed rather than concatenated so that adding a third kind of
+    executable config later cannot collide with an existing grant.
     """
-    servers = project_mcp_servers(cwd)
-    canonical = json.dumps(servers, sort_keys=True, ensure_ascii=False)
+    payload = {
+        "mcpServers": project_mcp_servers(cwd),
+        "commandTools": project_command_tools(cwd),
+    }
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -110,16 +177,26 @@ class TrustStatus:
     has_servers: bool
     server_names: list[str]
     config_hash: str
-    # True when there is executable config that is NOT trusted, i.e. servers
-    # were (or will be) refused. This is the "visible refusal" flag.
+    # True when there is executable config that is NOT trusted, i.e. something
+    # was (or will be) refused. This is the "visible refusal" flag.
     inert: bool
     reason: str
+    # Authored command tools the project declares, by filename. Separate from
+    # servers because they are refused by a different loader and the UI names
+    # them differently -- but they gate together, under one grant.
+    tool_files: list[str] = field(default_factory=list)
+
+    @property
+    def has_tools(self) -> bool:
+        return bool(self.tool_files)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "trusted": self.trusted,
             "has_servers": self.has_servers,
             "servers": list(self.server_names),
+            "has_tools": self.has_tools,
+            "tools": list(self.tool_files),
             "hash": self.config_hash,
             "inert": self.inert,
             "reason": self.reason,
@@ -174,17 +251,28 @@ class TrustStore:
     def status(self, cwd: str | os.PathLike[str]) -> TrustStatus:
         servers = project_mcp_servers(cwd)
         names = sorted(servers)
+        tool_files = sorted(project_command_tools(cwd))
         trusted = self.is_trusted(cwd)
         has_servers = bool(servers)
-        inert = has_servers and not trusted
-        if not has_servers:
-            reason = "no project-scope MCP servers declared"
+        has_executable = has_servers or bool(tool_files)
+        inert = has_executable and not trusted
+        # One noun for whatever this project actually declares, so the sentence
+        # is true for a project with only tools as well as only servers.
+        if has_servers and tool_files:
+            what = "MCP servers and command tools"
+        elif tool_files:
+            what = "command tools"
+        else:
+            what = "MCP servers"
+        if not has_executable:
+            reason = "no project-scope MCP servers or command tools declared"
         elif trusted:
             reason = "project trusted for this configuration"
         elif self.recorded_hash(cwd) is not None:
-            reason = "project configuration changed since it was trusted; re-approve to run its MCP servers"
+            reason = (f"project configuration changed since it was trusted; "
+                      f"re-approve to run its {what}")
         else:
-            reason = "project not trusted; its MCP servers are inert until you approve them"
+            reason = f"project not trusted; its {what} are inert until you approve them"
         return TrustStatus(
             trusted=trusted,
             has_servers=has_servers,
@@ -192,6 +280,7 @@ class TrustStore:
             config_hash=config_hash(cwd),
             inert=inert,
             reason=reason,
+            tool_files=tool_files,
         )
 
     # ---- mutations ----

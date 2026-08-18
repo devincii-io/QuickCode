@@ -256,6 +256,36 @@ def command_tools(cwd: Path | str | None, *, trusted: bool | None = None) -> lis
     return out
 
 
+def tools_for_review(cwd: Path | str | None) -> list[dict]:
+    """What this project's command tools would run, for the trust prompt.
+
+    Deliberately ignores trust: an untrusted tool is dropped from the registry,
+    so by the time the banner asks about it there is nothing left to read --
+    and asking someone to approve a filename is the thing the prompt exists to
+    prevent. Reading a file in order to show it is not running it.
+
+    Never builds a tool and never raises; a file too broken to parse still gets
+    a row, because "we could not read this one" is the most important row here.
+    """
+    try:
+        found = discover(cwd, trusted=True)
+    except Exception as exc:
+        log.warning("could not read authored tools for review: %s", exc)
+        return []
+    out: list[dict] = []
+    for plugin in found.by_kind("tool"):
+        if plugin.scope != "project":
+            continue  # user-scope tools are the user's own files, never gated
+        out.append({
+            "name": plugin.name,
+            "file": Path(plugin.path).name if plugin.path else "",
+            "path": plugin.path,
+            "label": plugin.label or "",
+            "argv": list(plugin.argv),
+        })
+    return sorted(out, key=lambda t: t["name"])
+
+
 def prompt_sections(cwd: Path | str | None, *, trusted: bool | None = None) -> list:
     """Authored ``PromptSection``s for the main agent, ordered. Never raises."""
     try:

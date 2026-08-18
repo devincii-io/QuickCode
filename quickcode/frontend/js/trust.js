@@ -1,15 +1,18 @@
-// Project trust — the visible half of the MCP gate (docs/TRUST-HANDOFF.md).
+// Project trust — the visible half of the gate (docs/TRUST-HANDOFF.md).
 //
-// A project's `.quickcode/settings.json` may declare `mcpServers`. Starting one
-// spawns its command as the user, so the backend leaves project-scope servers
-// inert until the project has been trusted once. That refusal must not be
-// silent: a project that quietly loses its tools is a worse bug than the hole
-// the gate closes.
+// A project can name programs for QuickCode to run in two places: `mcpServers`
+// in its `.quickcode/settings.json`, and `kind: tool` files in
+// `.quickcode/plugins/`. Both spawn a command as the user, both are committed
+// to the repository, and both are therefore inert until the project has been
+// trusted once — under a single grant, because they are one risk wearing two
+// hats. That refusal must not be silent: a project that quietly loses its
+// tools is a worse bug than the hole the gate closes.
 //
 // This module owns the banner that names what was refused, shows the commands
 // as they are written in the file, and takes the decision. It never guesses —
-// everything it claims comes from GET .../trust and from the kernel's view of
-// each `mcp.<name>` plugin, which carries that server's raw JSON block.
+// everything it claims comes from GET .../trust, which carries each command
+// tool's argv, and from the kernel's view of each `mcp.<name>` plugin, which
+// carries that server's raw JSON block.
 
 import { api } from "./api.js";
 import { store } from "./store.js";
@@ -162,18 +165,49 @@ function ensureMounts() {
 
 const NOTE_BOUND =
   "Trust is recorded for this folder and for the configuration shown here. If " +
-  "the mcpServers block is edited later, QuickCode asks again before running it.";
+  "the mcpServers block or a command tool is edited later, QuickCode asks " +
+  "again before running it.";
 
 const NOTE_SESSION =
   "The chat that is open now keeps the tool set it started with. Start a new " +
   "chat to use these tools.";
 
 const NOTE_REVOKE =
-  "Revoking stops QuickCode from starting these servers again — on the next " +
-  "open, and for anything that would start one after that. A server process " +
-  "that is already running keeps running until this project is closed.";
+  "Revoking stops QuickCode from starting these again — on the next open, and " +
+  "for anything that would start one after that. A server process that is " +
+  "already running keeps running until this project is closed; a command tool " +
+  "stops being offered to the agent in new chats.";
 
 function serverWord(n) { return n === 1 ? "server" : "servers"; }
+function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }
+
+// A project may declare MCP servers, authored command tools, or both, and the
+// two gate together under one grant. Every sentence that counts what is being
+// approved goes through here so none of them can name only half of it.
+function declared(status) {
+  const servers = (status.servers || []).length;
+  const tools = (status.tools || []).length;
+  const parts = [];
+  if (servers) parts.push(`${servers} MCP ${serverWord(servers)}`);
+  if (tools) parts.push(`${tools} ${toolWord(tools)}`);
+  return { servers, tools, total: servers + tools, phrase: parts.join(" and ") };
+}
+
+// What a refused command tool would run. The backend reads the file for us —
+// an untrusted tool is not registered, so there is nothing else left to show,
+// and a name on its own is not something anyone can consent to.
+function toolList(status) {
+  const detail = status.tool_detail || [];
+  if (!detail.length) return "";
+  const rows = detail.map((t) => `<li class="trust-srv">
+      <span class="ts-name">${esc(t.name || t.file || "?")}</span>
+      <code class="ts-cmd">${(t.argv || []).length
+        ? esc(t.argv.join(" "))
+        : "this file declares no command that could be read"}</code>
+      ${t.file ? `<span class="ts-env">.quickcode/plugins/${esc(t.file)}</span>` : ""}
+    </li>`).join("");
+  return `<ul class="trust-srvs">${rows}</ul>`;
+}
 
 // ---- rendering ----
 
@@ -221,7 +255,8 @@ function changedList(diff) {
 
 function card() {
   const { status, specs, pid } = current;
-  const n = (status.servers || []).length;
+  const d = declared(status);
+  const n = d.servers;
   // `reason` is the backend's own distinction between "never trusted" and
   // "trusted, then the config was edited" — the two cases need different copy,
   // and the report is the only place that knows which one this is.
@@ -231,10 +266,10 @@ function card() {
 
   const diff = changedSinceGrant ? diffApproved(pid, status, specs) : null;
   const title = changedSinceGrant
-    ? "This project's server configuration changed"
-    : n === 1
+    ? "This project's configuration changed"
+    : d.total === 1
       ? "This project wants to run a command on your machine"
-      : `This project wants to run ${n} commands on your machine`;
+      : `This project wants to run ${d.total} commands on your machine`;
 
   // A server started under the previous grant is still up: the gate governs
   // future starts, it does not kill a running process. Saying "nothing is
@@ -242,11 +277,11 @@ function card() {
   const stillUp = (status.running || []).filter((s) => (status.servers || []).includes(s));
 
   const intro = changedSinceGrant
-    ? `<p>You trusted this project before. The <code>mcpServers</code> block in
-        this project's settings is no longer the one you approved, so QuickCode
-        has not started ${n === 1 ? "it" : "them"} under the new configuration.
+    ? `<p>You trusted this project before. What it asks to run is no longer what
+        you approved, so QuickCode has not started ${
+  d.total === 1 ? "it" : "them"} under the new configuration.
         Read the commands again before approving them: an edit can add a server
-        or change what an existing one runs.</p>
+        or a command tool, or change what an existing one runs.</p>
        ${diff ? changedList(diff) : `<p class="trust-muted">This browser has no
         record of the configuration you approved, so it cannot show a
         comparison. Read the block below as if for the first time.</p>`}
@@ -256,10 +291,14 @@ function card() {
         not stop ${stillUp.length === 1 ? "it" : "them"}; ${
   stillUp.length === 1 ? "it stops" : "they stop"} when this project is
         closed.</p>` : ""}`
-    : `<p>This project declares ${n} MCP ${serverWord(n)} in its own settings
-        file. QuickCode has not started ${n === 1 ? "it" : "them"}. Starting an
-        MCP server runs its command on this computer, as you, with access to
-        your files and your network.</p>
+    : `<p>This project declares ${d.phrase} in its own files. QuickCode has not
+        started ${d.total === 1 ? "it" : "them"}. ${d.servers
+  ? "Starting an MCP server runs its command on this computer, as you, with "
+        + "access to your files and your network."
+  : ""} ${d.tools
+  ? "A command tool is a program this project lets the agent run, defined in a "
+        + "file the project itself commits."
+  : ""}</p>
        <p>Read the commands before you decide. If this project came from
         somewhere you do not control, judge them the way you would judge any
         script you were handed.</p>`;
@@ -273,8 +312,9 @@ function card() {
     </div>
     <div class="trust-body">
       ${intro}
-      ${serverList(status, specs)}
-      ${rawDetails(status, specs)}
+      ${d.servers ? serverList(status, specs) : ""}
+      ${d.servers ? rawDetails(status, specs) : ""}
+      ${toolList(status)}
       <p class="trust-note">${esc(NOTE_BOUND)}</p>
       <p class="trust-err hidden"></p>
     </div>
@@ -337,19 +377,20 @@ function trustedCard() {
       <button class="trust-collapse" title="Collapse this to the top bar">▴</button>
     </div>
     <div class="trust-body">
-      <p>QuickCode may start the ${names.length} MCP ${serverWord(names.length)}
-        declared in this project's settings, which means running the
-        ${names.length === 1 ? "command" : "commands"} listed below on this
-        computer. ${esc(NOTE_BOUND)}</p>
+      <p>QuickCode may run the ${declared(status).phrase || "commands"} declared
+        in this project's files, which means running the
+        ${declared(status).total === 1 ? "command" : "commands"} listed below on
+        this computer. ${esc(NOTE_BOUND)}</p>
       ${silent.length ? `<p class="trust-muted">${esc(silent.join(", "))} did not
         start. A server whose command does not launch is skipped and the reason
         is written to the QuickCode log; the trust decision itself was
         recorded.</p>` : ""}
       ${granted ? `<p class="trust-note">${esc(NOTE_SESSION)}</p>` : ""}
-      ${serverList(status, specs)}
-      <p class="trust-muted">Running in this project now: ${
-        running.length ? esc(running.join(", ")) : "none"}.</p>
-      ${rawDetails(status, specs)}
+      ${names.length ? serverList(status, specs) : ""}
+      ${names.length ? `<p class="trust-muted">Running in this project now: ${
+        running.length ? esc(running.join(", ")) : "none"}.</p>` : ""}
+      ${names.length ? rawDetails(status, specs) : ""}
+      ${toolList(status)}
       <p class="trust-note">${esc(NOTE_REVOKE)}</p>
       <p class="trust-err hidden"></p>
     </div>
@@ -409,19 +450,20 @@ function render() {
     chip.title = `QuickCode could not read this project's trust status (${error}).`;
     return;
   }
-  if (!status.has_servers) { chip.classList.add("hidden"); return; }
+  const d = declared(status);
+  if (!d.total) { chip.classList.add("hidden"); return; }
 
-  const n = (status.servers || []).length;
+  const n = d.total;
   chip.classList.remove("hidden");
   if (status.inert) {
     chip.className = "trust-chip warn";
-    chip.textContent = `△ ${n} MCP ${serverWord(n)} not started`;
-    chip.title = `This project declares ${n} MCP ${serverWord(n)} that are not `
-      + "running because the project is not trusted. Click to review them.";
+    chip.textContent = `△ ${d.phrase} not started`;
+    chip.title = `This project declares ${d.phrase} that will not run because `
+      + "the project is not trusted. Click to review them.";
   } else {
     chip.className = "trust-chip ok";
-    chip.textContent = `MCP trusted (${n})`;
-    chip.title = `This project is trusted to start ${n} MCP ${serverWord(n)}. `
+    chip.textContent = `Trusted (${n})`;
+    chip.title = `This project is trusted to run ${d.phrase}. `
       + "Click to review or revoke.";
   }
   if (current.revoked && !collapsed) {
@@ -432,9 +474,9 @@ function render() {
         <h2 class="trust-title">Trust revoked</h2>
       </div>
       <div class="trust-body">
-        <p>QuickCode will not start ${n === 1 ? "this server" : `these ${n} servers`}
-          in this project again. A server process that is already running keeps
-          running until this project is closed.</p>
+        <p>QuickCode will not run ${d.phrase} in this project again. A server
+          process that is already running keeps running until this project is
+          closed.</p>
       </div>
       <div class="trust-foot"><button class="btn trust-later">Close</button></div>
     </section>`);

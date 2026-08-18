@@ -149,6 +149,21 @@ coupling that used to live in name lists moves onto the tools themselves.
   worthless. The refusal is loud: the project opens and reports which servers
   it did not start, and the prompt shows each full command line before you
   approve it, because approving a command you cannot read is not consent.
+- **The trust grant covers authored command tools, not just MCP servers.** A
+  project can name a program to run in two places — `mcpServers` in its
+  settings, and a `kind: tool` file in `.quickcode/plugins/` — and both are
+  committed to the repository. Binding trust to the servers alone would have
+  left the second door open: a project already approved for its servers could
+  add a command tool afterwards and have it run with no prompt. The grant is
+  now bound to a hash over both, so adding or editing either one re-prompts,
+  and a file whose `kind:` cannot be parsed is treated as a tool, because the
+  unreadable case is the one an attacker controls. Authored agents and prompt
+  sections stay ungated: they are text, they cannot widen a capability
+  (tool lists and ceilings are intersected, never unioned), and this app
+  already quotes a repository's own `QUICKCODE.md` into the prompt untrusted.
+  The prompt shows each refused tool's argv, read from the file for display —
+  an untrusted tool is not registered, so without that the banner would be
+  asking for consent to a filename.
 
 ## [1.0.0] — 2026-08-17
 

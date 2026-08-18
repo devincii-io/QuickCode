@@ -512,21 +512,38 @@ def create_app(
     # UI report what was refused and grant/revoke that trust. See
     # docs/TRUST-HANDOFF.md and quickcode/security/trust.py.
 
+    def _with_tool_detail(pid: str, status: dict) -> dict:
+        """Add each command tool's argv to the report.
+
+        The trust module hashes those files but cannot parse them -- security
+        sits below the kernel, and the authoring parser imports it. The server
+        sits above both, so this is the layer where the two can meet.
+        """
+        if not status.get("tools"):
+            return status
+        try:
+            from quickcode.kernel.authoring import discovery
+
+            detail = discovery.tools_for_review(_project(pid).cwd)
+        except Exception:  # a report that loses its detail still reports
+            return status
+        return {**status, "tool_detail": detail}
+
     def _trust_status(pid: str) -> dict:
         try:
-            return hub.trust_status(pid)
+            return _with_tool_detail(pid, hub.trust_status(pid))
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
 
     async def _grant_trust(pid: str) -> dict:
         try:
-            return await hub.grant_trust(pid)
+            return _with_tool_detail(pid, await hub.grant_trust(pid))
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
 
     def _revoke_trust(pid: str) -> dict:
         try:
-            return hub.revoke_trust(pid)
+            return _with_tool_detail(pid, hub.revoke_trust(pid))
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
 

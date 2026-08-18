@@ -490,14 +490,30 @@ QuickCode would otherwise hand that repository the ability to define tools the
 agent may run, prompt sections that instruct the agent, and MCP servers that
 spawn processes. That is remote code execution with a nice card UI.
 
-**Project-scope authored plugins are inert until the project is trusted.**
+**Project-scope command tools are inert until the project is trusted.**
 One decision per project, recorded in `~/.quickcode/trust.json` keyed by
-resolved project path, storing a hash over the sorted contents of the project's
-plugin files. Until then every project-authored plugin loads as disabled with
-the problem `needs_trust`, and the Problems card leads with a single prompt
-naming what is in there ("3 tools, 1 MCP server, 2 prompt sections — review
-them"). The hash changing — a `git pull` that edits a tool — re-prompts, naming
-the files that changed.
+resolved project path, storing a hash over the project's `mcpServers` blocks
+*and* the bytes of every `kind: tool` file. Until the grant exists those tools
+load as skipped with the problem `needs_trust`, and the banner leads with a
+single prompt naming what is in there and showing each tool's argv. The hash
+changing — a `git pull` that edits a tool — re-prompts. A file whose `kind:`
+cannot be parsed is hashed as though it were a tool: the unreadable case is the
+one an attacker controls, so it resolves toward asking.
+
+MCP servers and command tools gate **together, under one grant**. They are one
+risk wearing two hats — a committed file naming a program to run — and splitting
+them into two prompts would teach the reflex of clicking through both.
+
+**Authored agents and prompt sections are not gated.** The line is capability,
+not influence. A tool adds an executable path that did not exist; an agent
+definition and a prompt section add text, and text here cannot widen anything —
+a definition's tool list and permission ceiling are *intersected* by the
+resolver, never unioned. QuickCode already quotes a repository's own
+`QUICKCODE.md` into the system prompt verbatim and untrusted on every session,
+and has loaded `.quickcode/agents/*.md` untrusted since agents became
+authorable; gating the new text while the old text walks straight in would be
+theatre that also breaks a documented feature. What they get instead is
+visibility: an `info` problem naming what the project contributes.
 
 User-scope plugins are trusted implicitly. You wrote them; there is nobody else
 to defend against, and prompting for your own files trains the reflex that makes
@@ -727,8 +743,13 @@ In order. Each step ends with something that runs.
    apply the trust gate, return `(plugins, problems)`. Never raises.
 6. **`authoring/store.py`** — slug allocation, create-from-template, save,
    delete-to-trash, duplicate (per the §4 table), export, import.
-7. **`authoring/trust.py`** — `~/.quickcode/trust.json`, hash over the project's
-   plugin files, `is_trusted` / `trust` / `revoke`.
+7. **`security/trust.py`** — not a new module: the MCP gate already owns
+   `~/.quickcode/trust.json`, `is_trusted` / `grant` / `revoke`, and the
+   path-keyed grant. Widen `config_hash` to cover the project's `kind: tool`
+   files alongside its `mcpServers`, so one grant governs both. It cannot
+   import the authoring parser to decide which files those are — `security`
+   sits below `kernel` and the parser imports it — so it reads the `kind:` out
+   of the frontmatter itself and resolves an unparseable one toward asking.
 8. **`kernel/spec.py`** — add `"authored"` to `Source`; add
    `factory: Callable[[], Any] | None = None` and `path: str = ""` to
    `PluginSpec`. Both default to the current behaviour, so nothing existing
