@@ -8,6 +8,7 @@
 // boot never touches the URL. A project id in the fragment is the only thing
 // that skips Home; otherwise the last project is merely offered there.
 
+import { initActivity } from "./activity.js";
 import { api, currentProject, initAuth, setProject } from "./api.js";
 import { initChat } from "./chat.js";
 import { initComposer, refreshCompositionPill } from "./composer.js";
@@ -244,6 +245,9 @@ async function boot() {
   initPanel();
   initReviews();
   initComposer({ onNewConversation: () => openConversation(null) });
+  // The second status surface. The bar at the bottom is a dense readout you
+  // consult; this one is a sign of life you cannot miss, next to the input.
+  initActivity();
   // Freshly trusted MCP tools only reach a conversation that starts after the
   // grant, so the trust card can offer that restart itself.
   initTrust({ onNewConversation: () => openConversation(null) });

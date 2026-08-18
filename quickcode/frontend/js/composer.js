@@ -508,8 +508,15 @@ export function initComposer(h) {
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !document.querySelector(".modal-backdrop, .menu")) {
-      actions.interrupt();
-    }
+    if (e.key === "Escape" && escInterrupts()) actions.interrupt();
   });
+}
+
+// Escape interrupts the turn — but only when it is not already spoken for.
+// A modal (permission, plan review) or an open menu closes on Escape instead,
+// and during a permission prompt that is exactly the case. Exported because
+// the activity line prints "esc to interrupt" and must not promise a key that
+// currently does something else.
+export function escInterrupts() {
+  return !document.querySelector(".modal-backdrop, .menu");
 }

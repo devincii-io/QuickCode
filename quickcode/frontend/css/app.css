@@ -208,6 +208,44 @@ textarea, input { font: inherit; color: inherit; }
   max-width: 860px; margin: 0 auto 6px; font-size: 12px; color: var(--fg-dim);
 }
 .queue-strip .q-item { padding: 2px 0; }
+
+/* Live activity line (js/activity.js). The height is reserved unconditionally:
+   the line comes and goes several times a turn, and a composer that grows a row
+   each time would shove the transcript up and down under someone reading it.
+   Only the opacity moves. */
+.activity {
+  max-width: 860px; margin: 0 auto 5px; height: 19px;
+  display: flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 19px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; transition: opacity .18s ease; pointer-events: none;
+}
+.activity.on { opacity: 1; }
+.act-glyph { flex: none; width: 1ch; color: var(--primary); }
+.act-verb { color: var(--fg); }
+.act-meta { color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; }
+/* A tool call and a compaction are facts, not moods — they read in the same
+   voice as the rest of the app. The states that need the user, or that stopped,
+   are the ones worth a color. */
+.activity[data-phase="approval"] .act-glyph,
+.activity[data-phase="approval"] .act-verb { color: var(--warning); }
+.activity[data-phase="interrupted"] .act-glyph,
+.activity[data-phase="interrupted"] .act-verb { color: var(--fg-dim); }
+.activity[data-phase="error"] .act-glyph,
+.activity[data-phase="error"] .act-verb { color: var(--error); }
+
+/* Visually hidden, still announced. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The glyph stops cycling (activity.js also stops advancing it) and the line
+     appears at once. The text and the clock stay: they are the information. */
+  .activity { transition: none; }
+}
+
 .composer-box {
   max-width: 860px; margin: 0 auto; background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: 16px; padding: 10px 12px 8px;
