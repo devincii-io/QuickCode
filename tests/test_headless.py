@@ -8,6 +8,8 @@ no live model call is made, and none is needed to prove what the log contains.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -45,7 +47,14 @@ def _install(monkeypatch, provider, built=None):
         return cfg
 
     monkeypatch.setattr(Config, "load", classmethod(lambda cls, *a, **k: load()))
-    monkeypatch.setattr(cli, "OpenAICompatProvider", lambda *a, **k: provider)
+    # Patched where it is defined, not where it is used: the CLI imports the
+    # provider inside _build_agent so that starting the app does not drag the
+    # OpenAI SDK in before the window exists, and a module-attribute patch on
+    # `cli` would break the moment that import moved.
+    monkeypatch.setattr(
+        "quickcode.providers.openai_compat.OpenAICompatProvider",
+        lambda *a, **k: provider,
+    )
     if built is not None:
         real = cli._build_agent
 
@@ -234,3 +243,27 @@ def test_failing_headless_turn_leaves_a_readable_log(tmp_path, monkeypatch, caps
     store = SessionStore(tmp_path, path.stem)
     assert store.is_empty() is False
     assert store.title().startswith("read it")
+
+
+def test_starting_the_app_does_not_import_the_openai_sdk():
+    """Importing the entry points must not pull in the provider SDK.
+
+    The OpenAI SDK is roughly two thirds of this application's import cost —
+    it brings in the Pydantic model trees for Assistants, graders, evals and
+    batches, none of which QuickCode uses. Paying that before the window
+    exists is what made a cold start look like nothing was happening. It is
+    loaded on the first request instead, where it hides behind model latency.
+
+    A fresh interpreter, because the in-process module table is long since
+    polluted by the rest of the suite.
+    """
+    code = (
+        "import sys; import quickcode.cli, quickcode.webapp; "
+        "print('openai' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", code],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False", (
+        "something re-introduced a module-level `import openai`; import it "
+        "inside the function that needs it instead"
+    )

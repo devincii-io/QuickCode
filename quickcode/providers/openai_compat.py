@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import AsyncOpenAI
+if TYPE_CHECKING:  # the SDK is imported lazily -- see OpenAICompatProvider.client
+    from openai import AsyncOpenAI
 
 from quickcode.core.events import (
     AgentEvent,
@@ -63,14 +64,36 @@ class OpenAICompatProvider:
                 "X-Title": app_name,
             }
 
-        # AsyncOpenAI raises on an empty key at construction. Pass a harmless
-        # placeholder when none is set so the app can still launch and show a
-        # "set your key" notice; the real auth failure then surfaces per-request.
-        self.client = AsyncOpenAI(
-            base_url=base_url,
-            api_key=api_key or "no-key-set",
-            default_headers=default_headers,
-        )
+        self._api_key = api_key
+        self._default_headers = default_headers
+        self._client: AsyncOpenAI | None = None
+
+    @property
+    def client(self) -> AsyncOpenAI:
+        """The SDK client, built on first use.
+
+        Importing ``openai`` costs ~800 ms of the ~1.2 s it takes to import
+        this application at all, and a large multiple of that on a cold file
+        cache -- it pulls in the Pydantic model trees for Assistants, graders,
+        evals, batches and responses, none of which this adapter touches.
+        Paying it before the window exists is what made a cold start look like
+        nothing happening; paying it on the first request hides it behind model
+        latency the user is already waiting on.
+
+        AsyncOpenAI raises on an empty key at construction, so a harmless
+        placeholder stands in when none is set: the app still launches and can
+        show a "set your key" notice, and the real auth failure surfaces
+        per-request rather than as a crash on startup.
+        """
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(
+                base_url=self.base_url,
+                api_key=self._api_key or "no-key-set",
+                default_headers=self._default_headers,
+            )
+        return self._client
 
     # ------------------------------------------------------------------
     # Message / tool translation

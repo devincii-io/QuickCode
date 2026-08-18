@@ -21,7 +21,6 @@ from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.kernel.resolve import runtime_limits
 from quickcode.kernel.state import prompt_overrides
 from quickcode.prompts.system import render_system_prompt
-from quickcode.providers.openai_compat import OpenAICompatProvider
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import default_registry
 
@@ -129,6 +128,11 @@ def _build_agent(args: argparse.Namespace):
     cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
     env = Environment.detect(cwd)
     profile = config.profile
+
+    # Imported here rather than at module scope: this module is what `qc` and
+    # the windowed entry point both load first, and a top-level import would
+    # drag the OpenAI SDK in before anything is on screen.
+    from quickcode.providers.openai_compat import OpenAICompatProvider
 
     provider = OpenAICompatProvider(profile.base_url, profile.api_key)
 
