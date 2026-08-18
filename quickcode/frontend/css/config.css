@@ -749,3 +749,222 @@ a.wb-tool:hover { border-color: var(--kind-agent); }
   .wb-preview-slot { border-left: 0; border-bottom: 1px solid var(--line); order: -1; }
   .wb-preview { position: static; }
 }
+
+/* ==========================================================================
+ * Authoring: the problems card, the Yours filters, New…, the source editor
+ * and the dry run.
+ *
+ * Two rules carried over from the rest of this file.
+ *
+ * **Severity owns colour here, and only here.** Everywhere else tier owns the
+ * badge and kind owns the hue; a problem is neither — it is a fact about
+ * something being broken, and --error is what --error is for. Locked still
+ * never borrows it: an error means "this did not load", which is exactly what
+ * a locked plugin is not.
+ *
+ * **The editor is a document, not a form.** It gets the same two-column
+ * treatment as the workbench (a wide monospace surface and a narrow reading of
+ * it) because the file is the thing being edited and the panel beside it is
+ * commentary on it.
+ * ======================================================================== */
+
+/* ---------- the problems card ---------- */
+
+.pb-card {
+  border: 1px solid var(--line-strong); border-left: 3px solid var(--fg-faint);
+  border-radius: var(--radius); background: var(--panel);
+  padding: 11px 13px; margin: 0 0 16px;
+}
+.pb-card[data-worst="error"]   { border-left-color: var(--error); }
+.pb-card[data-worst="warning"] { border-left-color: var(--warning); }
+.pb-card[data-worst="info"]    { border-left-color: var(--fg-faint); }
+.pb-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.pb-head h4 {
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-dim); display: flex; align-items: center; gap: 7px;
+}
+.pb-count {
+  font-size: 10.5px; letter-spacing: 0; text-transform: none;
+  padding: 1px 6px; border-radius: 8px; background: var(--surface); color: var(--fg-dim);
+}
+.pb-tally { display: flex; gap: 8px; margin-left: auto; }
+.pb-tally-bit { font-size: 10.5px; color: var(--fg-faint); }
+.pb-tally-bit[data-sev="error"]   { color: var(--error); }
+.pb-tally-bit[data-sev="warning"] { color: var(--warning); }
+.pb-lede {
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+  margin: 7px 0 2px; max-width: 84ch;
+}
+.pb-rows { margin-top: 6px; }
+.pb-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.pb-sev {
+  flex: none; width: 62px; font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; padding-top: 2px; color: var(--fg-faint); cursor: help;
+}
+.pb-row[data-sev="error"] .pb-sev   { color: var(--error); }
+.pb-row[data-sev="warning"] .pb-sev { color: var(--warning); }
+.pb-main { flex: 1; min-width: 0; }
+.pb-msg { font-size: 12.5px; line-height: 1.5; color: var(--fg); }
+.pb-fix { font-size: 11.5px; line-height: 1.55; color: var(--fg-dim); margin-top: 3px; }
+.pb-where {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px;
+  font-size: 10.5px; color: var(--fg-faint);
+}
+.pb-subject, .pb-path, .pb-code { font-family: var(--mono); font-size: 10.5px; }
+.pb-path { color: var(--fg-dim); overflow-wrap: anywhere; user-select: all; }
+.pb-code { margin-left: auto; }
+.pb-actions { flex: none; }
+.pb-slot:empty { display: none; }
+
+/* ---------- the Yours / scope filters ---------- */
+
+.cfg-filters {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.cfg-filter-group { display: inline-flex; gap: 2px; }
+.cfg-filter-group.off { opacity: .45; }
+.cfg-fchip {
+  font-size: 11.5px; padding: 3px 9px; border-radius: 7px;
+  border: 1px solid var(--line); background: transparent; color: var(--fg-dim);
+  cursor: pointer;
+}
+.cfg-fchip:hover:not(:disabled) { background: var(--panel); color: var(--fg); }
+.cfg-fchip.on { background: var(--boost); color: var(--fg); border-color: var(--line-strong); }
+.cfg-fchip:disabled { cursor: default; }
+.cfg-fcount { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
+.cfg-filter-note-inline {
+  font-size: 10.5px; color: var(--fg-faint); line-height: 1.5; max-width: 44ch;
+}
+
+/* ---------- card affordances ---------- */
+
+.k-card-side .ghost-btn { white-space: nowrap; }
+.k-nodup { font-size: 10.5px; color: var(--fg-faint); cursor: help; }
+.dup-refusal {
+  border: 1px solid var(--line-strong); border-left: 3px solid var(--warning);
+  border-radius: var(--radius); background: var(--panel);
+  padding: 10px 12px; margin-top: 8px; max-width: 78ch;
+}
+.dup-why { font-size: 12px; line-height: 1.6; color: var(--fg-dim); margin-bottom: 8px; }
+
+/* ---------- empty states ---------- */
+
+.empty-state { text-align: left; line-height: 1.65; }
+.empty-state p { margin-bottom: 8px; max-width: 74ch; }
+.empty-lead { font-weight: 600; color: var(--fg); }
+.empty-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+/* ---------- New… ---------- */
+
+.nw-form { display: flex; flex-direction: column; gap: 14px; max-width: 62ch; }
+.nw-field { display: flex; flex-direction: column; gap: 5px; border: 0; padding: 0; }
+.nw-field > span:first-child {
+  font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--fg-faint);
+}
+.nw-help { font-size: 11px; color: var(--fg-faint); line-height: 1.5; }
+.nw-radio {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12px;
+  color: var(--fg-dim); line-height: 1.55; padding: 5px 0;
+}
+.nw-radio code { font-family: var(--mono); font-size: 11px; }
+.nw-target { font-size: 11.5px; color: var(--fg-dim); }
+.nw-target code { font-family: var(--mono); color: var(--fg); user-select: all; }
+.nw-actions { display: flex; align-items: center; gap: 10px; }
+
+/* ---------- the source editor ---------- */
+
+.cfg-page:has(.ed) { overflow: hidden; }
+
+.ed {
+  display: grid; grid-template-columns: minmax(520px, 1fr) 420px;
+  height: 100%; min-height: 0;
+}
+.ed-main {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  padding: 20px 26px 18px;
+}
+.ed-side {
+  min-width: 0; overflow-y: auto; border-left: 1px solid var(--line);
+  background: var(--surface);
+}
+.ed-side-inner { padding: 16px 18px 40px; }
+.ed-path { font-size: 10.5px; color: var(--fg-faint); margin-top: 6px; }
+.ed-path code { font-family: var(--mono); user-select: all; overflow-wrap: anywhere; }
+.ed-text {
+  flex: 1; min-height: 200px; resize: none; width: 100%;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); color: var(--fg); tab-size: 2;
+}
+.ed-text:focus { outline: none; border-color: var(--primary); }
+.ed-bar { display: flex; align-items: center; gap: 10px; padding: 10px 0 6px; flex-wrap: wrap; }
+.ed-state { font-size: 11px; color: var(--fg-faint); }
+.ed-state[data-dirty="1"] { color: var(--warning); }
+.ed-applies {
+  margin-left: auto; font-size: 10.5px; color: var(--fg-faint);
+  line-height: 1.45; max-width: 46ch; text-align: right;
+}
+.ed-problems { flex: none; max-height: 34%; overflow-y: auto; }
+.ed-clean { font-size: 11.5px; color: var(--success); padding: 4px 0; }
+.ed-field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.ed-field > span {
+  font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--fg-faint);
+}
+
+/* ---------- the dry run ---------- */
+
+.dr-fields { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.dr-field { display: flex; flex-direction: column; gap: 4px; }
+.dr-name { display: flex; align-items: baseline; gap: 8px; }
+.dr-name code { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+.dr-type { font-size: 10px; color: var(--fg-faint); }
+.dr-desc { font-size: 10.5px; color: var(--fg-faint); line-height: 1.45; }
+.dr-list { font-family: var(--mono); font-size: 11.5px; resize: vertical; }
+.dr-out {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); padding: 9px 11px;
+}
+.dr-argv { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.dr-argv li { display: flex; align-items: baseline; gap: 8px; }
+.dr-idx {
+  flex: none; width: 16px; text-align: right; font-family: var(--mono);
+  font-size: 10px; color: var(--fg-faint);
+}
+.dr-arg {
+  font-family: var(--mono); font-size: 12px; color: var(--fg);
+  background: var(--surface); border-radius: 4px; padding: 1px 6px;
+  overflow-wrap: anywhere; user-select: all;
+}
+.dr-arg.empty { color: var(--fg-faint); font-style: italic; }
+.dr-line {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--fg-dim); overflow-wrap: anywhere; user-select: all;
+}
+.dr-empty { font-size: 11.5px; line-height: 1.55; color: var(--fg-dim); }
+.dr-unknown, .dr-warn { font-size: 11.5px; line-height: 1.55; color: var(--error); }
+.dr-rules {
+  list-style: none; margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.dr-rules li {
+  font-size: 11px; line-height: 1.55; color: var(--fg-faint);
+  padding-left: 12px; text-indent: -12px; margin-bottom: 5px;
+}
+.dr-rules code { font-family: var(--mono); color: var(--fg-dim); }
+
+/* ---------- the rail's problem count and Yours list ---------- */
+
+.rail-alert { color: var(--error); }
+.rail-alert .rail-sigil, .rail-alert .rail-count { color: var(--error); }
+.rail-none { font-size: 11px; color: var(--fg-faint); padding: 4px 9px; }
+
+@media (max-width: 1280px) {
+  /* The panel is commentary on the file, so it moves under it rather than
+     beside it — and is never dropped, because "where does this land" is the
+     one question the file cannot answer about itself. */
+  .ed { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  .ed-side { border-left: 0; border-top: 1px solid var(--line); max-height: 40%; }
+}

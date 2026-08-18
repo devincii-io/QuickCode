@@ -21,7 +21,9 @@ import { renderDetail } from "./detail.js";
 import { renderInstall } from "./install.js";
 import { renderMachineRoom } from "./machineroom.js";
 import { renderParts } from "./parts.js";
+import { renderProblems } from "./problems.js";
 import { renderRail } from "./rail.js";
+import { renderEditor, renderNew } from "./create/scaffold.js";
 import { PARTS, canonicalHref, kindLabel, sigilHtml } from "./kinds.js";
 import { summaryOf } from "./explain.js";
 
@@ -62,9 +64,14 @@ async function load(api) {
   // The prompt and the preset list are what make the cards say something a
   // person can use. Neither is fatal: a page that cannot read them says so in
   // the one place it would have used them.
-  const [presets, prompt] = await Promise.all([
+  // `authored` is the list of files the user owns, with the two directory
+  // paths. It is what the Yours filter, the scope filter and the editor's
+  // header read; a page that cannot get it degrades to "nothing is yours yet",
+  // which is the same thing an install with no authored files shows.
+  const [presets, prompt, authored] = await Promise.all([
     api.presets().catch(() => null),
     api.prompt().catch(() => null),
+    api.authored().catch(() => null),
   ]);
 
   const ranges = {};
@@ -76,8 +83,19 @@ async function load(api) {
     mcpTools[p.id] = kernel.plugins.filter(
       (t) => t.kind === "tool" && t.id.startsWith(`tool.mcp__${server}__`)).length;
   }
+  // The authoring routes and the kernel both report problems; they are the
+  // same array at two different times, so they are merged and de-duplicated
+  // here rather than shown as two lists that mostly agree.
+  kernel.problems = kernel.problems || [];
+  const seen = new Set(kernel.problems.map(problemKey));
+  for (const p of authored?.problems || []) {
+    if (!seen.has(problemKey(p))) { kernel.problems.push(p); seen.add(problemKey(p)); }
+  }
+
   return {
     api, kernel, presets, prompt,
+    authored: authored?.plugins || [],
+    dirs: authored?.dirs || {},
     facts: {
       schemas: {}, ranges, mcpTools,
       connected: kernel.mcp_servers || [],
@@ -86,8 +104,17 @@ async function load(api) {
     },
     go,
     touched: () => {},        // a plugin changed; the cached kernel copy is live
+    // A file was written. The cached kernel copy is now a description of a
+    // configuration that no longer exists, so it is dropped rather than
+    // patched: the next render re-reads, and the list the UI shows stays the
+    // list the runtime would build.
+    invalidate,
     railDirty: () => renderRail($("cfg-rail"), ctx, parseRoute(location.hash)),
   };
+}
+
+function problemKey(p) {
+  return `${p.code}|${p.subject}|${p.message}`;
 }
 
 export function invalidate() { ctx = null; loading = null; }
@@ -148,7 +175,11 @@ export async function render() {
       return;
     } else if (head === "machine-room") renderMachineRoom(page, ctx);
     else if (head === "install") await renderInstall(page, ctx, a || "general");
-    else if (head === "new") renderNew(page, a || "agent");
+    else if (head === "new") renderNew(page, ctx, a || "agent");
+    // The raw source editor. It has a URL because it is a page you link people
+    // to — "the file that does this is here" — not a dialog over a list.
+    else if (head === "edit" && a) await renderEditor(page, ctx, a, route.query);
+    else if (head === "problems") renderProblems(page, ctx);
     else renderAgentsIndex(page, ctx);
   } catch (err) {
     page.innerHTML = `<div class="cfg-page-inner"><div class="set-error">This page
@@ -184,47 +215,6 @@ function applyHighlight(page) {
   node.classList.add("hl");
   node.scrollIntoView({ block: "center" });
   setTimeout(() => node.classList.remove("hl"), 2400);
-}
-
-// ---- the placeholders that are honest about being placeholders ------------
-
-const NEW_KINDS = {
-  agent: ["New agent", `A markdown file with frontmatter under
-    <code>.quickcode/plugins/</code>: a name, a description, the tools it may
-    call, its model policy and its ceiling, with its instructions as the body.
-    The form will show the file path before it writes it, and "edit as file" is
-    reversible while the content still parses.`],
-  tool: ["New command tool", `A tool the model can call that runs a command you
-    pin down — <code>uv run pytest -q {path}</code> rather than an open shell.
-    Arguments are an argv token list, never a shell string, so nothing the model
-    fills in can add a token. The form previews the exact JSON schema the model
-    will be given and dry-runs the resolved argv.`],
-  prompt: ["New prompt section", `A block of the system prompt of your own, with
-    an <code>after:</code> naming the section it follows and an
-    <code>applies_to:</code> deciding whether it reaches subagents too.`],
-  composition: ["New composition", `A named set: the orchestrator's tools and
-    prompt, the agents it may spawn, and the bindings that attach parts to
-    them. It lives in <code>.quickcode/settings.json</code> under
-    <code>presets</code>.`],
-};
-
-function renderNew(page, kind) {
-  const [title, what] = NEW_KINDS[kind] || NEW_KINDS.agent;
-  page.innerHTML = `<div class="cfg-page-inner">
-    <header class="cfg-head">
-      <div class="cfg-crumbs">${esc(title)}</div>
-      <div class="cfg-head-main"><h2>${esc(title)}</h2></div>
-    </header>
-    <section class="cfg-soon">
-      <h4>Not built yet — and not faked</h4>
-      <p>${what}</p>
-      <p class="cfg-note">Creation needs the authoring backend
-        (<code>.quickcode/plugins/*.md</code> discovery, validation and the
-        <code>/api/kernel/authored</code> routes). Until it exists this page
-        would be a form with nowhere to write, so it says so instead. Every
-        kind above is already readable in full under Parts.</p>
-    </section>
-  </div>`;
 }
 
 // ---- the header search box ------------------------------------------------

@@ -54,6 +54,44 @@ export function canonicalHref(plugin) {
   return `#/config/parts/${partForKind(plugin.kind)}/${encodeURIComponent(plugin.id)}`;
 }
 
+// ---- duplicate-to-customise ----------------------------------------------
+//
+// `kernel/authoring/store.py` owns the real table and the real sentences; this
+// is only the question "is there a button here at all", which the browser has
+// to answer before the press. When the answer is no it offers the recourse
+// instead of a button that exists in order to fail — and if a refusal is ever
+// reached anyway (a kind this table has not heard of), the server's own 400
+// carries the full reason and it is rendered verbatim rather than summarised.
+//
+// Authored anything is duplicable: a copy of a file is a file.
+
+const RECOURSE = {
+  tool: ["A built-in tool is Python — its schema, its argument checking and its "
+       + "permission shape all come from the class the runtime instantiates, and "
+       + "none of that is an argv template.",
+         "+ New command tool", "#/config/new/tool"],
+  provider: ["A provider is a wire-protocol adapter, which is Python with no "
+           + "data shape to copy it into.", "", ""],
+  mcp_server: ["MCP servers are configured in settings.json in this version, "
+             + "not authored as files.", "", ""],
+  policy: ["Nothing consumes a second permission policy.", "", ""],
+  hook: ["Nothing consumes a second copy of a loop hook: it would be inert, and "
+       + "an inert plugin that looks enabled is worse than no button.", "", ""],
+  storage: ["The session log format is fixed by contract.", "", ""],
+  panel: ["A panel is frontend code.", "", ""],
+};
+
+/** `null` when this plugin can be duplicated, else `{why, label, href}`. */
+export function duplicateRefusal(plugin) {
+  if (!plugin) return null;
+  if (plugin.source === "authored") return null;
+  if (plugin.kind === "agent" || plugin.kind === "prompt_section") return null;
+  const entry = RECOURSE[plugin.kind];
+  if (!entry) return null;
+  const [why, label, href] = entry;
+  return { why, label, href };
+}
+
 // ---- per-kind card bodies -------------------------------------------------
 //
 // The body is not one template. Each kind shows the fact you would have opened

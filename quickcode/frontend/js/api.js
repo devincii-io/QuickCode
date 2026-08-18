@@ -128,6 +128,34 @@ export const api = {
     req("POST", P(`/kernel/conversations/${encodeURIComponent(convId)}/composition`),
         { preset }),
 
+  // ---- authored plugins: the files you own ----
+  // Everything here writes a file under .quickcode/plugins/ (project) or
+  // ~/.quickcode/plugins/ (user) and takes effect in *new* sessions — a
+  // running session's composition is frozen at open. Every write response
+  // carries `applies_to` saying so, and the UI quotes it rather than
+  // inventing its own reassurance.
+  authored: () => req("GET", P("/kernel/authored")),
+  // {kind, name, scope, title?, text?} → a commented template on disk.
+  createAuthored: (body) => req("POST", P("/kernel/authored"), body),
+  // Validate a draft that is not on disk. Writes nothing.
+  validateAuthored: (body) => req("POST", P("/kernel/authored/validate"), body),
+  authoredSource: (id) =>
+    req("GET", P(`/kernel/authored/${encodeURIComponent(id)}/source`)),
+  // Never refuses: it writes, then validates, and the problems come back with
+  // the 200. Saving something broken is allowed — the alternative is an editor
+  // that will not let you stop typing halfway.
+  saveAuthoredSource: (id, text) =>
+    req("PUT", P(`/kernel/authored/${encodeURIComponent(id)}/source`), { text }),
+  // A move to .trash/, not an unlink.
+  deleteAuthored: (id) =>
+    req("DELETE", P(`/kernel/authored/${encodeURIComponent(id)}`)),
+  // Materialise an editable copy. 400 = refused, and the detail is the reason
+  // plus the recourse — an internal tool is the case that hits this.
+  duplicatePlugin: (id, body = {}) =>
+    req("POST", P(`/kernel/plugins/${encodeURIComponent(id)}/duplicate`), body),
+  // The same array `GET /kernel` carries, alone, for polling after a write.
+  kernelProblems: () => req("GET", P("/kernel/problems")),
+
   // ---- project trust (the MCP gate) ----
   // A project's own mcpServers are inert until the project is trusted once,
   // because starting one runs its command on this machine. GET reports what was

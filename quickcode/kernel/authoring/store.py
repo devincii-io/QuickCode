@@ -246,6 +246,10 @@ def validate_text(
 
 # Why a kind cannot be duplicated. Each of these is shown to the user in place
 # of the button, with the recourse that *is* available.
+#
+# The table is queryable through ``refusal()`` rather than only reachable by
+# pressing the button and reading a 400, because a button that exists in order
+# to fail is worse than a sentence saying what to press instead.
 _NOT_DUPLICABLE: dict[str, tuple[str, str]] = {
     "tool": (
         "a built-in tool is Python: its schema, its argument validation and its "
@@ -277,6 +281,40 @@ _NOT_DUPLICABLE: dict[str, tuple[str, str]] = {
                 "Read the format on the plugin's card."),
     "panel": ("a panel is frontend code.", "Nothing to duplicate."),
 }
+
+# One id deserves its own sentence, because it is the one people will try:
+# a command tool *is* a narrowed bash, so "duplicate bash" is a reasonable
+# thing to reach for and the generic tool refusal answers the wrong question.
+_NOT_DUPLICABLE_ID: dict[str, tuple[str, str]] = {
+    "tool.bash": (
+        "bash's behaviour is 'run whatever the model wrote', and a copy of "
+        "that is not a narrower tool -- it is the same tool under a second "
+        "name, with the same reach and a name that hides it.",
+        "Use New command tool instead. It pins one command down to an argv "
+        "template with typed parameters, which is what a copy of bash is "
+        "usually reached for; a pipeline still belongs to bash itself, "
+        "because a command tool is argv-only and never sees a shell.",
+    ),
+}
+
+_NOTHING_TO_COPY = ("this plugin has nothing a file could hold.",
+                    "Nothing to duplicate.")
+
+
+def refusal(plugin_id: str) -> tuple[str, str] | None:
+    """``(reason, recourse)`` when ``plugin_id`` cannot be duplicated.
+
+    The static half of the table: it answers from the id alone, so a caller
+    can render the reason in place of the button. It deliberately does **not**
+    look at the filesystem, which means it says "no" for a kind whose internal
+    plugins are not duplicable even when an *authored* plugin of that kind
+    would be -- authored anything is a byte copy and always allowed, and
+    ``duplicate`` checks for that first.
+    """
+    kind = _kind_of(plugin_id)
+    if kind in ("agent", "prompt"):
+        return None
+    return _NOT_DUPLICABLE_ID.get(plugin_id) or _NOT_DUPLICABLE.get(kind, _NOTHING_TO_COPY)
 
 
 def duplicate(
@@ -313,10 +351,7 @@ def duplicate(
     if kind == "prompt":
         return _duplicate_section(directory, plugin_id, name, scope, bodies or {})
 
-    reason, recourse = _NOT_DUPLICABLE.get(
-        _kind_of(plugin_id),
-        ("this plugin has nothing a file could hold.", "Nothing to duplicate."),
-    )
+    reason, recourse = refusal(plugin_id) or _NOTHING_TO_COPY
     raise AuthoringError(f"{plugin_id} cannot be duplicated: {reason}",
                          fix=recourse, status=400, code=schema.NOT_DUPLICABLE)
 

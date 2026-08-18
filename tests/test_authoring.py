@@ -541,6 +541,43 @@ def test_duplicating_an_internal_tool_is_refused_with_the_reason(sandbox):
     assert error.status == 400
 
 
+def test_the_duplicate_table_answers_before_the_button_is_pressed(sandbox):
+    """A button whose only purpose is to fail is worse than a sentence.
+
+    ``refusal`` is the same table ``duplicate`` raises from, asked from the id
+    alone, so a card can show the recourse in place of the button rather than
+    teaching people to press something that never works.
+    """
+    assert store.refusal("agent.explore") is None
+    assert store.refusal("prompt.tool_use_policy") is None
+
+    reason, recourse = store.refusal("tool.read")
+    assert "none of that is expressible as an argv template" in reason
+    assert "New command tool" in recourse
+
+    # Every kind that refuses says why *and* what is available instead: an
+    # explanation with no exit is a dead end wearing a paragraph.
+    for plugin_id in ("provider.openrouter", "policy.permissions",
+                      "storage.sessions", "panel.trajectory"):
+        entry = store.refusal(plugin_id)
+        assert entry is not None
+        assert entry[0].strip() and entry[1].strip()
+
+
+def test_duplicating_bash_answers_the_question_people_actually_ask(sandbox):
+    """`bash` is the one everybody tries, and the generic tool refusal answers
+    a different question than the one being asked."""
+    with pytest.raises(store.AuthoringError) as excinfo:
+        store.duplicate(sandbox, "tool.bash", scope="project")
+    error = excinfo.value
+    assert "run whatever the model wrote" in error.message
+    assert "New command tool" in error.fix
+    # It must not offer `shell: true` as the way out -- the validator refuses
+    # that key, so a recourse naming it would send people into a refusal.
+    assert "shell: true" not in error.fix
+    assert error.status == 400
+
+
 def test_duplicating_a_locked_section_makes_a_sibling_not_a_replacement(sandbox):
     _path, plugin, _problems = store.duplicate(
         sandbox, "prompt.tool_use_policy", scope="project")

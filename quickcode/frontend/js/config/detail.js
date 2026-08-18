@@ -17,9 +17,54 @@ import {
   chip, flash, highlightJson, openPluginView, splitError, tierBadge,
 } from "../settings/ui.js";
 import { explainHtml, fixedBlockHtml, recourseHtml } from "./explain.js";
-import { bodyHtml, kindLabel, sigilHtml, signatureOf } from "./kinds.js";
+import { bodyHtml, duplicateRefusal, kindLabel, sigilHtml, signatureOf } from "./kinds.js";
+import { duplicatePlugin } from "./create/scaffold.js";
+import { dryRunHtml, wireDryRun } from "./create/tool.js";
 
 function num(n) { return Number(n || 0).toLocaleString(); }
+
+/** The declared JSON schema, read back as the parameter list the dry run needs.
+ *  The schema is what the model is handed, so deriving the dry run from it
+ *  rather than from the file means the two cannot describe different tools. */
+function paramsFromSchema(schemaText) {
+  try {
+    const s = JSON.parse(schemaText);
+    const props = s.parameters?.properties || {};
+    const required = new Set(s.parameters?.required || []);
+    return Object.entries(props).map(([name, prop]) => ({
+      name,
+      type: prop.type === "array" ? "list"
+        : prop.type === "boolean" ? "bool"
+        : Array.isArray(prop.enum) ? "enum" : "string",
+      choices: prop.enum || [],
+      required: required.has(name),
+      default: prop.default,
+      description: prop.description || "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Duplicate, Edit file, or the recourse — the header's one write affordance.
+ *  Locked and required are not exceptions here: duplicating reads, and reading
+ *  is what a locked plugin has always allowed. */
+function dupActionHtml(plugin) {
+  if (plugin.source === "authored") {
+    return `<a class="ghost-btn" href="#/config/edit/${encodeURIComponent(plugin.id)}"
+      title="This plugin is a file you own. Open it.">Edit file</a>`;
+  }
+  const refused = duplicateRefusal(plugin);
+  if (!refused) {
+    return `<button class="ghost-btn" data-dup-head title="Write an editable copy
+      under .quickcode/plugins/ with derived_from set. The original is untouched
+      and stays enabled.">⧉ Duplicate</button>`;
+  }
+  return refused.href
+    ? `<a class="ghost-btn" href="${refused.href}" title="${esc(refused.why)}"
+        >${esc(refused.label)}</a>`
+    : "";
+}
 
 function headHtml(plugin, { crumb }) {
   return `<header class="cfg-head" data-kind="${esc(plugin.kind)}"
@@ -41,6 +86,7 @@ function headHtml(plugin, { crumb }) {
           : `<label class="f-switch small" title="Enabled in this project">
                <input type="checkbox" data-enable${plugin.enabled ? " checked" : ""}>
                <span class="f-track"><span class="f-knob"></span></span></label>`}
+        ${dupActionHtml(plugin)}
         <button class="ghost-btn" data-raw title="Show the raw definition">Raw</button>
       </span>
     </div>
@@ -66,10 +112,14 @@ function resolvedHtml(plugin, facts) {
     </section>`;
   }
   if (plugin.kind === "tool") {
-    return `<section class="cfg-sec" data-schema>
-      <h4>The schema the model sees</h4>
-      <div class="cfg-schema"><div class="set-loading">Reading the declaration…</div></div>
-    </section>`;
+    // A command tool gets the dry run above its schema, because "what does it
+    // actually run" is the question, and the schema is the answer to a
+    // different one.
+    return `${plugin.metadata?.authored ? `<div data-dryrun></div>` : ""}
+      <section class="cfg-sec" data-schema>
+        <h4>The schema the model sees</h4>
+        <div class="cfg-schema"><div class="set-loading">Reading the declaration…</div></div>
+      </section>`;
   }
   return "";
 }
@@ -106,14 +156,46 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
       }));
   }
 
+  // The Fixed-by-design block ships a Duplicate button of its own
+  // (`explain.js:recourseHtml`) that was disabled with "arrives in the next
+  // pass". It has arrived, and the button is where somebody reading *why* this
+  // is locked will look for the way out — so it is adopted here rather than
+  // left as a stale promise.
+  for (const btn of host.querySelectorAll("[data-dup]")) {
+    const refused = duplicateRefusal(plugin);
+    if (plugin.source === "authored") {
+      btn.disabled = false;
+      btn.textContent = "⧉ Edit this file";
+      btn.title = "This plugin is a file you own.";
+      btn.addEventListener("click", () =>
+        ctx.go(`#/config/edit/${encodeURIComponent(plugin.id)}`));
+    } else if (refused) {
+      btn.textContent = refused.label || "⧉ Duplicate — not for this kind";
+      btn.title = refused.why;
+      btn.disabled = !refused.href;
+      if (refused.href) btn.addEventListener("click", () => ctx.go(refused.href));
+    } else {
+      btn.disabled = false;
+      btn.textContent = "⧉ Duplicate for an editable copy";
+      btn.title = "Writes a copy under .quickcode/plugins/ in which nothing is "
+        + "locked. The original is untouched and stays enabled.";
+      btn.addEventListener("click", () => duplicatePlugin(ctx, plugin.id, btn));
+    }
+  }
+
+  host.querySelector("[data-dup-head]")?.addEventListener("click", (e) => {
+    duplicatePlugin(ctx, plugin.id, e.target);
+  });
+
   host.addEventListener("click", (e) => {
     if (e.target.closest("[data-raw]")) { openPluginView(ctx.api, plugin); return; }
     const rec = e.target.closest("[data-recourse]");
     if (rec) {
       const action = rec.dataset.recourse;
       if (action === "settings" && rec.dataset.target) ctx.go(`#/config/parts/${rec.dataset.target}`);
-      else if (action === "duplicate" || action === "author") ctx.go("#/config/new/agent");
-      else openPluginView(ctx.api, plugin);
+      else if (action === "duplicate" || action === "author") {
+        duplicatePlugin(ctx, plugin.id, rec);
+      } else openPluginView(ctx.api, plugin);
     }
   });
 
@@ -145,6 +227,23 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
       const sig = ctx.facts.schemas[plugin.id];
       const sigSlot = host.querySelector(".cfg-summary .k-body");
       if (sig && sigSlot) sigSlot.textContent = sig;
+
+      // The dry run: the resolved argv, live, from the declared parameters.
+      // It resolves and never executes — running a command tool goes through
+      // the permission gate, where the approval prompt shows this same array.
+      const drySlot = host.querySelector("[data-dryrun]");
+      if (drySlot) {
+        const params = paramsFromSchema(content);
+        const values = Object.fromEntries(params.map(
+          (p) => [p.name, p.default ?? (p.type === "bool" ? false : "")]));
+        const argv = plugin.metadata?.argv || [];
+        drySlot.innerHTML = dryRunHtml(argv, params, values, {
+          lede: `The template is <code>${esc(argv.join(" "))}</code>, executed
+            directly with no shell involved. Fill the parameters in to see the
+            exact array.`,
+        });
+        wireDryRun(drySlot, argv, params, values);
+      }
     } catch (err) {
       schemaSlot.innerHTML = `<div class="set-error">Could not read the declaration:
         ${esc(err.message)}</div>`;

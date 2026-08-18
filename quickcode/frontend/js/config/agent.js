@@ -23,6 +23,7 @@ import { renderSettingsForm } from "../settings/fields.js";
 import { sigilHtml } from "./kinds.js";
 import { mountPreview } from "./preview.js";
 import { openToolPicker } from "./toolpicker.js";
+import { duplicatePlugin } from "./create/scaffold.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
@@ -257,6 +258,13 @@ function headHtml(d) {
         ${d.builtin ? tierBadge("locked", { label: "built-in" }) : chip("yours", "src-config")}
       </span>
       <span class="cfg-head-actions">
+        ${d.id === ORCHESTRATOR ? "" : d.builtin
+          ? `<button class="ghost-btn" data-dup title="Write an editable markdown
+              copy of this agent under .quickcode/plugins/. Every line that is
+              fixed here becomes plain text there; this one is untouched and
+              stays available.">⧉ Duplicate</button>`
+          : `<a class="ghost-btn" href="#/config/edit/${
+              encodeURIComponent(`agent.${d.id}`)}">Edit file</a>`}
         ${d.id === ORCHESTRATOR ? "" : `<button class="ghost-btn" data-raw>Raw</button>`}
       </span>
     </div>
@@ -412,5 +420,14 @@ export async function renderWorkbench(host, ctx, id, query = {}) {
 
   host.querySelector("[data-raw]")?.addEventListener("click", () => {
     if (plugin) openPluginView(ctx.api, plugin);
+  });
+
+  // Duplicate-to-customise, from the page where you found out what this agent
+  // does. This is the flagship: `explore` is locked, required and built in, and
+  // pressing this yields a markdown file in which every one of those lines is
+  // editable text — with `derived_from` as the only link back, because a live
+  // one would recreate the coupling the locked tier exists to prevent.
+  host.querySelector("[data-dup]")?.addEventListener("click", (e) => {
+    duplicatePlugin(ctx, `agent.${id}`, e.target);
   });
 }
