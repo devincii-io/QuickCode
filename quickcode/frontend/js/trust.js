@@ -64,6 +64,10 @@ function writeApproved(pid, status, specs) {
   } catch { /* quota — the diff is a nicety, the decision is not */ }
 }
 
+function forgetApproved(pid) {
+  try { localStorage.removeItem(SEEN_KEY(pid)); } catch { /* nothing to undo */ }
+}
+
 /** added / removed / changed, relative to the block this browser approved. */
 function diffApproved(pid, status, specs) {
   const prev = readApproved(pid);
@@ -92,7 +96,7 @@ function commandLine(spec) {
 async function loadSpecs(names) {
   const out = new Map();
   await Promise.all((names || []).map(async (name) => {
-    let entry = { command: "", args: [], line: "", raw: null, unreadable: true };
+    let entry = { command: "", args: [], line: "", raw: null };
     try {
       const plugin = await api.plugin(`mcp.${name}`);
       let raw = null;
@@ -102,9 +106,8 @@ async function loadSpecs(names) {
         args: Array.isArray(plugin?.metadata?.args) ? plugin.metadata.args : [],
         line: plugin?.description || "",
         raw,
-        unreadable: false,
       };
-    } catch { /* keep the unreadable placeholder */ }
+    } catch { /* the row says the command could not be read */ }
     out.set(name, entry);
   }));
   return out;
@@ -139,7 +142,13 @@ function ensureMounts() {
     const actions = document.querySelector("#topbar .topbar-actions");
     if (!actions) return false;
     chip = el(`<button id="trust-chip" class="trust-chip hidden"></button>`);
-    chip.addEventListener("click", () => { collapsed = !collapsed; render(); });
+    chip.addEventListener("click", () => {
+      collapsed = !collapsed;
+      // Reopening shows where the project stands, not the receipt for the last
+      // thing that was done to it.
+      if (!collapsed && current) { current.granted = null; current.revoked = false; }
+      render();
+    });
     actions.insertAdjacentElement("afterbegin", chip);
   }
   return true;
@@ -213,6 +222,9 @@ function changedList(diff) {
 function card() {
   const { status, specs, pid } = current;
   const n = (status.servers || []).length;
+  // `reason` is the backend's own distinction between "never trusted" and
+  // "trusted, then the config was edited" — the two cases need different copy,
+  // and the report is the only place that knows which one this is.
   const changedSinceGrant = status.inert && /changed/.test(status.reason || "");
 
   if (!status.inert) return trustedCard();
@@ -224,19 +236,30 @@ function card() {
       ? "This project wants to run a command on your machine"
       : `This project wants to run ${n} commands on your machine`;
 
+  // A server started under the previous grant is still up: the gate governs
+  // future starts, it does not kill a running process. Saying "nothing is
+  // running" while one is would be the wrong kind of reassuring.
+  const stillUp = (status.running || []).filter((s) => (status.servers || []).includes(s));
+
   const intro = changedSinceGrant
     ? `<p>You trusted this project before. The <code>mcpServers</code> block in
-        this project's settings is no longer the one you approved, so its
-        ${n} ${serverWord(n)} ${n === 1 ? "was" : "were"} not started. Read the
-        commands again before approving them: an edit can add a server or change
-        what an existing one runs.</p>
+        this project's settings is no longer the one you approved, so QuickCode
+        has not started ${n === 1 ? "it" : "them"} under the new configuration.
+        Read the commands again before approving them: an edit can add a server
+        or change what an existing one runs.</p>
        ${diff ? changedList(diff) : `<p class="trust-muted">This browser has no
         record of the configuration you approved, so it cannot show a
-        comparison. Read the block below as if for the first time.</p>`}`
+        comparison. Read the block below as if for the first time.</p>`}
+       ${stillUp.length ? `<p class="trust-muted">${esc(stillUp.join(", "))}
+        ${stillUp.length === 1 ? "is" : "are"} still running from the
+        configuration you approved earlier. Revoking or leaving this off does
+        not stop ${stillUp.length === 1 ? "it" : "them"}; ${
+  stillUp.length === 1 ? "it stops" : "they stop"} when this project is
+        closed.</p>` : ""}`
     : `<p>This project declares ${n} MCP ${serverWord(n)} in its own settings
         file. QuickCode has not started ${n === 1 ? "it" : "them"}. Starting an
-        MCP server runs the command below on this computer, as you, with access
-        to your files and your network.</p>
+        MCP server runs its command on this computer, as you, with access to
+        your files and your network.</p>
        <p>Read the commands before you decide. If this project came from
         somewhere you do not control, judge them the way you would judge any
         script you were handed.</p>`;
@@ -271,7 +294,7 @@ function card() {
     try {
       const next = await api.grantTrust();
       writeApproved(pid, next, specs);
-      current = { status: next, specs, pid, granted: next.connected || [] };
+      current = { ...current, status: next, granted: next.connected || [] };
       collapsed = false;
       render();
     } catch (err) {
@@ -290,16 +313,20 @@ function card() {
 }
 
 function trustedCard() {
-  const { status, specs, granted } = current;
+  const { status, specs, granted, wasRunning } = current;
   const names = status.servers || [];
-  const running = (status.running || []).filter((s) => names.includes(s));
+  // POST answers with `connected`, not `running`: what is up after a grant is
+  // what was already up plus what the grant just started.
+  const known = status.running
+    ?? [...new Set([...(wasRunning || []), ...(granted || [])])];
+  const running = known.filter((s) => names.includes(s));
+  const silent = granted ? names.filter((s) => !running.includes(s)) : [];
 
   const head = granted
     ? (granted.length
       ? `Trusted. ${granted.length} ${serverWord(granted.length)} started: ${
         granted.join(", ")}.`
-      : "Trusted. No server started — a server whose command does not launch is "
-        + "skipped, and the reason is in the QuickCode log.")
+      : "Trusted. No new server started.")
     : "This project is trusted";
 
   const el_ = el(`<section class="trust-card ok" role="region"
@@ -311,8 +338,13 @@ function trustedCard() {
     </div>
     <div class="trust-body">
       <p>QuickCode may start the ${names.length} MCP ${serverWord(names.length)}
-        declared in this project's settings, which means running the command
-        below on this computer. ${esc(NOTE_BOUND)}</p>
+        declared in this project's settings, which means running the
+        ${names.length === 1 ? "command" : "commands"} listed below on this
+        computer. ${esc(NOTE_BOUND)}</p>
+      ${silent.length ? `<p class="trust-muted">${esc(silent.join(", "))} did not
+        start. A server whose command does not launch is skipped and the reason
+        is written to the QuickCode log; the trust decision itself was
+        recorded.</p>` : ""}
       ${granted ? `<p class="trust-note">${esc(NOTE_SESSION)}</p>` : ""}
       ${serverList(status, specs)}
       <p class="trust-muted">Running in this project now: ${
@@ -335,6 +367,9 @@ function trustedCard() {
     revoke.disabled = true;
     try {
       const next = await api.revokeTrust();
+      // There is no approved block any more, so there is nothing to diff a
+      // future prompt against.
+      forgetApproved(current.pid);
       current = { ...current, status: next, granted: null, revoked: true };
       collapsed = false;
       render();
@@ -390,16 +425,23 @@ function render() {
       + "Click to review or revoke.";
   }
   if (current.revoked && !collapsed) {
-    host.appendChild(el(`<section class="trust-card warn" role="region">
+    const done = el(`<section class="trust-card warn" role="region"
+        aria-label="Project trust">
       <div class="trust-head">
         <span class="trust-icon">△</span>
         <h2 class="trust-title">Trust revoked</h2>
       </div>
       <div class="trust-body">
-        <p>These ${n} ${serverWord(n)} will not be started in this project
-          again. ${esc(NOTE_REVOKE)}</p>
+        <p>QuickCode will not start ${n === 1 ? "this server" : `these ${n} servers`}
+          in this project again. A server process that is already running keeps
+          running until this project is closed.</p>
       </div>
-    </section>`));
+      <div class="trust-foot"><button class="btn trust-later">Close</button></div>
+    </section>`);
+    done.querySelector(".trust-later").addEventListener("click", () => {
+      collapsed = true; render();
+    });
+    host.appendChild(done);
     return;
   }
   if (collapsed) return;
@@ -435,7 +477,7 @@ export async function checkTrust(pid) {
     return null;
   }
   const specs = status.has_servers ? await loadSpecs(status.servers) : new Map();
-  current = { status, specs, pid };
+  current = { status, specs, pid, wasRunning: status.running || [] };
   collapsed = !status.inert;   // a trusted project says its piece in the chip
   render();
   return status;
