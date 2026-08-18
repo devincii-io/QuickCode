@@ -192,6 +192,32 @@ def resolve_credentials(
     return Credentials(api_key=api_key, base_url=base_url, extra=extra), missing
 
 
+KEY_SOURCE_CONFIG = "config.json"
+KEY_SOURCE_SAVED = "the saved (encrypted) key"
+
+
+def key_source(
+    info: ProviderInfo,
+    settings: SearchSettings | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Where this provider's key is being read from -- never the key itself.
+
+    Same order as :func:`resolve_credentials`, and that order is the whole
+    point of showing it: a key in config.json or in the environment outranks a
+    saved one, so "I pasted a key and nothing changed" has an answer on screen
+    instead of being a mystery. Only meaningful once a key has resolved; the
+    fallback names the store because that is what would be read last.
+    """
+    env = os.environ if env is None else env
+    configured = settings.for_provider(info.name) if settings else {}
+    if configured.get("api_key"):
+        return KEY_SOURCE_CONFIG
+    if info.api_key_env and env.get(info.api_key_env):
+        return info.api_key_env
+    return KEY_SOURCE_SAVED
+
+
 def configured_providers(
     settings: SearchSettings | None = None,
     env: dict[str, str] | None = None,

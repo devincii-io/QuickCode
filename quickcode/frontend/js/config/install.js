@@ -7,20 +7,25 @@
 // shell for the sake of it. The quick-settings modal on the composer is a
 // shortcut into the first of them and says so.
 //
-// Updates is the fourth, and it is here rather than anywhere else for the same
-// reason the others are: a version is a fact about the install, not about a
-// project or a session. It is also the only page in QuickCode that describes
-// an outbound network request, so it describes it in full.
+// Updates and Web search are the two later ones, and they are here rather than
+// anywhere else for the same reason the others are: a version and a search
+// engine are facts about the install, not about a project or a session.
+// Updates is also the only page in QuickCode that describes an outbound network
+// request QuickCode makes on its own, so it describes it in full.
 
 import { esc, relTime } from "../util.js";
 import { MODES } from "../modals.js";
 import {
   renderAppearancePage, renderGeneralPage, renderModelsPage,
 } from "../settings/general.js";
+// ./search.js is the configuration view's own search box; this is the page
+// that configures the agent's.
+import { renderWebSearchPage } from "./websearch.js";
 
 const TABS = [
   ["general", "Provider & defaults", renderGeneralPage],
   ["models", "Model catalog", renderModelsPage],
+  ["search", "Web search", renderWebSearchPage],
   ["appearance", "Appearance", renderAppearancePage],
   ["updates", "Updates", renderUpdatesPage],
 ];
@@ -37,7 +42,8 @@ export function renderInstall(host, ctx, tab = "general") {
     </header>
     <div class="cfg-lede">Per install, not per project and not per session:
       the endpoint tokens come from, the key, the mode new sessions start in,
-      how the app looks, and which version of it this is.</div>
+      which search engine the agent may ask, how the app looks, and which
+      version of it this is.</div>
     <div class="seg cfg-tabs">${TABS.map(([id, label]) =>
       `<a href="#/config/install/${id}" class="${id === current[0] ? "active" : ""}"
         >${esc(label)}</a>`).join("")}</div>

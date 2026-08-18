@@ -186,6 +186,10 @@ export const api = {
   // ---- per install ----
   putConfig: (cfg) => req("PUT", "/api/config", cfg),
   putApiKey: (key) => req("POST", "/api/apikey", { key }),
+  // A search provider's key. Its own route because /api/config writes plain
+  // text to config.json and this goes to the encrypted store; write-only, like
+  // the model key — nothing ever reads one back out to the browser.
+  putSearchKey: (provider, key) => req("POST", "/api/search-key", { provider, key }),
 
   // ---- update checking (the one outbound request QuickCode makes) ----
   // GET asks github.com only when a check is due, and answers 200 even when

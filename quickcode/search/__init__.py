@@ -20,12 +20,15 @@ from quickcode.search.base import (
 )
 from quickcode.search.resolve import (
     DEFAULT_PROVIDER,
+    KEY_SOURCE_CONFIG,
+    KEY_SOURCE_SAVED,
     PROVIDER_CHOICE_ENV,
     PROVIDERS,
     SearchSettings,
     chosen_provider,
     configured_providers,
     info_for,
+    key_source,
     provider_infos,
     provider_names,
     resolve_credentials,
@@ -36,6 +39,8 @@ from quickcode.search.resolve import (
 __all__ = [
     "DEFAULT_COUNT",
     "DEFAULT_PROVIDER",
+    "KEY_SOURCE_CONFIG",
+    "KEY_SOURCE_SAVED",
     "MAX_COUNT",
     "PROVIDERS",
     "PROVIDER_CHOICE_ENV",
@@ -50,6 +55,7 @@ __all__ = [
     "chosen_provider",
     "configured_providers",
     "info_for",
+    "key_source",
     "provider_infos",
     "provider_names",
     "resolve_credentials",

@@ -114,15 +114,14 @@ def _search_settings():
 
 
 def _search_key_source(info, settings) -> str:
-    """Where the key came from — never the key itself, not even truncated."""
-    import os
+    """Where the key came from — never the key itself, not even truncated.
 
-    configured = settings.for_provider(info.name) if settings else {}
-    if configured.get("api_key"):
-        return "config.json"
-    if os.environ.get(info.api_key_env):
-        return info.api_key_env
-    return "the saved (encrypted) key"
+    The wording lives in ``search.resolve`` because Settings shows the same
+    fact: one phrasing, so the diagnostic and the UI cannot disagree.
+    """
+    from quickcode.search import key_source
+
+    return key_source(info, settings)
 
 
 def _search_ready_detail(info, credentials, settings) -> str:

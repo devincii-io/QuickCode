@@ -1078,3 +1078,28 @@ a.wb-tool:hover { border-color: var(--kind-agent); }
 .upd-setting-help p:last-child { margin-bottom: 0; }
 .upd-setting-help em { color: var(--fg); font-style: normal; }
 .upd-setting-help code { font-family: var(--mono); color: var(--fg-dim); overflow-wrap: anywhere; }
+
+/* ---------- Install ▸ Web search ---------- */
+
+/* Deliberately not reusing the .upd-* state row: same shape, different fact,
+   and one of them will want to change alone. */
+.srch-page { max-width: 74ch; }
+.srch-current { font-size: 12.5px; color: var(--fg-dim); margin: 14px 0 12px; }
+.srch-current strong { color: var(--fg); font-weight: 500; }
+
+.srch-state {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 12px; line-height: 1.6; color: var(--fg-dim); margin-bottom: 12px;
+}
+.srch-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
+.srch-ok .srch-dot { background: var(--success); }
+.srch-warn .srch-dot { background: var(--warning); }
+
+.srch-meta, .srch-note {
+  font-size: 11px; line-height: 1.6; color: var(--fg-faint); margin-top: 5px;
+  max-width: 62ch;
+}
+.srch-meta code, .srch-note code { font-family: var(--mono); color: var(--fg-dim); }
+/* An override is the one thing on this page that can make a correct action do
+   nothing, so it is the one thing that carries a colour. */
+.srch-note { color: var(--fg-dim); border-left: 2px solid var(--warning); padding-left: 9px; }
