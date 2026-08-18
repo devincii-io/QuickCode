@@ -13,6 +13,11 @@
     Written for Windows PowerShell 5.1: no &&, no ||, no ternary / ?? / ?. operators.
     All branching uses if/else and explicit $null checks.
 
+    Any installer this script downloads is Authenticode-verified - valid signature,
+    expected publisher - before it is executed. A failed check aborts the run; it
+    is never downgraded to a warning. See Assert-TrustedInstaller below for why
+    signature verification rather than a pinned SHA-256.
+
 .PARAMETER SourceDir
     Path to the QuickCode source tree (containing pyproject.toml) to pip-install.
 
@@ -28,7 +33,8 @@
 
 .EXITCODE
     0 on success. Non-zero on hard failure (Git/Python could not be made available,
-    or the QuickCode install itself failed).
+    a downloaded installer failed verification, or the QuickCode install itself
+    failed).
 #>
 
 [CmdletBinding()]
@@ -42,6 +48,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1 inherits .NET's legacy default, which on older builds
+# still offers TLS 1.0 first. Both download hosts want TLS 1.2 or better, and a
+# downgraded handshake is not a channel to fetch an executable over.
+$currentProtocols = [Net.ServicePointManager]::SecurityProtocol
+[Net.ServicePointManager]::SecurityProtocol = $currentProtocols -bor [Net.SecurityProtocolType]::Tls12
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -86,6 +98,121 @@ function Test-WingetAvailable {
     return Test-CommandExists -Name "winget"
 }
 
+# ---------------------------------------------------------------------------
+# Verifying what we downloaded
+# ---------------------------------------------------------------------------
+#
+# This script fetches two third-party installers over HTTPS and runs them with
+# Administrator rights. HTTPS says the bytes arrived from the host we asked;
+# it says nothing about whether that host, or the release pipeline behind it,
+# gave us what we expected. So each download is checked before it is executed.
+#
+# The check is Authenticode: signature status *and* signer identity. The
+# obvious alternative, a pinned version plus a pinned SHA-256, was rejected
+# because it rots. A hash pins one build forever, so six months from now the
+# script either installs a Git with known CVEs or -- the moment anyone bumps
+# the version and mistypes the digest -- hard-fails every single install on a
+# mismatch nobody can debug. And Git for Windows is fetched from a "latest"
+# redirect precisely so users get current Git; pinning it away is a real cost.
+# A signature check has neither problem: it keeps working across every future
+# release, because what it pins is *who built this*, which is the property we
+# actually care about.
+#
+# What it does not catch: a publisher whose own signing key is compromised.
+# Nothing available here catches that, hash pinning included.
+
+# Matched against the Authenticode signer's certificate subject. Substrings, so
+# a certificate renewal that changes only the OU or address still passes.
+$script:GitPublishers = @("Johannes Schindelin")
+$script:PythonPublishers = @("Python Software Foundation")
+
+# A verification failure is not a "try the next method" situation: we hold a
+# file we cannot account for. Say so plainly, say what to do instead, and stop.
+function Stop-Install {
+    param(
+        [string]$Message,
+        [string[]]$Remedies
+    )
+    Write-Host ""
+    Write-Fail $Message
+    foreach ($remedy in $Remedies) {
+        Write-Info $remedy
+    }
+    Write-Host ""
+    Write-Host "Installation stopped. Nothing was installed by this step." -ForegroundColor Red
+    exit 1
+}
+
+# Confirms a downloaded installer carries a valid Authenticode signature from
+# an expected publisher. Returns nothing on success; on failure it deletes the
+# file and terminates the script -- it never returns a "no" the caller could
+# accidentally ignore.
+function Assert-TrustedInstaller {
+    param(
+        [string]$Path,
+        [string]$Name,
+        [string[]]$AllowedPublishers,
+        [string]$WingetId,
+        [string]$HomePage
+    )
+
+    Write-Info "Verifying the $Name installer's digital signature..."
+
+    $signature = $null
+    try {
+        $signature = Get-AuthenticodeSignature -FilePath $Path
+    }
+    catch {
+        $signature = $null
+    }
+
+    $status = "NotSigned"
+    $subject = "(no signer certificate)"
+    if ($null -ne $signature) {
+        $status = [string]$signature.Status
+        if ($null -ne $signature.SignerCertificate) {
+            $subject = [string]$signature.SignerCertificate.Subject
+        }
+    }
+
+    $publisherOk = $false
+    foreach ($allowed in $AllowedPublishers) {
+        if ($subject -like "*$allowed*") {
+            $publisherOk = $true
+        }
+    }
+
+    if ($status -eq "Valid" -and $publisherOk) {
+        Write-Ok "$Name installer signed by $subject"
+        return
+    }
+
+    # Do not leave an unaccounted-for executable sitting in TEMP.
+    Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+
+    if ($status -ne "Valid") {
+        $reason = "its Authenticode signature did not validate (status: $status)"
+    }
+    else {
+        $reason = "it is signed by an unexpected publisher"
+    }
+
+    $expected = $AllowedPublishers -join ", "
+    Stop-Install -Message "Refusing to run the downloaded $Name installer: $reason." -Remedies @(
+        "Signer:   $subject",
+        "Expected: $expected",
+        "Status:   $status",
+        "The downloaded file has been deleted and was never executed.",
+        "",
+        "What you can do:",
+        "  - Install $Name yourself from $HomePage and re-run this installer.",
+        "  - Or, if you have winget:  winget install --id $WingetId -e",
+        "  - A publisher change after a certificate renewal is possible; if the",
+        "    signer above looks legitimate to you, verify it against $HomePage",
+        "    and report it so this script can be updated. Do not skip the check."
+    )
+}
+
 # Refresh $env:Path for the current process from both Machine and User scope,
 # so a just-installed tool becomes visible without spawning a new shell.
 function Update-SessionPath {
@@ -125,7 +252,10 @@ function Install-GitViaWinget {
 function Install-GitViaDirectDownload {
     Write-Info "Downloading Git for Windows installer..."
 
-    # Known-good redirect that always points at the latest 64-bit "Git for Windows" installer.
+    # Redirect that always points at the latest 64-bit "Git for Windows"
+    # installer. Deliberately not pinned: the signature check below identifies
+    # the publisher regardless of version, so users get current Git instead of
+    # whatever release this script was written against.
     $downloadUrl = "https://github.com/git-for-windows/git/releases/latest/download/Git-64-bit.exe"
     $installerPath = Join-Path $env:TEMP "QuickCode-GitInstaller.exe"
 
@@ -141,6 +271,10 @@ function Install-GitViaDirectDownload {
         Write-Warn2 "Git installer download did not produce a file."
         return $false
     }
+
+    Assert-TrustedInstaller -Path $installerPath -Name "Git for Windows" `
+        -AllowedPublishers $script:GitPublishers `
+        -WingetId "Git.Git" -HomePage "https://git-scm.com/download/win"
 
     Write-Info "Running Git installer silently..."
     $proc = Start-Process -FilePath $installerPath -ArgumentList @("/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-") -Wait -PassThru
@@ -290,6 +424,10 @@ function Install-PythonViaDirectDownload {
         Write-Warn2 "Python installer download did not produce a file."
         return $false
     }
+
+    Assert-TrustedInstaller -Path $installerPath -Name "Python" `
+        -AllowedPublishers $script:PythonPublishers `
+        -WingetId "Python.Python.3.12" -HomePage "https://www.python.org/downloads/windows/"
 
     Write-Info "Running Python installer silently (per-user, PATH prepended)..."
     $installerArgs = @("/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1")
