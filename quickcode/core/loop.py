@@ -31,7 +31,7 @@ from quickcode.core.events import (
 )
 from quickcode.core.permissions import Decision
 from quickcode.kernel.composition import RuntimeLimits
-from quickcode.prompts.system import mode_reminder, system_reminder
+from quickcode.prompts.system import system_reminder
 from quickcode.providers.base import ChatRequest, ProviderError
 
 if TYPE_CHECKING:
@@ -50,8 +50,13 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
         from quickcode.prompts.compact import POST_COMPACTION_REMINDER
 
         reminders.append(system_reminder(POST_COMPACTION_REMINDER))
-    if (mode_note := mode_reminder(agent.mode.value)):
+    # Only when it is news. A reminder earns its tokens by reporting a change;
+    # the mode used to be restated on every turn for the life of the session,
+    # which is a fixed cost per request for a sentence the model already had.
+    if (mode_note := agent.take_mode_change()):
         reminders.append(system_reminder(mode_note))
+    # Anything else queued since the last turn -- one delivery each, in order.
+    reminders.extend(system_reminder(r) for r in agent.take_reminders())
     for r in reminders:
         agent.bus.emit(ContextInjection(r))
     agent.history.push_user(user_input, reminders or None)

@@ -165,6 +165,15 @@ class AgentInstance:
         self._cancel = asyncio.Event()
         self.busy = False
         self._post_compaction = False
+        # Reminders wait here until the next turn opens and are delivered once.
+        # A reminder describes a *change*; repeating an unchanged one every turn
+        # spends tokens to tell the model something it was already told, and
+        # trains it to skim the block that also carries the things that did
+        # change.
+        self._reminders: list[str] = []
+        # The mode the model has actually been told about. None until the first
+        # turn announces it.
+        self._announced_mode: str | None = None
         # Optional hooks set by the app: called with a ChatMessage after each
         # message is appended (session persistence).
         self.on_message = None
@@ -176,11 +185,40 @@ class AgentInstance:
     def mark_compacted(self) -> None:
         """Flag that the next user turn should carry a post-compaction reminder."""
         self._post_compaction = True
+        # Compaction rewrites the transcript, so whatever the model was told
+        # about the mode may not have survived into the summary. Forget that it
+        # was announced and say it once more.
+        self._announced_mode = None
 
     def take_post_compaction(self) -> bool:
         was = self._post_compaction
         self._post_compaction = False
         return was
+
+    def queue_reminder(self, text: str) -> None:
+        """Hold a reminder for the next turn. Duplicates collapse."""
+        if text and text not in self._reminders:
+            self._reminders.append(text)
+
+    def take_reminders(self) -> list[str]:
+        """Drain the queue. Called once as a turn opens."""
+        out, self._reminders = self._reminders, []
+        return out
+
+    def take_mode_change(self) -> str:
+        """The mode reminder body if the mode is news, else ''.
+
+        Edge-triggered on purpose: the first turn announces the mode, and after
+        that only a change does. Re-stating an unchanged mode on every turn was
+        a fixed tax on every single request that told the model nothing.
+        """
+        current = self.permissions.mode.value
+        if current == self._announced_mode:
+            return ""
+        self._announced_mode = current
+        from quickcode.prompts.system import mode_reminder
+
+        return mode_reminder(current)
 
     @property
     def mode(self) -> Mode:
