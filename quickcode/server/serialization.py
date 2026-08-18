@@ -34,8 +34,41 @@ from quickcode.core.events import (
 LOG_RESULT_CAP = 64 * 1024
 
 
+# Serializers registered by plugins, keyed by the event class they handle.
+# Checked before the built-ins so a plugin can enrich its own event types --
+# and only its own: overriding a core shape would break replay, so a plugin
+# registering for a built-in class is refused.
+_EXTRA: dict[type, Any] = {}
+_CORE_EVENT_TYPES: tuple[type, ...] = (
+    TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd,
+    ToolResultEvent, Usage, TurnDone, ContextInjection, AgentStatus,
+)
+
+
+def register_event(event_cls: type, serializer, *, logged: bool = False) -> None:
+    """Teach the wire about a plugin's event type.
+
+    ``serializer`` takes the event and returns a JSON-able dict including a
+    ``type`` key. ``logged=True`` also puts it in the session log, which means
+    it will come back on replay -- only worth it for assembled events a reader
+    would miss, never for deltas.
+    """
+    if event_cls in _CORE_EVENT_TYPES:
+        raise ValueError(
+            f"{event_cls.__name__} is a core event type and cannot be re-serialized"
+        )
+    _EXTRA[event_cls] = serializer
+    if logged:
+        probe = getattr(event_cls, "wire_type", "")
+        if probe:
+            LOGGED_TYPES.add(probe)
+
+
 def event_to_json(ev: AgentEvent) -> dict[str, Any] | None:
     """Serialize one bus event for the live WebSocket stream."""
+    for event_cls, serializer in _EXTRA.items():
+        if isinstance(ev, event_cls):
+            return serializer(ev)
     if isinstance(ev, TextDelta):
         return {"type": "text_delta", "text": ev.text}
     if isinstance(ev, ReasoningDelta):

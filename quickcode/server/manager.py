@@ -26,6 +26,7 @@ from quickcode.config import Config, Environment
 from quickcode.core.agent import (
     AgentInstance,
     EventBus,
+    Ledger,
     PermissionOutcome,
     PermissionRequest,
     PlanOutcome,
@@ -43,12 +44,23 @@ from quickcode.core.events import (
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.core.tasks import TaskBoard
+from quickcode.kernel import preset as preset_module
+from quickcode.kernel.composition import (
+    MODE_PRIVILEGE,
+    ORCHESTRATOR_ID,
+    Resolved,
+    narrower_mode,
+)
+from quickcode.kernel.resolve import default_mode as resolved_default_mode
+from quickcode.kernel.resolve import resolve_composition, session_pool
 from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.base import ModelInfo, Provider, ProviderError
 from quickcode.server.serialization import event_to_json, loggable
 from quickcode.session.store import SessionStore
-from quickcode.subagents.runner import SubagentDeps
+from quickcode.subagents.definitions import load_defs
+from quickcode.subagents.runner import MAX_DEPTH, SubagentDeps
 from quickcode.tools.base import ReadRegistry, ToolCtx
+from quickcode.tools.registry import ToolRegistry
 
 log = logging.getLogger("quickcode.server")
 
@@ -92,12 +104,19 @@ class Conversation:
         store: SessionStore,
         board: TaskBoard,
         manager: ConversationManager,
+        resolved: Resolved,
     ) -> None:
         self.conv_id = conv_id
         self.agent = agent
         self.store = store
         self.board = board
         self.manager = manager
+        # The session's frozen composition. Every value a running conversation
+        # depends on -- the tool list, the section bodies, the ceiling, the
+        # spawnable agents -- is read from here and nowhere else, so editing a
+        # preset mid-flight cannot change the tools under a conversation that
+        # has already been told what it has.
+        self.resolved = resolved
         self.clients: set[Client] = set()
         self.pending: dict[str, PendingReview] = {}
         self.input_queue: list[str] = []
@@ -187,7 +206,7 @@ class Conversation:
             return
         elif isinstance(ev, ToolResultEvent):
             self.emit(wire)
-            if ev.name.startswith("task_"):
+            if ev.ui_meta.get("tasks_changed"):
                 self.emit(
                     {"type": "tasks", "tasks": [t.to_dict() for t in self.board.list()]},
                     log_it=False,
@@ -417,6 +436,17 @@ class Conversation:
         if mode == Mode.yolo and not self.agent.permissions.yolo_accepted:
             self.emit({"type": "error", "message": "yolo mode requires launching with --yolo"})
             return
+        ceiling = self.resolved.ceiling
+        if MODE_PRIVILEGE[mode] > MODE_PRIVILEGE[ceiling]:
+            # The mode is live, the ceiling is frozen. Without this a preset's
+            # ``ceiling`` is decoration: it would say what the session may do
+            # and then let anyone say otherwise.
+            self.emit({
+                "type": "error",
+                "message": (f"this session is capped at {ceiling.value} by its "
+                            f"composition; {mode.value} is above that"),
+            })
+            return
         self.agent.set_mode(mode)
         self.emit({"type": "mode_changed", "mode": mode.value})
         self._emit_state()
@@ -425,6 +455,10 @@ class Conversation:
         self.agent.model = model
         info = self.manager.model_info(model)
         self.agent.context_length = info.context_length if info else None
+        # Re-rendered from the *frozen* section bodies, not from a fresh read of
+        # the settings files: switching model already rebuilds the prompt cache,
+        # but it must not silently apply prompt edits made since the session
+        # opened.
         self.agent.history.set_system_prompt(
             render_system_prompt(
                 self.manager.env,
@@ -432,7 +466,8 @@ class Conversation:
                 provider=self.manager.provider_name,
                 headless=False,
                 plan=(self.agent.mode == Mode.plan),
-                orchestration=True,
+                orchestration=bool(self.resolved.spawns),
+                overrides=dict(self.resolved.section_bodies),
             )
         )
         self.manager.config.last_model = model
@@ -489,20 +524,14 @@ class ConversationManager:
 
     # ---- plugin inventory (for the Settings → Plugins page) ----
     def plugin_inventory(self) -> dict[str, Any]:
-        from quickcode.tools.registry import default_registry
-
-        builtin = set(default_registry().tools)
         tools = []
         for t in self.registry_factory().tools.values():
-            source = "builtin" if t.name in builtin else (
-                "mcp" if t.name.startswith("mcp__") else "plugin"
-            )
             tools.append(
                 {
                     "name": t.name,
                     "description": (t.description or "").strip().split("\n")[0][:200],
                     "read_only": t.is_read_only,
-                    "source": source,
+                    "source": getattr(t, "source", "internal"),
                 }
             )
         return {
@@ -536,6 +565,28 @@ class ConversationManager:
     def get(self, conv_id: str) -> Conversation | None:
         return self.conversations.get(conv_id)
 
+    def _resolve_role(self, spec: str) -> str:
+        """A model role ("worker", "orchestrator") to a slug; anything else
+        passes through, because any id the provider accepts is allowed."""
+        if spec in ("worker", "orchestrator"):
+            return self.config.profile.resolve(spec)  # type: ignore[arg-type]
+        return spec
+
+    @staticmethod
+    def _frozen_composition(store: SessionStore, resuming: bool) -> Resolved | None:
+        """A resumed session's recorded composition, if it has one.
+
+        Sessions written before compositions existed have no such record and
+        fall back to re-resolving, which is exactly what they did before --
+        including the fallback to ``standard`` when the preset is gone. A
+        session that *does* carry one resumes from it and does not re-resolve,
+        which is strictly better: deleting a preset no longer degrades a
+        conversation already in flight.
+        """
+        if not resuming:
+            return None
+        return Resolved.from_json(store.meta().get("composition"))
+
     def open(self, conv_id: str | None = None) -> Conversation:
         """Create a new conversation, or attach to / resume an existing one."""
         if conv_id and conv_id in self.conversations:
@@ -556,14 +607,56 @@ class ConversationManager:
             extra={"task_board": board},
         )
 
-        mode_str = self.default_mode or self.config.default_mode
+        # The preset is the session's plugin composition. A resumed session
+        # keeps the one it started with: the conversation was already told
+        # which tools it has, and changing them underneath it is a lie.
+        preset = preset_module.resolve(
+            self.cwd, store.meta().get("preset", "") if resuming else ""
+        )
+
+        # The session pool: everything this install has, minus the plugins that
+        # are switched off. Distinct from any one agent's grant -- restricting
+        # the orchestrator's tools does not restrict the session, and this is
+        # the set that says what the session's envelope actually is.
+        pool = session_pool(self.cwd, list(self.registry_factory().tools.values()))
+        # Snapshotted once: editing an agent definition takes effect in new
+        # sessions, consistent with presets.
+        defs = load_defs(self.cwd)
+
+        resolved = self._frozen_composition(store, resuming) or resolve_composition(
+            ORCHESTRATOR_ID,
+            pool=pool,
+            preset=preset,
+            defs=defs,
+            cwd=self.cwd,
+            parent=None,
+            depth=0,
+            max_depth=MAX_DEPTH,
+            resolve_model=self._resolve_role,
+        )
+
+        mode_str = (
+            self.default_mode
+            or preset.default_mode
+            or resolved_default_mode(self.cwd, self.config.default_mode)
+        )
         try:
             mode = Mode(mode_str)
         except ValueError:
             mode = Mode.ask
+        # The starting mode may not begin above the ceiling. It stays live
+        # below it -- rules decide this call, the ceiling decides what is ever
+        # possible, and only the second is composition.
+        mode = narrower_mode(mode, resolved.ceiling)
+        # One registry for the session: the agent runs it, the permission
+        # engine reads its tools' declared shapes, and subagents select from it.
+        # Built from the resolved tool list, so the answer the UI gives and the
+        # tools the model is handed come from one computation.
+        registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
         permissions = PermissionEngine(
             mode=mode, rules=Rules.load(self.cwd), root=self.cwd,
             yolo_accepted=self.allow_yolo,
+            specs=registry.permission_specs(),
         )
 
         model = self.config.last_model or profile.resolve("orchestrator")
@@ -576,7 +669,8 @@ class ConversationManager:
                 provider=self.provider_name,
                 headless=False,
                 plan=(mode == Mode.plan),
-                orchestration=True,
+                orchestration=bool(resolved.spawns),
+                overrides=dict(resolved.section_bodies),
             )
         )
         if resuming:
@@ -585,7 +679,7 @@ class ConversationManager:
         agent = AgentInstance(
             name="main",
             provider=self.provider,
-            registry=self.registry_factory(),
+            registry=registry,
             history=history,
             ctx=ctx,
             permissions=permissions,
@@ -594,8 +688,15 @@ class ConversationManager:
             context_length=info.context_length if info else None,
         )
 
+        if resuming:
+            # Spend belongs to the session, not to this process: restore it
+            # from the log so a reopened conversation does not claim it cost
+            # nothing so far.
+            agent.ledger = Ledger.from_events(store.load_events())
+
         conv = Conversation(
-            conv_id=store.conv_id, agent=agent, store=store, board=board, manager=self
+            conv_id=store.conv_id, agent=agent, store=store, board=board,
+            manager=self, resolved=resolved,
         )
         agent.permission_cb = conv.permission_cb
         agent.plan_cb = conv.plan_cb
@@ -607,9 +708,24 @@ class ConversationManager:
             cwd=self.cwd,
             depth=0,
             on_pane=conv.on_subagent,
+            # The depth-0 carve-out. Children at depth 0 are intersected
+            # against the session POOL, not the orchestrator's GRANT: the
+            # orchestrator's restriction says what it does with its own hands,
+            # not what the session may do. Passing the filtered registry here
+            # is what made "delegate everything" hand every subagent an empty
+            # toolset. Deeper levels keep intersecting against the parent's
+            # grant, which is what ``deps.child()`` passes down.
+            pool=pool,
+            tool_pool=pool,
+            parent=resolved,
+            defs=defs,
+            preset=preset,
         )
         if not resuming:
-            store.append_meta(title="", model=model, cwd=str(self.cwd))
+            store.append_meta(
+                title="", model=model, cwd=str(self.cwd), preset=preset.id,
+                composition=resolved.to_json(),
+            )
         # Log the rendered system prompt (again on resume — a new run may have
         # re-rendered it): the trace must show everything the model sees.
         conv.emit({"type": "system_prompt", "text": history.system_prompt})

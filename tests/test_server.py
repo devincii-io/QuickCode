@@ -291,4 +291,6 @@ def test_plugins_endpoint(tmp_path):
         inv = client.get("/api/plugins").json()
         names = {t["name"] for t in inv["tools"]}
         assert {"read", "write", "edit", "bash"} <= names
-        assert all(t["source"] == "builtin" for t in inv["tools"])
+        # Provenance is carried on the tool now ("internal" / "entrypoint" /
+        # "config"), not inferred from its name at inventory time.
+        assert all(t["source"] == "internal" for t in inv["tools"])

@@ -9,6 +9,13 @@ Lines are one of:
 
 The event log is the source of truth for what the user *saw*; the message log
 is the source of truth for what the model *sees* on resume.
+
+Archival is a *move*, not a flag: an archived session's JSONL is relocated to
+``<sessions>/archive/``. The listing glob is non-recursive, so archived logs
+drop out of every listing — including one produced by a build that has never
+heard of archiving — while the bytes stay untouched and the mtime survives.
+Nothing has to be written into the log itself, so there is no way for an older
+reader to misread a record it does not know.
 """
 
 from __future__ import annotations
@@ -16,14 +23,28 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import shutil
 import uuid
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from quickcode.providers.base import ChatMessage
 
 SESSIONS_DIRNAME = Path(".quickcode") / "sessions"
+ARCHIVE_DIRNAME = "archive"
+TASKS_DIRNAME = Path(".quickcode") / "tasks"
+ARTIFACTS_DIRNAME = Path(".quickcode") / "artifacts"
+
+# Subagent artifacts are named ``{agent-name}-{n}.md`` from a per-conversation
+# counter, so the filename alone says nothing about which session owns it —
+# two sessions can both have produced an ``explore-1.md``. The only record of
+# ownership is the offload marker the runner splices into the tool result
+# ("…written to <path>…"), which lands verbatim in the session log. Matching it
+# in the raw JSONL text handles both separators and the doubled backslashes
+# JSON escaping leaves behind on Windows.
+_ARTIFACT_REF_RE = re.compile(r"artifacts[\\/]+([A-Za-z0-9][A-Za-z0-9._-]*\.md)")
 
 # Event types that carry the transcript itself. Their presence is what tells a
 # session log apart from one written before the event log existed.
@@ -121,6 +142,17 @@ class SessionInfo:
     title: str
     model: str
     message_count: int
+    archived: bool = False
+
+
+@dataclass
+class PurgeResult:
+    """What a delete actually removed from disk."""
+
+    sessions: list[str] = field(default_factory=list)
+    boards: list[str] = field(default_factory=list)
+    artifacts: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
 
 
 class SessionStore:
@@ -130,8 +162,50 @@ class SessionStore:
         self.root = Path(root)
         self.conv_id = conv_id or uuid.uuid4().hex[:12]
         self.sessions_dir = self.root / SESSIONS_DIRNAME
-        self.path = self.sessions_dir / f"{self.conv_id}.jsonl"
+        self.archive_dir = self.sessions_dir / ARCHIVE_DIRNAME
+        self.active_path = self.sessions_dir / f"{self.conv_id}.jsonl"
+        self.archived_path = self.archive_dir / f"{self.conv_id}.jsonl"
         self._next_seq: int | None = None
+
+    @property
+    def path(self) -> Path:
+        """Where this conversation's log lives right now.
+
+        Archiving moves the file, so the store follows it: an archived session
+        that gets resumed keeps appending to the same bytes instead of
+        silently starting a second log under the same id.
+        """
+        if self.active_path.exists():
+            return self.active_path
+        if self.archived_path.exists():
+            return self.archived_path
+        return self.active_path
+
+    @property
+    def archived(self) -> bool:
+        return not self.active_path.exists() and self.archived_path.exists()
+
+    # ---- archival ----
+    def archive(self) -> bool:
+        """Move the log out of the default listing. False if there is nothing
+        to archive (or it already is)."""
+        if not self.active_path.exists():
+            return False
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+        if self.archived_path.exists():
+            # Two logs for one id is a state we refuse to create; the caller
+            # sees "already archived" rather than losing one of them.
+            return False
+        self.active_path.replace(self.archived_path)
+        return True
+
+    def unarchive(self) -> bool:
+        """Inverse of :meth:`archive`. False if it was not archived."""
+        if not self.archived_path.exists() or self.active_path.exists():
+            return False
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.archived_path.replace(self.active_path)
+        return True
 
     def _scan_last_seq(self) -> int:
         last = 0
@@ -142,8 +216,9 @@ class SessionStore:
 
     # ---- writing ----
     def _append_line(self, obj: dict[str, Any]) -> None:
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as f:
+        target = self.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as f:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def append_message(self, msg: ChatMessage) -> None:
@@ -228,6 +303,22 @@ class SessionStore:
         synthesized = _events_from_messages(self.load_messages())
         return synthesized + events
 
+    def meta(self) -> dict[str, Any]:
+        """Every ``meta`` record merged, later writes winning.
+
+        Used on resume to recover what the session was started with -- its
+        preset above all, since a conversation must keep the composition it
+        was told it had.
+        """
+        merged: dict[str, Any] = {}
+        for rec in self._iter_records():
+            if rec.get("kind") != "meta":
+                continue
+            for key, value in rec.items():
+                if key not in ("kind", "ts") and value not in (None, ""):
+                    merged[key] = value
+        return merged
+
     def title(self) -> str:
         for rec in self._iter_records():
             if rec.get("kind") == "meta" and rec.get("title"):
@@ -236,43 +327,117 @@ class SessionStore:
             if msg.role == "user" and msg.content:
                 text = msg.content.strip()
                 return text[:60]
+        # A turn interrupted before `_persist_new_messages()` ran (the process
+        # died mid-turn) leaves the message log empty even though the event
+        # log — written synchronously, per event — has the real transcript.
+        # Without this, such a session reports "(empty)" despite holding a
+        # full conversation.
+        for ev in self.load_events():
+            if ev.get("type") == "user_message" and ev.get("text"):
+                return str(ev["text"]).strip()[:60]
         return "(empty)"
+
+    def is_empty(self) -> bool:
+        """True only when this log holds no transcript whatsoever.
+
+        A session with zero ``message`` records is *not* automatically empty:
+        a turn interrupted before ``_persist_new_messages()`` ran leaves the
+        message log bare while the event log — written per event — still holds
+        the whole conversation. Both logs have to be silent before a session
+        can be swept up as abandoned; anything less would be data loss.
+        """
+        for rec in self._iter_records():
+            kind = rec.get("kind")
+            if kind == "message":
+                return False
+            if kind == "event":
+                ev = rec.get("ev")
+                if isinstance(ev, dict) and ev.get("type") in TRANSCRIPT_EVENT_TYPES:
+                    return False
+        return True
+
+    def artifact_refs(self) -> set[str]:
+        """Names of subagent artifacts this session's log points at."""
+        path = self.path
+        if not path.exists():
+            return set()
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return set()
+        return set(_ARTIFACT_REF_RE.findall(text))
 
     # ---- listing ----
     @classmethod
-    def list_sessions(cls, root: Path) -> list[SessionInfo]:
-        sessions_dir = Path(root) / SESSIONS_DIRNAME
-        if not sessions_dir.is_dir():
-            return []
-        infos: list[SessionInfo] = []
-        for path in sessions_dir.glob("*.jsonl"):
-            conv_id = path.stem
-            try:
-                store = cls(root, conv_id=conv_id)
-                mtime = path.stat().st_mtime
-                model = ""
-                message_count = 0
-                for rec in store._iter_records():
-                    kind = rec.get("kind")
-                    if kind == "meta" and not model and rec.get("model"):
-                        model = str(rec["model"])
-                    elif kind == "message":
-                        message_count += 1
-                title = store.title()
-            except OSError:
-                continue
-            infos.append(
-                SessionInfo(
-                    conv_id=conv_id,
-                    path=path,
-                    mtime=mtime,
-                    title=title,
-                    model=model,
-                    message_count=message_count,
+    def _info(cls, root: Path, path: Path, *, archived: bool) -> SessionInfo | None:
+        conv_id = path.stem
+        try:
+            store = cls(root, conv_id=conv_id)
+            mtime = path.stat().st_mtime
+            model = ""
+            message_count = 0
+            for rec in store._iter_records():
+                kind = rec.get("kind")
+                if kind == "meta" and not model and rec.get("model"):
+                    model = str(rec["model"])
+                elif kind == "message":
+                    message_count += 1
+            if not message_count:
+                # Same fallback as title(): an event-only session (no
+                # persisted message log) still has a real transcript, so
+                # count that rather than showing "0 msgs" for it.
+                message_count = sum(
+                    1 for ev in store.load_events()
+                    if ev.get("type") in TRANSCRIPT_EVENT_TYPES
                 )
-            )
+            title = store.title()
+        except OSError:
+            return None
+        return SessionInfo(
+            conv_id=conv_id,
+            path=path,
+            mtime=mtime,
+            title=title,
+            model=model,
+            message_count=message_count,
+            archived=archived,
+        )
+
+    @classmethod
+    def list_sessions(
+        cls, root: Path, *, include_archived: bool = False, archived_only: bool = False
+    ) -> list[SessionInfo]:
+        """Sessions newest first. Archived logs are excluded by default; the
+        glob is non-recursive, so the archive subdirectory costs nothing."""
+        sessions_dir = Path(root) / SESSIONS_DIRNAME
+        infos: list[SessionInfo] = []
+        if not archived_only and sessions_dir.is_dir():
+            for path in sessions_dir.glob("*.jsonl"):
+                info = cls._info(root, path, archived=False)
+                if info is not None:
+                    infos.append(info)
+        if include_archived or archived_only:
+            archive_dir = sessions_dir / ARCHIVE_DIRNAME
+            if archive_dir.is_dir():
+                for path in archive_dir.glob("*.jsonl"):
+                    info = cls._info(root, path, archived=True)
+                    if info is not None:
+                        infos.append(info)
         infos.sort(key=lambda s: s.mtime, reverse=True)
         return infos
+
+    @classmethod
+    def empty_sessions(cls, root: Path) -> list[str]:
+        """Ids of non-archived sessions holding no transcript at all.
+
+        Archived ones are left out on purpose: archiving is a deliberate act,
+        and a sweep for abandoned logs must not undo it.
+        """
+        out = []
+        for info in cls.list_sessions(root):
+            if info.message_count == 0 and cls(root, info.conv_id).is_empty():
+                out.append(info.conv_id)
+        return out
 
     @classmethod
     def most_recent(cls, root: Path) -> str | None:
@@ -280,3 +445,51 @@ class SessionStore:
         if not sessions:
             return None
         return sessions[0].conv_id
+
+
+def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
+    """Delete sessions and everything on disk that belonged only to them.
+
+    A session owns three things: its JSONL (archived or not), its task board
+    under ``.quickcode/tasks/<conv_id>/``, and the subagent artifacts its log
+    references. Artifacts are shared namespace — the id counter restarts per
+    conversation — so one is removed only when no *surviving* session still
+    points at it.
+    """
+    root = Path(root)
+    result = PurgeResult()
+    doomed_refs: set[str] = set()
+
+    for conv_id in conv_ids:
+        store = SessionStore(root, conv_id)
+        if not store.path.exists():
+            result.missing.append(conv_id)
+            continue
+        doomed_refs |= store.artifact_refs()
+        try:
+            store.path.unlink()
+        except OSError:
+            result.missing.append(conv_id)
+            continue
+        result.sessions.append(conv_id)
+        board_dir = root / TASKS_DIRNAME / conv_id
+        if board_dir.is_dir():
+            shutil.rmtree(board_dir, ignore_errors=True)
+            result.boards.append(conv_id)
+
+    if doomed_refs:
+        keep: set[str] = set()
+        for info in SessionStore.list_sessions(root, include_archived=True):
+            keep |= SessionStore(root, info.conv_id).artifact_refs()
+        artifacts_dir = root / ARTIFACTS_DIRNAME
+        for name in sorted(doomed_refs - keep):
+            target = artifacts_dir / name
+            # Guard the join: the name comes out of a log, so it is untrusted.
+            if target.parent != artifacts_dir or not target.is_file():
+                continue
+            try:
+                target.unlink()
+            except OSError:
+                continue
+            result.artifacts.append(name)
+    return result
