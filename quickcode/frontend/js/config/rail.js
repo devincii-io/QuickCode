@@ -1,9 +1,10 @@
-// The rail: the same five sections on every page, so "where am I" is one
-// glance, and every destination is a real link with a real URL.
+// The rail: the same sections on every page, so "where am I" is one glance, and
+// every destination is a real link with a real URL.
 //
 // The order is the order of the questions people arrive with —
 //   make this agent behave differently        → Agents
 //   which agent do new sessions start as      → Compositions
+//   how much may it do without asking         → Permission profiles
 //   what can it do at all / add a capability  → Parts
 //   why does it do that, what is fixed        → Machine room
 //   where do the models come from             → Install
@@ -32,6 +33,8 @@ export function renderRail(node, ctx, route) {
   const startsAt = (head) => route.path[0] === head;
   const agents = agentPlugins(ctx.kernel);
   const presets = ctx.presets?.presets || [];
+  const profiles = ctx.profiles?.profiles || [];
+  const activeProfile = ctx.profiles?.active || "";
   const counts = Object.fromEntries(PARTS.map((p) => [
     p.slug, ctx.kernel.plugins.filter((x) => p.kinds.includes(x.kind)).length,
   ]));
@@ -68,6 +71,18 @@ export function renderRail(node, ctx, route) {
         </a>`).join("")}
       ${item("#/config/new/composition", "New composition",
         { add: true, active: at("new", "composition") })}
+    </section>
+
+    <section class="rail-sec">
+      <h3><a href="#/config/profiles">Permission profiles</a></h3>
+      ${profiles.map((p) => `<a class="rail-item${
+          at("profiles", p.id) ? " active" : ""}"
+          href="#/config/profiles/${encodeURIComponent(p.id)}">
+          <span class="rail-label">${esc(p.title)}</span>
+          ${p.id === activeProfile ? `<span class="rail-tick">✓ active</span>` : ""}
+        </a>`).join("")}
+      ${item("#/config/profiles/new", "New profile",
+        { add: true, active: at("profiles", "new") })}
     </section>
 
     <section class="rail-sec">

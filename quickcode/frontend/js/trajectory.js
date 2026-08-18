@@ -112,6 +112,7 @@ function previewOf(ev) {
     case "model_changed": return `model → ${inner.model}`;
     case "compacted": return `compacted (${inner.summary_chars} char summary)`;
     case "composition_changed": return compositionPreview(inner);
+    case "profile_changed": return profilePreview(inner);
     case "agent_spawned": return `spawned ${ev.agent_id} (${ev.definition})`;
     case "system_note": return inner.text;
     case "usage": return `tokens in ${fmtTokens(inner.input_tokens)} / out ${fmtTokens(inner.output_tokens)}`;
@@ -135,6 +136,15 @@ function compositionPreview(inner) {
     n === 1 ? "" : "s"} · ceiling ${inner.ceiling}` +
     (moved.length ? " · " + moved.join(" · ") : " · same tools") +
     (inner.spawns?.length ? ` · spawns ${inner.spawns.join(", ")}` : " · no delegation");
+}
+
+// A posture switch changes what the next tool call will be allowed to do
+// without asking, which makes it the row that explains every permission event
+// after it. The counts are the whole engine state, so they are what it says.
+function profilePreview(inner) {
+  if (!inner.profile) return "permission profile cleared";
+  return `permission profile → ${inner.title || inner.profile} · mode ${
+    inner.mode} · ${inner.allow} allow · ${inner.ask} ask · ${inner.deny} deny`;
 }
 
 // ---- cross-links into #/config/… ------------------------------------------
@@ -169,6 +179,10 @@ export function configTarget(ev, inner = ev) {
       return inner.preset
         ? { href: `#/config/compositions/${enc(inner.preset)}`, label: inner.preset }
         : null;
+    case "profile_changed":
+      return inner.profile
+        ? { href: `#/config/profiles/${enc(inner.profile)}`, label: inner.profile }
+        : { href: "#/config/profiles", label: "profiles" };
     case "system_prompt": case "context_injection":
       return { href: "#/config/parts/prompt", label: "prompt" };
     case "model_changed":

@@ -173,6 +173,150 @@ function mountCompositionPill() {
   compositionPill.addEventListener("click", (e) => openCompositionMenu(e.currentTarget));
 }
 
+// ---- the permission-profile pill ------------------------------------------
+//
+// The fourth session-scoped control, and the one the mode pill has always
+// implied: the mode says how much this session asks about in general, a profile
+// says the same thing at the granularity of a single rule. It sits immediately
+// beside the mode pill because the two are one question read at two
+// resolutions.
+//
+// Unlike a composition switch this is never refused and never waits for a turn
+// boundary. Nothing the model has been told depends on which of its tools will
+// prompt, so the server rewrites the running engine and answers with what it
+// changed; `Conversation.apply_posture` argues the same case from the other
+// side. A posture you had to reopen the session to change would be a settings
+// file with a nicer font.
+
+let profilePill = null;
+let profMenuEl = null;
+// `undefined` = never read, `null` = read and failed. The distinction is what
+// stops a failed fetch from being retried on every repaint.
+let profileList;
+let unnamedId = "";      // an active id the last read could not put a title to
+
+async function loadProfiles(force = false) {
+  if (profileList !== undefined && !force) return profileList;
+  try { profileList = await api.profiles(); } catch { profileList = null; }
+  return profileList;
+}
+
+function profileById(id) {
+  return (profileList?.profiles || []).find((p) => p.id === id) || null;
+}
+
+export function refreshProfilePill() {
+  if (!profilePill) return;
+  // Hidden until there is a session, like the composition pill: a posture is a
+  // fact about a conversation, not about the window.
+  if (!store.state) { profilePill.classList.add("hidden"); return; }
+  profilePill.classList.remove("hidden");
+
+  const id = store.state.profile || "";
+  const p = profileById(id);
+  profilePill.textContent = `§ ${p?.title || id || "no profile"} ▾`;
+  profilePill.classList.toggle("subtle", !id);
+  profilePill.title = id
+    ? `Permission profile: ${p?.title || id}${p?.description ? `\n${p.description}` : ""}`
+      + "\nIts rules add to this project's own; its mode is where the session"
+      + " started, not a ceiling."
+    : "No permission profile — this project's own rules apply on their own.";
+
+  // The pill knows the id from the session and the title only from the list, so
+  // an id it cannot name asks for the list — once per id, not once per repaint.
+  if (id && !p && unnamedId !== id) {
+    unnamedId = id;
+    loadProfiles(true).then(refreshProfilePill);
+  }
+}
+
+function closeProfMenu() {
+  if (profMenuEl) { profMenuEl.remove(); profMenuEl = null; }
+}
+
+function profileRowHtml(id, title, desc, layer, active) {
+  return `<button class="menu-item" data-profile="${esc(id)}">
+      <div class="mi-title">${esc(title)}${
+        id === active ? '<span class="check">✓</span>' : ""}${
+        layer ? `<span class="pf-layer" data-layer="${esc(layer)}">${
+          esc(layer)}</span>` : ""}</div>
+      <div class="mi-desc">${esc(desc)}</div>
+    </button>`;
+}
+
+async function openProfileMenu(anchor) {
+  document.querySelectorAll(".menu").forEach((m) => m.remove());
+  // Re-read rather than reuse: a profile written on the configuration page a
+  // moment ago has to be in this list, or the two screens disagree.
+  const data = await loadProfiles(true);
+  const list = data?.profiles || [];
+  const active = data?.active ?? (store.state?.profile || "");
+
+  const m = document.createElement("div");
+  m.className = "menu prof-menu";
+  m.innerHTML = `
+    <div class="menu-head">Permission profile for this session</div>
+    <div class="menu-list">
+      ${profileRowHtml("", "No profile",
+        "This project's own rules, on their own.", "", active)}
+      ${list.map((p) => profileRowHtml(p.id, p.title,
+        // A profile the trust gate reduced says so here too. The list is where
+        // it is picked, so it is where "this does less than it says" belongs.
+        ((p.refused || []).length
+          ? `Reduced — this project is not trusted, so its ${
+              p.refused.join(" and ")} was ignored. ` : "")
+        + (p.description || ""),
+        p.layer, active)).join("")}
+    </div>
+    <a class="menu-item prof-manage" href="#/config/profiles">
+      <div class="mi-title">Manage profiles…</div>
+      <div class="mi-desc">Write one of your own — allow <code>bash(git **)</code>,
+        deny <code>read(**)</code>, whatever this piece of work needs.</div>
+    </a>
+    <div class="prof-note" data-prof-note>A profile's rules are added to this
+      project's own rather than replacing them, so it narrows by denying; its
+      mode is where a session starts, and Shift+Tab still works afterwards.
+      Switching applies straight away, to every session open on this project.</div>`;
+  document.body.appendChild(m);
+  profMenuEl = m;
+  placeMenu(m, anchor);
+
+  const dismiss = (e) => {
+    if (!m.isConnected) { document.removeEventListener("mousedown", dismiss, true); return; }
+    if (!m.contains(e.target)) { closeProfMenu(); document.removeEventListener("mousedown", dismiss, true); }
+  };
+  setTimeout(() => document.addEventListener("mousedown", dismiss, true), 0);
+
+  m.addEventListener("click", async (e) => {
+    if (e.target.closest(".prof-manage")) { closeProfMenu(); return; }
+    const btn = e.target.closest("[data-profile]");
+    if (!btn) return;
+    const note = m.querySelector("[data-prof-note]");
+    note.textContent = "Switching…";
+    try {
+      const res = await api.setActiveProfile(btn.dataset.profile);
+      profileList = res;              // the write answers with the whole list
+      closeProfMenu();
+      refreshProfilePill();
+    } catch (err) {
+      note.textContent = String(err.message).replace(/^\d+:\s*/, "");
+      note.classList.add("is-err");
+    }
+  });
+}
+
+function mountProfilePill() {
+  const left = document.querySelector(".composer-left");
+  const mode = $("mode-pill");
+  if (!left || !mode || profilePill) return;
+  profilePill = document.createElement("button");
+  profilePill.id = "profile-pill";
+  profilePill.className = "pill subtle hidden";
+  profilePill.textContent = "§ no profile ▾";
+  left.insertBefore(profilePill, mode.nextSibling);
+  profilePill.addEventListener("click", (e) => openProfileMenu(e.currentTarget));
+}
+
 // ---- history (project-scoped, shared across conversations) ----
 
 // One list per project, like the side panel's layout: the messages you sent to
@@ -240,6 +384,10 @@ const COMMANDS = [
   {
     name: "/composition", desc: "Switch this session's composition (at a turn boundary)",
     exec: () => openCompositionMenu($("composition-pill") || $("model-pill")),
+  },
+  {
+    name: "/profile", desc: "Switch this session's permission profile (takes effect now)",
+    exec: () => openProfileMenu($("profile-pill") || $("mode-pill")),
   },
   {
     name: "/help", desc: "Keyboard shortcuts and slash commands",
@@ -446,6 +594,7 @@ export function initComposer(h) {
   hooks = { onNewConversation: () => {}, ...(h || {}) };
   input = $("input");
   mountCompositionPill();
+  mountProfilePill();
 
   input.addEventListener("input", () => {
     histIdx = null;               // typing leaves history browsing
@@ -505,6 +654,7 @@ export function initComposer(h) {
   window.addEventListener("resize", () => {
     if (slashOpen()) position();
     if (compMenuEl && compositionPill) placeMenu(compMenuEl, compositionPill);
+    if (profMenuEl && profilePill) placeMenu(profMenuEl, profilePill);
   });
 
   document.addEventListener("keydown", (e) => {

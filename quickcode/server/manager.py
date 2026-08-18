@@ -34,6 +34,8 @@ from quickcode.core.agent import (
 from quickcode.core.compact import run_compaction, should_compact
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.core.profiles import PermissionProfile
+from quickcode.core.profiles import effective as effective_posture
 from quickcode.core.tasks import TaskBoard
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import (
@@ -109,6 +111,7 @@ class Conversation:
         manager: ConversationManager,
         resolved: Resolved,
         preset_id: str = "",
+        profile_id: str = "",
     ) -> None:
         self.conv_id = conv_id
         self.agent = agent
@@ -119,6 +122,19 @@ class Conversation:
         # opened with. A switch rewrites it and records it, so resume restores
         # the composition the session ended with.
         self.preset_id = preset_id
+        # The permission posture this session runs under, by id. Unlike the
+        # composition it is not frozen: a posture says what the session may do
+        # on its own, and nothing the model has been told depends on it, so it
+        # can be swapped mid-session without lying to anybody.
+        self.profile_id = profile_id
+        # The allow rules the posture put there, as opposed to the ones the user
+        # accrued afterwards by answering "always allow". ``persist_allow``
+        # appends to the live engine and writes to settings.local.json, but that
+        # file's allow list is gated on project trust like every other -- so in
+        # an untrusted project the grant exists *only* here, and swapping the
+        # posture must carry it rather than recompute over it. See
+        # ``apply_posture``.
+        self._posture_allow = set(agent.permissions.rules.allow)
         # The session's frozen composition. Every value a running conversation
         # depends on -- the tool list, the section bodies, the ceiling, the
         # spawnable agents -- is read from here and nowhere else, so editing a
@@ -194,6 +210,9 @@ class Conversation:
                 for p in self.pending.values()
             ],
             "tasks": [t.to_dict() for t in self.board.list()],
+            # The posture, on the same event and for the same reason as the
+            # composition: the composer draws a pill from it.
+            "profile": self.profile_id,
             # The composition is session state, like the mode and the model, so
             # it rides on the same event the composer's other two pills read.
             "composition": {
@@ -378,6 +397,71 @@ class Conversation:
         self.agent.set_mode(mode)
         self.emit({"type": "mode_changed", "mode": mode.value})
         self._emit_state()
+
+    def apply_posture(self, mode: Mode, rules: Rules,
+                      profile: PermissionProfile | None) -> dict[str, Any]:
+        """Adopt a permission profile on a session that is already running.
+
+        Unlike a composition switch this is never refused and never waits for a
+        turn boundary. Nothing in the conversation depends on the posture: the
+        model was told which tools it has, not which of them will prompt, so
+        rewriting the engine mid-turn changes the next gate check and nothing
+        else. Making the user reopen the session to change what prompts would
+        be the friction the pill exists to remove.
+
+        The mode moves too. It is still capped by the composition's ceiling,
+        and yolo still needs the launch flag -- a profile is a posture, not a
+        way around either.
+
+        What is carried across rather than recomputed is the "always allow"
+        the user answered *during this session*. It is in the live engine and,
+        in a project nobody has trusted, nowhere else, so rebuilding the rule
+        set from the file layer would revoke it -- the same revocation
+        ``PermissionProfile.merged`` refuses to perform one layer up, and for
+        the same reason: picking a posture is not a request to un-approve
+        anything.
+        """
+        accrued = [r for r in self.agent.permissions.rules.allow
+                   if r not in self._posture_allow]
+        # Recorded before the carry, so it stays "what the posture contributed"
+        # -- fold the accrued rules in here and the *next* switch would read
+        # them as the posture's and drop them.
+        self._posture_allow = set(rules.allow)
+        rules = Rules(
+            allow=list(rules.allow) + accrued,
+            ask=list(rules.ask), deny=list(rules.deny),
+        )
+        self.agent.permissions.rules = rules
+        self.profile_id = profile.id if profile else ""
+
+        ceiling = self.resolved.ceiling
+        if mode == Mode.yolo and not self.agent.permissions.yolo_accepted:
+            mode = Mode.ask
+        mode = narrower_mode(mode, ceiling)
+        if mode != self.agent.mode:
+            self.agent.set_mode(mode)
+            self.emit({"type": "mode_changed", "mode": mode.value})
+
+        counts = (len(rules.allow), len(rules.ask), len(rules.deny))
+        self.emit({
+            "type": "profile_changed",
+            "profile": self.profile_id,
+            "title": profile.title if profile else "",
+            "mode": mode.value,
+            "allow": counts[0], "ask": counts[1], "deny": counts[2],
+        }, log_it=True)
+        self.emit({
+            "type": "system_note",
+            "text": (f"permission profile → {profile.title} "
+                     f"(mode {mode.value}, {counts[0]} allow · {counts[1]} ask · "
+                     f"{counts[2]} deny)") if profile else
+                    "permission profile cleared; the project's own rules apply",
+        })
+        self._emit_state()
+        return {
+            "profile": self.profile_id, "mode": mode.value,
+            "allow": counts[0], "ask": counts[1], "deny": counts[2],
+        }
 
     def set_model(self, model: str) -> None:
         self.agent.model = model
@@ -727,6 +811,35 @@ class ConversationManager:
             mode = Mode(mode_str)
         except ValueError:
             mode = Mode.ask
+        # The permission posture: the active profile's rules ride *on top of*
+        # the project's own (never instead of them, or picking a profile would
+        # revoke every "always allow" the user has accrued here), and its mode
+        # is where the session starts.
+        #
+        # Applied identically whether or not this is a resume, which is a
+        # decision and not an oversight. The tempting rule -- a profile's mode
+        # is a *starting* mode, and a resumed session has already started, so it
+        # should keep the mode it had -- has nothing to keep: no per-session
+        # mode is ever written to disk, and the ``mode`` computed above is the
+        # composition's default re-derived, not this session's. Skipping the
+        # profile on resume would preserve nothing; it would swap the posture
+        # the user picked for the install default, and for every profile that
+        # narrows -- Read only starts in ``plan`` -- that is a resume coming
+        # back *wider* than the session it resumes.
+        #
+        # It is also the reading ``apply_posture`` already commits to: nothing
+        # the model has been told depends on the posture, which is the whole
+        # reason one can be swapped under a live turn. A thing that may change
+        # mid-turn does not need protecting across a reopen.
+        posture_mode, rules, posture = effective_posture(
+            self.cwd, Rules.load(self.cwd), fallback=mode,
+        )
+        # Above the preset's ``default_mode``, below ``--mode``. A profile is a
+        # file and the flag is the operator saying it at launch, which is the
+        # same order ``mode_str`` above already puts them in; the rules apply
+        # either way, since the flag has nothing to say about those.
+        if not self.default_mode:
+            mode = posture_mode
         # The starting mode may not begin above the ceiling. It stays live
         # below it -- rules decide this call, the ceiling decides what is ever
         # possible, and only the second is composition.
@@ -737,7 +850,7 @@ class ConversationManager:
         # tools the model is handed come from one computation.
         registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
         permissions = PermissionEngine(
-            mode=mode, rules=Rules.load(self.cwd), root=self.cwd,
+            mode=mode, rules=rules, root=self.cwd,
             yolo_accepted=self.allow_yolo,
             specs=registry.permission_specs(),
         )
@@ -781,6 +894,7 @@ class ConversationManager:
         conv = Conversation(
             conv_id=store.conv_id, agent=agent, store=store, board=board,
             manager=self, resolved=resolved, preset_id=preset.id,
+            profile_id=posture.id if posture else "",
         )
         agent.permission_cb = conv.permission_cb
         agent.plan_cb = conv.plan_cb

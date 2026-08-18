@@ -22,6 +22,7 @@ import { renderInstall } from "./install.js";
 import { renderMachineRoom } from "./machineroom.js";
 import { renderParts } from "./parts.js";
 import { renderProblems } from "./problems.js";
+import { renderProfiles } from "./profiles.js";
 import { renderRail } from "./rail.js";
 import { renderEditor, renderNew } from "./create/scaffold.js";
 import { PARTS, canonicalHref } from "./kinds.js";
@@ -68,10 +69,14 @@ async function load(api) {
   // paths. It is what the Yours filter, the scope filter and the editor's
   // header read; a page that cannot get it degrades to "nothing is yours yet",
   // which is the same thing an install with no authored files shows.
-  const [presets, prompt, authored] = await Promise.all([
+  // `profiles` is here for the rail only — the page itself refetches, because a
+  // posture is switched from two places (this view and the composer pill) and a
+  // list cached for the life of a visit would show the other one's answer late.
+  const [presets, prompt, authored, profiles] = await Promise.all([
     api.presets().catch(() => null),
     api.prompt().catch(() => null),
     api.authored().catch(() => null),
+    api.profiles().catch(() => null),
   ]);
 
   const ranges = {};
@@ -93,7 +98,7 @@ async function load(api) {
   }
 
   return {
-    api, kernel, presets, prompt,
+    api, kernel, presets, prompt, profiles,
     authored: authored?.plugins || [],
     dirs: authored?.dirs || {},
     facts: {
@@ -165,6 +170,9 @@ export async function render() {
     if (head === "agents" && a) await renderAgent(page, ctx, a, route.query);
     else if (head === "agents") renderAgentsIndex(page, ctx);
     else if (head === "compositions") renderCompositions(page, ctx, a || "");
+    // `a` is a profile id, `new` for a blank one; `?from=` prefills from another
+    // and `?scope=` says which file the editor writes to.
+    else if (head === "profiles") await renderProfiles(page, ctx, a || "", route.query);
     else if (head === "parts" && b) {
       const part = PARTS.find((p) => p.slug === a);
       const plugin = ctx.kernel.plugins.find((p) => p.id === b);

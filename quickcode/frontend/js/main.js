@@ -13,7 +13,7 @@
 import { initActivity } from "./activity.js";
 import { api, currentProject, initAuth, setProject } from "./api.js";
 import { initChat } from "./chat.js";
-import { initComposer, refreshCompositionPill } from "./composer.js";
+import { initComposer, refreshCompositionPill, refreshProfilePill } from "./composer.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
 import { initReviews, openHelp, openQuickSettings, openSessionMenu } from "./modals.js";
 import {
@@ -165,6 +165,10 @@ function refreshState() {
   // same event as the mode and the model — including whether it can be switched
   // right now, which is a fact about the agent being busy.
   refreshCompositionPill();
+  // The posture is the fourth, and rides the same event for the same reason —
+  // including when it moved because someone switched it on the configuration
+  // page or from another window.
+  refreshProfilePill();
   refreshMetrics(s);
   $("btn-interrupt").classList.toggle("hidden", !s.busy);
   const qc = $("queued-count");
@@ -363,6 +367,9 @@ async function boot() {
     // A switch changes what every configuration page would say about this
     // session, and the view caches the kernel for the life of a visit.
     if (kind === "event" && ev.type === "composition_changed") invalidateConfig();
+    // Same for a posture: the rail draws the profile list with the active one
+    // ticked, and that tick is now stale.
+    if (kind === "event" && ev.type === "profile_changed") invalidateConfig();
     // Counts accumulate while a session replays, but the state event that
     // drives the status bar arrives before the replay does — without this the
     // bar reads "0 turns" over a fully rendered conversation.

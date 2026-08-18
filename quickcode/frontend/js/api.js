@@ -93,6 +93,22 @@ export const api = {
   // The composed system prompt with each section's byte range.
   prompt: () => req("GET", P("/prompt")),
 
+  // ---- permission profiles ----
+  // A named permission posture: a starting mode plus allow/ask/deny lists.
+  // Every write answers with the whole list again, so a page never has to
+  // reconstruct what the server now holds.
+  profiles: () => req("GET", P("/profiles")),
+  // {id, title, description, mode, allow, ask, deny, scope, shadow?}.
+  // 409 = the id belongs to a built-in; `shadow: true` says that was meant.
+  saveProfile: (body) => req("POST", P("/profiles"), body),
+  deleteProfile: (id, scope = "user") =>
+    req("DELETE", P(`/profiles/${encodeURIComponent(id)}?scope=${encodeURIComponent(scope)}`)),
+  // `""` clears the selection. Unlike a composition switch this never waits for
+  // a turn boundary — it takes effect on every live session immediately. The
+  // one refusal is 409: selecting a profile that lets the agent act without
+  // asking is gated on the project having been trusted.
+  setActiveProfile: (id) => req("POST", P("/profiles/active"), { id }),
+
   // ---- the agent workbench ----
   // Every agent identity, `@orchestrator` first and first-class: an inventory
   // that lists the spawnable agents and omits the one you talk to answers the

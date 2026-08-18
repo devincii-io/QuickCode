@@ -165,9 +165,21 @@ def _build_agent(args: argparse.Namespace):
     except ValueError:
         mode = Mode.ask
 
+    # The active permission profile, exactly as the server applies it: its rules
+    # merge with the project's own, and its mode is where the run starts unless
+    # `--mode` named one outright. `-c` makes no difference -- no per-session
+    # mode is stored for a resume to keep, so honouring the profile only there
+    # would mean a continued run came back wider than the one it continues.
+    # `manager.open()` draws the same two lines, at more length.
+    from quickcode.core.profiles import effective as effective_posture
+
+    posture_mode, rules, _posture = effective_posture(cwd, Rules.load(cwd), fallback=mode)
+    if not args.mode:
+        mode = posture_mode
+
     permissions = PermissionEngine(
         mode=mode,
-        rules=Rules.load(cwd),
+        rules=rules,
         root=cwd,
         yolo_accepted=bool(args.yolo),
         specs=registry.permission_specs(),

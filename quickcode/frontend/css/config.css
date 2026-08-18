@@ -741,6 +741,140 @@ a.wb-tool:hover { border-color: var(--kind-agent); }
 .comp-menu .comp-note.is-err { color: var(--error); }
 #composition-pill.blocked { opacity: .6; }
 
+/* ---------- the permission-profile pill and its menu ---------- */
+
+/* The same shell as the composition menu, because it is the same gesture on
+   the same row; only the rows differ. */
+.prof-menu .menu-head {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--fg-faint); padding: 8px 12px 4px;
+}
+.prof-menu .prof-manage { border-top: 1px solid var(--line); text-decoration: none; }
+.prof-menu .mi-desc code { font-family: var(--mono); }
+.prof-menu .prof-note {
+  padding: 7px 12px 9px; font-size: 11px; line-height: 1.55; color: var(--fg-faint);
+  border-top: 1px solid var(--line); max-width: 46ch;
+}
+.prof-menu .prof-note.is-err { color: var(--error); }
+/* No profile is the resting state, so the pill is quiet until one is picked. */
+#profile-pill:not(.subtle) { color: var(--fg); border-color: var(--line-strong); }
+
+/* ---------- permission profiles ---------- */
+
+.pf-card.is-active { border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
+
+/* The layer is the fact that decides whether Edit and Delete exist, so it is a
+   badge rather than a sentence. Three states, one hue each, all borrowed. */
+.pf-layer {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line-strong);
+  color: var(--fg-faint);
+}
+.pf-layer[data-layer="user"] {
+  color: var(--secondary);
+  border-color: color-mix(in srgb, var(--secondary) 40%, transparent);
+}
+.pf-layer[data-layer="project"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* A profile the trust gate or the validator cut down has to *look* cut down
+   where it is picked. Warning, not error: what survived still applies. */
+.pf-reduced {
+  margin: 7px 0 0 30px; padding: 6px 9px; border-radius: 8px; max-width: 78ch;
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
+}
+.pf-reduced b { color: var(--warning); font-weight: 500; }
+
+/* ---------- the rule editor ---------- */
+
+.pf-editor { max-width: 90ch; }
+.pf-lists {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px; margin: 18px 0;
+}
+.pf-list label {
+  display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--fg-faint); margin-bottom: 5px;
+}
+.pf-list textarea {
+  width: 100%; font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+  padding: 7px 9px; border-radius: 8px; resize: vertical;
+  color: var(--fg); background: var(--surface); border: 1px solid var(--line);
+}
+.pf-list textarea:focus { outline: none; border-color: var(--primary); }
+.pf-note {
+  font-size: 11px; line-height: 1.6; color: var(--fg-faint); margin-top: 5px;
+  max-width: 62ch;
+}
+.pf-note code { font-family: var(--mono); color: var(--fg-dim); }
+.pf-bad { font-size: 11px; line-height: 1.6; margin-top: 5px; color: transparent; }
+.pf-bad.is-bad { color: var(--warning); }
+.pf-warn {
+  margin-top: 6px; padding: 6px 9px; border-radius: 8px; max-width: 72ch;
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+  border: 1px solid color-mix(in srgb, var(--warning) 32%, transparent);
+}
+.pf-warn code { font-family: var(--mono); color: var(--warning); }
+
+.pf-tools { margin: 8px 0 4px; }
+.pf-tools > summary {
+  cursor: pointer; font-size: 12px; color: var(--fg-dim); padding: 4px 0;
+}
+.pf-tools > summary:hover { color: var(--fg); }
+.pf-toolchips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.pf-chip {
+  font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 7px;
+  color: var(--fg-dim); background: var(--panel); border: 1px solid var(--line);
+}
+
+/* ---------- the modelled preview ---------- */
+
+.pf-preview { max-width: 90ch; }
+.pf-try {
+  display: grid; grid-template-columns: minmax(140px, 1fr) 2fr minmax(120px, 1fr);
+  gap: 12px; align-items: end;
+}
+.pf-verdict { margin-top: 14px; }
+.pf-outcome { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.pf-outcome-word {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line-strong); color: var(--fg-dim);
+}
+.pf-outcome[data-outcome="allow"] .pf-outcome-word {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+.pf-outcome[data-outcome="ask"] .pf-outcome-word {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.pf-outcome[data-outcome="deny"] .pf-outcome-word {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+.pf-outcome-say { font-size: 12.5px; color: var(--fg-dim); }
+.pf-outcome-say code { font-family: var(--mono); overflow-wrap: anywhere; }
+
+/* The trace is the point: not the verdict but which check produced it, and
+   which checks never got to run. */
+.pf-trace { list-style: none; margin-top: 10px; max-width: 78ch; }
+.pf-trace li {
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-faint);
+  padding: 4px 0; border-top: 1px solid var(--line);
+}
+.pf-trace li:first-child { border-top: 0; }
+.pf-trace li b { font-family: var(--mono); font-weight: 400; }
+.pf-trace li[data-hit="true"] { color: var(--fg-dim); }
+.pf-trace li[data-hit="true"] b { color: var(--primary); }
+
+@media (max-width: 900px) {
+  .pf-try { grid-template-columns: 1fr; }
+}
+
 /* ---------- narrower windows ---------- */
 
 @media (max-width: 1280px) {
