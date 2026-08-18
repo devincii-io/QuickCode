@@ -119,6 +119,16 @@ function problemKey(p) {
 
 export function invalidate() { ctx = null; loading = null; }
 
+/** Drop the cached snapshot and repaint if the view is on screen. Trusting a
+ *  project changes which tools exist, and a view mounted before the grant
+ *  would keep quoting the old count beside a picker that refetches and quotes
+ *  the new one — two numbers disagreeing on one screen, which reads as a bug
+ *  even though neither is lying about the moment it was fetched. */
+export function refreshIfOpen() {
+  invalidate();
+  if (document.getElementById("app")?.classList.contains("showing-config")) render();
+}
+
 // ---- rendering ------------------------------------------------------------
 
 export async function render() {

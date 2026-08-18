@@ -61,6 +61,9 @@ function dupActionHtml(plugin) {
       under .quickcode/plugins/ with derived_from set. The original is untouched
       and stays enabled.">⧉ Duplicate</button>`;
   }
+  // The header keeps the recourse as a button; the reason is stated in full in
+  // the Fixed-by-design block below, which is where someone asking "why can I
+  // not copy this" is already looking.
   return refused.href
     ? `<a class="ghost-btn" href="${refused.href}" title="${esc(refused.why)}"
         >${esc(refused.label)}</a>`
@@ -176,6 +179,13 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
       btn.title = refused.why;
       btn.disabled = !refused.href;
       if (refused.href) btn.addEventListener("click", () => ctx.go(refused.href));
+      // The reason has to be readable without hovering. A button that changed
+      // into a different button, with the explanation hidden in a tooltip, is
+      // the wordless refusal this whole pass exists to stop shipping.
+      if (!btn.parentElement.querySelector(".dup-why")) {
+        btn.insertAdjacentHTML("afterend",
+          `<p class="dup-why">${esc(refused.why)}</p>`);
+      }
     } else {
       btn.disabled = false;
       btn.textContent = "⧉ Duplicate for an editable copy";

@@ -126,7 +126,21 @@ function argvHtml(res) {
     <span class="dr-idx">${i}</span>
     <code class="dr-arg${a === "" ? " empty" : ""}">${a === "" ? "(empty string)" : esc(a)}</code>
   </li>`).join("")}</ol>
-  <div class="dr-line"><code>${esc(argv.join(" "))}</code></div>`;
+  <div class="dr-line"><code>${esc(argvLine(argv))}</code></div>`;
+}
+
+// Anything that needs no quoting to be read as one argument.
+const BARE_ARG = /^[A-Za-z0-9._:+=/@-]+$/;
+
+/** A one-line reading of the array, with every element that is not a bare token
+ *  quoted. This is the one screen whose whole job is to say "this is an argv
+ *  array, not a shell line" — and joining `; rm -rf /` onto the end unquoted
+ *  renders precisely the sentence the panel exists to disprove. The numbered
+ *  list above is the truth; this line must not contradict it. */
+function argvLine(argv) {
+  return argv
+    .map((a) => (a !== "" && BARE_ARG.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`))
+    .join(" ");
 }
 
 /** The one thing shown when the resolver cannot be reached. Guessing at the

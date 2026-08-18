@@ -15,6 +15,7 @@
 // carries that server's raw JSON block.
 
 import { api } from "./api.js";
+import { refreshIfOpen } from "./config/view.js";
 import { store } from "./store.js";
 import { el, esc } from "./util.js";
 
@@ -51,19 +52,36 @@ function disarm(btn, resting) {
 
 const SEEN_KEY = (pid) => `qc-trust-approved:${pid || "-"}`;
 
+// Everything the grant covered, as name → the command line it stood for.
+// Servers and command tools go in one map because they gate under one grant:
+// recording only the servers meant a project whose executable config is tools
+// stored an empty object and every re-prompt claimed there was no record to
+// compare against — inaccurate, and exactly the case the diff is for.
+function entriesOf(status, specs) {
+  const out = {};
+  for (const name of status.servers || []) out[name] = commandLine(specs.get(name));
+  for (const t of status.tool_detail || []) {
+    out[t.name || t.file] = (t.argv || []).join(" ");
+  }
+  return out;
+}
+
 function readApproved(pid) {
   try {
     const raw = localStorage.getItem(SEEN_KEY(pid));
     const data = raw ? JSON.parse(raw) : null;
-    return data && typeof data.servers === "object" ? data : null;
+    if (!data) return null;
+    // Records written before tools were covered carry `servers` alone. They are
+    // still a real record of a real approval, so they are read, not discarded.
+    const entries = data.entries ?? data.servers;
+    return typeof entries === "object" && entries ? { ...data, entries } : null;
   } catch { return null; }
 }
 
 function writeApproved(pid, status, specs) {
-  const servers = {};
-  for (const name of status.servers || []) servers[name] = commandLine(specs.get(name));
   try {
-    localStorage.setItem(SEEN_KEY(pid), JSON.stringify({ hash: status.hash, servers }));
+    localStorage.setItem(SEEN_KEY(pid), JSON.stringify(
+      { hash: status.hash, entries: entriesOf(status, specs) }));
   } catch { /* quota — the diff is a nicety, the decision is not */ }
 }
 
@@ -71,15 +89,15 @@ function forgetApproved(pid) {
   try { localStorage.removeItem(SEEN_KEY(pid)); } catch { /* nothing to undo */ }
 }
 
-/** added / removed / changed, relative to the block this browser approved. */
+/** added / removed / changed, relative to what this browser approved. */
 function diffApproved(pid, status, specs) {
   const prev = readApproved(pid);
   if (!prev) return null;
-  const now = new Map((status.servers || []).map((n) => [n, commandLine(specs.get(n))]));
-  const added = [...now.keys()].filter((n) => !(n in prev.servers));
-  const removed = Object.keys(prev.servers).filter((n) => !now.has(n));
-  const changed = [...now.keys()].filter(
-    (n) => n in prev.servers && prev.servers[n] !== now.get(n));
+  const now = entriesOf(status, specs);
+  const added = Object.keys(now).filter((n) => !(n in prev.entries));
+  const removed = Object.keys(prev.entries).filter((n) => !(n in now));
+  const changed = Object.keys(now).filter(
+    (n) => n in prev.entries && prev.entries[n] !== now[n]);
   return added.length || removed.length || changed.length
     ? { added, removed, changed } : null;
 }
@@ -337,6 +355,7 @@ function card() {
       current = { ...current, status: next, granted: next.connected || [] };
       collapsed = false;
       render();
+      refreshIfOpen();   // the tool list just changed underneath it
     } catch (err) {
       grant.disabled = false;
       disarm(grant, resting);
@@ -414,6 +433,7 @@ function trustedCard() {
       current = { ...current, status: next, granted: null, revoked: true };
       collapsed = false;
       render();
+      refreshIfOpen();   // revoking removes tools just as granting adds them
     } catch (err) {
       revoke.disabled = false;
       disarm(revoke, "Revoke trust");
