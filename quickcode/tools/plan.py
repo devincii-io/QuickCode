@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 
 class PlanInput(BaseModel):
@@ -28,6 +28,9 @@ class PlanTool(Tool[PlanInput]):
         "this to ask questions — it is for a complete, actionable plan."
     )
     is_read_only = False
+    # Submitting a plan is intercepted by the loop before the permission gate
+    # -- it asks the user directly -- so it never needs a second prompt.
+    permission = PermissionSpec(mutates=False)
     Input = PlanInput
 
     async def run(self, input: PlanInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002

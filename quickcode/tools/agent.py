@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 
 class AgentInput(BaseModel):
@@ -52,6 +52,10 @@ class AgentTool(Tool[AgentInput]):
     # deny-callback. Single-writer safety is the orchestrator's job (it's
     # prompted to give each subagent a distinct, non-overlapping file scope).
     is_read_only = True
+    # Spawning a subagent touches nothing from the parent -- the child's own
+    # actions are gated by its capped mode -- and a modal per spawn would make
+    # fan-out unusable. Cost stays visible in the status meter.
+    permission = PermissionSpec(mutates=False, target_field="agent_type")
     Input = AgentInput
 
     def render_call(self, input: AgentInput) -> str:  # noqa: A002

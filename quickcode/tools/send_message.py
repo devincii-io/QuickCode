@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 
 class SendMessageInput(BaseModel):
@@ -35,6 +35,7 @@ class SendMessageTool(Tool[SendMessageInput]):
     # own actions are gated by its capped mode), and concurrent fan-out can't
     # surface a separate modal per message.
     is_read_only = True
+    permission = PermissionSpec(mutates=False, target_field="agent_id")
     Input = SendMessageInput
 
     def render_call(self, input: SendMessageInput) -> str:  # noqa: A002

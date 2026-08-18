@@ -17,7 +17,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
 BINARY_SNIFF_BYTES = 8192
@@ -51,6 +51,7 @@ class GrepTool(Tool[GrepInput]):
         "head_limit (default 100)."
     )
     is_read_only: ClassVar[bool] = True
+    permission = PermissionSpec(mutates=False, target_field="path")
     Input = GrepInput
 
     def render_call(self, input: GrepInput) -> str:  # noqa: A002

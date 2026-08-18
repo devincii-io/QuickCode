@@ -25,7 +25,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from quickcode.pty.session import PtySession
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 DEFAULT_TIMEOUT_MS = 120_000
 MAX_TIMEOUT_MS = 600_000
@@ -65,6 +65,7 @@ class BashTool(Tool[BashInput]):
         f"caps at {MAX_TIMEOUT_MS}. run_in_background is not yet supported."
     )
     is_read_only: ClassVar[bool] = False
+    permission = PermissionSpec(mutates=True, target_field="command", shell=True)
     Input = BashInput
 
     def render_call(self, input: BashInput) -> str:  # noqa: A002

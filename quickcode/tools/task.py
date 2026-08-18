@@ -13,7 +13,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from quickcode.core.tasks import TaskBoard
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 
 def _board(ctx: ToolCtx) -> TaskBoard:
@@ -39,6 +39,9 @@ class TaskCreateTool(Tool[TaskCreateInput]):
         "Use for 3+ step work to track progress; the harness assigns ids (T1, T2, ...)."
     )
     is_read_only: ClassVar[bool] = False
+    # The task board is QuickCode's own bookkeeping, not the user's project:
+    # writing to it never needs a prompt, whatever the mode.
+    permission = PermissionSpec(mutates=False)
     Input = TaskCreateInput
 
     def render_call(self, input: TaskCreateInput) -> str:  # noqa: A002
@@ -51,7 +54,12 @@ class TaskCreateTool(Tool[TaskCreateInput]):
             description=input.description,
             active_form=input.active_form,
         )
-        return ToolResult(content=f"Created {task.id}: {task.subject}")
+        # The board changed: the UI's task panel refreshes off this flag rather
+        # than off the tool's name.
+        return ToolResult(
+            content=f"Created {task.id}: {task.subject}",
+            ui_meta={"tasks_changed": True},
+        )
 
 
 class TaskUpdateInput(BaseModel):
@@ -75,6 +83,7 @@ class TaskUpdateTool(Tool[TaskUpdateInput]):
         "in_progress is rejected if any blocked_by task is not completed."
     )
     is_read_only: ClassVar[bool] = False
+    permission = PermissionSpec(mutates=False, target_field="task_id")
     Input = TaskUpdateInput
 
     def render_call(self, input: TaskUpdateInput) -> str:  # noqa: A002
@@ -94,7 +103,10 @@ class TaskUpdateTool(Tool[TaskUpdateInput]):
             return ToolResult(content=f"Error: {exc}", is_error=True)
         except ValueError as exc:
             return ToolResult(content=f"Error: {exc}", is_error=True)
-        return ToolResult(content=f"Updated {task.id}: status={task.status} owner={task.owner}")
+        return ToolResult(
+            content=f"Updated {task.id}: status={task.status} owner={task.owner}",
+            ui_meta={"tasks_changed": True},
+        )
 
 
 class TaskListInput(BaseModel):
@@ -105,6 +117,7 @@ class TaskListTool(Tool[TaskListInput]):
     name: ClassVar[str] = "task_list"
     description: ClassVar[str] = "Lists all non-deleted tasks on the task board as a checklist."
     is_read_only: ClassVar[bool] = True
+    permission = PermissionSpec(mutates=False)
     Input = TaskListInput
 
     def render_call(self, input: TaskListInput) -> str:  # noqa: A002
@@ -123,6 +136,7 @@ class TaskGetTool(Tool[TaskGetInput]):
     name: ClassVar[str] = "task_get"
     description: ClassVar[str] = "Fetches full detail for a single task by id."
     is_read_only: ClassVar[bool] = True
+    permission = PermissionSpec(mutates=False, target_field="task_id")
     Input = TaskGetInput
 
     def render_call(self, input: TaskGetInput) -> str:  # noqa: A002

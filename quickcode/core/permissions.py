@@ -50,9 +50,39 @@ class Decision(str, Enum):
     deny = "deny"
 
 
-# Tools that mutate state (blocked in plan mode, prompted in ask mode).
-MUTATING_TOOLS = {"write", "edit", "bash"}
-READONLY_TOOLS = {"read", "glob", "grep", "task_list", "task_get"}
+@dataclass(frozen=True)
+class PermissionSpec:
+    """How a tool wants to be gated -- declared by the tool, not guessed here.
+
+    The engine used to keep name lists of which tools mutate and which
+    argument holds the path. That worked exactly as long as every tool was
+    one we shipped: a plugin tool that wrote files got none of the protection
+    ``write`` got, purely because it was not called ``write``. A tool now
+    declares its own shape and the engine reads it.
+    """
+
+    # Changes something the user would want a say over: blocked in plan mode,
+    # prompted in ask mode. Read-only tools are allowed by default.
+    mutates: bool = True
+    # Which Input field carries the thing being acted on, for rule matching
+    # (``edit(src/**)``, ``bash(npm *)``).
+    target_field: str | None = None
+    # The target is a filesystem path: protected paths (.git, .env, .ssh,
+    # anything outside the project) prompt before any allow rule applies.
+    path_target: bool = False
+    # The target is a shell command line and gets decomposed per subcommand.
+    shell: bool = False
+
+
+# What an unknown tool gets: treated as mutating, so a plugin that forgets to
+# declare itself is prompted for rather than waved through.
+DEFAULT_SPEC = PermissionSpec()
+
+# Spawning or resuming a subagent doesn't touch the filesystem from the parent
+# (the child's own actions are gated by its capped mode), and concurrent
+# fan-out can't surface a separate modal per spawn. Cost stays visible in the
+# status-bar meter.
+READ_LIKE = PermissionSpec(mutates=False)
 
 
 @dataclass
@@ -143,33 +173,78 @@ def _protected(path: str, root: Path) -> bool:
     return False
 
 
+_SPEC_CACHE: dict[str, PermissionSpec] | None = None
+
+
+def registry_specs() -> dict[str, PermissionSpec]:
+    """Permission shapes of the built-in tools, read off the tools themselves.
+
+    Cached: the tool classes are static for the life of the process, and the
+    engine asks for this on every call.
+    """
+    global _SPEC_CACHE
+    if _SPEC_CACHE is None:
+        try:
+            from quickcode.tools.registry import default_registry
+
+            _SPEC_CACHE = {
+                name: getattr(tool, "permission", DEFAULT_SPEC)
+                for name, tool in default_registry().tools.items()
+            }
+        except Exception:  # never let tool import trouble break the gate
+            _SPEC_CACHE = {}
+    return _SPEC_CACHE
+
+
 @dataclass
 class PermissionEngine:
     mode: Mode
     rules: Rules
     root: Path
     yolo_accepted: bool = False
+    # Per-tool shapes for this session, including plugin and MCP tools. Empty
+    # means "ask the built-in registry", which is what direct callers get.
+    specs: dict[str, PermissionSpec] = field(default_factory=dict)
 
-    def evaluate(self, tool: str, arg: str) -> Decision:
+    def spec_for(self, tool: str) -> PermissionSpec:
+        if tool in self.specs:
+            return self.specs[tool]
+        return registry_specs().get(tool, DEFAULT_SPEC)
+
+    @staticmethod
+    def target_for(spec: PermissionSpec, args: dict) -> str:
+        """The argument a rule matches against, as the tool declares it."""
+        if not spec.target_field:
+            return ""
+        value = args.get(spec.target_field)
+        return "" if value is None else str(value)
+
+    def evaluate_tool(self, tool, args: dict) -> tuple[Decision, str]:
+        """Gate one call, given the tool object and its parsed arguments.
+
+        Returns the decision and the target it was matched on, so the caller
+        can show the user what they are approving.
+        """
+        spec = getattr(tool, "permission", DEFAULT_SPEC)
+        target = self.target_for(spec, args)
+        return self.evaluate(tool.name, target, spec=spec), target
+
+    def evaluate(self, tool: str, arg: str, spec: PermissionSpec | None = None) -> Decision:
         """Decide for a single tool invocation. ``arg`` is the match target
-        (bash command string, or file path for read/write/edit)."""
-        is_write = tool in MUTATING_TOOLS
-        # "agent"/"send_message" are auto-allowed like a read-only tool: spawning
-        # or resuming a subagent doesn't touch the filesystem from the parent
-        # (the child's own actions are gated by its capped mode), and concurrent
-        # fan-out can't surface a separate modal per spawn. Cost stays visible in
-        # the status-bar meter.
-        is_read = tool in READONLY_TOOLS or tool in {"read", "agent", "send_message"}
+        (a shell command line, or a path -- whichever the tool declares)."""
+        spec = spec or self.spec_for(tool)
+        is_write = spec.mutates
+        is_read = not spec.mutates
 
         # 1. Protected paths always prompt (before any allow rule).
-        if tool in {"read", "write", "edit"} and _protected(arg, self.root):
+        if spec.path_target and _protected(arg, self.root):
             if self.mode in (Mode.dontask,):
                 return Decision.deny
             return Decision.ask
 
-        # 2. Bash gets decomposed and evaluated per subcommand (handles plan
-        #    mode itself — read-only builtins stay allowed, everything else denied).
-        if tool == "bash":
+        # 2. Shell tools get decomposed and evaluated per subcommand (handles
+        #    plan mode itself — read-only builtins stay allowed, rest denied).
+        if spec.shell:
             return self._eval_bash(arg)
 
         # 3. Plan mode structurally blocks file mutation.
@@ -269,7 +344,7 @@ class PermissionEngine:
 
     def suggest_rule(self, tool: str, arg: str) -> str:
         """The rule text an 'always allow' would persist."""
-        if tool == "bash":
+        if self.spec_for(tool).shell:
             first = arg.split()[0] if arg.split() else arg
             return f"bash({first} *)"
         return f"{tool}({arg})"

@@ -14,7 +14,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 MTIME_TOLERANCE = 1e-3
 MAX_DIFF_LINES = 60
@@ -40,6 +40,7 @@ class EditTool(Tool[EditInput]):
         "session and must not have changed on disk since."
     )
     is_read_only: ClassVar[bool] = False
+    permission = PermissionSpec(mutates=True, target_field="file_path", path_target=True)
     Input = EditInput
 
     def render_call(self, input: EditInput) -> str:  # noqa: A002

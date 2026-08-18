@@ -12,7 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 
 class WriteInput(BaseModel):
@@ -31,6 +31,7 @@ class WriteTool(Tool[WriteInput]):
         "is rejected."
     )
     is_read_only: ClassVar[bool] = False
+    permission = PermissionSpec(mutates=True, target_field="file_path", path_target=True)
     Input = WriteInput
 
     def render_call(self, input: WriteInput) -> str:  # noqa: A002

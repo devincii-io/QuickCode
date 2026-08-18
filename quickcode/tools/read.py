@@ -13,7 +13,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult, truncate
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult, truncate
 
 DEFAULT_LIMIT = 2000
 MAX_LINE_CHARS = 2000
@@ -42,6 +42,7 @@ class ReadTool(Tool[ReadInput]):
         "marker, and total output is capped (use offset to read further)."
     )
     is_read_only: ClassVar[bool] = True
+    permission = PermissionSpec(mutates=False, target_field="file_path", path_target=True)
     Input = ReadInput
 
     def render_call(self, input: ReadInput) -> str:  # noqa: A002

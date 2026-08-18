@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
 
+from quickcode.core.permissions import DEFAULT_SPEC, PermissionSpec
 from quickcode.providers.base import ToolSchema
 
 In = TypeVar("In", bound=BaseModel)
@@ -70,11 +71,24 @@ class Tool(Generic[In]):
     Subclasses set ``name``, ``description``, ``Input`` and ``is_read_only`` and
     implement ``run``. ``render_call`` / ``render_result`` return terminal-ready
     strings for the transcript (the UI may wrap them in widgets).
+
+    ``permission`` tells the permission engine how to gate this tool: whether
+    it mutates, which argument is the thing being acted on, and whether that
+    argument is a path or a shell command. Declaring it here is what lets a
+    plugin tool get the same protection a built-in one gets -- the engine no
+    longer recognises tools by name. The default is the cautious one: an
+    undeclared tool is treated as mutating and is prompted for.
     """
 
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
     is_read_only: ClassVar[bool] = False
+    permission: ClassVar[PermissionSpec] = DEFAULT_SPEC
+    # Where this tool came from: "internal" (shipped), "entrypoint" (a plugin
+    # package) or "config" (an MCP server). Carried on the tool rather than
+    # inferred from its name, so the Settings list stays truthful when a
+    # plugin ships a tool called "read".
+    source: ClassVar[str] = "internal"
     Input: type[BaseModel] = BaseModel
 
     async def run(self, input: In, ctx: ToolCtx) -> ToolResult:  # noqa: A002

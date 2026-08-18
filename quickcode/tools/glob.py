@@ -13,7 +13,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
-from quickcode.tools.base import Tool, ToolCtx, ToolResult, truncate
+from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult, truncate
 
 MAX_RESULTS = 200
 IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
@@ -36,6 +36,7 @@ class GlobTool(Tool[GlobInput]):
         "__pycache__, and .venv. Returns up to 200 matches, newest first."
     )
     is_read_only: ClassVar[bool] = True
+    permission = PermissionSpec(mutates=False, target_field="path")
     Input = GlobInput
 
     def render_call(self, input: GlobInput) -> str:  # noqa: A002
