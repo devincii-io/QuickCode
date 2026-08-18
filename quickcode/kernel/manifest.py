@@ -1437,6 +1437,31 @@ def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[Plugi
     return out
 
 
+REDACTED = "•" * 8
+
+
+def _redacted(cfg: dict[str, Any]) -> dict[str, Any]:
+    """One MCP server's config with its ``env`` *values* replaced.
+
+    An MCP server is configured by handing it credentials in ``env``, so this
+    block routinely holds a live API token. It is rendered on a card anyone can
+    open, and again inside the trust banner, which is the one moment the user is
+    most likely to be sharing their screen -- reviewing a project before
+    granting it.
+
+    The key names stay, because they are what the review is actually for: you
+    are deciding whether this server should receive a token at all, and the name
+    tells you that. The value tells you nothing you can check and is the part
+    that must not be read over a shoulder or captured in a screenshot.
+
+    The banner's own list view already printed only the key names. This makes
+    the raw block agree with it rather than quietly undo it.
+    """
+    if not isinstance(cfg.get("env"), dict):
+        return cfg
+    return {**cfg, "env": {k: REDACTED for k in cfg["env"]}}
+
+
 def mcp_specs(configs: dict[str, dict[str, Any]]) -> list[PluginSpec]:
     out: list[PluginSpec] = []
     for name, cfg in sorted(configs.items()):
@@ -1458,6 +1483,7 @@ def mcp_specs(configs: dict[str, dict[str, Any]]) -> list[PluginSpec]:
             docs_anchor="docs/ARCHITECTURE.md#the-plugin-kernel",
             metadata={"server": name, "command": cfg.get("command", ""),
                       "args": list(cfg.get("args", []))},
-            view=_view("json", json.dumps(cfg, indent=2), f"{name} definition"),
+            view=_view("json", json.dumps(_redacted(cfg), indent=2),
+                       f"{name} definition"),
         ))
     return out

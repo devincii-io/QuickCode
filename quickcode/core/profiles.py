@@ -49,6 +49,7 @@ from typing import Any
 from quickcode.core.permissions import Mode, Rules
 from quickcode.kernel.problems import Layer, Problem, Provenance
 from quickcode.kernel.state import _read, project_settings_path, user_settings_path
+from quickcode.security import trust
 from quickcode.security.trust import project_may_state
 
 log = logging.getLogger("quickcode.core.profiles")
@@ -581,9 +582,22 @@ def save_profile(profile: PermissionProfile, *, cwd: Path | None = None) -> None
     section = raw.get(PROFILES_KEY)
     if not isinstance(section, dict):
         section = {}
+    # A widening profile is part of the trust hash, so writing one moves the
+    # hash and would revoke the project's grant. That is right when a
+    # repository ships a profile and wrong when the user just wrote one
+    # here -- re-asking someone to trust a project because of an edit they
+    # made in this app teaches them to click through the prompt.
+    #
+    # Re-affirmed only if the project was *already* trusted before the write.
+    # Granting on save would turn "save a profile" into a way to trust a
+    # project without ever being asked, which is the bypass this gate exists
+    # to close.
+    was_trusted = bool(cwd) and trust.is_trusted(cwd)
     section[profile.id] = profile.to_dict()
     raw[PROFILES_KEY] = section
     _write(path, raw)
+    if was_trusted and cwd:
+        trust.default_store().grant(cwd)
 
 
 def delete_profile(profile_id: str, *, cwd: Path | None = None) -> bool:

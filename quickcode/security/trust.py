@@ -252,6 +252,16 @@ def project_policy_config(cwd: str | os.PathLike[str]) -> dict[str, Any]:
                     value = body.get(field_name)
                     if value and not project_may_state(field_name, value):
                         out[f"presets.{name}.{field_name}"] = value
+        # Profiles are the third widening surface. The loader in core.profiles
+        # gates each field independently, so an untrusted project can never
+        # widen -- but without this a project already trusted for its MCP
+        # servers could *add* a permissive profile afterwards, leaving the hash
+        # unchanged and the grant silently covering it. The shape of a profile
+        # lives in core.profiles, and the function-local import keeps security
+        # below the kernel, as state._project_entries does.
+        from quickcode.core.profiles import policy_keys_from_settings
+
+        out.update(policy_keys_from_settings(data))
     return out
 
 
