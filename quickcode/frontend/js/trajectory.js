@@ -69,7 +69,7 @@ let frame = 0;
 function emptyModel() {
   const t = Date.now();
   return {
-    items: [], bySeq: new Map(),
+    items: [], bySeq: new Map(), agentDefs: new Map(),
     segs: [{ r0: t, r1: t + 1000, v0: 0, v1: 1000, collapsed: false }],
     tMin: t, tMax: t + 1000, totalV: 1000,
   };
@@ -111,12 +111,87 @@ function previewOf(ev) {
     case "mode_changed": return `mode → ${inner.mode}`;
     case "model_changed": return `model → ${inner.model}`;
     case "compacted": return `compacted (${inner.summary_chars} char summary)`;
+    case "composition_changed": return compositionPreview(inner);
     case "agent_spawned": return `spawned ${ev.agent_id} (${ev.definition})`;
     case "system_note": return inner.text;
     case "usage": return `tokens in ${fmtTokens(inner.input_tokens)} / out ${fmtTokens(inner.output_tokens)}`;
     case "error": return inner.message;
     default: return oneLine(JSON.stringify(inner), 160);
   }
+}
+
+// A composition switch is the single most consequential row in the log — the
+// agent's tools, ceiling and delegation all changed under a live conversation —
+// and it used to render as raw JSON because it had no case above. The event
+// already carries the answer; this is only the sentence.
+function compositionPreview(inner) {
+  const n = (inner.tools || []).length;
+  const moved = [];
+  if (inner.gained?.length) moved.push("+" + inner.gained.join(", "));
+  if (inner.lost?.length) moved.push("−" + inner.lost.join(", "));
+  const from = inner.from_preset && inner.from_preset !== inner.preset
+    ? ` (was ${inner.from_preset})` : "";
+  return `composition → ${inner.title || inner.preset}${from} · ${n} tool${
+    n === 1 ? "" : "s"} · ceiling ${inner.ceiling}` +
+    (moved.length ? " · " + moved.join(" · ") : " · same tools") +
+    (inner.spawns?.length ? ` · spawns ${inner.spawns.join(", ")}` : " · no delegation");
+}
+
+// ---- cross-links into #/config/… ------------------------------------------
+//
+// A tool call in the trajectory should be one click from the card that governs
+// it. The configuration view is a real view addressed by `#/config/…`, and
+// main.js's hashchange listener shows it from anywhere — so this is a plain
+// href, not a callback, and it survives being copied out of the log.
+
+const enc = encodeURIComponent;
+
+function toolTarget(name) {
+  return name ? { href: `#/config/parts/tools/${enc("tool." + name)}`,
+                  label: `tool.${name}` } : null;
+}
+
+function agentTarget(definition) {
+  return definition ? { href: `#/config/agents/${enc("agent." + definition)}`,
+                        label: `agent.${definition}` } : null;
+}
+
+/** The configuration page that governs one event, or null when nothing does. */
+export function configTarget(ev, inner = ev) {
+  switch (inner.type || ev.type) {
+    case "tool_call": case "tool_result":
+      return toolTarget(inner.name);
+    case "permission_request": case "permission_resolved":
+      return toolTarget(inner.tool);
+    case "agent_spawned":
+      return agentTarget(ev.definition || inner.definition);
+    case "composition_changed":
+      return inner.preset
+        ? { href: `#/config/compositions/${enc(inner.preset)}`, label: inner.preset }
+        : null;
+    case "system_prompt": case "context_injection":
+      return { href: "#/config/parts/prompt", label: "prompt" };
+    case "model_changed":
+      return { href: "#/config/parts/models", label: "models" };
+    case "mode_changed": case "permission_denied":
+      return { href: "#/config/parts/policies/runtime.permissions",
+               label: "runtime.permissions" };
+    case "compacted":
+      return { href: "#/config/parts/policies/runtime.compaction",
+               label: "runtime.compaction" };
+    default:
+      // Anything a subagent emitted points at the definition it was spawned
+      // from, which is the page that decided what it was allowed to do.
+      return ev.agent_id ? agentTarget(model.agentDefs?.get(ev.agent_id)) : null;
+  }
+}
+
+function configLinkHtml(ev, inner) {
+  const target = configTarget(ev, inner);
+  if (!target) return "";
+  return `<a class="t-ms k-link tj-cfg" href="${esc(target.href)}"
+    title="Open ${esc(target.label)} in configuration — this is what governs it"
+    >${esc(target.label)} ↗</a>`;
 }
 
 function visible(ev) {
@@ -243,6 +318,9 @@ function wireTable() {
     if (!atBottom()) setFollowing(false);
   });
   const activate = (e) => {
+    // The row's config link is a real navigation, not a selection: letting it
+    // do both would open configuration *and* rearrange the timeline behind it.
+    if (e.target.closest("a")) return;
     const row = e.target.closest(".tj-row");
     if (!row) return;
     selectSeq(Number(row.dataset.seq), { center: true });
@@ -360,10 +438,17 @@ function buildModel() {
   const resultAt = new Map();      // tool_call id -> index of its tool_result
   const agentPrev = new Map();     // agent_id -> index of that agent's last event
   const agentEnd = new Map();      // agent_id -> last time seen (for agent_spawned)
+  // agent_id -> the definition it was spawned from. Only `agent_spawned`
+  // carries it, so every later event from that agent has to look it up here to
+  // link back to the definition that decided what it could do.
+  const agentDefs = new Map();
   for (let i = 0; i < n; i++) {
     const ev = evs[i];
     if (ev.type === "tool_result" && ev.id) resultAt.set(ev.id, i);
     if (ev.agent_id) agentEnd.set(ev.agent_id, raw[i]);
+    if (ev.type === "agent_spawned" && ev.agent_id && ev.definition) {
+      agentDefs.set(ev.agent_id, ev.definition);
+    }
   }
 
   const items = new Array(n);
@@ -424,7 +509,7 @@ function buildModel() {
   }
 
   const lastSeg = segs[segs.length - 1];
-  model = { items, bySeq, segs, tMin, tMax, totalV: Math.max(1, lastSeg.v1) };
+  model = { items, bySeq, segs, agentDefs, tMin, tMax, totalV: Math.max(1, lastSeg.v1) };
 }
 
 // Merge every bar's [t0,t1] into coverage; whatever is left uncovered and long
@@ -706,6 +791,7 @@ function rowHTML(it, i) {
     <span class="seq">${it.seq}</span>
     <span class="chip chip-${it.role}">${it.role}</span>
     <span class="preview">${esc(previewOf(it.ev))}</span>${res}
+    ${configLinkHtml(it.ev, it.inner)}
     <span class="t-ms">${ms}</span></div>`;
 }
 
@@ -813,6 +899,7 @@ function onHover(e) {
 function showHoverCard(it, x, rect) {
   const kind = it.inner.type || it.ev.type;
   const dur = it.t1 - it.t0;
+  const target = configTarget(it.ev, it.inner);
   const ms = it.inner.type === "tool_result" && it.inner.ms != null ? it.inner.ms : dur;
   hoverEl.innerHTML =
     `<div class="hc-head"><span class="chip chip-${it.role}">${it.role}</span>
@@ -822,7 +909,8 @@ function showHoverCard(it, x, rect) {
        <span class="hc-arrow">→</span>
        <span>${esc(clock(it.t1))}</span>
        <span class="hc-dur">${esc(ms ? fmtMs(Math.round(ms)) : "0 ms")}</span></div>
-     <div class="hc-off">at ${esc(fmtRel(it.t0 - model.tMin))}${dur ? " · spans " + esc(fmtDur(dur)) : ""}</div>`;
+     <div class="hc-off">at ${esc(fmtRel(it.t0 - model.tMin))}${dur ? " · spans " + esc(fmtDur(dur)) : ""}${
+       target ? " · governed by " + esc(target.label) : ""}</div>`;
   hoverEl.classList.remove("hidden");
   const w = hoverEl.offsetWidth || 240;
   const host = timelineEl.getBoundingClientRect();
@@ -898,6 +986,7 @@ function renderDetail() {
     &nbsp;#${ev.seq} · ${esc(inner.type || ev.type)}`;
 
   if (detailTab === "summary") {
+    const target = configTarget(ev, inner);
     const rowsKv = [
       ["Type", inner.type || ev.type],
       ["Turn", ev.turn ?? "–"],
@@ -906,8 +995,14 @@ function renderDetail() {
       inner.name ? ["Tool", inner.name] : null,
       inner.finish_reason ? ["Finish", inner.finish_reason] : null,
       inner.is_error != null ? ["Status", inner.is_error ? "error" : "ok"] : null,
+      // The last row is the one that turns a record into something you can act
+      // on: the page that decided this was allowed to happen.
+      target ? ["Governed by", target.label, target.href] : null,
     ].filter(Boolean);
-    const kv = rowsKv.map(([k, v]) => `<div class="k">${k}</div><div class="v">${esc(String(v))}</div>`).join("");
+    const kv = rowsKv.map(([k, v, href]) => `<div class="k">${k}</div><div class="v">${
+      href ? `<a class="k-link" href="${esc(href)}"
+        title="Open it in configuration">${esc(String(v))} ↗</a>`
+        : esc(String(v))}</div>`).join("");
     const text = inner.text || inner.content || inner.arguments || inner.plan || inner.message || "";
     detailBody.innerHTML = `<div class="kv">${kv}</div>` +
       (text ? `<pre>${esc(String(text).slice(0, 20000))}</pre>` : "");

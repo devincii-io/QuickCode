@@ -3,6 +3,7 @@
 import { highlightPayload, isJson } from "./highlight.js";
 import { renderMarkdown } from "./markdown.js";
 import { store, subscribe } from "./store.js";
+import { configTarget } from "./trajectory.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;
@@ -200,12 +201,24 @@ function summaryHtml(name, argsRaw) {
     role="button" tabindex="0">${esc(summary)}</span>`;
 }
 
+// The card that governs this tool — the same target the trajectory links to,
+// resolved by the same function so the two views cannot drift about which page
+// decides what a tool may do.
+function configLinkHtml(ev) {
+  const target = configTarget(ev);
+  if (!target) return "";
+  return `<a class="tool-ms k-link" href="${esc(target.href)}"
+    title="Open ${esc(target.label)} in configuration — this is what governs it"
+    >${esc(target.label)} ↗</a>`;
+}
+
 function toolCardNode(ev, { agent } = {}) {
   const card = el(`<div class="tool-card" data-call="${esc(ev.id)}">
     <div class="tool-head" aria-expanded="false">
       <span class="tool-dot running"></span>
       <span class="tool-name">${esc(ev.name)}</span>
       <span class="tool-summary">${summaryHtml(ev.name, ev.arguments)}</span>
+      ${configLinkHtml(ev)}
       <span class="tool-ms"></span>
     </div>
     <div class="tool-body"></div></div>`);
@@ -220,7 +233,10 @@ function toolCardNode(ev, { agent } = {}) {
     `<div class="result-slot"></div>` +
     (ev.seq != null ? `<div class="io-trace">${traceLink(ev.seq)}</div>` : "");
   const head = card.querySelector(".tool-head");
-  clickable(head, () => {
+  clickable(head, (e) => {
+    // The head toggles the card, but it now contains a link. Without this the
+    // link both navigates and collapses the card behind it.
+    if (e?.target?.closest?.("a")) return;
     head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
   });
   wireFileRefs(card);
