@@ -79,6 +79,48 @@ coupling that used to live in name lists moves onto the tools themselves.
   on save, and saving a file that does not yet parse is allowed and returns its
   problems, because refusing to save work in progress is how an editor loses
   it.
+- **Duplicate anything, and get a file you own.** Press Duplicate on
+  `agent.explore` — locked, required, built-in — and get an editable markdown
+  file with `derived_from` set, every previously locked line plain text, and
+  the original untouched. A locked prompt section duplicates as a *sibling*
+  with `after:` pointing at the original, because two sections claiming one
+  position is not a copy. Internal tools refuse with the reason shown and
+  **New command tool** offered in its place: a Python tool's behaviour is not
+  expressible as an argv template, and pretending otherwise would produce a
+  file that lies about what it does. Alongside it: `New…` for the three
+  authorable kinds, an editor page with its own URL where the raw file is the
+  primary surface and the panel beside it is commentary, source and scope
+  filters, and empty states that name a real plugin and offer to copy it.
+- **A dry run that resolves the argv and never executes it.** One field per
+  declared parameter, the command rendered element by element as you type.
+  There is no run button and the panel says why — "run it once to check"
+  would be a second route to execution that skips the permission gate, and
+  the approval prompt already shows this exact array. A parameter value of
+  `; rm -rf /` renders as one inert argument, which is argv-first made
+  visible.
+- **A Problems card**, pinned above every Parts page and with a page of its
+  own. A plugin that failed to load appears here and *not* in the plugin list,
+  which is the point: a plugin that silently vanished is a worse bug than one
+  that refuses loudly. Problems naming no plugin — an unparseable `kind:`, a
+  project whose command tools are inert for want of trust — appear on every
+  Parts page, because those are precisely the ones that cannot be attached to
+  a row and would otherwise be the ones nobody sees.
+- **`used_by`: what moves if you change this.** Every plugin payload now
+  carries the compositions and agent definitions that hold it, each with the
+  sentence saying *how* ("its orchestrator holds it", "matched by `mcp__*` in
+  its tools") and an address to open. Compositions are answered by resolving,
+  so bindings, `base:` inheritance and revokes fold in; agent definitions by
+  what they declare, which is also the file you would go and edit. The index
+  is cached per registry instance and never process-wide — the registry is
+  rebuilt per request deliberately, and a longer-lived cache would serve the
+  composition you had before your edit.
+- **Cross-links from the transcript into configuration.** A tool call in the
+  chat or the trajectory is one click from the card that governs it, and both
+  views resolve that target through the same function so they cannot drift
+  about which page decides what a tool may do. `composition_changed` renders
+  as a readable summary instead of raw JSON, and the search box ranks results
+  — exact, then id prefix, then title prefix, then substring — instead of
+  returning them in registry order.
 - **An agent workbench.** Every agent, including `@orchestrator`, has a page
   that answers what it will actually be sent and who decided each part: the
   resolved composition with provenance in place, the composed prompt with its
