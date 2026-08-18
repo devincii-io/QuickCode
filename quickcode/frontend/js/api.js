@@ -93,6 +93,41 @@ export const api = {
   // The composed system prompt with each section's byte range.
   prompt: () => req("GET", P("/prompt")),
 
+  // ---- the agent workbench ----
+  // Every agent identity, `@orchestrator` first and first-class: an inventory
+  // that lists the spawnable agents and omits the one you talk to answers the
+  // wrong question.
+  agents: () => req("GET", P("/kernel/agents")),
+  // What this agent actually gets, with provenance on every value, the exact
+  // composed prompt and the exact tool schemas. `conv` reads a running
+  // session's frozen snapshot (and says so); without it the answer is live.
+  resolvedAgent: (id, { preset = "", parent = "", conv = "" } = {}) => {
+    const q = new URLSearchParams();
+    if (preset) q.set("preset", preset);
+    if (parent) q.set("parent", parent);
+    if (conv) q.set("conv", conv);
+    const tail = q.toString() ? `?${q}` : "";
+    return req("GET", P(`/kernel/agents/${encodeURIComponent(id)}/resolved${tail}`));
+  },
+  // The same shape for an unsaved draft, composed server-side. The browser
+  // never reconstructs a prompt: a reconstruction drifts, and a preview that
+  // drifts is worse than none because it is believed.
+  previewAgent: (id, draft) =>
+    req("POST", P(`/kernel/agents/${encodeURIComponent(id)}/preview`), draft),
+  // Save a composition edit. 409 = the composition is built in, with the
+  // recourse in the detail.
+  saveComposition: (id, body) =>
+    req("PUT", P(`/kernel/agents/${encodeURIComponent(id)}/composition`), body),
+  // "Customise this…": duplicate a composition into a project-scoped one.
+  deriveComposition: (id, name) =>
+    req("POST", P(`/kernel/compositions/${encodeURIComponent(id)}/derive`),
+        name ? { name } : {}),
+  // Session-scoped switching. 409 = refused, and the detail is the reason —
+  // never queued, never applied silently once the agent goes idle.
+  switchComposition: (convId, preset) =>
+    req("POST", P(`/kernel/conversations/${encodeURIComponent(convId)}/composition`),
+        { preset }),
+
   // ---- project trust (the MCP gate) ----
   // A project's own mcpServers are inert until the project is trusted once,
   // because starting one runs its command on this machine. GET reports what was

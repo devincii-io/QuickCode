@@ -1,37 +1,20 @@
 // Agents — the section the navigation leads with, because "make it stop
 // rewriting my whole file" is a sentence about an agent.
 //
-// The three-column workbench (editor beside a live preview of the exact bytes
-// the agent will receive) is Phase 4 and needs the `/resolved` and `/preview`
-// endpoints that do not exist yet. What is here now is the part that does not:
-// each agent's identity, its model policy, its tool grant and its ceiling, all
-// editable through the same tiered PUT as any other plugin, plus an honest
-// panel saying what the workbench will add and why it is not here yet.
+// The index is here; every agent page — `@orchestrator` included, as a
+// first-class agent rather than a special case — is the workbench in
+// `config/agent.js`, which is the same component from both entry points.
 
 import { esc } from "../util.js";
 import { chip, openPluginView, tierBadge } from "../settings/ui.js";
 import { summaryOf } from "./explain.js";
-import { renderDetail } from "./detail.js";
+import { renderWorkbench } from "./agent.js";
 import { bodyHtml, sigilHtml } from "./kinds.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
 export function agentPlugins(kernel) {
   return kernel.plugins.filter((p) => p.kind === "agent");
-}
-
-function workbenchNote(what) {
-  return `<section class="cfg-soon">
-    <h4>Workbench — next pass</h4>
-    <p>${what}</p>
-    <p class="cfg-note">It needs two routes the kernel does not expose yet:
-      <code>GET /api/kernel/agents/{id}/resolved</code> for the composed prompt
-      with its section boundaries and the exact tool schemas, and
-      <code>POST /api/kernel/agents/{id}/preview</code> so an unsaved draft can
-      be previewed without the browser re-implementing the prompt composer in a
-      second language. Until they land, nothing here pretends to know bytes it
-      cannot see.</p>
-  </section>`;
 }
 
 export function renderAgentsIndex(host, ctx) {
@@ -102,73 +85,15 @@ export function renderAgentsIndex(host, ctx) {
   });
 }
 
-export async function renderAgent(host, ctx, id) {
-  if (id === ORCHESTRATOR) return renderOrchestrator(host, ctx);
-  const plugin = ctx.kernel.plugins.find((p) => p.id === id && p.kind === "agent");
-  if (!plugin) {
-    host.innerHTML = `<div class="cfg-page-inner"><div class="set-error">There is no
-      agent <code>${esc(id)}</code> in this project.</div></div>`;
-    return;
-  }
-  const inner = document.createElement("div");
-  inner.className = "cfg-page-inner";
-  host.innerHTML = "";
-  host.appendChild(inner);
-  await renderDetail(inner, ctx, plugin, {
-    crumb: `<a href="#/config/agents">Agents</a> ▸ ${esc(plugin.title)}`,
-    lede: `Spawnable by the orchestrator. Its ceiling is the most it may ever do
-      whatever mode the session is in — a subagent has no way to ask you, so a
-      request above the ceiling is denied rather than queued.`,
-  });
-  inner.insertAdjacentHTML("beforeend", workbenchNote(
-    `The editable side of this agent is here. What is not yet: the composed
-     system prompt it will actually receive, with each section's boundaries
-     drawn, and its tool grant as a pattern picker rather than a list.`));
-}
-
-function renderOrchestrator(host, ctx) {
-  const preset = (ctx.presets?.presets || []).find((p) => p.id === ctx.presets?.active);
-  const sections = ctx.prompt?.sections || [];
-  const chars = ctx.prompt ? [...ctx.prompt.text].length : 0;
-  const tools = preset?.tools || [];
-  host.innerHTML = `<div class="cfg-page-inner">
-    <header class="cfg-head" data-kind="agent" data-tier="free">
-      <div class="cfg-crumbs"><a href="#/config/agents">Agents</a> ▸ Orchestrator</div>
-      <div class="cfg-head-main">
-        ${sigilHtml("agent", { big: true })}
-        <h2>Orchestrator</h2>
-        <code class="cfg-id">@orchestrator</code>
-        <span class="cfg-head-badges">${chip("the agent you talk to")}</span>
-      </div>
-    </header>
-    <div class="cfg-lede">The orchestrator is not a definition on disk: it is
-      whatever the active composition says a session starts as. Restricting its
-      tools states what it does with its own hands — it does not restrict the
-      session, because a subagent it spawns still draws from the session's pool.
-      To take something away from the whole session, disable the plugin.</div>
-
-    <section class="cfg-sec">
-      <h4>Composition</h4>
-      <div class="k-facts">
-        <a class="k-fact k-link" href="#/config/compositions/${esc(preset?.id || "")}"
-          >${esc(preset?.title || ctx.presets?.active || "standard")}</a>
-        <span class="k-fact">${tools.length && tools[0] !== "*"
-          ? `${tools.length} tool patterns` : "every tool the session has"}</span>
-        <span class="k-fact">mode ${esc(preset?.default_mode || "the install default")}</span>
-      </div>
-    </section>
-
-    <section class="cfg-sec">
-      <h4>System prompt</h4>
-      <p class="cfg-note">${ctx.prompt
-        ? `${sections.length} sections · ${chars.toLocaleString()} characters, as
-           composed for the next session.
-           <a class="k-link" href="#/config/parts/prompt">Read it section by section →</a>`
-        : `The composed prompt could not be read.`}</p>
-    </section>
-
-    ${workbenchNote(`The orchestrator's own page is the one that most wants the
-      three-column workbench: its instructions beside the exact prompt bytes,
-      with the changed range marked as you type.`)}
-  </div>`;
+export async function renderAgent(host, ctx, id, query = {}) {
+  // The rail and the cards address agents by plugin id (`agent.explore`); the
+  // kernel addresses them by agent id (`explore`). Both land here, because a
+  // link that has been in someone's address bar since Phase 3 must keep
+  // working.
+  const agentId = id.startsWith("agent.") ? id.slice("agent.".length) : id;
+  // One component, both entry points: the orchestrator and a spawnable agent
+  // render the same six sections against different backing stores. The
+  // difference is what the identity header says and whether Delegation has
+  // anything in it — everything else is literally the same code.
+  await renderWorkbench(host, ctx, agentId, query);
 }

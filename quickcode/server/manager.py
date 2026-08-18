@@ -67,6 +67,18 @@ log = logging.getLogger("quickcode.server")
 CLIENT_QUEUE_MAX = 4096
 
 
+class SwitchRefused(Exception):
+    """A composition switch that must not happen, carrying why.
+
+    The frozen-composition invariant exists for two reasons and neither is "the
+    composition may never change": the model has been told what tools it has,
+    and the prompt cache breakpoint sits on the system message. Both survive a
+    switch taken *between* turns. So a switch mid-turn is refused -- not queued,
+    not applied on the next idle. A switch that lands invisibly three seconds
+    later is worse than one that does not happen.
+    """
+
+
 @dataclass
 class PendingReview:
     """A permission or plan request awaiting a client decision."""
@@ -105,12 +117,17 @@ class Conversation:
         board: TaskBoard,
         manager: ConversationManager,
         resolved: Resolved,
+        preset_id: str = "",
     ) -> None:
         self.conv_id = conv_id
         self.agent = agent
         self.store = store
         self.board = board
         self.manager = manager
+        # Which composition this session is running *now* -- not the one it
+        # opened with. A switch rewrites it and records it, so resume restores
+        # the composition the session ended with.
+        self.preset_id = preset_id
         # The session's frozen composition. Every value a running conversation
         # depends on -- the tool list, the section bodies, the ceiling, the
         # spawnable agents -- is read from here and nowhere else, so editing a
@@ -181,6 +198,18 @@ class Conversation:
                 for p in self.pending.values()
             ],
             "tasks": [t.to_dict() for t in self.board.list()],
+            # The composition is session state, like the mode and the model, so
+            # it rides on the same event the composer's other two pills read.
+            "composition": {
+                "id": self.preset_id,
+                "ceiling": self.resolved.ceiling.value,
+                "tools": len(self.resolved.tools),
+                "denied": len(self.resolved.denied_tools),
+                "spawns": list(self.resolved.spawns),
+                "digest": self.resolved.digest(),
+                "switchable": self.switch_blocked_reason() == "",
+                "blocked_reason": self.switch_blocked_reason(),
+            },
         }
 
     # ---- main-agent bus pump ----
@@ -494,6 +523,146 @@ class Conversation:
         self.emit({"type": "system_prompt", "text": self.agent.history.system_prompt})
         self._emit_state()
 
+    # ---- session-scoped composition switching ----
+
+    def switch_blocked_reason(self) -> str:
+        """Why a switch cannot be taken right now, or "" when it can."""
+        if self.agent.busy:
+            return ("the agent is running — a composition switch takes effect at "
+                    "a turn boundary, so it is refused rather than queued")
+        if self.pending:
+            kind = next(iter(self.pending.values())).kind
+            return f"a {kind} review is waiting for your answer"
+        if self.input_queue:
+            n = len(self.input_queue)
+            return f"{n} queued message{'s' if n != 1 else ''} still to send"
+        return ""
+
+    def switch_composition(self, preset_id: str) -> dict[str, Any]:
+        """Move a running session onto another composition, at a turn boundary.
+
+        Re-resolves, rebuilds the tool registry, re-renders the system prompt
+        from the *new* bodies, records a ``composition`` meta record and emits a
+        transcript marker. The marker is not decoration: read later without it,
+        the log would be misleading, because the same conversation genuinely had
+        two different agents in it.
+
+        The cache breakpoint moves once and the next turn pays a full uncached
+        input. That is the honest cost, and it is paid at a moment the user
+        chose.
+        """
+        blocked = self.switch_blocked_reason()
+        if blocked:
+            raise SwitchRefused(blocked)
+
+        manager = self.manager
+        preset = preset_module.resolve(manager.cwd, preset_id)
+        if preset.id == self.preset_id:
+            raise SwitchRefused(f"this session already runs “{preset.title}”")
+
+        pool = session_pool(
+            manager.cwd, list(manager.registry_factory().tools.values())
+        )
+        defs = load_defs(manager.cwd)
+        limits = runtime_limits(manager.cwd)
+        resolved = resolve_composition(
+            ORCHESTRATOR_ID,
+            pool=pool,
+            preset=preset,
+            defs=defs,
+            cwd=manager.cwd,
+            parent=None,
+            depth=0,
+            max_depth=limits.max_depth,
+            resolve_model=manager.resolve_role,
+        )
+        limits = runtime_limits(settings=resolved.settings)
+        if resolved.errors():
+            raise SwitchRefused(resolved.refusal())
+
+        before = self.resolved
+        previous_id = self.preset_id
+        self.resolved = resolved
+        self.preset_id = preset.id
+
+        # The tool list the model is about to be told about, built the same way
+        # ``open()`` builds it, from one computation.
+        registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
+        self.agent.registry = registry
+        self.agent.permissions.specs = registry.permission_specs()
+        self.agent.limits = limits
+
+        # The ceiling is part of the composition, so a switch can lower it under
+        # a session already above it. Clamp rather than leave a mode the new
+        # composition forbids.
+        if MODE_PRIVILEGE[self.agent.mode] > MODE_PRIVILEGE[resolved.ceiling]:
+            self.agent.set_mode(resolved.ceiling)
+            self.emit({"type": "mode_changed", "mode": resolved.ceiling.value})
+
+        self.agent.history.set_system_prompt(
+            render_system_prompt(
+                manager.env,
+                model=self.agent.model,
+                provider=manager.provider_name,
+                headless=False,
+                plan=(self.agent.mode == Mode.plan),
+                orchestration=bool(resolved.spawns),
+                overrides=dict(resolved.section_bodies),
+            )
+        )
+
+        # Everything a later spawn resolves against moves with the session: the
+        # pool, the parent composition, the definitions snapshot and the preset.
+        deps = self.agent.ctx.extra.get("subagent")
+        if deps is not None:
+            deps.pool = pool
+            deps.tool_pool = pool
+            deps.parent = resolved
+            deps.defs = defs
+            deps.preset = preset
+            deps.limits = limits
+
+        self.store.append_meta(
+            preset=preset.id, composition=resolved.to_json(),
+        )
+
+        gained = [t for t in resolved.tools if t not in before.tools]
+        lost = [t for t in before.tools if t not in resolved.tools]
+        self.emit({
+            "type": "composition_changed",
+            "preset": preset.id,
+            "title": preset.title,
+            "from_preset": previous_id,
+            "tools": list(resolved.tools),
+            "gained": gained,
+            "lost": lost,
+            "ceiling": resolved.ceiling.value,
+            "spawns": list(resolved.spawns),
+            "digest": resolved.digest(),
+        }, log_it=True)
+        detail = []
+        if gained:
+            detail.append("+" + ", ".join(gained))
+        if lost:
+            detail.append("−" + ", ".join(lost))
+        self.emit({
+            "type": "system_note",
+            "text": (f"composition → {preset.title} "
+                     f"({len(resolved.tools)} tools, ceiling {resolved.ceiling.value})"
+                     + (f" · {' · '.join(detail)}" if detail else "")),
+        })
+        self.emit({"type": "system_prompt", "text": self.agent.history.system_prompt})
+        self._emit_state()
+        return {
+            "preset": preset.id,
+            "title": preset.title,
+            "tools": list(resolved.tools),
+            "gained": gained,
+            "lost": lost,
+            "ceiling": resolved.ceiling.value,
+            "digest": resolved.digest(),
+        }
+
 
 class ConversationManager:
     """Builds and tracks live conversations for one project directory."""
@@ -579,6 +748,15 @@ class ConversationManager:
         if spec in ("worker", "orchestrator"):
             return self.config.profile.resolve(spec)  # type: ignore[arg-type]
         return spec
+
+    def resolve_role(self, spec: str) -> str:
+        """The public name for ``_resolve_role``.
+
+        The workbench has to pass the *same* callable the runner passes or model
+        policy would be checked against a different set in the preview than at
+        spawn, which is exactly the drift a preview exists to rule out.
+        """
+        return self._resolve_role(spec)
 
     @staticmethod
     def _frozen_composition(store: SessionStore, resuming: bool) -> Resolved | None:
@@ -711,7 +889,7 @@ class ConversationManager:
 
         conv = Conversation(
             conv_id=store.conv_id, agent=agent, store=store, board=board,
-            manager=self, resolved=resolved,
+            manager=self, resolved=resolved, preset_id=preset.id,
         )
         agent.permission_cb = conv.permission_cb
         agent.plan_cb = conv.plan_cb

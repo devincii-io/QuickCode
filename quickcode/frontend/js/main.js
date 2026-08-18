@@ -10,11 +10,12 @@
 
 import { api, currentProject, initAuth, setProject } from "./api.js";
 import { initChat } from "./chat.js";
-import { initComposer } from "./composer.js";
+import { initComposer, refreshCompositionPill } from "./composer.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
 import { initReviews, openHelp, openQuickSettings, openSessionMenu } from "./modals.js";
 import {
-  DEFAULT_ROUTE, initConfig, isConfigRoute, lastConfigRoute, render as renderConfig,
+  DEFAULT_ROUTE, initConfig, invalidate as invalidateConfig, isConfigRoute,
+  lastConfigRoute, render as renderConfig,
 } from "./config/view.js";
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
@@ -120,6 +121,10 @@ function refreshState() {
   $("st-tokens").textContent =
     `▲${fmtTokens(s.ledger.input_tokens)} ▼${fmtTokens(s.ledger.output_tokens)}`;
   $("st-cost").textContent = fmtCost(s.ledger.cost_usd);
+  // The composition is the third session-scoped control, so it moves with the
+  // same event as the mode and the model — including whether it can be switched
+  // right now, which is a fact about the agent being busy.
+  refreshCompositionPill();
   refreshMetrics(s);
   $("btn-interrupt").classList.toggle("hidden", !s.busy);
   const qc = $("queued-count");
@@ -271,9 +276,12 @@ async function boot() {
 
   subscribe((kind, ev) => {
     if (kind === "state") refreshState();
-    if (kind === "status") refreshStatus(ev.state);
+    if (kind === "status") { refreshStatus(ev.state); refreshCompositionPill(); }
     if (kind === "queued") { queuedTexts.push(ev.text); renderQueue(); }
     if (kind === "event" && ev.type === "user_message") bumpSessionChip();
+    // A switch changes what every configuration page would say about this
+    // session, and the view caches the kernel for the life of a visit.
+    if (kind === "event" && ev.type === "composition_changed") invalidateConfig();
     // Counts accumulate while a session replays, but the state event that
     // drives the status bar arrives before the replay does — without this the
     // bar reads "0 turns" over a fully rendered conversation.

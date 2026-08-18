@@ -122,7 +122,10 @@ export async function render() {
   const [head, a, b] = route.path;
 
   try {
-    if (head === "agents" && a) await renderAgent(page, ctx, a);
+    // `?conv=` opens a running session's frozen view and `?preset=` resolves
+    // against a composition other than the active one, so both ride the URL:
+    // "the agent this session is actually running" has to be linkable.
+    if (head === "agents" && a) await renderAgent(page, ctx, a, route.query);
     else if (head === "agents") renderAgentsIndex(page, ctx);
     else if (head === "compositions") renderCompositions(page, ctx, a || "");
     else if (head === "parts" && b) {

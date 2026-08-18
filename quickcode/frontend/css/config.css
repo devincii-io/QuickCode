@@ -402,3 +402,350 @@ a.k-fact { color: var(--accent); text-decoration: none; }
   .rail-sec h3 { margin: 0 4px 0 0; }
   .cfg-where { display: none; }
 }
+
+/* ==========================================================================
+ * The agent workbench
+ *
+ * Three columns at >=1280px: the view rail, the editor, and a sticky preview.
+ * Below that the preview moves above the editor rather than being removed —
+ * seeing the editor and the bytes it produces at the same time *is* the
+ * feature, so the pane is relocated and never dropped.
+ * ======================================================================== */
+
+/* The workbench manages its own scrolling in two independent columns, so the
+   page must not add a third. */
+.cfg-page:has(.wb) { overflow: hidden; }
+
+.wb {
+  display: grid; grid-template-columns: minmax(520px, 1fr) 460px;
+  gap: 0; height: 100%; min-height: 0;
+}
+.wb-editor { padding: 20px 26px 60px; overflow-y: auto; min-width: 0; }
+.wb-preview-slot { min-width: 0; border-left: 1px solid var(--line); }
+
+.wb-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.wb-sec { margin: 22px 0; }
+.wb-sec > h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--fg-faint); margin-bottom: 8px;
+  display: flex; align-items: center; gap: 8px;
+}
+.wb-count {
+  font-size: 10.5px; letter-spacing: 0; text-transform: none;
+  padding: 1px 6px; border-radius: 8px; background: var(--panel); color: var(--fg-dim);
+}
+
+.wb-rows { display: grid; grid-template-columns: 132px 1fr; gap: 7px 14px; }
+.wb-rows dt {
+  font-size: 12px; color: var(--fg-faint); font-family: var(--mono);
+  padding-top: 2px;
+}
+.wb-rows dd {
+  margin: 0; font-size: 12.5px; color: var(--fg);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+}
+.wb-rows code, .wb-src {
+  font-family: var(--mono); font-size: 11.5px; background: var(--panel);
+  padding: 1px 5px; border-radius: 5px;
+}
+.wb-note { font-size: 11.5px; color: var(--fg-dim); line-height: 1.55; }
+.wb-note.block { display: block; margin-top: 8px; max-width: 78ch; }
+.wb-na, .wb-inherited { color: var(--fg-faint); }
+
+/* Provenance is never a separate page: it sits next to the value it explains,
+   because "why is this ask when the default is yolo" is asked while looking at
+   the value. */
+.wb-prov {
+  font-size: 10.5px; color: var(--fg-faint); cursor: help;
+  border-bottom: 1px dotted var(--line-strong);
+}
+.wb-prov.none { border: 0; }
+.wb-chain { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.wb-slot {
+  font-size: 10px; font-family: var(--mono); color: var(--fg-faint);
+  padding: 1px 5px; border: 1px solid var(--line); border-radius: 6px; cursor: help;
+}
+.wb-slot.win {
+  color: var(--fg); border-color: var(--kind-agent);
+  background: color-mix(in srgb, var(--kind-agent) 12%, transparent);
+}
+.wb-arrow { color: var(--fg-faint); font-size: 9px; }
+
+.wb-body {
+  width: 100%; min-height: 190px; resize: vertical; font-family: var(--mono);
+  font-size: 12px; line-height: 1.6; padding: 10px 12px; color: var(--fg);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+}
+.wb-body:focus { outline: none; border-color: var(--kind-agent); }
+.wb-body-foot {
+  display: flex; justify-content: space-between; gap: 12px; margin-top: 6px;
+  align-items: baseline;
+}
+.wb-body-count { font-size: 11px; color: var(--fg-faint); font-family: var(--mono); }
+
+.wb-grant { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wb-pattern, .wb-tool {
+  font-family: var(--mono); font-size: 11.5px; padding: 2px 7px;
+  border-radius: 7px; background: var(--panel); border: 1px solid var(--line);
+  color: var(--fg);
+}
+.wb-tool { cursor: help; text-decoration: none; }
+a.wb-tool:hover { border-color: var(--kind-agent); }
+.wb-inherit { font-size: 12px; color: var(--fg-dim); }
+.wb-tool-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.wb-footer-line {
+  margin-top: 9px; font-size: 12.5px; color: var(--fg);
+  padding: 7px 10px; border-radius: 8px; background: var(--panel);
+  border-left: 3px solid var(--kind-agent);
+}
+
+.wb-denied { margin-top: 10px; }
+.wb-denied > summary {
+  cursor: pointer; font-size: 11.5px; color: var(--fg-dim); padding: 4px 0;
+}
+.wb-denied > summary:hover { color: var(--fg); }
+.wb-denied-row {
+  display: grid; grid-template-columns: 150px 1fr; gap: 10px; padding: 4px 0;
+  border-top: 1px solid var(--line); font-size: 11.5px; color: var(--fg-dim);
+}
+.wb-denied-row code { font-family: var(--mono); color: var(--fg); }
+
+.wb-problems .wb-problem {
+  display: grid; grid-template-columns: 64px 1fr auto; gap: 10px;
+  padding: 8px 0; border-top: 1px solid var(--line); align-items: start;
+}
+.wb-sev {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 1px 6px; border-radius: 6px; background: var(--panel); color: var(--fg-dim);
+}
+.wb-problem[data-sev="error"] .wb-sev { color: var(--error); }
+.wb-problem[data-sev="warning"] .wb-sev { color: var(--warning); }
+.wb-problem-msg { font-size: 12.5px; color: var(--fg); }
+.wb-problem-fix { font-size: 11.5px; color: var(--fg-dim); margin-top: 2px; }
+.wb-problem-code { font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); }
+
+.wb-form { margin-top: 12px; }
+
+/* ---------- the preview pane ---------- */
+
+.wb-preview {
+  display: flex; flex-direction: column; height: 100%; min-height: 0;
+  background: var(--surface); position: sticky; top: 0;
+}
+.wb-preview.is-busy { opacity: .72; }
+.wb-pv-head {
+  flex: none; padding: 10px 14px 8px; border-bottom: 1px solid var(--line);
+}
+.wb-pv-tabs { display: inline-flex; gap: 2px; }
+.pv-tab {
+  font-size: 12px; padding: 4px 10px; border-radius: 8px; color: var(--fg-dim);
+  background: transparent; border: 1px solid transparent;
+}
+.pv-tab:hover { color: var(--fg); }
+.pv-tab.active { background: var(--boost); color: var(--fg); }
+.wb-pv-state {
+  margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+}
+.pv-state {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  padding: 1px 7px; border-radius: 7px; border: 1px solid var(--line-strong);
+  color: var(--fg-dim);
+}
+.pv-state.live {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+.pv-state.frozen {
+  color: var(--chip-user);
+  border-color: color-mix(in srgb, var(--chip-user) 45%, transparent);
+}
+.pv-state.draft {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.pv-state-note { font-size: 11px; color: var(--fg-faint); line-height: 1.5; }
+
+.wb-pv-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
+.wb-pv-foot {
+  flex: none; display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+}
+
+.pv-prompt {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.62;
+  white-space: pre-wrap; word-break: break-word; color: var(--fg-dim);
+}
+/* Each section keeps its own left margin, so the boundaries are visible without
+   colouring the text. An undifferentiated wall of prose is what this replaces. */
+.pv-block {
+  display: block; position: relative; padding: 3px 0 3px 11px;
+  border-left: 2px solid var(--line-strong); margin: 3px 0; color: var(--fg);
+}
+.pv-block:hover { border-left-color: var(--kind-prompt); }
+.pv-block.is-overridden { border-left-color: var(--kind-agent); }
+.pv-block-tag {
+  position: absolute; left: 11px; top: -8px; font-size: 9px;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--fg-faint);
+  background: var(--surface); padding: 0 4px;
+}
+.pv-gap { color: var(--fg-faint); }
+
+.pv-absences { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.pv-absences h5, .pv-denied h5 {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--fg-faint); margin-bottom: 6px;
+}
+.pv-absent { padding: 5px 0; border-top: 1px solid var(--line); }
+.pv-absent:first-of-type { border-top: 0; }
+.pv-absent-id {
+  display: block; font-size: 11.5px; color: var(--fg-dim);
+  text-decoration: line-through;
+}
+.pv-absent-why { font-size: 11px; color: var(--fg-faint); line-height: 1.5; }
+
+.pv-tools { display: flex; flex-direction: column; gap: 3px; }
+.pv-tool > summary {
+  display: flex; align-items: center; gap: 7px; cursor: pointer;
+  padding: 4px 6px; border-radius: 7px; font-size: 11.5px;
+}
+.pv-tool > summary:hover { background: var(--panel); }
+.pv-tool-name { font-family: var(--mono); color: var(--fg); }
+.pv-tool-by { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+.pv-tool-size { font-size: 10px; color: var(--fg-faint); font-family: var(--mono); }
+.pv-json {
+  font-family: var(--mono); font-size: 11px; line-height: 1.55; padding: 8px 10px;
+  background: var(--bg); border-radius: 8px; overflow-x: auto; margin: 4px 0 8px;
+}
+/* R/W is a column, never a colour that competes with tier and kind: read-only
+   tools skip the permission prompt and run in parallel, which makes this the
+   single most consequential fact about a tool. */
+.pv-flag, .tp-flag {
+  font-size: 9.5px; font-family: var(--mono); padding: 0 5px; border-radius: 5px;
+  border: 1px solid var(--line); color: var(--fg-faint);
+}
+.pv-flag.ro, .tp-flag.ro { color: var(--secondary); }
+.pv-flag.rw, .tp-flag.rw { color: var(--accent); }
+.pv-flag.sh, .tp-flag.sh { color: var(--warning); }
+.tp-flag.sh:empty, .pv-flag.sh:empty { border: 0; }
+
+.pv-denied { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.pv-denied-lede {
+  font-size: 11px; color: var(--fg-faint); line-height: 1.55; margin-bottom: 6px;
+}
+.pv-denied-row {
+  display: grid; grid-template-columns: 118px 22px 1fr; gap: 7px;
+  align-items: baseline; padding: 4px 0; border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.pv-denied-row code { font-family: var(--mono); color: var(--fg-dim); }
+.pv-denied-why { color: var(--fg-faint); line-height: 1.5; }
+.pv-count { color: var(--fg-faint); }
+.pv-empty { font-size: 12px; color: var(--fg-dim); line-height: 1.6; }
+
+/* ---------- the tool picker ---------- */
+
+.tp-grant {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); margin-bottom: 12px;
+}
+.tp-grant-head { display: flex; justify-content: space-between; align-items: baseline; }
+.tp-grant-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--fg-faint);
+}
+.tp-matched { font-size: 11px; color: var(--fg-dim); font-family: var(--mono); }
+.tp-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; min-height: 22px; }
+.tp-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 7px;
+  border: 1px solid var(--line-strong); border-radius: 7px; font-size: 11.5px;
+}
+.tp-chip code { font-family: var(--mono); }
+.tp-x { color: var(--fg-faint); font-size: 12px; padding: 0 3px; }
+.tp-x:hover { color: var(--error); }
+.tp-add { display: flex; gap: 6px; }
+.tp-input, .tp-search {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px;
+  padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--fg);
+}
+.tp-inherit {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+  font-size: 11.5px; color: var(--fg-dim);
+}
+.tp-inherit-note { font-size: 11.5px; color: var(--fg-dim); }
+.tp-locked {
+  font-size: 11.5px; color: var(--warning); padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  margin-bottom: 10px;
+}
+.tp-filter { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.tp-legend { display: flex; gap: 9px; font-size: 10.5px; color: var(--fg-faint); }
+
+.tp-group { margin-bottom: 10px; }
+.tp-group-head {
+  display: flex; justify-content: space-between; font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--fg-faint);
+  padding: 4px 6px; border-bottom: 1px solid var(--line);
+}
+.tp-row {
+  display: grid; grid-template-columns: 18px 132px 1fr 22px 38px 190px;
+  gap: 8px; align-items: baseline; width: 100%; text-align: left;
+  padding: 4px 6px; border-radius: 7px; font-size: 11.5px; background: transparent;
+}
+.tp-row:hover:not(:disabled) { background: var(--panel); }
+.tp-row:disabled { opacity: .55; cursor: default; }
+.tp-mark { font-family: var(--mono); color: var(--fg-faint); }
+.tp-row[data-state="matched"] .tp-mark { color: var(--success); }
+.tp-row[data-state="matched-by-glob"] .tp-mark { color: var(--primary); }
+.tp-name {
+  font-family: var(--mono); color: var(--fg); overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tp-desc {
+  color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-via { text-align: right; font-size: 10.5px; }
+.tp-pattern { font-family: var(--mono); color: var(--primary); }
+.tp-why { color: var(--fg-faint); }
+.tp-family > summary {
+  display: grid; grid-template-columns: 18px 132px 1fr 190px; gap: 8px;
+  align-items: baseline; cursor: pointer; padding: 4px 6px; border-radius: 7px;
+  font-size: 11.5px;
+}
+.tp-family > summary:hover { background: var(--panel); }
+.tp-family .tp-row { padding-left: 22px; }
+.tp-footer { font-size: 11.5px; color: var(--fg); }
+.tp-footer.is-err { color: var(--error); }
+.tp-foot-actions { margin-left: auto; display: flex; gap: 6px; }
+
+/* ---------- the composition pill and its menu ---------- */
+
+.comp-menu .menu-head {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--fg-faint); padding: 8px 12px 4px;
+}
+.comp-menu .menu-blocked {
+  margin: 4px 10px 6px; padding: 7px 9px; border-radius: 8px; font-size: 11.5px;
+  line-height: 1.55; color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+}
+.comp-menu .comp-custom { border-top: 1px solid var(--line); }
+.comp-menu .comp-note {
+  padding: 7px 12px 9px; font-size: 11px; line-height: 1.55; color: var(--fg-faint);
+  border-top: 1px solid var(--line);
+}
+.comp-menu .comp-note.is-err { color: var(--error); }
+#composition-pill.blocked { opacity: .6; }
+
+/* ---------- narrower windows ---------- */
+
+@media (max-width: 1280px) {
+  /* The preview is never removed, only relocated: it is the feature. */
+  .wb { grid-template-columns: 1fr; grid-template-rows: 320px 1fr; }
+  .wb-preview-slot { border-left: 0; border-bottom: 1px solid var(--line); order: -1; }
+  .wb-preview { position: static; }
+}

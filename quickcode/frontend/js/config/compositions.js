@@ -39,7 +39,11 @@ function card(p, active, live) {
       <div class="k-summary">${esc(p.description || "")}</div>
       <dl class="pv-comp">
         <dt>Tools</dt><dd>${patterns(p.tools, "none — nothing callable")}</dd>
-        <dt>Subagents</dt><dd>${patterns(p.agents, "none — delegation tools dropped")}</dd>
+        <dt>Subagents</dt><dd>${patterns(
+          // `agents` carries two meanings by type — a legacy spawn list or a
+          // dict of per-agent compositions — so the unambiguous key is the one
+          // to read. Reading `agents` here rendered `[object Object]`.
+          p.spawns, "none — delegation tools dropped")}</dd>
         <dt>Mode</dt><dd>${p.default_mode
           ? `<code class="pv-tag">${esc(p.default_mode)}</code>`
           : `<span class="pv-none">the install default</span>`}</dd>
@@ -54,6 +58,10 @@ function card(p, active, live) {
       ${isActive
         ? `<span class="pv-note">new sessions use this</span>`
         : `<button class="btn" data-use="${esc(p.id)}">Use for new sessions</button>`}
+      <a class="ghost-btn" href="#/config/agents/%40orchestrator?preset=${
+        encodeURIComponent(p.id)}">Open in the workbench</a>
+      <button class="ghost-btn" data-derive="${esc(p.id)}"
+        title="Duplicate this into a composition you own">Customise this…</button>
     </div>
   </article>`;
 }
@@ -92,17 +100,39 @@ export function renderCompositions(host, ctx, selected = "") {
     <span class="set-flash" data-flash></span>
     <div class="k-list">${list.map((p) => card(p, data.active, live[p.id] || 0)).join("")
       || `<div class="set-empty">No composition with that id.</div>`}</div>
-    ${selected ? `<section class="cfg-soon">
-      <h4>Editing — next pass</h4>
-      <p>Editing a composition in place (its tool patterns, which agents it may
-        spawn, per-agent prompt bodies and bindings) is the authoring pass.
-        Today a composition is written in <code>.quickcode/settings.json</code>
-        under <code>presets</code>, and everything above is read straight from
-        it.</p>
+    ${selected ? `<section class="cfg-sec">
+      <h4>Editing</h4>
+      <p class="cfg-note">A composition is an agent identity under a switchable
+        name, so it is edited in the same workbench as any other agent:
+        <a class="k-link" href="#/config/agents/%40orchestrator?preset=${
+          encodeURIComponent(selected)}">open its orchestrator →</a>. A built-in
+        composition is duplicated first — <em>Customise this…</em> writes a copy
+        into <code>.quickcode/settings.json</code> that you own. Per-agent
+        overlays and bindings are still written by hand in that file.</p>
     </section>` : ""}
   </div>`;
 
   host.querySelector(".k-list").addEventListener("click", async (e) => {
+    const derive = e.target.closest("[data-derive]");
+    if (derive) {
+      e.preventDefault();
+      const msg = host.querySelector("[data-flash]");
+      try {
+        // The on-ramp: most people discover they want a custom composition at
+        // the moment an existing one is nearly right.
+        const made = await ctx.api.deriveComposition(derive.dataset.derive);
+        ctx.presets = await ctx.api.presets();
+        renderCompositions(host, ctx, selected);
+        flash(host.querySelector("[data-flash]"),
+          `Created “${made.title}” in this project — open it to edit.`);
+        ctx.railDirty?.();
+        location.hash = `#/config/agents/%40orchestrator?preset=${
+          encodeURIComponent(made.id)}`;
+      } catch (err) {
+        flash(msg, splitError(err).detail, "err");
+      }
+      return;
+    }
     const btn = e.target.closest("[data-use]");
     if (!btn) return;
     e.preventDefault();

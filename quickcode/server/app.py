@@ -38,6 +38,7 @@ from quickcode.kernel.spec import (
 from quickcode.kernel.state import prompt_overrides
 from quickcode.prompts.system import render_with_sections
 from quickcode.server import auth
+from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
@@ -752,6 +753,11 @@ def create_app(
     # lines. Declared after the kernel routes so the literal ``authored``
     # segment cannot be read as a plugin id.
     register_authoring_routes(app, lambda: hub.default, _project)
+    # The agent workbench: inventory, resolved composition with provenance,
+    # preview from an unsaved draft, and the session-scoped switch. Takes the
+    # hub rather than the two lambdas because the session routes reach a
+    # conversation by id, not only the default project.
+    register_agent_routes(app, hub)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():

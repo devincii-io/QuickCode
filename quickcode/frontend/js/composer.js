@@ -2,8 +2,9 @@
 // send / interrupt / compact, mode + model pills, input history (localStorage)
 // and the slash-command menu. Parity with the old Textual TUI composer.
 
-import { currentProject } from "./api.js";
+import { api, currentProject } from "./api.js";
 import { openHelp, openModeMenu, openModelMenu } from "./modals.js";
+import { store } from "./store.js";
 import { esc } from "./util.js";
 import { actions } from "./ws.js";
 
@@ -19,6 +20,158 @@ const MODE_DESCS = [
   ["dontask", "Never prompts — anything outside the rules is denied."],
   ["yolo", "No permission prompts at all (needs --yolo)."],
 ];
+
+// ---- the composition pill -------------------------------------------------
+//
+// Three things are session-scoped and belong next to the send button: the mode,
+// the model, and now the composition. Everything else — authoring a plugin,
+// editing an agent, changing what a composition *means* — takes effect in the
+// next session and lives in the configuration view. A setting whose blast
+// radius is every future session does not belong on a pill.
+//
+// The rule the switch follows is the plan's, and it is a refusal rather than a
+// queue: the model has already been told what tools it has, so a switch is
+// taken at a turn boundary or not at all. A switch that lands invisibly three
+// seconds later is worse than one that does not happen.
+
+const GAP = 6;
+
+let compositionPill = null;
+let compMenuEl = null;
+
+function compositionState() {
+  return store.state?.composition || null;
+}
+
+const RUNNING = new Set(["sending", "streaming", "executing_tools"]);
+
+// The `state` event is emitted at turn boundaries, so `busy` on it lags a turn
+// that is under way; the status stream does not. Both are only a hint: the
+// server re-checks and answers 409 with the reason, and that answer is the
+// authority.
+function blockedReason() {
+  const c = compositionState();
+  if (RUNNING.has(store.agentStatus)) {
+    return "the agent is running — a composition switch takes effect at a turn "
+      + "boundary, so it is refused rather than queued";
+  }
+  return c && !c.switchable ? c.blocked_reason : "";
+}
+
+export function refreshCompositionPill() {
+  if (!compositionPill) return;
+  const c = compositionState();
+  if (!c) {
+    compositionPill.classList.add("hidden");
+    return;
+  }
+  const blocked = blockedReason();
+  compositionPill.classList.remove("hidden");
+  compositionPill.textContent = `${c.id || "standard"} ▾`;
+  compositionPill.classList.toggle("blocked", !!blocked);
+  compositionPill.title = blocked
+    ? `Cannot switch right now: ${blocked}`
+    : `Composition: ${c.tools} tools · ceiling ${c.ceiling}`
+      + (c.spawns?.length ? ` · spawns ${c.spawns.join(", ")}` : " · no delegation")
+      + "\nSwitching applies at a turn boundary.";
+}
+
+function closeCompMenu() {
+  if (compMenuEl) { compMenuEl.remove(); compMenuEl = null; }
+}
+
+function placeMenu(m, anchor) {
+  const r = anchor.getBoundingClientRect();
+  m.style.maxHeight = Math.max(160, Math.min(window.innerHeight * 0.6,
+    r.top - GAP * 2)) + "px";
+  m.style.bottom = window.innerHeight - r.top + GAP + "px";
+  m.style.top = "auto";
+  m.style.left = Math.max(GAP,
+    Math.min(r.left, window.innerWidth - m.offsetWidth - 12)) + "px";
+}
+
+async function openCompositionMenu(anchor) {
+  document.querySelectorAll(".menu").forEach((m) => m.remove());
+  const current = compositionState();
+  let payload = null;
+  try { payload = await api.presets(); } catch { /* offline: an empty list */ }
+  const presets = payload?.presets || [];
+
+  const rows = presets.map((p) => `
+    <button class="menu-item" data-preset="${esc(p.id)}">
+      <div class="mi-title">${esc(p.title)}${
+        p.id === current?.id ? '<span class="check">✓</span>' : ""}</div>
+      <div class="mi-desc">${esc(p.description || "")}</div>
+    </button>`).join("");
+
+  const blocked = blockedReason();
+  const m = document.createElement("div");
+  m.className = "menu comp-menu";
+  m.innerHTML = `
+    <div class="menu-head">Composition for this session</div>
+    ${blocked ? `<div class="menu-blocked">Refused right now — ${esc(blocked)}.
+      It is not queued: the model has already been told what tools it has, so a
+      switch is taken between turns or not at all.</div>` : ""}
+    <div class="menu-list">${rows}</div>
+    <button class="menu-item comp-custom" data-customise>
+      <div class="mi-title">Customise this…</div>
+      <div class="mi-desc">Duplicate the active composition into one you own and
+        open it in the workbench.</div>
+    </button>
+    <div class="comp-note" data-comp-note>Switching re-resolves the tools, the
+      prompt and the ceiling, records it in the session log and marks the
+      transcript. The next turn pays one uncached input.</div>`;
+  document.body.appendChild(m);
+  compMenuEl = m;
+  placeMenu(m, anchor);
+
+  const dismiss = (e) => {
+    if (!m.isConnected) { document.removeEventListener("mousedown", dismiss, true); return; }
+    if (!m.contains(e.target)) { closeCompMenu(); document.removeEventListener("mousedown", dismiss, true); }
+  };
+  setTimeout(() => document.addEventListener("mousedown", dismiss, true), 0);
+
+  m.addEventListener("click", async (e) => {
+    const note = m.querySelector("[data-comp-note]");
+    if (e.target.closest("[data-customise]")) {
+      closeCompMenu();
+      try {
+        const made = await api.deriveComposition(current?.id || "standard");
+        location.hash = `#/config/agents/%40orchestrator?preset=${
+          encodeURIComponent(made.id)}`;
+      } catch (err) {
+        window.alert(`Could not duplicate the composition: ${err.message}`);
+      }
+      return;
+    }
+    const btn = e.target.closest("[data-preset]");
+    if (!btn) return;
+    note.textContent = "Switching…";
+    try {
+      await api.switchComposition(store.convId, btn.dataset.preset);
+      closeCompMenu();
+    } catch (err) {
+      // The server's own words. A 409 here is the reason, and it is the most
+      // useful sentence on the screen.
+      note.textContent = String(err.message).replace(/^\d+:\s*/, "");
+      note.classList.add("is-err");
+    }
+  });
+}
+
+function mountCompositionPill() {
+  const left = document.querySelector(".composer-left");
+  if (!left || compositionPill) return;
+  compositionPill = document.createElement("button");
+  compositionPill.id = "composition-pill";
+  compositionPill.className = "pill hidden";
+  compositionPill.title = "Composition";
+  compositionPill.textContent = "standard ▾";
+  // Beside mode and model, because those are the other two things a person
+  // changes mid-conversation.
+  left.insertBefore(compositionPill, left.children[2] || null);
+  compositionPill.addEventListener("click", (e) => openCompositionMenu(e.currentTarget));
+}
 
 // ---- history (project-scoped, shared across conversations) ----
 
@@ -83,6 +236,10 @@ const COMMANDS = [
   {
     name: "/model", desc: "Pick the model for this session",
     exec: () => openModelMenu($("model-pill")),
+  },
+  {
+    name: "/composition", desc: "Switch this session's composition (at a turn boundary)",
+    exec: () => openCompositionMenu($("composition-pill") || $("model-pill")),
   },
   {
     name: "/help", desc: "Keyboard shortcuts and slash commands",
@@ -288,6 +445,7 @@ function send() {
 export function initComposer(h) {
   hooks = { onNewConversation: () => {}, ...(h || {}) };
   input = $("input");
+  mountCompositionPill();
 
   input.addEventListener("input", () => {
     histIdx = null;               // typing leaves history browsing
@@ -344,7 +502,10 @@ export function initComposer(h) {
   $("model-pill").addEventListener("click", (e) => openModelMenu(e.currentTarget));
   $("btn-help")?.addEventListener("click", () => openHelp());
 
-  window.addEventListener("resize", () => { if (slashOpen()) position(); });
+  window.addEventListener("resize", () => {
+    if (slashOpen()) position();
+    if (compMenuEl && compositionPill) placeMenu(compMenuEl, compositionPill);
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !document.querySelector(".modal-backdrop, .menu")) {
