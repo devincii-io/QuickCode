@@ -8,6 +8,7 @@
 // into that view and says so.
 
 import { api } from "./api.js";
+import { KEYS, PANEL_NOTE, SLASH } from "./help/shortcuts.js";
 import { sheetOpen } from "./settings/ui.js";
 import { store, subscribe } from "./store.js";
 import { actions } from "./ws.js";
@@ -319,35 +320,31 @@ function askCustomModel(prefill = "") {
 }
 
 // ---- help ----
+//
+// `?` stays a modal, and that is a decision rather than an oversight. It is
+// pressed mid-sentence to remember one shortcut, and answering that with a view
+// transition — losing the transcript you were looking at, changing the URL —
+// would be a worse app for the commonest question. So the fast reference stays
+// exactly where people expect it.
+//
+// What the modal is no longer allowed to be is the *whole* of the help. It now
+// ends in a link into #/help, which is the surface that can explain how the
+// pieces fit together, and it reads its two lists from js/help/shortcuts.js so
+// the quick reference and the full one cannot drift apart.
 
-const HELP_KEYS = [
-  ["Enter", "Send the message"],
-  ["Shift + Enter", "Newline inside the composer"],
-  ["Esc", "Interrupt the agent (when no menu or dialog is open)"],
-  ["↑ / ↓", "Walk back and forward through sent-message history"],
-  ["/", "Open the slash-command menu; Tab completes, Enter runs, Esc closes"],
-];
-
-const HELP_COMMANDS = [
-  ["/compact", "Compress the conversation into a summary"],
-  ["/clear", "Start a new conversation"],
-  ["/mode &lt;plan|ask|auto-edit|dontask|yolo&gt;", "Switch the permission mode"],
-  ["/model", "Pick the model for this session"],
-  ["/help", "This reference"],
-];
-
-export function openHelp() {
+export function openHelp({ onFull } = {}) {
   const row = ([k, d]) =>
     `<div class="help-row"><span class="help-key">${k}</span>
        <span class="help-desc">${d}</span></div>`;
-  modal("Help", `
+  const m = modal("Help", `
     <div class="help-sec">
       <h4>Keyboard</h4>
-      ${HELP_KEYS.map(([k, d]) => row([esc(k), esc(d)])).join("")}
+      ${KEYS.map(([k, d]) => row([esc(k), esc(d)])).join("")}
     </div>
     <div class="help-sec">
       <h4>Slash commands</h4>
-      ${HELP_COMMANDS.map(([k, d]) => row([k, esc(d)])).join("")}
+      ${SLASH.map(([cmd, arg, d]) =>
+        row([esc(cmd) + (arg ? " " + esc(arg) : ""), esc(d)])).join("")}
     </div>
     <div class="help-sec">
       <h4>Permission modes</h4>
@@ -355,11 +352,20 @@ export function openHelp() {
     </div>
     <div class="help-sec">
       <h4>Side panel</h4>
-      <div class="help-note">The right-hand panel holds Trajectory, Agents,
-        Tasks, Files and Usage. Drag its left edge to resize, press ⛶ to give
-        it the whole window (Esc brings the chat back), and use the ⌕ trace
-        links in the transcript to jump straight to an event.</div>
-    </div>`);
+      <div class="help-note">${esc(PANEL_NOTE)}</div>
+    </div>`,
+    `<button class="btn primary" id="help-full">Open the full help →</button>`);
+  // Three places open this modal (the top bar, Home, and /help) and none of
+  // them cares where "full help" goes, so the default is the route itself. The
+  // callback exists for the one caller that wants to remember where it came
+  // from; without it the link still works, which is what keeps this button from
+  // ever being the dead control it would otherwise become.
+  m.querySelector("#help-full").addEventListener("click", () => {
+    closeModal();
+    if (onFull) onFull();
+    else location.hash = "#/help/overview";
+  });
+  return m;
 }
 
 // ---- sessions ----

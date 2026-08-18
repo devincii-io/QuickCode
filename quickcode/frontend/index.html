@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="css/trajectory.css">
 <link rel="stylesheet" href="css/settings.css">
 <link rel="stylesheet" href="css/config.css">
+<link rel="stylesheet" href="css/help.css">
 <link rel="icon" href="assets/favicon.ico">
 <link rel="manifest" href="assets/manifest.webmanifest">
 </head>
@@ -222,6 +223,29 @@
     <div class="cfg-body">
       <nav id="cfg-rail" class="cfg-rail" aria-label="Configuration sections"></nav>
       <main id="cfg-page" class="cfg-page"></main>
+    </div>
+  </section>
+
+  <!-- ============================== HELP ============================== -->
+  <!-- A fourth top-level view, peer of Configuration: every page has a URL so a
+       Settings card can link to the paragraph that explains it, and showing it
+       must never cost the workspace its socket. -->
+  <section id="view-help" class="view view-help">
+    <header id="help-top">
+      <button id="help-brand" class="brand" title="Back to what you were doing">
+        <span class="brand-mark"><img src="assets/icon.svg" alt="" width="18" height="18"></span>
+        <span class="brand-name">QuickCode</span>
+      </button>
+      <span class="cfg-where">Help</span>
+      <div class="hp-top-spacer"></div>
+      <div class="hp-top-actions">
+        <a class="ghost-btn" href="#/config/agents" title="Open Configuration">⚙ Configuration</a>
+        <button id="help-done" class="ghost-btn" title="Back to the session">Done ✕</button>
+      </div>
+    </header>
+    <div class="cfg-body">
+      <nav id="help-rail" class="cfg-rail" aria-label="Help sections"></nav>
+      <main id="help-page" class="cfg-page"></main>
     </div>
   </section>
 

@@ -1,0 +1,645 @@
+/* The Help view: #view-help, its rail, the turn diagram and the hands-on
+ * widgets.
+ *
+ * Help is a peer of Configuration, not a second design. Everything structural
+ * here is deliberately the same shape as css/config.css — the same rail, the
+ * same page furniture, the same card — and the classes that already exist
+ * (.cfg-rail, .cfg-page-inner, .cfg-head, .cfg-lede, .cfg-sub, .k-card,
+ * .k-explain, .tier-*, .k-sigil) are reused rather than re-cut. What is new
+ * below is only what Configuration has no equivalent of: the turn diagram and
+ * the widgets.
+ *
+ * Two rules carried over from config.css and kept:
+ *
+ *   **Nothing hardcodes a colour.** The theme is eleven variables swapped at
+ *   runtime (js/util.js applyTheme), so every value here is a token or a
+ *   color-mix of one. A literal hex would survive a theme change and be the
+ *   one wrong pixel on the screen.
+ *
+ *   **Kind owns the hue.** The diagram nodes carry the same data-kind values
+ *   the cards do, so the box for the prompt is the same violet as a prompt
+ *   card and the box for a tool is the same amber. Learning the diagram is
+ *   therefore learning the colour language of the rest of the app.
+ *
+ * The .help-* prefix is already taken by the keyboard modal in app.css:594.
+ * Everything here is .hp-.
+ */
+
+/* ---------- the view ----------
+   shell.css owns the view switch and knows about three views. These rules add
+   the fourth without editing it. `#app > .view { display: none }` already hides
+   #view-help by default, so all that is needed is to show it and to beat the
+   two rules that would otherwise leave Home or the workspace showing
+   underneath — each of those carries two ids and two classes, so these match it
+   exactly and win on order, this file being linked after shell.css.
+
+   Configuration still outranks Help if both classes are somehow set, which is
+   the same precedence shell.css already gives it over the other two. */
+
+#app.showing-help:not(.showing-config) #view-help {
+  display: flex; flex-direction: column;
+}
+#app.showing-help:not(.showing-config) #view-workspace,
+#app.showing-help:not(.showing-config) #view-home { display: none; }
+
+/* ---------- shell ---------- */
+
+#help-top {
+  flex: none; display: flex; align-items: center; gap: 14px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+#help-top .brand { flex: none; padding: 3px 8px 3px 4px; border-radius: 8px; }
+#help-top .brand:hover { background: var(--panel); }
+.hp-top-spacer { flex: 1 1 auto; min-width: 0; }
+.hp-top-actions { flex: none; display: flex; gap: 6px; align-items: center; }
+.hp-top-actions .ghost-btn { text-decoration: none; }
+
+/* The body below the header is .cfg-body / .cfg-rail / .cfg-page verbatim, not
+   a parallel set of classes: the rail behaves identically, the narrow-window
+   collapse in config.css:393 applies for free, and there is no second layout to
+   keep in sync. Only the header needs its own id, because #config-top is an id
+   selector this file cannot join. */
+
+/* Prose pages, unlike the configuration workbench, are read rather than
+   scanned: a narrower measure than .cfg-page-inner's 1080px. The diagram opts
+   back out of it on its own. */
+.hp-inner { padding: 20px 26px 72px; max-width: 940px; }
+
+.hp-lede {
+  font-size: 13px; line-height: 1.7; color: var(--fg-dim); max-width: 74ch;
+  margin-bottom: 18px;
+}
+.hp-lede em { color: var(--fg); font-style: normal; }
+.hp-p {
+  font-size: 13px; line-height: 1.75; color: var(--fg-dim); max-width: 74ch;
+  margin-bottom: 12px;
+}
+.hp-p:last-child { margin-bottom: 0; }
+.hp-p strong { color: var(--fg); font-weight: 600; }
+.hp-p code, .hp-lede code, .hp-li code, .hp-dd code {
+  font-family: var(--mono); font-size: 11.5px; background: var(--panel);
+  padding: 1px 5px; border-radius: 4px; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.hp-a { color: var(--accent); text-decoration: none; }
+.hp-a:hover { text-decoration: underline; }
+
+.hp-list { list-style: none; max-width: 74ch; margin-bottom: 12px; }
+.hp-li {
+  font-size: 13px; line-height: 1.7; color: var(--fg-dim);
+  padding-left: 16px; text-indent: -16px; margin-bottom: 7px;
+}
+.hp-li::before { content: "→ "; color: var(--fg-faint); }
+.hp-li strong { color: var(--fg); font-weight: 600; }
+
+/* A short definition table: the term, then what it means here. */
+.hp-defs {
+  display: grid; grid-template-columns: minmax(120px, 168px) minmax(0, 1fr);
+  gap: 8px 16px; max-width: 82ch; margin: 4px 0 16px;
+}
+.hp-dt {
+  font-size: 12px; font-family: var(--mono); color: var(--fg); padding-top: 2px;
+  overflow-wrap: anywhere;
+}
+.hp-dd { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--fg-dim); }
+
+/* A quoted sentence the app itself wrote — a docstring, a plugin's own
+   `consequence`. Marked as a quotation so a reader can tell what is this page
+   talking and what is the codebase talking. */
+.hp-quote {
+  border-left: 2px solid var(--line-strong); padding: 2px 0 2px 12px;
+  margin: 10px 0 14px; max-width: 74ch;
+  font-size: 12.5px; line-height: 1.7; color: var(--fg-dim);
+}
+.hp-quote cite {
+  display: block; margin-top: 5px; font-style: normal;
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+}
+
+/* The "this is modelled in the browser" line. Every widget that reasons
+   client-side instead of asking the server carries one, because a widget that
+   quietly reimplements the backend is how a help page starts lying. */
+.hp-honesty {
+  font-size: 11px; line-height: 1.55; color: var(--fg-faint);
+  border-left: 2px solid var(--warning); padding-left: 9px; margin-top: 10px;
+  max-width: 70ch;
+}
+.hp-honesty.live { border-left-color: var(--success); }
+
+.hp-note {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); padding: 11px 13px; margin: 16px 0; max-width: 78ch;
+}
+.hp-note h4 {
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint); margin-bottom: 7px;
+}
+.hp-note .hp-p { margin-bottom: 7px; }
+
+/* ==========================================================================
+ * The turn diagram
+ *
+ * Hand-built: a grid of nodes, CSS rules for the connectors, one inline SVG
+ * for the round-trip arc that no border can draw. It scrolls inside itself at
+ * narrow widths rather than widening the page — the page body never scrolls
+ * sideways.
+ * ======================================================================== */
+
+.hp-diagram-wrap {
+  overflow-x: auto; overscroll-behavior-x: contain;
+  padding: 4px 0 10px; margin-bottom: 6px;
+}
+.hp-diagram {
+  position: relative; min-width: 620px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 0 26px;
+  align-items: start;
+}
+
+/* The spine: the ordered stages of one turn, top to bottom. */
+.hp-spine { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+
+.hp-node {
+  display: block; width: 100%; text-align: left; text-decoration: none;
+  color: inherit; position: relative;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 9px 12px 10px 14px;
+}
+.hp-node::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: var(--kind-hue, var(--fg-faint));
+}
+.hp-node:hover { border-color: var(--line-strong); background: var(--surface); }
+.hp-node:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+.hp-node-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hp-node-title { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.hp-node-step {
+  flex: none; font-family: var(--mono); font-size: 10px; color: var(--fg-faint);
+  border: 1px solid var(--line); border-radius: 9px; padding: 0 6px;
+}
+.hp-node-go {
+  margin-left: auto; flex: none; font-size: 10.5px; color: var(--accent);
+  white-space: nowrap;
+}
+.hp-node:hover .hp-node-go { text-decoration: underline; }
+.hp-node-body {
+  margin: 4px 0 0 30px; font-size: 11.5px; line-height: 1.55; color: var(--fg-dim);
+}
+.hp-node-body code {
+  font-family: var(--mono); font-size: 11px; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/* The connector between two stages. A rule with an arrowhead, and a label
+   riding on it where the edge is a decision rather than a step. */
+.hp-edge {
+  position: relative; height: 30px; margin-left: 24px;
+  display: flex; align-items: center;
+}
+.hp-edge::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 8px; width: 2px;
+  background: var(--line-strong);
+}
+.hp-edge::after {
+  content: ""; position: absolute; left: -3px; bottom: 2px;
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 6px solid var(--line-strong);
+}
+.hp-edge-label {
+  margin-left: 14px; font-size: 10.5px; color: var(--fg-faint);
+  font-family: var(--mono); background: var(--bg); padding: 0 6px;
+  border-radius: 8px;
+}
+.hp-edge-label b { color: var(--fg-dim); font-weight: 400; }
+
+/* Your message and the model's turn take the hues the transcript already gives
+   them (app.css:23-31), so the diagram is readable in the vocabulary of the
+   chat window rather than in one invented for this page. */
+.hp-node[data-node="you"], .hp-key-swatch[data-node="you"] {
+  --kind-hue: var(--chip-user);
+}
+.hp-node[data-node="model"], .hp-node[data-node="answer"],
+.hp-key-swatch[data-node="model"] { --kind-hue: var(--chip-assistant); }
+
+/* The two ways out of the model: another round, or the answer. Rendered as one
+   row of two edges so the fork is visible as a fork. */
+.hp-fork { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+.hp-fork .hp-edge { margin-left: 24px; }
+
+/* A branch of the fork. The rule down its left is what says "these steps only
+   happen on this side". */
+.hp-branch {
+  border-left: 2px solid var(--line-strong); margin-left: 24px;
+  padding: 2px 0 2px 18px;
+}
+.hp-branch.is-terminal { margin-top: 14px; border-left-style: dashed; }
+.hp-branch-label {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint); margin-bottom: 8px;
+}
+
+/* The round trip. The only drawn connector on the page, because it is the only
+   one that goes backwards. */
+.hp-loopback {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 4px; color: var(--kind-agent);
+}
+.hp-loopback svg { flex: none; display: block; }
+.hp-loopback-note {
+  flex: 1 1 260px; min-width: 0; font-size: 11.5px; line-height: 1.6;
+  color: var(--fg-dim);
+}
+
+/* The side rail: what hangs off the loop rather than sitting in it. */
+.hp-taps { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+.hp-taps-head {
+  font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.hp-tap {
+  display: block; text-decoration: none; color: inherit;
+  border: 1px dashed var(--line-strong); border-radius: var(--radius);
+  background: transparent; padding: 8px 11px; text-align: left; width: 100%;
+}
+.hp-tap:hover { border-color: var(--kind-hue, var(--line-strong)); background: var(--panel); }
+.hp-tap:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.hp-tap-title {
+  font-size: 12px; font-weight: 600; color: var(--fg);
+  display: flex; align-items: center; gap: 7px;
+}
+.hp-tap-body { font-size: 11px; line-height: 1.55; color: var(--fg-dim); margin-top: 4px; }
+
+.hp-diagram-key {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+  font-size: 10.5px; color: var(--fg-faint); margin: 2px 0 18px;
+}
+.hp-key-swatch {
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.hp-key-swatch i {
+  width: 9px; height: 9px; border-radius: 2px; display: block;
+  background: var(--kind-hue, var(--fg-faint));
+}
+
+/* ==========================================================================
+ * Hands-on widgets
+ * ======================================================================== */
+
+.hp-widget {
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--panel); padding: 13px 15px; margin: 14px 0 22px;
+}
+.hp-widget-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.hp-widget-head h4 { font-size: 13px; font-weight: 600; color: var(--fg); }
+.hp-widget-kicker {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.hp-widget-lede {
+  font-size: 12px; line-height: 1.65; color: var(--fg-dim); max-width: 74ch;
+  margin-bottom: 10px;
+}
+
+.hp-fields { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 12px; }
+.hp-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 220px; }
+.hp-field > label {
+  font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.hp-field input, .hp-field select, .hp-field textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; font-size: 12.5px; outline: none;
+  font-family: var(--mono);
+}
+.hp-field textarea { resize: vertical; line-height: 1.6; min-height: 2.4em; }
+.hp-field input:focus, .hp-field select:focus, .hp-field textarea:focus {
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+}
+.hp-field-help { font-size: 10.5px; color: var(--fg-faint); line-height: 1.5; }
+
+.hp-samples { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; align-items: center; }
+.hp-samples-label {
+  font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--fg-faint); margin-right: 2px;
+}
+.hp-sample {
+  font-family: var(--mono); font-size: 11px; padding: 2px 9px; border-radius: 8px;
+  border: 1px solid var(--line); color: var(--fg-dim); background: var(--surface);
+}
+.hp-sample:hover { color: var(--fg); border-color: var(--line-strong); }
+
+/* The verdict. Colour is the outcome and nothing else here uses it. */
+.hp-verdict {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg); padding: 10px 12px;
+}
+.hp-verdict-badge {
+  flex: none; font-family: var(--mono); font-size: 11px; font-weight: 700;
+  padding: 2px 10px; border-radius: 9px; letter-spacing: .04em;
+  background: var(--boost); color: var(--fg-dim);
+}
+.hp-verdict[data-outcome="allow"] .hp-verdict-badge {
+  background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success);
+}
+.hp-verdict[data-outcome="ask"] .hp-verdict-badge {
+  background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning);
+}
+.hp-verdict[data-outcome="deny"] .hp-verdict-badge {
+  background: color-mix(in srgb, var(--error) 18%, transparent); color: var(--error);
+}
+.hp-verdict-why { min-width: 0; font-size: 12px; line-height: 1.6; color: var(--fg); }
+.hp-verdict-why code { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* The ordered trace under a verdict: which check answered, and which never ran. */
+.hp-trace { list-style: none; margin-top: 10px; }
+.hp-trace li {
+  display: grid; grid-template-columns: 20px minmax(90px, 150px) minmax(0, 1fr);
+  gap: 9px; align-items: baseline;
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+  padding: 4px 0; border-top: 1px solid var(--line);
+}
+.hp-trace li:first-child { border-top: 0; }
+.hp-trace-mark { font-family: var(--mono); color: var(--fg-faint); text-align: center; }
+.hp-trace li[data-hit="1"] .hp-trace-mark { color: var(--primary); }
+.hp-trace li[data-hit="skip"] { color: var(--fg-faint); }
+.hp-trace-step { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
+.hp-trace li[data-hit="1"] .hp-trace-step { color: var(--fg); }
+.hp-trace-why code { font-family: var(--mono); overflow-wrap: anywhere; }
+
+/* The mode comparison table. Wide, so it scrolls inside itself. */
+.hp-table-wrap { overflow-x: auto; overscroll-behavior-x: contain; margin: 10px 0; }
+.hp-table { border-collapse: collapse; font-size: 11.5px; min-width: 420px; }
+.hp-table th, .hp-table td {
+  border: 1px solid var(--line); padding: 5px 10px; text-align: left;
+  vertical-align: top;
+}
+.hp-table thead th {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--fg-faint); font-weight: 600; white-space: nowrap;
+}
+.hp-table tbody th {
+  font-family: var(--mono); font-weight: 400; color: var(--fg); white-space: nowrap;
+}
+.hp-table td { color: var(--fg-dim); }
+/* Tool chips in the mode widget: offered, withheld. */
+.hp-tools { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0; }
+.hp-tool {
+  font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 7px;
+  border: 1px solid var(--line); color: var(--fg); background: var(--surface);
+}
+.hp-tool[data-state="withheld"] {
+  color: var(--fg-faint); text-decoration: line-through;
+  background: transparent; border-style: dashed;
+}
+.hp-tools-head {
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--fg-faint); margin-top: 12px;
+}
+
+/* The layering demo: one row per layer, the winner marked. */
+.hp-layers { display: flex; flex-direction: column; gap: 3px; margin: 10px 0; }
+.hp-layer {
+  display: grid; grid-template-columns: 20px minmax(74px, 100px) minmax(0, 1fr) auto;
+  gap: 10px; align-items: baseline;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  padding: 6px 10px; font-size: 11.5px;
+}
+.hp-layer-n { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
+.hp-layer-name { font-family: var(--mono); color: var(--fg-dim); }
+.hp-layer-value { min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
+.hp-layer-value code {
+  font-family: var(--mono); font-size: 11px; background: var(--surface);
+  padding: 1px 5px; border-radius: 4px; margin-right: 3px; display: inline-block;
+}
+.hp-layer-tag {
+  font-size: 10px; color: var(--fg-faint); white-space: nowrap;
+}
+.hp-layer[data-role="win"] {
+  border-color: color-mix(in srgb, var(--kind-agent) 55%, transparent);
+  background: color-mix(in srgb, var(--kind-agent) 8%, transparent);
+}
+.hp-layer[data-role="win"] .hp-layer-tag { color: var(--kind-agent); }
+.hp-layer[data-role="silent"] { opacity: .55; }
+.hp-layer-out {
+  display: grid; grid-template-columns: 20px minmax(74px, 100px) minmax(0, 1fr) auto;
+  gap: 10px; align-items: baseline; padding: 7px 10px; margin-top: 4px;
+  border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel);
+  font-size: 12px;
+}
+.hp-layer-out .hp-layer-name { color: var(--fg); }
+
+.hp-toggle-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.hp-toggle {
+  font-size: 11.5px; padding: 4px 11px; border-radius: 8px;
+  border: 1px solid var(--line); background: transparent; color: var(--fg-dim);
+}
+.hp-toggle:hover { background: var(--surface); color: var(--fg); }
+.hp-toggle[aria-pressed="true"] {
+  background: var(--boost); color: var(--fg); border-color: var(--line-strong);
+}
+
+/* ---------- the plugin-model page ---------- */
+
+.hp-tier-row {
+  display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 12px;
+  padding: 9px 0; border-top: 1px solid var(--line); align-items: start;
+}
+.hp-tier-row:first-child { border-top: 0; padding-top: 0; }
+.hp-tier-badge { padding-top: 1px; }
+.hp-tier-what { font-size: 12.5px; color: var(--fg); line-height: 1.55; }
+.hp-tier-how {
+  font-size: 11.5px; color: var(--fg-dim); line-height: 1.6; margin-top: 3px;
+}
+
+.hp-kinds {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 8px; margin-bottom: 10px;
+}
+.hp-kind {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); padding: 9px 11px; position: relative;
+  padding-left: 14px; overflow: hidden;
+}
+.hp-kind::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--kind-hue, var(--fg-faint));
+}
+.hp-kind-head { display: flex; align-items: center; gap: 8px; }
+.hp-kind-name { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.hp-kind-head .hp-node-go { margin-left: auto; }
+.hp-kind-note {
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim); margin-top: 5px;
+}
+.hp-dim-inline { color: var(--fg-faint); font-family: var(--mono); font-size: 11px; }
+
+/* ---------- the six-questions page ---------- */
+
+.hp-example {
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--surface); padding: 12px 14px; margin: 12px 0 18px;
+}
+.hp-example-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.hp-example-head .hp-example-what {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.hp-example-head code { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); }
+.hp-example .k-explain { margin-bottom: 8px; }
+.hp-example-foot {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--fg-dim); padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.hp-q {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 14px;
+  padding: 10px 0; border-top: 1px solid var(--line); align-items: start;
+}
+.hp-q:first-of-type { border-top: 0; }
+.hp-q-key {
+  font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--fg-faint); padding-top: 3px;
+}
+.hp-q-body { font-size: 12.5px; line-height: 1.7; color: var(--fg-dim); }
+.hp-q-body strong { color: var(--fg); font-weight: 600; }
+.hp-q-when {
+  display: block; margin-top: 4px; font-size: 11px; color: var(--fg-faint);
+}
+
+/* ---------- the tutorial ---------- */
+
+.hp-steps { list-style: none; counter-reset: hp-step; margin: 6px 0 18px; }
+.hp-step {
+  counter-increment: hp-step; position: relative;
+  padding: 0 0 16px 40px; border-left: 1px solid var(--line); margin-left: 12px;
+}
+.hp-step:last-child { border-left-color: transparent; padding-bottom: 0; }
+.hp-step::before {
+  content: counter(hp-step); position: absolute; left: -12px; top: 0;
+  width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-family: var(--mono); font-size: 11px; color: var(--fg-dim);
+  background: var(--panel); border: 1px solid var(--line-strong);
+}
+.hp-step h4 { font-size: 13px; font-weight: 600; color: var(--fg); margin-bottom: 5px; }
+.hp-step .hp-p { font-size: 12.5px; margin-bottom: 8px; }
+.hp-step-do {
+  font-size: 12px; line-height: 1.6; color: var(--fg);
+  background: var(--panel); border-radius: 8px; padding: 7px 10px;
+  border-left: 3px solid var(--primary); max-width: 72ch; margin-bottom: 8px;
+}
+.hp-step-do code { font-family: var(--mono); font-size: 11.5px; }
+
+/* ---------- the permissions page ---------- */
+
+/* The decision order. Numbered because the order *is* the content: the first
+   check that answers wins, so "which one is third" is the whole lesson. */
+.hp-order { counter-reset: hp-ord; list-style: none; max-width: 78ch; margin: 6px 0 16px; }
+.hp-order > li {
+  counter-increment: hp-ord; position: relative; padding: 8px 0 8px 34px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.7; color: var(--fg-dim);
+}
+.hp-order > li:first-child { border-top: 0; }
+.hp-order > li::before {
+  content: counter(hp-ord); position: absolute; left: 0; top: 8px;
+  width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim);
+  background: var(--boost);
+}
+.hp-order strong { color: var(--fg); font-weight: 600; }
+.hp-order em { color: var(--fg-dim); font-style: normal; }
+.hp-order code { font-family: var(--mono); font-size: 11.5px; }
+
+.hp-mode { padding: 12px 0; border-top: 1px solid var(--line); }
+.hp-mode:first-child { border-top: 0; padding-top: 0; }
+.hp-mode-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hp-mode-id {
+  font-family: var(--mono); font-size: 12px; padding: 1px 9px; border-radius: 8px;
+  background: var(--boost); color: var(--fg-dim);
+}
+/* The same hues the composer's mode pill uses (app.css:268-272), so the mode
+   named here and the mode showing on screen read as one thing. */
+.hp-mode-id[data-mode="plan"] { color: var(--chip-agent); }
+.hp-mode-id[data-mode="auto-edit"] { color: var(--warning); }
+.hp-mode-id[data-mode="dontask"] { color: var(--fg-faint); }
+.hp-mode-id[data-mode="yolo"] { color: var(--error); }
+.hp-mode-title { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.hp-mode-what {
+  font-size: 12.5px; line-height: 1.65; color: var(--fg-dim); margin: 6px 0 8px;
+  max-width: 74ch;
+}
+.hp-mode-grid {
+  display: grid; grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
+  gap: 3px 14px; max-width: 74ch;
+}
+.hp-mode-grid dt { font-size: 11px; color: var(--fg-faint); }
+.hp-mode-grid dd { margin: 0; font-size: 11.5px; color: var(--fg); }
+.hp-mode-caveat {
+  font-size: 11.5px; line-height: 1.65; color: var(--fg-dim); margin-top: 9px;
+  border-left: 2px solid var(--line-strong); padding-left: 10px; max-width: 72ch;
+}
+
+/* ---------- the layering widget ---------- */
+
+.hp-chain { margin: 12px 0 18px; }
+.hp-chain-head {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  font-size: 12px; color: var(--fg); margin-bottom: 6px;
+}
+.hp-chain-head code { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+.hp-chain .hp-p { font-size: 12px; margin-bottom: 8px; }
+.hp-tools-gap { margin-top: 10px; }
+
+/* ---------- the keyboard reference ---------- */
+
+kbd {
+  font-family: var(--mono); font-size: 11px; padding: 1px 6px;
+  border: 1px solid var(--line-strong); border-radius: 5px;
+  background: var(--panel); color: var(--fg);
+}
+
+.hp-keys { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  gap: 5px 16px; max-width: 78ch; margin-bottom: 6px; }
+.hp-keys dt {
+  font-family: var(--mono); font-size: 12px; color: var(--primary);
+  min-width: 0; overflow-wrap: anywhere;
+}
+.hp-keys dd { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--fg-dim); }
+
+/* ---------- states ---------- */
+
+.hp-loading, .hp-degraded {
+  font-size: 12.5px; line-height: 1.6; color: var(--fg-dim); padding: 12px 14px;
+  border: 1px dashed var(--line); border-radius: var(--radius); max-width: 74ch;
+}
+.hp-degraded { color: var(--fg-faint); }
+
+/* ---------- narrow windows ---------- */
+
+@media (max-width: 1000px) {
+  .hp-inner { padding: 16px 18px 56px; }
+}
+@media (max-width: 900px) {
+  /* The side taps stop being a rail and become a row under the spine. Nothing
+     is dropped: what hangs off the loop is part of the answer. */
+  .hp-diagram { grid-template-columns: minmax(0, 1fr); gap: 20px 0; }
+  .hp-taps { flex-direction: row; flex-wrap: wrap; }
+  .hp-tap { flex: 1 1 220px; width: auto; }
+}
+/* The 820px rail collapse is not repeated here: the markup reuses .cfg-body and
+   .cfg-rail, so config.css:393 already does it. */
+
+/* No prefers-reduced-motion block: nothing on these pages moves. The diagram
+   is static, the widgets repaint rather than animate, and the only transition
+   in reach is the one app.css already guards. If motion is ever added here,
+   this comment is where its guard goes. */

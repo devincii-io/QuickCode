@@ -1,7 +1,9 @@
-// Boot and routing. QuickCode is a three-view single-page app: a Home view
+// Boot and routing. QuickCode is a four-view single-page app: a Home view
 // that lists projects, a workspace (chat + side panel) bound to exactly one
-// project and one conversation, and Configuration — a peer view rather than a
-// dialog, addressed by `#/config/…` so every page in it has a URL.
+// project and one conversation, Configuration — a peer view rather than a
+// dialog, addressed by `#/config/…` so every page in it has a URL — and Help
+// at `#/help/…`, on the same terms, so a Settings card can link to the
+// paragraph that explains it.
 //
 // The launch fragment carries the token and, when the CLI opened a directory,
 // the project id — api.initAuth() strips it immediately, so navigation after
@@ -18,6 +20,9 @@ import {
   DEFAULT_ROUTE, initConfig, invalidate as invalidateConfig, isConfigRoute,
   lastConfigRoute, render as renderConfig,
 } from "./config/view.js";
+import {
+  initHelp, isHelpRoute, lastHelpRoute, render as renderHelp,
+} from "./help/view.js";
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
 import { setInspector } from "./inspect.js";
@@ -36,6 +41,7 @@ let cameFrom = "home";
 
 function showHome() {
   leaveConfig();
+  leaveHelp();
   disconnect();
   // The trust banner belongs to one project; leaving the workspace drops it so
   // the next project is asked about rather than inheriting an answer.
@@ -50,6 +56,7 @@ function showHome() {
 
 function showWorkspace() {
   leaveConfig();
+  leaveHelp();
   const app = document.getElementById("app");
   app.classList.remove("showing-home");
   // The transcript grew while it was hidden, where every scroll measurement
@@ -66,6 +73,7 @@ function showConfig(route) {
   if (!app.classList.contains("showing-config")) {
     cameFrom = app.classList.contains("showing-home") ? "home" : "workspace";
   }
+  leaveHelp();
   app.classList.add("showing-config");
   document.title = "QuickCode — Configuration";
   if (route && location.hash !== route) { location.hash = route; return; }
@@ -79,6 +87,37 @@ function leaveConfig() {
   if (isConfigRoute(location.hash)) {
     history.replaceState(null, "", location.pathname + location.search);
   }
+}
+
+function leaveHelp() {
+  const app = document.getElementById("app");
+  if (!app.classList.contains("showing-help")) return;
+  app.classList.remove("showing-help");
+  if (isHelpRoute(location.hash)) {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+}
+
+/** Same contract as showConfig(): never calls disconnect(), so reading the
+ *  help while a turn is running does not cost the session. */
+function showHelp(route) {
+  const app = document.getElementById("app");
+  if (!app.classList.contains("showing-help")) {
+    cameFrom = app.classList.contains("showing-home") ? "home" : "workspace";
+  }
+  leaveConfig();
+  app.classList.add("showing-help");
+  document.title = "QuickCode — Help";
+  if (route && location.hash !== route) { location.hash = route; return; }
+  renderHelp();
+}
+
+function closeHelp() {
+  leaveHelp();
+  if (cameFrom === "home") { showHome(); return; }
+  showWorkspace();
+  document.title = store.bootstrap?.project
+    ? `QuickCode — ${store.bootstrap.project}` : "QuickCode";
 }
 
 function closeConfig() {
@@ -258,6 +297,7 @@ async function boot() {
   // Read before initAuth(), which drops the launch fragment: a reload of a
   // linked configuration page must land back on that page.
   const wantsConfig = isConfigRoute(location.hash);
+  const wantsHelp = isHelpRoute(location.hash);
   const { token, project, resumeHint } = initAuth();
 
   // One inspector for every surface: chat, the agents panel and the
@@ -285,9 +325,15 @@ async function boot() {
   $("brand-home").addEventListener("click", showHome);
   // Configuration and help are install-wide, so Home carries them too.
   initConfig({ api, onDone: closeConfig });
+  initHelp({ api, onDone: closeHelp });
   $("config-brand").addEventListener("click", closeConfig);
+  $("help-brand").addEventListener("click", closeHelp);
+  $("help-done").addEventListener("click", closeHelp);
   $("home-settings").addEventListener("click", () => showConfig(lastConfigRoute()));
-  $("home-help").addEventListener("click", () => openHelp());
+  // The quick reference stays a modal -- recalling one shortcut mid-sentence
+  // should not cost a view transition -- and offers the full view as a door.
+  $("home-help").addEventListener("click", () =>
+    openHelp({ onFull: () => showHelp(lastHelpRoute()) }));
   $("btn-new-chat").addEventListener("click", () => openConversation(null));
   $("btn-settings").addEventListener("click", () => showConfig(lastConfigRoute()));
   $("btn-quick-settings").addEventListener("click", () =>
@@ -297,8 +343,11 @@ async function boot() {
   // Every configuration page is a URL. A hash that names one shows the view;
   // anything else (including "back" out of it) returns to where we were.
   window.addEventListener("hashchange", () => {
+    const app = document.getElementById("app");
     if (isConfigRoute(location.hash)) showConfig();
-    else if (document.getElementById("app").classList.contains("showing-config")) closeConfig();
+    else if (isHelpRoute(location.hash)) showHelp();
+    else if (app.classList.contains("showing-config")) closeConfig();
+    else if (app.classList.contains("showing-help")) closeHelp();
   });
   $("session-chip").addEventListener("click", (e) =>
     openSessionMenu(e.currentTarget, {
@@ -345,6 +394,7 @@ async function boot() {
     showHome();
   }
   if (wantsConfig) showConfig();
+  if (wantsHelp) showHelp();
 }
 
 boot();
