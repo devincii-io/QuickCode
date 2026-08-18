@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from quickcode.search import SearchSettings
+
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 CONFIG_DIR = Path.home() / ".quickcode"
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -162,6 +164,10 @@ class Config:
     # Last model picked via F2; used as the session default so a switch persists.
     last_model: str = ""
     theme: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME_COLORS))
+    # Which web-search backend answers, and its non-secret per-provider settings.
+    # Install-wide rather than per-profile: a profile is a *model* endpoint, and
+    # nothing about which search engine you use follows from which model answers.
+    search: SearchSettings = field(default_factory=SearchSettings)
 
     @property
     def profile(self) -> Profile:
@@ -200,6 +206,7 @@ class Config:
             default_mode=raw.get("default_mode", "ask"),
             last_model=raw.get("last_model", ""),
             theme=theme,
+            search=SearchSettings.from_dict(raw.get("search")),
         )
 
     def save(self, path: Path = CONFIG_PATH) -> None:
@@ -209,6 +216,7 @@ class Config:
             "default_mode": self.default_mode,
             "last_model": self.last_model,
             "theme": self.theme,
+            "search": self.search.to_dict(),
             "profiles": {
                 name: {
                     "base_url": p.base_url,

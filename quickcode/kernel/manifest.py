@@ -704,6 +704,8 @@ def _tool_group(tool: Any) -> str:
         return "Shell"
     if name in ("read", "write", "edit", "glob", "grep"):
         return "Files"
+    if name in ("web_fetch", "web_search"):
+        return "Web"
     if name.startswith("task"):
         return "Tasks"
     if name in ("agent", "send_message"):
@@ -764,6 +766,12 @@ _CHARACTER_PROSE: dict[str, tuple[str, str]] = {
 # agents receive a tool at all. ``registry.build_registry`` never gives a
 # subagent ``plan``, and grants the delegation pair by depth rather than by
 # allowlist, so no ``PermissionSpec`` could tell you this.
+#
+# The two web tools are here for the other reason a fact can fail to be
+# derivable: a ``PermissionSpec`` has one word for "worth asking about" and it
+# is ``mutates``, so the derived prose would say these tools change files. They
+# do not. They leave the machine, which is a different thing to be asked about
+# and needs saying in its own words.
 _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
     "plan": {
         "audience": "orchestrator",
@@ -788,6 +796,34 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
                        "keeps its full context, which is why this is cheaper than "
                        "spawning the same work again.",
     },
+    "web_fetch": {
+        "affects": ("tool_list", "permissions"),
+        "summary": "Reads one public web page as markdown; refuses loopback and "
+                   "private addresses.",
+        "consequence": "It changes nothing on disk but it does leave the machine, "
+                       "which is why it is declared mutating: that is the only word "
+                       "the engine has for \"stop and ask\". So it prompts in ask "
+                       "mode, is withheld in plan mode, and a subagent capped at ask "
+                       "cannot use it at all. Refusals happen before any packet is "
+                       "sent -- non-http(s) schemes, loopback, private, link-local and "
+                       "reserved addresses, bare and .local hostnames -- and are "
+                       "re-checked on every redirect hop, with the connection pinned "
+                       "to the address that was checked. No cookies or credentials are "
+                       "ever sent. Rules can name a site: web_fetch(https://docs.*/**).",
+    },
+    "web_search": {
+        "affects": ("tool_list", "permissions"),
+        "summary": "Runs one query through the configured search provider and "
+                   "returns ranked links.",
+        "consequence": "Which provider answers is a setting, not an argument: the "
+                       "model cannot choose one and nothing falls back to another if "
+                       "a key expires. With no provider configured the tool still "
+                       "exists and fails with the signup page named, rather than "
+                       "disappearing. Like web_fetch it is declared mutating so that "
+                       "it prompts, which also withholds it in plan mode. Queries "
+                       "spend somebody's monthly quota, and a rule can cap that: "
+                       "web_search or web_search(*).",
+    },
 }
 
 _TOOL_DOCS: dict[str, str] = {
@@ -797,6 +833,10 @@ _TOOL_DOCS: dict[str, str] = {
     "glob": "docs/TOOLS.md#glob-read-only",
     "grep": "docs/TOOLS.md#grep-read-only",
     "bash": "docs/TOOLS.md#bash",
+    # No fragment: docs/TOOLS.md has no section for these two yet, and a link
+    # promising an anchor that is not there is worse than one that is not.
+    "web_fetch": "docs/TOOLS.md",
+    "web_search": "docs/TOOLS.md",
     "agent": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
     "send_message": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",
     "plan": "docs/PERMISSIONS.md#plan-mode",

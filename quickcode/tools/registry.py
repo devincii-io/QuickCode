@@ -25,6 +25,8 @@ from quickcode.tools.plan import PlanTool
 from quickcode.tools.read import ReadTool
 from quickcode.tools.send_message import SendMessageTool
 from quickcode.tools.task import task_tools
+from quickcode.tools.web_fetch import WebFetchTool
+from quickcode.tools.web_search import WebSearchTool
 from quickcode.tools.write import WriteTool
 
 # Selection aliases: a short word in a definition's ``tools:`` list that stands
@@ -65,6 +67,12 @@ def core_tools(*, include_plan: bool = True, include_agent: bool = True) -> list
         GlobTool(),
         GrepTool(),
         BashTool(),
+        # Registered whether or not a search key is configured: an unconfigured
+        # web_search fails with the signup page in the message, which is more
+        # use to everyone than a tool that silently does not exist. Same
+        # reasoning as the OpenRouter key -- see tools/web_search.py.
+        WebFetchTool(),
+        WebSearchTool(),
         *task_tools(),
     ]
     if include_plan:
