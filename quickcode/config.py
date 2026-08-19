@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 import os
 import platform
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from quickcode import subproc
 from quickcode.search import SearchSettings
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -300,7 +300,7 @@ class Environment:
         branch = ""
         if is_git:
             try:
-                branch = subprocess.run(
+                branch = subproc.run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     cwd=root, capture_output=True, text=True, timeout=5,
                 ).stdout.strip()

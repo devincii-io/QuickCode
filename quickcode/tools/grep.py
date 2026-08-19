@@ -26,12 +26,12 @@ import base64
 import json
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from quickcode import subproc
 from quickcode.context import toon
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
@@ -140,7 +140,7 @@ def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
             args += ["-C", str(input.context)]
     args += ["--", input.pattern, str(root)]
 
-    proc = subprocess.run(
+    proc = subproc.run(
         args,
         capture_output=True,
         timeout=30,

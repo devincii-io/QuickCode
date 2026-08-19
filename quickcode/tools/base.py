@@ -7,7 +7,11 @@ runs against a ``ToolCtx``, and returns a ``ToolResult``. Truncation happens
 
 from __future__ import annotations
 
+import contextlib
+import locale
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -54,6 +58,76 @@ class ToolResult:
     content: str
     is_error: bool = False
     ui_meta: dict[str, Any] = field(default_factory=dict)
+
+
+# A lone surrogate is what ``errors="surrogateescape"`` leaves behind for a
+# byte that is not valid UTF-8. It survives inside a Python string and then
+# fails the moment anything encodes it -- and everything downstream does:
+# `json.dumps(..., ensure_ascii=False).encode("utf-8")` is both the session
+# log write and the WebSocket frame, and the provider request is a third.
+_SURROGATES = re.compile("[\ud800-\udfff]")
+
+
+def clean_text(text: str) -> str:
+    """Text that is safe to log, broadcast and send to a model.
+
+    Every tool result passes through here. A tool that hands back bytes which
+    were never UTF-8 used to kill the turn with ``UnicodeEncodeError:
+    surrogates not allowed`` -- raised not in the tool but in the recorder,
+    long after the tool returned, so the command showed as still running and
+    the turn never ended.
+
+    Replacing rather than raising is the choice a transcript invites: the
+    output is still worth reading with one character replaced, and a tool is
+    not the place to litigate somebody else's encoding.
+    """
+    return _SURROGATES.sub("�", text) if text else text
+
+
+def decode_output(raw: bytes) -> str:
+    """Bytes from a child process, as text.
+
+    UTF-8 first, because that is what almost everything emits, and because it
+    is the one encoding here that can *reject* input: a byte sequence that
+    decodes as UTF-8 almost certainly is UTF-8.
+
+    After that, the machine's own code page, once. On a German Windows
+    ``Größe`` arrives from a console program as cp1252 bytes, and reading it as
+    UTF-8 with replacements turns a word the user can read into one they
+    cannot.
+
+    Only one fallback is tried, deliberately. A single-byte code page maps
+    every one of its 256 bytes, so it never raises -- a chain of them would not
+    be choosing the right encoding, it would be returning whichever happened to
+    be first while looking like it had decided something. There is no way to
+    tell cp1252 from cp850 by inspection, so this picks the system's and says
+    so rather than dressing the guess up.
+
+    Never ``surrogateescape``: that defers the failure to whoever encodes the
+    string next, which is how a bad byte in a command's output came to kill a
+    turn inside the recorder long after the tool had returned.
+    """
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    encoding = _system_encoding()
+    if encoding:
+        with contextlib.suppress(UnicodeDecodeError, LookupError):
+            return raw.decode(encoding)
+    return raw.decode("utf-8", errors="replace")
+
+
+@lru_cache(maxsize=1)
+def _system_encoding() -> str:
+    """The machine's own code page, or "" if it is UTF-8 (already tried)."""
+    try:
+        name = locale.getpreferredencoding(False)
+    except Exception:  # noqa: BLE001 - a locale this odd is not worth a crash
+        return ""
+    return "" if name.lower().replace("-", "") in {"utf8", "utf8mb4"} else name
 
 
 def truncate(text: str, limit: int, *, hint: str = "") -> str:

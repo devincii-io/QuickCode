@@ -66,7 +66,7 @@ def fake_rg(monkeypatch, stdout: str, code: int = 0) -> list[list[str]]:
         return proc
 
     monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "rg")
-    monkeypatch.setattr(grep_module.subprocess, "run", run)
+    monkeypatch.setattr(grep_module.subproc, "run", run)
     return calls
 
 

@@ -10,7 +10,8 @@ it without spawning a subprocess). Output is capped at 30000 characters
 
 On POSIX, commands run inside a real pseudo-terminal so programs see a tty:
 colors, tty semantics, and correct process-tree kill on timeout. On Windows
-they do not, because ConPTY costs three seconds a call (see ``_use_pty``).
+they run on plain pipes, so that a command which reads stdin gets EOF and
+exits instead of waiting for a person who is not there (see ``_use_pty``).
 Either way the tool falls back to a plain subprocess if the PTY backend is
 unavailable. Background execution is not yet supported.
 """
@@ -25,8 +26,15 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from quickcode import subproc
 from quickcode.pty.session import PtySession
-from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
+from quickcode.tools.base import (
+    PermissionSpec,
+    Tool,
+    ToolCtx,
+    ToolResult,
+    decode_output,
+)
 
 DEFAULT_TIMEOUT_MS = 120_000
 MAX_TIMEOUT_MS = 600_000
@@ -40,7 +48,8 @@ _GIT_BASH_CANDIDATES = [
 _LONE_CD_RE = re.compile(r'^cd\s+(".*"|\'.*\'|\S+)\s*$')
 
 # Set to "1" to run through ConPTY on Windows anyway, for a program that
-# genuinely needs a tty and is worth the wait.
+# genuinely needs a tty. Note the trade in ``_use_pty``: with a tty, a command
+# that reads stdin waits for input nobody will type.
 PTY_ENV = "QUICKCODE_BASH_PTY"
 
 
@@ -55,29 +64,40 @@ class PtyNotWorthIt(Exception):
 
 
 def _use_pty(ctx: ToolCtx) -> bool:
-    """Whether to spend a pseudo-terminal on this command.
+    r"""Whether to spend a pseudo-terminal on this command.
 
     On POSIX, yes: ``openpty`` plus a fork is microseconds and a tty is strictly
     more faithful.
 
-    On Windows, no. ConPTY adds a flat ~3.0 s to *every* command, measured on
-    Windows 11 26200 against four shells:
+    On Windows, no -- and the reason that matters is not speed.
 
-        command       pty    subprocess   overhead
-        bash -c     3.113s      0.032s     +3.081s
-        bash -lc    3.330s      0.335s     +2.994s
-        cmd /c      3.028s      0.043s     +2.985s
-        powershell  3.285s      0.196s     +3.089s
+    **There is nobody to answer a prompt.** A program that reads stdin gets EOF
+    under a pipe and exits; under a tty it waits, and an unattended agent has
+    no one to type. `git commit` with no `-m`, `ssh`, an npm prompt or a pager
+    each turn from an error into a hang that only the timeout ends. Everything
+    else the tty buys is spent before the model sees it: colour is stripped
+    (``_clean_output``), and a progress bar arrives as carriage-return
+    spam. Process-tree kill works on both paths (``_kill_tree``).
 
-    It is the pseudo-console teardown, not the shell: `echo hi` finishes in
-    26 ms and the process stays alive for three more seconds. A session that
-    runs forty commands spent two minutes waiting for terminals to close.
+    Speed was the original reason and it turned out to be a smaller and more
+    interesting one. ConPTY costs a flat ~3.0 s per command, measured on
+    Windows 11 26200 against four shells (pty vs plain subprocess): bash -c
+    3.113s / 0.032s, bash -lc 3.330s / 0.335s, cmd /c 3.028s / 0.043s,
+    powershell 3.285s / 0.196s.
 
-    What the tty bought does not survive the trip anyway. Colour is stripped
-    before the model sees it (``_clean_pty_output``), progress bars arrive as
-    carriage-return spam, and there is nobody to answer an interactive prompt --
-    under a pipe such a program reads EOF and exits instead of hanging until the
-    timeout. Process-tree kill is handled by ``_kill_tree`` on both paths.
+    That 3.0 s is **not** teardown, which is what this comment used to claim.
+    ConPTY opens by sending a Primary Device Attributes query -- its first
+    bytes are ``\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h`` -- and then waits about
+    three seconds for a terminal to identify itself. Nothing here ever
+    answered. Output is not delayed by it (the first byte arrives in 29 ms);
+    the wait sits between the command finishing and the session closing.
+    Writing ``\x1b[?1;0c`` back when the query appears removes it: 8.14 s to
+    5.13 s over three runs.
+
+    So the pty is affordable now, and is still not used here, because the
+    stdin argument above does not depend on what it costs. The terminal panel
+    *does* answer the query (``quickcode/pty/interactive.py``) -- there a human
+    is typing, which is exactly the case a tty is for.
     """
     if not ctx.platform.lower().startswith("win"):
         return True
@@ -175,7 +195,7 @@ class BashTool(Tool[BashInput]):
                 raise PtyNotWorthIt
             session = PtySession(argv, cwd=str(cwd))
             raw_out, returncode, timed_out = await asyncio.to_thread(session.run, timeout_s)
-            text = _clean_pty_output(raw_out)
+            text = _clean_output(raw_out)
         except asyncio.CancelledError:
             # Stop, mid-command. Cancelling this coroutine does not reach the
             # child -- `run` is parked in a worker thread and `find /` would
@@ -253,14 +273,49 @@ _ANSI_RE = re.compile(
 )
 
 
-def _clean_pty_output(raw: bytes) -> str:
-    """Decode PTY bytes once and strip terminal control noise for the model."""
-    text = raw.decode("utf-8", errors="surrogateescape")
+def _clean_output(raw: bytes) -> str:
+    """Decode a command's bytes and strip terminal control noise.
+
+    Both paths call this. They used to disagree: the PTY path stripped escapes
+    and the subprocess path handed them through untouched, so on Windows --
+    where the subprocess path is the default -- anything that forces color
+    (``ls --color=always``, ``pytest --color=yes``, most npm output) spent the
+    model's tokens on escape bytes and drew them raw in the transcript.
+    """
+    text = decode_output(raw)
     text = _ANSI_RE.sub("", text)
-    # ConPTY uses CRLF line endings; normalize (and lone CR from carriage
-    # returns used for in-place redraws).
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\r\n", "\n")
+    if "\r" in text:
+        text = "\n".join(_collapse_redraws(line) for line in text.split("\n"))
     return text
+
+
+def _collapse_redraws(line: str) -> str:
+    """Apply carriage returns the way a terminal does: overwrite, don't stack.
+
+    A progress bar is one line redrawn a few hundred times. Turning every CR
+    into a newline, which is what this used to do, gave the model four hundred
+    lines of `pip install` and the reader a wall of near-identical bars. A
+    terminal shows the line it finished on, so that is what we keep.
+
+    Overwriting is not the same as taking the last segment. `100%\\r5%` really
+    does leave `5%0%` on a real terminal, and a cleaner that printed `5%` would
+    be inventing output nobody saw.
+    """
+    if "\r" not in line:
+        return line
+    buf: list[str] = []
+    col = 0
+    for ch in line:
+        if ch == "\r":
+            col = 0
+        elif col == len(buf):
+            buf.append(ch)
+            col += 1
+        else:
+            buf[col] = ch
+            col += 1
+    return "".join(buf)
 
 
 def _run_subprocess(
@@ -274,7 +329,7 @@ def _run_subprocess(
     kill the process tree if the turn is interrupted.
     """
     try:
-        proc = subprocess.Popen(
+        proc = subproc.popen(
             argv,
             cwd=cwd,
             stdout=subprocess.PIPE,
@@ -294,12 +349,12 @@ def _run_subprocess(
             raw_out, _ = proc.communicate(timeout=5)
         except Exception:  # noqa: BLE001
             raw_out = b""
-        text = raw_out.decode("utf-8", errors="surrogateescape") if raw_out else ""
+        text = _clean_output(raw_out)
         text = _cap(text)
         msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
         return ToolResult(content=msg, is_error=True)
 
-    text = raw_out.decode("utf-8", errors="surrogateescape") if raw_out else ""
+    text = _clean_output(raw_out)
     text = _cap(text)
 
     if returncode != 0:
@@ -338,7 +393,7 @@ def _find_git_bash() -> str | None:
 def _kill_tree(pid: int, ctx: ToolCtx) -> None:
     if ctx.platform.lower().startswith("win"):
         try:
-            subprocess.run(
+            subproc.run(
                 ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
                 timeout=10,

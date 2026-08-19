@@ -33,6 +33,7 @@ from quickcode.core.permissions import Decision
 from quickcode.kernel.composition import RuntimeLimits
 from quickcode.prompts.system import system_reminder
 from quickcode.providers.base import ChatRequest, ProviderError
+from quickcode.tools.base import clean_text
 
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance
@@ -364,6 +365,15 @@ async def _run_tool(
     except Exception as e:  # tools never crash the loop
         return (f"Tool {call.name} raised: {type(e).__name__}: {e}", True, {})
 
+    # Cleaned here rather than in each tool, because "the result must be
+    # encodable" is a property of this boundary, not of any one tool. What
+    # crosses it goes to three places that all encode UTF-8 -- the session log,
+    # the WebSocket, and the provider request -- and a lone surrogate from a
+    # command's output used to raise in the recorder, long after the tool had
+    # returned, killing the turn with the command still shown as running. An
+    # MCP server or a plugin tool can hand back the same thing.
+    content = clean_text(result.content)
+
     for hook in agent.hooks:
-        hook.after_tool(agent, tool, result.content, result.is_error)
-    return (result.content, result.is_error, result.ui_meta)
+        hook.after_tool(agent, tool, content, result.is_error)
+    return (content, result.is_error, result.ui_meta)

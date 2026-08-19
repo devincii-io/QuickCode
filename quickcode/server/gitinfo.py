@@ -20,26 +20,25 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from quickcode import subproc
 from quickcode.server.manager import ConversationManager
 
 log = logging.getLogger("quickcode.server.gitinfo")
 
 GIT_TIMEOUT = 5.0
 DIFF_CAP = 200_000
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _run(cwd: Path, *args: str) -> tuple[bool, str]:
     """Run one git command; return (ok, stdout). Never raises."""
     try:
-        proc = subprocess.run(
+        proc = subproc.run(
             ["git", "-C", str(cwd), "-c", "core.quotepath=off", *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=GIT_TIMEOUT,
-            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("git %s failed: %s", args[:1], exc)

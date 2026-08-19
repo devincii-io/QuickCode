@@ -46,7 +46,7 @@ from quickcode.context import toon
 from quickcode.core.permissions import PermissionSpec
 from quickcode.kernel.authoring import argv as argv_rules
 from quickcode.kernel.authoring.model import AuthoredPlugin, Param
-from quickcode.tools.base import Tool, ToolCtx, ToolResult, truncate
+from quickcode.tools.base import Tool, ToolCtx, ToolResult, decode_output, truncate
 
 # Environment handed to the child. A command tool is started from a file that
 # may be committed, so the child gets what a program needs to run and not the
@@ -317,7 +317,7 @@ def _child_env(plugin: AuthoredPlugin) -> dict[str, str]:
 def _decode(raw: bytes | None) -> str:
     if not raw:
         return ""
-    return raw.decode("utf-8", errors="surrogateescape").replace("\r\n", "\n")
+    return decode_output(raw).replace("\r\n", "\n")
 
 
 def _map_output(
