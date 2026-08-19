@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.1] — 2026-08-19
+
+### Fixed
+
+- **The installer killed itself.** 2.5.0 could not be installed from inside a
+  running QuickCode: Setup's "close the running copy first" step called
+  `taskkill /F /T /IM QuickCodeApp.exe`, and `/T` kills the target's whole
+  process *tree*. The in-app updater starts the installer with `Popen`, which
+  on Windows leaves it a **child of the app being replaced** — so Setup handed
+  taskkill a tree it was standing in and was terminated by its own cleanup. It
+  looked, from the outside, like the installer had decided it was an open
+  QuickCode window and closed itself.
+
+  Both halves are fixed, because either one alone would leave this working by
+  accident. The installer kills by image name only, which is all that is
+  needed: what holds the lock on `QuickCodeApp.exe` is `QuickCodeApp.exe`. And
+  `launch_installer` now really detaches (`DETACHED_PROCESS`,
+  `CREATE_NEW_PROCESS_GROUP`, and `CREATE_BREAKAWAY_FROM_JOB` where the job
+  permits it) — the comment above it had claimed "detached" since it was
+  written, and a bare `Popen` on Windows is not.
+
+  A test now reads the shipped `.iss` and fails if `/T` returns, because this
+  is not reproducible without building an installer and running it from inside
+  the app.
+
 ## [2.5.0] — 2026-08-19
 
 Two numbers explain most of this release. A shell command that runs in 26ms
