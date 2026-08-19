@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -125,11 +126,18 @@ class SubagentDeps:
     # the child's EventBus) so a live pane can subscribe to the child's stream.
     # Optional — headless runs leave it None.
     on_pane: Callable[[str, str, EventBus], None] | None = None
-    # The other end of ``on_pane``: called once, on the task, when a detached
-    # job reaches a terminal state, with (agent_id, definition name, status,
-    # seconds). It is what emits ``agent_done``. Blocking spawns do not fire it
-    # -- their completion is the tool result, and a roster row that goes
-    # terminal twice is worse than one that goes terminal once.
+    # The other end of ``on_pane``: called once, when a child reaches a terminal
+    # state, with (agent_id, definition name, status, seconds). It is what emits
+    # ``agent_done``.
+    #
+    # Blocking spawns fire it too, which they did not used to. The old rule --
+    # a blocking child's completion *is* the spawner's tool result, so a second
+    # marker is redundant -- holds for the transcript and for nothing else. The
+    # roster, and anything replaying the log, had to infer the ending from "the
+    # last thing I saw from this agent was an assistant_message", which is
+    # simply wrong for every round that ends in tool calls: the provider emits
+    # one ``TurnDone`` per round, so a busy child looks finished several times
+    # before it is. An ending is a fact; it gets an event.
     on_done: Callable[[str, str, str, float], None] | None = None
     # Where a detached job's task goes to be owned. A task nobody holds is
     # garbage-collected at the end of the turn that created it, so this is not
@@ -168,6 +176,10 @@ class SubagentDeps:
     # Delegation turns spent per agent id, against that agent's max_turns.
     turns: dict[str, int] = field(default_factory=dict)
     budgets: dict[str, int] = field(default_factory=dict)
+    # Which definition each spawned id came from. Shared down the tree like the
+    # roster, so a resume three levels down can name the same definition in its
+    # ``agent_done`` that the matching ``agent_spawned`` named.
+    kinds: dict[str, str] = field(default_factory=dict)
     # The session's frozen runtime numbers, shared down the whole tree so every
     # depth counts against the same budget the session opened with.
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
@@ -206,6 +218,7 @@ class SubagentDeps:
             preset=self.preset,
             turns=self.turns,
             budgets=self.budgets,
+            kinds=self.kinds,
             limits=self.limits,
         )
 
@@ -353,6 +366,7 @@ def _prepare_child(
     # ``defn.name`` follows the child around: the pane, the done event and the
     # job record all name the definition rather than the id's prefix.
     child_definition = defn.name
+    deps.kinds[agent_id] = child_definition
 
     child_ctx = ToolCtx(
         cwd=deps.cwd,
@@ -400,8 +414,13 @@ async def spawn_subagent(
     agent_type: str,
     prompt: str,
     model_override: str | None = None,
-) -> tuple[str, str]:
-    """Run one subagent to completion. Returns ``(agent_id, sanitized_report)``.
+) -> tuple[str, str, str]:
+    """Run one subagent to completion. Returns ``(agent_id, report, status)``.
+
+    The status is the same vocabulary a ``JobRecord`` uses, so a caller can
+    tell a report that came back from a finished child apart from one that
+    came back because the child died — the text alone cannot be trusted for
+    that, and the tool result has to say which it was.
 
     Raises ValueError for an unknown agent_type or when a spawn limit is hit —
     the tool wrapper turns those into an error ToolResult.
@@ -409,8 +428,41 @@ async def spawn_subagent(
     agent_id, child = _prepare_child(
         deps, agent_type=agent_type, model_override=model_override
     )
-    report = await _run_and_finish(deps, agent_id, child, prompt)
-    return agent_id, report
+    status, report = await _blocking_run(deps, agent_id, child, prompt)
+    return agent_id, report, status
+
+
+async def _blocking_run(
+    deps: SubagentDeps, agent_id: str, child: AgentInstance, message: str
+) -> tuple[str, str]:
+    """One awaited delegation turn, with its ending announced.
+
+    The announcement is the point. ``_run_and_finish`` already turns every way
+    a child can stop into a report, so the *spawner* is told either way; this
+    is what tells everyone else. Cancellation gets its own branch because the
+    parent's interrupt cancels the gather this coroutine is running in, so the
+    only chance to say "that child is over" is on the way out.
+    """
+    started = time.monotonic()
+    try:
+        status, report = await _run_and_finish(deps, agent_id, child, message)
+    except asyncio.CancelledError:
+        _announce_done(deps, agent_id, CANCELLED, time.monotonic() - started)
+        raise
+    _announce_done(deps, agent_id, status, time.monotonic() - started)
+    return status, report
+
+
+def _announce_done(
+    deps: SubagentDeps, agent_id: str, status: str, seconds: float
+) -> None:
+    """Fire ``on_done`` for one child, never letting telemetry break a run."""
+    if deps.on_done is None:
+        return
+    try:
+        deps.on_done(agent_id, deps.kinds.get(agent_id, ""), status, round(seconds, 1))
+    except Exception:  # noqa: BLE001 — the event is best-effort telemetry
+        pass
 
 
 def spawn_subagent_background(
@@ -468,7 +520,7 @@ async def _run_job(
     unretrieved-exception warning long after the turn that started it.
     """
     try:
-        report = await _run_and_finish(deps, job.agent_id, child, prompt)
+        status, report = await _run_and_finish(deps, job.agent_id, child, prompt)
     except asyncio.CancelledError:
         job.finish(CANCELLED, sanitize_report(
             "[did not finish] the background job was cancelled."
@@ -481,7 +533,7 @@ async def _run_job(
         ))
         _announce(deps, job)
         return
-    job.finish(DONE, report)
+    job.finish(status, report)
     _announce(deps, job)
 
 
@@ -491,11 +543,7 @@ def _announce(deps: SubagentDeps, job: JobRecord) -> None:
     Both halves are isolated: telemetry and a queued reminder are the two
     things least entitled to break a job that has already done its work.
     """
-    if deps.on_done is not None:
-        try:
-            deps.on_done(job.agent_id, job.agent_type, job.status, job.seconds())
-        except Exception:  # noqa: BLE001 — the event is best-effort telemetry
-            pass
+    _announce_done(deps, job.agent_id, job.status, job.seconds())
     if deps.owner is not None:
         try:
             deps.owner.queue_reminder(job.reminder())
@@ -505,31 +553,39 @@ def _announce(deps: SubagentDeps, job: JobRecord) -> None:
 
 async def _run_and_finish(
     deps: SubagentDeps, agent_id: str, child: AgentInstance, message: str
-) -> str:
+) -> tuple[str, str]:
     """Drive one turn on ``child`` and post-process the result: exception
     safety, "[did not finish]" tagging, artifact offload, and sanitization.
 
     Shared by ``spawn_subagent`` (first turn) and ``resume_subagent`` (any
     later turn) so both go through identical treatment.
+
+    Returns ``(status, report)``. The status is the same vocabulary a
+    ``JobRecord`` uses, so how a run ended is decided once, here, rather than
+    once per caller -- a child that raised reported ``done`` for as long as
+    that decision lived in ``_run_job``. An empty report stays ``done``: the
+    "[did not finish]" tag says the model produced nothing, not that the
+    machinery failed.
     """
     deps.turns[agent_id] = deps.turns.get(agent_id, 0) + 1
     try:
         report = await child.run_turn(message)
     except Exception as e:  # a child failure must not crash the parent's loop
-        return sanitize_report(f"[did not finish] subagent errored: {e}")
+        return ERROR, sanitize_report(f"[did not finish] subagent errored: {e}")
 
+    status = CANCELLED if child.cancelled else DONE
     if child.cancelled or not report.strip():
         report = report or "(no output)"
         report = f"[did not finish]\n{report}"
     report = maybe_offload(deps.cwd, agent_id, report)
-    return sanitize_report(report)
+    return status, sanitize_report(report)
 
 
 async def resume_subagent(
     deps: SubagentDeps, *, agent_id: str, message: str
 ) -> tuple[str, str]:
     """Send a follow-up message to a previously spawned, now-idle subagent,
-    resuming it with its full history intact. Returns ``(agent_id, sanitized_report)``.
+    resuming it with its full history intact. Returns ``(agent_id, report, status)``.
 
     Raises ValueError for an unknown agent_id or if the agent is still mid-turn
     — the tool wrapper turns those into an error ToolResult.
@@ -552,5 +608,5 @@ async def resume_subagent(
             "fresh agent if there is more to do."
         )
 
-    report = await _run_and_finish(deps, agent_id, child, message)
-    return agent_id, report
+    status, report = await _blocking_run(deps, agent_id, child, message)
+    return agent_id, report, status

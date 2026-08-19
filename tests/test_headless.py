@@ -312,3 +312,39 @@ async def test_a_provider_with_no_catalog_leaves_the_meter_exactly_as_it_was():
     )
     await cli._warm_context_length(agent)          # a dead catalog is not an error
     assert agent.context_length is None
+
+
+def test_a_headless_delegation_is_bracketed_in_the_log(tmp_path, monkeypatch, capsys):
+    """A ``-p`` run logged a subagent starting and nothing at all after it.
+
+    Every headless delegation blocks -- there is nothing here to own a
+    detached job -- so the blocking shape was the one shape whose ending was
+    never written down, in the one place with no live UI to compensate.
+    """
+    spawn = json.dumps({
+        "description": "look around", "prompt": "look", "agent_type": "explore",
+    })
+
+    class DelegatingProvider(FakeProvider):
+        async def stream_chat(self, req):
+            system = next((m.content for m in req.messages if m.role == "system"), "")
+            if "QuickCode subagent" in (system or ""):
+                yield TextDelta("nothing to report")
+                yield TurnDone("stop")
+                return
+            async for ev in super().stream_chat(req):
+                yield ev
+
+    _install(monkeypatch, DelegatingProvider([
+        [ToolCallEnd(id="a1", name="agent", arguments=spawn), TurnDone("tool_calls")],
+        [TextDelta("the child found nothing"), TurnDone("stop")],
+    ]))
+
+    cli.main(_headless(tmp_path, "delegate this"))
+    capsys.readouterr()
+
+    events = _events(tmp_path)
+    spawned = [e for e in events if e["type"] == "agent_spawned"]
+    done = [e for e in events if e["type"] == "agent_done"]
+    assert [e["agent_id"] for e in spawned] == [e["agent_id"] for e in done]
+    assert done[0]["status"] == "done"

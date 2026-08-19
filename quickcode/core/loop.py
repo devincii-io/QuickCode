@@ -73,7 +73,14 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
             agent.history.push_user("", [wrap_up])
         agent.bus.emit(AgentStatus("sending"))
         msg = await _stream_once(agent)
-        if msg is None:  # cancelled or error already surfaced
+        if msg is None:
+            # An error surfaced itself (``AgentStatus("error")``); a cancel had
+            # nothing to surface it with, so a client that saw the stream stop
+            # mid-sentence was told nothing at all -- and the recorder never
+            # flushed the half-streamed text, which then reappeared glued to
+            # the *next* turn's assistant message.
+            if agent.cancelled:
+                agent.bus.emit(AgentStatus("interrupted"))
             return last_text
         agent.history.push_assistant(msg)
         agent.ledger.add(msg.usage)
@@ -105,6 +112,31 @@ def _tools_for(agent: AgentInstance):
     return [t.schema() for t in tools]
 
 
+def _abandon_round(
+    agent: AgentInstance,
+    usage: Usage,
+    calls: dict[str, dict[str, str]],
+    ended: list[str],
+    reason: str,
+) -> None:
+    """Close the books on a round that ends without an assistant message.
+
+    Two things are already public by the time a round is abandoned, and both
+    outlive the coroutine that dropped them. The provider's ``usage`` was
+    emitted, so it is in the log and a resume counts it -- if the live ledger
+    skips it, the same session adds up to two different numbers depending on
+    who is reading. And every tool call that finished streaming was emitted as
+    a ``tool_call``, so a reader holds a call with no result: a spinner that
+    never stops, live and on replay alike.
+    """
+    if usage.input_tokens or usage.output_tokens or usage.cached_tokens or usage.cost_usd:
+        agent.ledger.add(usage)
+    for cid in ended:
+        agent.bus.emit(
+            ToolResultEvent(cid, calls.get(cid, {}).get("name", ""), reason, True, 0, {})
+        )
+
+
 async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
     req = ChatRequest(
         model=agent.model,
@@ -115,12 +147,15 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
     reasoning_parts: list[str] = []
     calls: dict[str, dict[str, str]] = {}
     order: list[str] = []
+    # The subset of ``order`` that reached the wire as a whole ``tool_call``.
+    ended: list[str] = []
     usage = Usage()
     finish = "stop"
     agent.bus.emit(AgentStatus("streaming"))
     try:
         async for ev in agent.provider.stream_chat(req):
             if agent.cancelled:
+                _abandon_round(agent, usage, calls, ended, "[interrupted]")
                 return None
             agent.bus.emit(ev)
             if isinstance(ev, TextDelta):
@@ -144,6 +179,8 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
                     c["args"] = ev.arguments
                 if ev.id not in order:
                     order.append(ev.id)
+                if ev.id not in ended:
+                    ended.append(ev.id)
             elif isinstance(ev, Usage):
                 usage = ev
             elif isinstance(ev, TurnDone):
@@ -151,14 +188,22 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
                 if ev.error:
                     # The provider event was already emitted above. Flip state
                     # and stop without duplicating the same error in the UI.
+                    _abandon_round(agent, usage, calls, ended, "[round failed]")
                     agent.bus.emit(AgentStatus("error"))
                     return None
     except ProviderError as e:
         # Emit the error once (TurnDone carries the text); AgentStatus only
         # flips the state indicator so it is not rendered a second time.
         agent.bus.emit(TurnDone("error", str(e)))
+        _abandon_round(agent, usage, calls, ended, "[round failed]")
         agent.bus.emit(AgentStatus("error"))
         return None
+    except BaseException:
+        # A provider that raises something other than ProviderError, or a
+        # cancelled task: the exception is the caller's to handle, but the
+        # round's public leftovers are still ours to close.
+        _abandon_round(agent, usage, calls, ended, "[round failed]")
+        raise
 
     tool_calls = [
         AssembledToolCall(id=cid, name=calls[cid]["name"], arguments=calls[cid]["args"] or "{}")
@@ -176,17 +221,37 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
 async def _execute_tools(
     agent: AgentInstance, calls: list[AssembledToolCall]
 ) -> list[tuple[AssembledToolCall, str, bool]]:
-    """Read-only calls run concurrently; mutating calls sequentially in order."""
+    """Read-only calls run concurrently; mutating calls sequentially in order.
+
+    Every call that got this far was announced to the world as a ``tool_call``.
+    ``record`` is the only way a result is written down here, and the ``finally``
+    sweep guarantees it happens once for each of them -- an interrupt, a
+    cancelled gather, a hook that raised, all of it. A ``tool_call`` with no
+    ``tool_result`` is a spinner nothing ever stops, and it is just as permanent
+    on replay as it was live.
+    """
     results: dict[str, tuple[str, bool]] = {}
+
+    def record(
+        call: AssembledToolCall,
+        content: str,
+        is_error: bool,
+        *,
+        ms: int = 0,
+        ui_meta: dict | None = None,
+    ) -> None:
+        if call.id in results:
+            return
+        results[call.id] = (content, is_error)
+        agent.bus.emit(
+            ToolResultEvent(call.id, call.name, content, is_error, ms, ui_meta or {})
+        )
 
     async def run_one(call: AssembledToolCall) -> None:
         started = asyncio.get_running_loop().time()
         content, is_error, ui_meta = await _run_tool(agent, call)
         ms = int((asyncio.get_running_loop().time() - started) * 1000)
-        results[call.id] = (content, is_error)
-        agent.bus.emit(
-            ToolResultEvent(call.id, call.name, content, is_error, ms, ui_meta)
-        )
+        record(call, content, is_error, ms=ms, ui_meta=ui_meta)
 
     readonly: list[AssembledToolCall] = []
     mutating: list[AssembledToolCall] = []
@@ -194,11 +259,8 @@ async def _execute_tools(
         tool = agent.registry.get(c.name)
         (readonly if (tool and tool.is_read_only) else mutating).append(c)
 
-    if readonly:
-        if agent.cancelled:
-            for c in readonly:
-                results[c.id] = ("[interrupted]", True)
-        else:
+    try:
+        if readonly and not agent.cancelled:
             running = asyncio.gather(*(run_one(c) for c in readonly))
             interrupted = asyncio.create_task(agent._cancel.wait())
             done, _ = await asyncio.wait(
@@ -207,18 +269,23 @@ async def _execute_tools(
             if interrupted in done and agent.cancelled:
                 running.cancel()
                 await asyncio.gather(running, return_exceptions=True)
-                for c in readonly:
-                    results.setdefault(c.id, ("[interrupted]", True))
             else:
                 interrupted.cancel()
                 await asyncio.gather(interrupted, return_exceptions=True)
-    for c in mutating:
-        if agent.cancelled:
-            results[c.id] = ("[interrupted]", True)
-            continue
-        await run_one(c)
+                # A tool that raised past ``_run_tool``'s own catch (a hook,
+                # say) leaves its failure on the gather. Take it so asyncio
+                # does not report it unretrieved; the sweep writes the result.
+                if running.done() and not running.cancelled():
+                    running.exception()
+        for c in mutating:
+            if agent.cancelled:
+                break
+            await run_one(c)
+    finally:
+        for c in calls:
+            record(c, "[interrupted]" if agent.cancelled else "[no result]", True)
 
-    return [(c, *results.get(c.id, ("[no result]", True))) for c in calls]
+    return [(c, *results[c.id]) for c in calls]
 
 
 async def _run_tool(

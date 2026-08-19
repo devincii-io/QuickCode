@@ -336,7 +336,46 @@ def test_the_default_is_on(home):
 # ---------------------------------------------------------------------------
 
 
-def test_the_windows_installer_layout_is_recognised(tmp_path, monkeypatch):
+def frozen_app(tmp_path, monkeypatch, *, uninstaller: bool) -> Path:
+    """A stand-in for the shipping layout: the frozen application folder, with
+    or without the Inno Setup uninstaller that proves it was installed."""
+    monkeypatch.setattr("os.name", "nt")
+    app = tmp_path / "Programs" / "QuickCode"
+    (app / "_internal").mkdir(parents=True)
+    exe = app / "QuickCodeApp.exe"
+    exe.write_bytes(b"MZ")
+    if uninstaller:
+        (app / "unins000.exe").write_bytes(b"")
+    monkeypatch.setattr(update.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(update.sys, "executable", str(exe))
+    return app
+
+
+def test_the_frozen_installer_layout_is_recognised(tmp_path, monkeypatch):
+    """The shape the installer actually ships since the move to PyInstaller:
+    both executables in the install directory beside the uninstaller, with no
+    venv anywhere. Reading sys.prefix here would find the app folder and learn
+    nothing, so detection goes by sys.executable instead."""
+    app = frozen_app(tmp_path, monkeypatch, uninstaller=True)
+    info = update.detect_install(app / "_internal")
+    assert info.method == "installer"
+    assert info.can_self_update is True
+    assert Path(info.app_dir) == app
+
+
+def test_an_uninstalled_frozen_copy_offers_nothing(tmp_path, monkeypatch):
+    """dist/QuickCode, or an unzipped release folder. There is no install to
+    replace, and claiming "pip" would print a command that does nothing."""
+    app = frozen_app(tmp_path, monkeypatch, uninstaller=False)
+    info = update.detect_install(app / "_internal")
+    assert info.method == "unknown"
+    assert info.can_self_update is False
+
+
+def test_the_older_venv_installer_layout_is_still_recognised(tmp_path, monkeypatch):
+    """Pre-frozen installs put a private venv under the app directory. Nothing
+    ships that shape any more, but a wheel installed into one of those venvs
+    still lands beside a real uninstaller."""
     monkeypatch.setattr("os.name", "nt")
     app = tmp_path / "Programs" / "QuickCode"
     (app / "venv").mkdir(parents=True)

@@ -208,8 +208,12 @@ def _build_agent(args: argparse.Namespace):
         cwd=cwd,
         depth=0,
         # Subagent activity belongs in the log for the same reason it does in
-        # the UI: without it the trace shows a tool call and no worker.
+        # the UI: without it the trace shows a tool call and no worker. Both
+        # brackets, or the trace shows a worker that starts and never stops --
+        # and every ``-p`` delegation is blocking, since nothing here outlives
+        # the turn to own a detached one.
         on_pane=recorder.on_subagent,
+        on_done=recorder.on_subagent_done,
         tool_pool=list(registry.tools.values()),
         limits=limits,
     )
@@ -345,16 +349,28 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def main_app() -> None:
-    """GUI entry point (``quickcode-app``) for the Start Menu / Desktop shortcut.
+    """GUI entry point for the Start Menu / Desktop shortcut and the frozen
+    ``QuickCodeApp.exe``.
 
     Equivalent to ``quickcode --cwd <home>``: the user's home directory is the
-    default project, and the app window opens on it. Launched through
-    pythonw, so the console streams are patched up before anything writes to
-    them. Extra arguments still pass through -- argparse takes the last
-    ``--cwd``, so a caller can override the default.
+    *default* project, and the app window opens on it. Launched without a
+    console (pythonw, or a windowed PyInstaller build), so the console streams
+    are patched up before anything writes to them.
+
+    The home directory is only a fallback. A launch that already names a
+    project keeps it -- which is what makes the Explorer context menu work:
+    it runs ``QuickCodeApp.exe "%V"`` on the clicked folder, and prepending
+    ``--cwd <home>`` unconditionally would silently discard it (argparse takes
+    the *last* ``--cwd``, and the folder arrives as a positional).
     """
     _bind_null_streams()
-    main(["--cwd", str(Path.home()), *sys.argv[1:]])
+    args = list(sys.argv[1:])
+    named_project = any(a.startswith("--cwd") for a in args) or any(
+        _looks_like_dir(a) for a in args if not a.startswith("-")
+    )
+    if not named_project:
+        args = ["--cwd", str(Path.home()), *args]
+    main(args)
 
 
 if __name__ == "__main__":

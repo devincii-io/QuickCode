@@ -83,14 +83,15 @@ declare itself trustworthy.
 
 QuickCode installs three ways. All of them give you the same local web app.
 
-**Windows installer (`.exe`)** — the turnkey path. Build
-`packaging\quickcode.iss` with the [Inno Setup](https://jrsoftware.org/isinfo.php)
-compiler (or run `scripts\release.py --build`), then run the resulting
-`QuickCode-Setup-<version>.exe`. It installs
-per-user, ensures Git and Python 3.12+ (installing them silently if missing),
-creates a private venv, puts `quickcode`/`qc` on your `PATH`, and adds a Start
-Menu shortcut — plus optional desktop and *"Open QuickCode here"* folder
-context-menu entries. See [packaging/README.md](packaging/README.md).
+**Windows installer (`.exe`)** — the turnkey path, and the only one that needs
+nothing installed first: it carries a frozen copy of QuickCode and its Python
+runtime, so **no Python and no Git are required** and nothing is downloaded
+while it runs. Run `QuickCode-Setup-<version>.exe` from a
+[GitHub release](https://github.com/devincii-io/QuickCode/releases) (or build it
+yourself with `scripts\release.py --build`). It installs per-user into
+`%LOCALAPPDATA%\Programs\QuickCode`, puts `quickcode`/`qc` on your `PATH`, and
+adds a Start Menu shortcut — plus optional desktop and *"Open QuickCode here"*
+folder context-menu entries. See [packaging/README.md](packaging/README.md).
 
 **pip / uv** — for anyone who already has Python 3.12+. QuickCode is not
 published on PyPI; install the wheel from a
@@ -115,9 +116,10 @@ qc .             # same thing, explicitly
 qc C:\proj       # open another project
 ```
 
-The installer's **QuickCode** shortcut runs `quickcode-app`, a windowed entry
-point that opens your home directory as the default project with no console
-window behind the browser.
+The installer's **QuickCode** shortcut runs the windowed entry point
+(`QuickCodeApp.exe`; `quickcode-app` in a pip install), which opens your home
+directory as the default project with no console window behind it. Right-click
+a folder and *"Open QuickCode here"* opens that folder instead.
 
 QuickCode's mark is a friendly blue ghost — it's the Start Menu icon, the
 browser favicon, and the app's own brand mark

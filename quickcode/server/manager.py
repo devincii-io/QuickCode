@@ -333,11 +333,40 @@ class Conversation:
             self._inbox.put_nowait(text)
         self._emit_state()
 
+    def cancel_pending_reviews(self) -> int:
+        """Answer every review still waiting on the user. Returns how many.
+
+        The cancel flag is read by the loop, and a turn parked on a permission
+        modal is not in the loop -- it is awaiting a ``Future`` that only a
+        client decision resolves. Nothing was going to resolve it once the user
+        pressed Stop, so the turn never ended: ``busy`` stayed true, the Stop
+        button stayed on screen and the composer stayed disabled with nothing
+        actually running. Denying is the honest answer -- the user just said no
+        to the whole turn -- and it also emits the ``permission_resolved`` /
+        ``plan_resolved`` half of the pair, which is what closes the modal.
+        """
+        answered = 0
+        for p in list(self.pending.values()):
+            if p.future is None or p.future.done():
+                continue
+            if p.kind == "permission":
+                p.future.set_result(PermissionOutcome(
+                    allow=False,
+                    deny_message="Interrupted by the user before this was answered.",
+                ))
+            else:
+                p.future.set_result(PlanOutcome(
+                    approved=False, feedback="Interrupted by the user."
+                ))
+            answered += 1
+        return answered
+
     def interrupt(self) -> None:
         cleared = len(self.input_queue)
         self.input_queue.clear()
         if self.agent.busy:
             self.agent.cancel()
+        reviews = self.cancel_pending_reviews()
         # Detached jobs are the whole point of the feature and exactly what an
         # interrupt is for: stopping the agent while its background children
         # kept spending would make Esc a lie.
@@ -347,6 +376,8 @@ class Conversation:
             bits.append(f"{cleared} queued message{'s' if cleared != 1 else ''} cleared")
         if jobs:
             bits.append(f"{jobs} background job{'s' if jobs != 1 else ''} cancelled")
+        if reviews:
+            bits.append(f"{reviews} pending review{'s' if reviews != 1 else ''} denied")
         note = "(interrupt requested)"
         if bits:
             note = f"(interrupt requested; {'; '.join(bits)})"
@@ -363,17 +394,27 @@ class Conversation:
             except Exception as e:  # never kill the worker
                 log.exception("turn failed")
                 self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
-            self.rec.persist_new_messages(self.agent)
-            self._note_jobs_in_flight()
-            # ``runtime.compaction.enabled`` gates the automatic path only:
-            # /compact is a thing the user asked for, and switching the
-            # automatic summary off is not a statement about that.
-            limits = self.agent.limits
-            if limits.compaction_enabled and should_compact(
-                self.agent, limits.compaction_threshold
-            ):
-                await self._compact(manual=False)
-            self._emit_state()
+            # Everything after the turn is bookkeeping, and none of it is
+            # allowed to be the reason a client never hears that the turn
+            # ended: ``busy`` is cleared by a state event, so the state event
+            # is emitted in a ``finally``. Without it, one raised summarization
+            # left the Stop button on screen forever with nothing running.
+            try:
+                self.rec.persist_new_messages(self.agent)
+                self._note_jobs_in_flight()
+                # ``runtime.compaction.enabled`` gates the automatic path only:
+                # /compact is a thing the user asked for, and switching the
+                # automatic summary off is not a statement about that.
+                limits = self.agent.limits
+                if limits.compaction_enabled and should_compact(
+                    self.agent, limits.compaction_threshold
+                ):
+                    await self._compact(manual=False)
+            except Exception as e:  # never kill the worker
+                log.exception("post-turn work failed")
+                self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            finally:
+                self._emit_state()
             # Send the next queued follow-up, if any.
             if self.input_queue and not self.agent.busy:
                 self._inbox.put_nowait(self.input_queue.pop(0))
@@ -800,6 +841,24 @@ class ConversationManager:
             except Exception:
                 self._models = self._models or []
         return self._models
+
+    def adopt_catalog(self, models: list[ModelInfo]) -> None:
+        """Take an install-wide catalog fetched elsewhere, and teach every live
+        conversation the context length it has been missing.
+
+        The catalog no longer blocks the window (see ProjectHub._warm_catalog),
+        so a conversation can open before it arrives. Everything works without
+        it except the context meter, which reads `None` until this fills it in.
+        """
+        if not models:
+            return
+        self._models = list(models)
+        for conv in self.conversations.values():
+            info = self.model_info(conv.agent.model)
+            if info is None or conv.agent.context_length == info.context_length:
+                continue
+            conv.agent.context_length = info.context_length
+            conv._emit_state()
 
     def model_info(self, model_id: str) -> ModelInfo | None:
         for m in self._models or []:

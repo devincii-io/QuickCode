@@ -42,6 +42,99 @@ function emptyMetrics() {
 
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 
+// A round that ends in tool calls is a pause, not an ending: the agent runs the
+// tools and asks the model again. Everything else — stop, length, error, or a
+// provider that said nothing — ends the turn.
+export function midTurn(finishReason) {
+  return finishReason === "tool_calls" || finishReason === "function_call";
+}
+
+// The three states the loop stops in. Anything still marked in-flight when one
+// of these arrives never will finish: an interrupted tool call is answered in
+// the message history and emits no `tool_result` at all (core/loop.py), so the
+// maps below would keep it for ever and the activity line would name a tool
+// that is not running on the *next* turn.
+const TERMINAL_STATUS = new Set(["idle", "interrupted", "error"]);
+
+function endOfTurn(state) {
+  store.runningTools.clear();
+  store.pendingCalls.clear();
+  // An interrupt takes the whole tree down — Conversation.interrupt() cancels
+  // the agent *and* every background job, and a blocking child dies with the
+  // tool call awaiting it. Only detached jobs get an `agent_done` to say so,
+  // so without this the rest of the fan-out sits in the roster as "running"
+  // for ever, and their cards keep claiming they are still thinking.
+  if (state !== "interrupted") return;
+  for (const a of store.agents.values()) {
+    if (a.done) continue;
+    a.done = true;
+    a.streamText = "";
+    a.status = "interrupted";
+  }
+}
+
+// Replay carries no status events, so an agent whose terminal record never got
+// written — an interrupt kills a blocking child before it can produce one —
+// pulsed "running" again on every reconnect. `busy` is the server's own word
+// for whether anything is still in flight, and it arrives on the state event
+// just before the replay. Presumed, not concluded: a detached job really can
+// outlive the turn that spawned it, so one live event revives the row.
+function presumeSettled() {
+  if (!store.state || store.state.busy) return;
+  for (const a of store.agents.values()) {
+    if (a.done) continue;
+    a.done = true;
+    a.presumed = true;
+  }
+}
+
+// A blocking subagent's report coming back to the parent is proof the child is
+// over — and for one that died without writing a terminal message of its own
+// (its turn raised, or its last round produced no text) it is the only proof
+// in the log, which is why such a row used to sit in the roster as "running"
+// for the rest of the session. `<subagent id="…">` is the wrapper the agent
+// tool puts around every report, and `[did not finish]` is how the runner tags
+// one that failed (tools/agent.py, subagents/runner.py). Presumed, not
+// concluded: a later event from that agent takes it straight back.
+// The wrapper the agent/send_message tools put around a report. `status` is the
+// authority (the runner decided it); the `[did not finish]` marker is the
+// fallback for logs written before the attribute existed — and note it can sit
+// *after* the sanitizer's own prefix line, which is why matching it needs the
+// optional hop rather than `\s*`.
+const REPORT_TAG =
+  /<subagent id="([^"]+)"(?:\s+status="([^"]*)")?>\s*(?:\[quickcode:[^\]]*\]\s*)?(\[did not finish\])?/g;
+
+function settleFromReport(content) {
+  if (typeof content !== "string" || !content.includes("<subagent id=")) return;
+  for (const [, id, status, marker] of content.matchAll(REPORT_TAG)) {
+    const a = store.agents.get(id);
+    if (!a || a.done) continue;
+    a.done = true;
+    // A status attribute is a fact from the runner, not an inference from the
+    // report's text, so a report that carries one is not "presumed" anything.
+    a.presumed = !status;
+    a.streamText = "";
+    if (marker || (status && status !== "done")) a.status = status || "error";
+  }
+}
+
+// It spoke: it was alive after all.
+function revive(a) {
+  if (!a?.presumed) return;
+  a.presumed = false;
+  a.done = false;
+  a.status = undefined;
+}
+
+function agentRecord(id, definition) {
+  let a = store.agents.get(id);
+  // A spawn always precedes its events in the log, but an out-of-order or
+  // truncated stream must not leave an agent the store cannot see at all.
+  if (!a) { a = { definition: definition || "", streamText: "", done: false }; store.agents.set(id, a); }
+  else if (definition && !a.definition) a.definition = definition;
+  return a;
+}
+
 function notify(kind, ev) { for (const fn of subs) fn(kind, ev); }
 
 export function resetConversation() {
@@ -73,7 +166,12 @@ export function ingest(ev) {
     return;
   }
   if (t === "replay_start") { store.replaying = true; notify("replay_start"); return; }
-  if (t === "replay_done") { store.replaying = false; notify("replay_done"); return; }
+  if (t === "replay_done") {
+    store.replaying = false;
+    presumeSettled();
+    notify("replay_done");
+    return;
+  }
 
   // Logged events carry seq; dedupe (replay can overlap the live stream).
   if (ev.seq != null) {
@@ -90,11 +188,24 @@ export function ingest(ev) {
       store.runningTools.set(ev.id, ev);
     } else if (t === "tool_result") {
       store.runningTools.delete(ev.id);
+      settleFromReport(ev.content);
     } else if (t === "agent_spawned") {
-      store.agents.set(ev.agent_id, { definition: ev.definition, streamText: "", done: false });
+      const a = agentRecord(ev.agent_id, ev.definition);
+      a.definition = ev.definition;
+      revive(a);
     } else if (t === "agent_event") {
-      const a = store.agents.get(ev.agent_id);
-      if (a && ev.ev?.type === "assistant_message") { a.streamText = ""; a.done = true; }
+      const a = agentRecord(ev.agent_id);
+      revive(a);
+      if (ev.ev?.type === "assistant_message") {
+        a.streamText = "";
+        // The provider emits TurnDone once per *round*, so the recorder
+        // synthesises an assistant_message every time a round produced text —
+        // including the rounds that end in tool calls and carry on working.
+        // Treating any of them as terminal marked a busy subagent "done", hid
+        // it behind the roster's running filter, and stopped its live text from
+        // rendering at all. `finish_reason` is the difference.
+        if (!midTurn(ev.ev.finish_reason)) a.done = true;
+      }
     } else if (t === "agent_done") {
       // A detached job's closing bracket. A blocking subagent goes terminal on
       // its assistant_message above; a background one finishes at a moment
@@ -122,13 +233,16 @@ export function ingest(ev) {
       break;
     }
     case "status":
-      store.agentStatus = ev.state; notify("status", ev); break;
+      store.agentStatus = ev.state;
+      if (TERMINAL_STATUS.has(ev.state)) endOfTurn(ev.state);
+      notify("status", ev); break;
     case "tasks":
       notify("tasks", ev); break;
     case "queued_message":
       notify("queued", ev); break;
     case "agent_event": {
       const a = store.agents.get(ev.agent_id);
+      revive(a);
       if (a && ev.ev?.type === "text_delta") a.streamText += ev.ev.text;
       notify("agent_stream", ev); break;
     }
@@ -194,8 +308,19 @@ function endTurnTiming() {
 
 // ---- derived helpers ----
 
-export function toolResultFor(callId) {
-  return store.events.find((e) => e.type === "tool_result" && e.id === callId);
+// A subagent's result is wrapped in an `agent_event`, so matching on the
+// top-level type alone found nothing for every call a subagent made — the
+// inspector then reported "not applicable" for a result that is in the log.
+// `agentId` scopes the search to the agent that made the call, since ids are
+// only unique within one agent's stream.
+export function toolResultFor(callId, agentId = null) {
+  for (const e of store.events) {
+    const inner = e.type === "agent_event" ? e.ev : e;
+    if (!inner || inner.type !== "tool_result" || inner.id !== callId) continue;
+    if ((e.agent_id ?? null) !== (agentId ?? null)) continue;
+    return inner;
+  }
+  return undefined;
 }
 
 export function eventBySeq(seq) {

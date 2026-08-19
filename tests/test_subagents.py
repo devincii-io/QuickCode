@@ -98,7 +98,7 @@ def test_project_defs_shadow_builtins(tmp_path):
 
 async def test_spawn_returns_sanitized_report_and_id():
     provider = ScriptedProvider("Found the bug at core/loop.py:42")
-    agent_id, report = await spawn_subagent(
+    agent_id, report, _ = await spawn_subagent(
         _deps(provider), agent_type="explore", prompt="find the bug"
     )
     assert agent_id == "explore-1"
@@ -137,6 +137,54 @@ async def test_depth_limit_withholds_agent_tool():
     # This spawn produces a child at depth == MAX_DEPTH: it should still run,
     # but its own registry has no 'agent' tool. We assert indirectly: spawning
     # succeeds and the roster grew by one.
-    _id, report = await spawn_subagent(deps, agent_type="general", prompt="p")
+    _id, report, _ = await spawn_subagent(deps, agent_type="general", prompt="p")
     assert "leaf" in report
     assert len(deps.spawned) == 1
+
+
+# --------------------------------------------------------------------------
+# how a delegation ends, and who is told
+# --------------------------------------------------------------------------
+
+
+def _watched_deps(provider, **kw):
+    """Deps wired the way a live conversation wires them: the pane callback
+    that opens a roster row, and the done callback that closes it."""
+    ended: list[tuple] = []
+    started: list[tuple] = []
+    deps = _deps(provider, **kw)
+    deps.on_pane = lambda aid, defn, _bus: started.append((aid, defn))
+    deps.on_done = lambda aid, defn, status, secs: ended.append((aid, defn, status))
+    return deps, started, ended
+
+
+async def test_a_blocking_delegation_reports_that_it_finished():
+    # The tool result tells the spawner. Nothing told the roster, which had to
+    # guess an ending from the child's last message -- and a child emits one of
+    # those per round, not per turn.
+    deps, started, ended = _watched_deps(ScriptedProvider("all done"))
+    await spawn_subagent(deps, agent_type="explore", prompt="p")
+    assert started == [("explore-1", "explore")]
+    assert ended == [("explore-1", "explore", "done")]
+
+
+async def test_a_child_that_raised_says_so_instead_of_reporting_done():
+    class BrokenProvider(ScriptedProvider):
+        async def stream_chat(self, req):
+            raise RuntimeError("the provider fell over")
+            yield  # pragma: no cover — makes this an async generator
+
+    deps, _started, ended = _watched_deps(BrokenProvider("x"))
+    _id, report, _ = await spawn_subagent(deps, agent_type="explore", prompt="p")
+    assert "[did not finish]" in report
+    assert ended == [("explore-1", "explore", "error")]
+
+
+async def test_a_spawn_refused_before_it_starts_opens_no_row_to_close():
+    # An unknown agent type must not leave a roster row that never closes --
+    # the refusal happens before the pane is opened, and so before there is
+    # anything to announce the end of.
+    deps, started, ended = _watched_deps(ScriptedProvider("x"))
+    with pytest.raises(ValueError):
+        await spawn_subagent(deps, agent_type="no-such-agent", prompt="p")
+    assert started == [] and ended == []

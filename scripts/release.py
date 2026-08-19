@@ -1,13 +1,18 @@
 """Local release gate and release-artifact builder for QuickCode.
 
 Mirrors QuickTerm's ``scripts/check.py`` + manual release workflow
-(``AGENTS.md`` there), adapted to how QuickCode actually ships: there is no
-PyInstaller/frozen build, so a "release" is a wheel + sdist (``uv build``)
-plus a Windows installer (``packaging/quickcode.iss``, Inno Setup) that
-pip-installs the wheel into a private venv at install time. Both consume the
-one version that matters at runtime -- ``pyproject.toml``'s
-``[project].version`` -- so this script is also the only place that bumps
-it, to keep the installer, the wheel, and ``uv.lock`` from drifting apart.
+(``AGENTS.md`` there). A QuickCode release is three artifacts:
+
+* a **frozen application folder** (``quickcode.spec``, PyInstaller onedir),
+  wrapped by the Inno Setup installer (``packaging/quickcode.iss``). This is
+  the turnkey path: it needs neither Python nor Git on the user's machine.
+* a **wheel** and an **sdist** (``uv build``), so ``pip``/``uv`` installs stay
+  supported for people who already have Python.
+
+All of them consume the one version that matters at runtime --
+``pyproject.toml``'s ``[project].version`` -- so this script is also the only
+place that bumps it, to keep the installer, the wheel, and ``uv.lock`` from
+drifting apart.
 
 Usage (from the repo root, PowerShell):
 
@@ -17,8 +22,9 @@ Usage (from the repo root, PowerShell):
 
     .venv\\Scripts\\python.exe scripts\\release.py --version 2.0.0
         # Bump pyproject.toml's version, re-lock (`uv lock`), run --check,
-        # `uv build` a wheel + sdist, compile the Inno Setup installer with
-        # /DMyAppVersion=2.0.0, and write SHA256SUMS.txt over all three.
+        # `uv build` a wheel + sdist, freeze the app with PyInstaller, compile
+        # the Inno Setup installer with /DMyAppVersion=2.0.0 around it, and
+        # write SHA256SUMS.txt over all three artifacts.
         # Does NOT tag, commit, or push -- that is a deliberate manual step.
 
     .venv\\Scripts\\python.exe scripts\\release.py --build
@@ -45,7 +51,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 ISS = ROOT / "packaging" / "quickcode.iss"
+SPEC = ROOT / "quickcode.spec"
 DIST = ROOT / "dist"  # uv build's wheel + sdist land here.
+# PyInstaller's COLLECT output, named by quickcode.spec, and what the .iss
+# copies into the install directory. Both executables plus _internal\.
+FROZEN_DIR = DIST / "QuickCode"
+FROZEN_EXES = ("quickcode.exe", "QuickCodeApp.exe")
 # packaging/quickcode.iss has `OutputDir=dist`, resolved relative to the
 # .iss file's own directory -- so the installer lands in packaging/dist/,
 # not the repo-root dist/ next to the wheel. Both are covered by the
@@ -75,10 +86,12 @@ def project_version() -> str:
 def set_version(new_version: str) -> None:
     """Rewrite ``[project].version`` in pyproject.toml in place.
 
-    Deliberately does NOT touch ``quickcode/__init__.py``'s ``__version__``:
-    that value is unused dead code (``quickcode/cli.py`` reads the version
-    via ``importlib.metadata.version("quickcode")`` instead), not a second
-    source of truth QuickTerm-style. See AGENTS.md.
+    There is nothing else to touch: ``quickcode/__init__.py`` resolves
+    ``__version__`` out of the installed distribution's metadata rather than
+    holding a literal, so pyproject.toml is the only place the number lives.
+    The frozen build carries that metadata (``copy_metadata`` in
+    quickcode.spec), which is why ``build()`` insists the environment is
+    in sync before freezing. See AGENTS.md.
     """
     text = PYPROJECT.read_text(encoding="utf-8")
     new_text, n = re.subn(
@@ -105,10 +118,54 @@ def check_javascript() -> None:
         run(node, "--check", str(path))
 
 
+# pytest-timeout's banner. Seeing it means a test was killed on the clock, and
+# in this suite that has one known cause: creating an asyncio event loop on
+# Windows builds its self-pipe with ``socket.socketpair()``, which binds a
+# loopback listener and calls ``accept()`` with no timeout -- and that call
+# sometimes never returns. Confirmed with live stack dumps under both
+# starlette's TestClient portal and pytest-asyncio's runner. It is not our code,
+# the selector loop uses the same self-pipe, and it strikes a different test
+# every time.
+_TIMEOUT_BANNER = "+++ Timeout +++"
+PYTEST_ATTEMPTS = 3
+
+
+def run_tests() -> None:
+    """The suite, retried *only* when the environment hang above killed it.
+
+    A retry loop over a test suite is normally how a real failure gets ignored,
+    so this one refuses to be that: anything other than the timeout banner fails
+    on the first attempt, and a run that only ever times out fails too, loudly,
+    rather than being reported as a pass.
+    """
+    for attempt in range(1, PYTEST_ATTEMPTS + 1):
+        print(f"+ {sys.executable} -m pytest -q  (attempt {attempt})", flush=True)
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        print(proc.stdout, end="", flush=True)
+        if proc.returncode == 0:
+            return
+        if _TIMEOUT_BANNER not in (proc.stdout + proc.stderr):
+            print(proc.stderr, end="", file=sys.stderr, flush=True)
+            raise RuntimeError("pytest failed")
+        print(
+            f"pytest was killed by the socketpair hang (attempt {attempt} of "
+            f"{PYTEST_ATTEMPTS}); no test reported a failure, retrying.",
+            flush=True,
+        )
+    raise RuntimeError(
+        f"pytest hit the socketpair hang on all {PYTEST_ATTEMPTS} attempts; the "
+        "suite never completed, so nothing was verified. Try again on a quieter "
+        "machine before releasing."
+    )
+
+
 def check() -> None:
     version = project_version()
     print(f"QuickCode {version} local release gate", flush=True)
-    run(sys.executable, "-m", "pytest", "-q")
+    run_tests()
     run(sys.executable, "-m", "ruff", "check", "quickcode", "tests", "scripts")
     if not compileall.compile_dir(ROOT / "quickcode", quiet=1):
         raise RuntimeError("Python byte compilation failed")
@@ -136,12 +193,48 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def freeze() -> None:
+    """PyInstaller the onedir app into dist/QuickCode.
+
+    Run from this interpreter rather than a bare ``pyinstaller`` on PATH: the
+    frozen build inherits the *environment it is built in*, so a stray global
+    PyInstaller pointed at some other Python would quietly ship a different
+    runtime and a different dependency set than the one the tests just passed
+    against.
+    """
+    # quickcode.spec bundles this environment's dist-info so the frozen build
+    # can answer importlib.metadata.version("quickcode") -- which is what
+    # --version, /api/health and the update check all read. A stale editable
+    # install would ship yesterday's number and make the updater offer an
+    # update to the version already running.
+    from importlib.metadata import version as installed_version
+
+    declared = project_version()
+    installed = installed_version("quickcode")
+    if installed != declared:
+        raise RuntimeError(
+            f"this environment has quickcode {installed} installed but "
+            f"pyproject.toml declares {declared}; the frozen build would report "
+            "the wrong version. Run `uv sync` first."
+        )
+    run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(SPEC))
+    missing = [name for name in FROZEN_EXES if not (FROZEN_DIR / name).is_file()]
+    if missing:
+        # Notably how a case-insensitive name collision between the two
+        # executables would present: the build succeeds, one of them is gone.
+        raise RuntimeError(f"PyInstaller did not produce: {missing}")
+
+
 def build(iscc_path: str | None) -> None:
     version = project_version()
     print(f"Building QuickCode {version} release artifacts", flush=True)
 
-    # Wheel + sdist.
+    # Wheel + sdist. Still built, and still supported: `pip install` is a
+    # first-class way to run QuickCode for anyone who already has Python.
     run("uv", "build", "--out-dir", "dist")
+
+    # The frozen app the installer wraps. Before ISCC, which copies its output.
+    freeze()
 
     # Windows installer, version injected so it can never disagree with
     # pyproject.toml (packaging/quickcode.iss falls back to its own literal
@@ -210,6 +303,10 @@ def main() -> int:
     if args.version:
         set_version(args.version)
         run("uv", "lock")
+        # Re-install the project so its dist-info carries the new number: the
+        # frozen build copies that metadata, and `uv lock` alone does not
+        # touch the environment.
+        run("uv", "sync")
         check()
         build(args.iscc)
     else:

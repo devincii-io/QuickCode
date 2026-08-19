@@ -53,9 +53,17 @@ class SendMessageTool(Tool[SendMessageInput]):
         from quickcode.subagents.runner import resume_subagent
 
         try:
-            agent_id, report = await resume_subagent(
+            agent_id, report, status = await resume_subagent(
                 deps, agent_id=input.agent_id, message=input.message
             )
         except ValueError as e:
             return ToolResult(str(e), is_error=True)
-        return ToolResult(f"<subagent id=\"{agent_id}\">\n{report}\n</subagent>")
+        # Same reasoning as the agent tool: a resumed child that died hands back
+        # a report too, and calling that a success is how a green tick ends up
+        # over a dead agent.
+        from quickcode.subagents.jobs import DONE
+
+        return ToolResult(
+            f'<subagent id="{agent_id}" status="{status}">\n{report}\n</subagent>',
+            is_error=status != DONE,
+        )

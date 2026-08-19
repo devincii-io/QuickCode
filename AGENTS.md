@@ -101,23 +101,34 @@ uv run --no-sync ruff check quickcode tests scripts
 
 ## Local release workflow
 
-QuickCode does not freeze into a single binary the way QuickTerm does
-(no PyInstaller spec, no `.spec` file) — the Windows installer
-(`packaging/quickcode.iss`) provisions Git/Python, creates a private venv,
-and `pip install`s the built wheel into it at install time. The version that
-matters at runtime is `pyproject.toml`'s `[project].version`, read back via
-`importlib.metadata.version("quickcode")` in `quickcode/cli.py`; the
-hardcoded `__version__` in `quickcode/__init__.py` is unused dead code, not
-a second source of truth to keep in sync (do not treat it like QuickTerm's
-`__init__.py`/pyproject/`uv.lock` three-way invariant — it isn't one).
+QuickCode freezes into a PyInstaller **onedir** folder (`quickcode.spec` at
+the repo root), the way QuickTerm does, with one difference: it produces two
+executables out of one `dist/QuickCode` — `quickcode.exe` (console CLI) and
+`QuickCodeApp.exe` (windowed app). The windowed one cannot be called
+`QuickCode.exe`; Windows file names are case-insensitive, so PyInstaller
+would build both and silently overwrite the first with the second. The
+installer (`packaging/quickcode.iss`) now only *copies* that folder — no
+Git, no Python, no venv, no network at install time. Wheel and sdist are
+still built, so `pip install` stays supported.
+
+The version that matters at runtime is `pyproject.toml`'s
+`[project].version`, read back via `importlib.metadata.version("quickcode")`
+(`quickcode/__init__.py` resolves `__version__` lazily from the same place —
+it holds no literal, so there is no QuickTerm-style three-way invariant to
+keep in sync). The frozen build carries that dist-info via `copy_metadata`,
+which means **the build environment must match pyproject.toml**: freeze
+against a stale editable install and `--version`, `/api/health` and the
+update check all report yesterday's number. `scripts/release.py` refuses to
+freeze when the two disagree, and `uv sync`s after a version bump.
 
 ```powershell
-.venv\Scripts\python.exe scripts\release.py --version 2.0.0   # bump pyproject.toml, uv lock, build, checksum
+.venv\Scripts\python.exe scripts\release.py --version 2.0.0   # bump pyproject.toml, uv lock+sync, check, build, checksum
 ```
 
-See `scripts/release.py` for exactly what that runs; it mirrors QuickTerm's
-`scripts/check.py` + manual release steps, adapted for an installer that
-pip-installs rather than a frozen `dist/` folder.
+See `scripts/release.py` for exactly what that runs — `uv build`, then
+PyInstaller against `quickcode.spec`, then ISCC around its output, then
+SHA256SUMS.txt over all three artifacts. `packaging/README.md` documents the
+installer itself.
 
 ## Security model
 

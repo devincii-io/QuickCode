@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from quickcode.subagents.jobs import DONE
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 
@@ -124,7 +125,7 @@ class AgentTool(Tool[AgentInput]):
                 )
 
         try:
-            agent_id, report = await spawn_subagent(
+            agent_id, report, status = await spawn_subagent(
                 deps,
                 agent_type=input.agent_type,
                 prompt=input.prompt,
@@ -132,4 +133,13 @@ class AgentTool(Tool[AgentInput]):
             )
         except ValueError as e:
             return ToolResult(str(e), is_error=True)
-        return ToolResult(f"<subagent id=\"{agent_id}\">\n{report}\n</subagent>{inline_note}")
+        # A child that errored or was cut off comes back with a report like any
+        # other, and calling that a success put a green tick and "Status: ok" on
+        # the parent's tool card over a subagent that had died. The status
+        # `_run_and_finish` already decided is the honest answer, and naming it
+        # in the tag lets the roster settle the child's row on a fact rather
+        # than on a guess about the report's wording.
+        return ToolResult(
+            f'<subagent id="{agent_id}" status="{status}">\n{report}\n</subagent>{inline_note}',
+            is_error=status != DONE,
+        )

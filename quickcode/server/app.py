@@ -1302,9 +1302,22 @@ async def _live_phase(ws: WebSocket, conv: Conversation, client: Client) -> None
         await asyncio.gather(out, inp, return_exceptions=True)
 
 
+# A frame every so often, so silence means something. After a laptop sleeps and
+# wakes, a socket can sit in OPEN with nothing alive behind it: sends succeed
+# into the void and, on an idle conversation, no frame ever arrives to disprove
+# it. The client cannot tell that apart from "the agent is thinking" without a
+# beat to miss, so this is that beat — and a send that raises here is how this
+# side learns the peer is gone, too.
+HEARTBEAT_S = 15.0
+
+
 async def _pump_out(ws: WebSocket, client: Client) -> None:
     while True:
-        item = await client.queue.get()
+        try:
+            item = await asyncio.wait_for(client.queue.get(), timeout=HEARTBEAT_S)
+        except TimeoutError:
+            await ws.send_text('{"type":"heartbeat"}')
+            continue
         if item is None:  # overflow sentinel: force a clean replay reconnect
             await ws.close(code=1013, reason="client fell behind; reconnect to replay")
             return

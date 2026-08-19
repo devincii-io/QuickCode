@@ -92,9 +92,10 @@ CACHE_VERSION = 1
 
 CHECK_TIMEOUT_S = 10.0
 DOWNLOAD_TIMEOUT_S = 300.0
-# The installer is a source-bundling Inno package, currently a couple of MB. A
-# cap two orders of magnitude above that is not a guess about the file, it is a
-# refusal to stream an unbounded body onto the user's disk.
+# The installer carries the frozen application folder — a Python runtime, the
+# dependencies and the frontend — currently a few tens of MB compressed. The cap
+# is not a guess about the file, it is a refusal to stream an unbounded body
+# onto the user's disk.
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
 # Fixed for every install. See the module docstring: a version in here would be
@@ -184,8 +185,8 @@ class InstallInfo:
 
     ``method`` is one of:
 
-    ``installer``  the Windows Inno Setup install: a private venv at
-                   ``<app>\\venv`` beside the uninstaller, normally under
+    ``installer``  the Windows Inno Setup install: the frozen application
+                   folder beside the uninstaller, normally under
                    ``%LOCALAPPDATA%\\Programs\\QuickCode``.
     ``pip``        installed as a package into some environment.
     ``source``     a checkout, or an editable install of one.
@@ -212,8 +213,39 @@ class InstallInfo:
         }
 
 
+def _uninstaller_beside(app: Path) -> bool:
+    """Whether an Inno Setup uninstaller sits in ``app``.
+
+    That file is written by the installer and by nothing else, so its presence
+    is evidence rather than inference — which is the whole reason both layout
+    checks below insist on it.
+    """
+    try:
+        return any(app.glob("unins*.exe"))
+    except OSError:
+        return False
+
+
+def _frozen_app_dir(executable: str | os.PathLike[str] | None = None) -> Path | None:
+    """``<app>`` when this process is the frozen build the installer ships.
+
+    The shipping shape since the move to PyInstaller: ``QuickCodeApp.exe`` and
+    ``quickcode.exe`` sit directly in the install directory, next to the
+    uninstaller, with the Python runtime under ``_internal``. There is no venv
+    and no ``sys.prefix`` worth reading — a frozen process reports the
+    application folder there — so this looks at the executable instead.
+    """
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return None
+    try:
+        app = Path(executable or sys.executable).resolve().parent
+    except OSError:
+        return None
+    return app if _uninstaller_beside(app) else None
+
+
 def _inno_app_dir(prefix: Path) -> Path | None:
-    """``<app>`` when ``prefix`` is the venv the Windows installer built.
+    """``<app>`` when ``prefix`` is the venv a pre-frozen installer built.
 
     Two independent marks are required, because either alone is a coincidence
     waiting to happen: the venv is named ``venv`` and sits directly under a
@@ -226,12 +258,7 @@ def _inno_app_dir(prefix: Path) -> Path | None:
     if prefix.name.lower() != "venv":
         return None
     app = prefix.parent
-    try:
-        if not any(app.glob("unins*.exe")):
-            return None
-    except OSError:
-        return None
-    return app
+    return app if _uninstaller_beside(app) else None
 
 
 def _editable_install() -> bool:
@@ -255,12 +282,37 @@ def detect_install(prefix: str | os.PathLike[str] | None = None) -> InstallInfo:
     """Work out what an update could mean here. Never raises."""
     try:
         root = Path(prefix) if prefix is not None else Path(sys.prefix)
+        app = _frozen_app_dir()
+        if app is not None:
+            return InstallInfo(
+                method="installer",
+                detail=(
+                    "Installed by the Windows installer: the QuickCode "
+                    f"application folder at {app}, beside its uninstaller."
+                ),
+                app_dir=str(app),
+                prefix=str(root),
+            )
+        if getattr(sys, "frozen", False):
+            # The application folder, but nobody installed it -- an unpacked
+            # release, or a build straight out of dist/. There is no installer
+            # to hand it, and "pip install -U" would be a lie, so nothing is
+            # offered and the reason is said out loud.
+            return InstallInfo(
+                method="unknown",
+                detail=(
+                    "Running the frozen application folder without an "
+                    "uninstaller beside it — a portable or unpacked copy "
+                    "rather than an install."
+                ),
+                prefix=str(root),
+            )
         app = _inno_app_dir(root)
         if app is not None:
             return InstallInfo(
                 method="installer",
                 detail=(
-                    "Installed by the Windows installer: a private virtual "
+                    "Installed by an older Windows installer: a private virtual "
                     f"environment at {root}, beside the uninstaller in {app}."
                 ),
                 app_dir=str(app),

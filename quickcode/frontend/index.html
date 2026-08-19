@@ -260,6 +260,13 @@
   <div id="modal-root"></div>
 </div>
 
+<!-- The connection banner. Outside #app on purpose: losing the server while
+     you are reading Configuration or Help is exactly when you need to be told,
+     and those are views that cover the workspace. It is the third page-level
+     aria-live host, alongside the toast stack and the trust banner, and like
+     them it is empty and inert until there is something true to say. -->
+<div id="conn-host" class="conn-host hidden" aria-live="polite"></div>
+
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

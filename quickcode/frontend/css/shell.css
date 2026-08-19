@@ -119,10 +119,17 @@ body.resizing-panel { cursor: col-resize; user-select: none; }
 .pt-icon { font-size: 12px; line-height: 1; }
 .panel-bar-actions { flex: none; display: flex; gap: 2px; }
 
-/* A narrow panel keeps the icons and drops the words. */
-@container (max-width: 490px) {
-  .pt-label { display: none; }
-  .panel-tab { padding: 4px 9px; font-size: 13px; }
+/* The tabs keep their names. This used to drop every label below 490px — one
+   pixel under the default panel width — which left five two-character sigils
+   and no way to tell Trajectory from Tasks. The strip already scrolls, and
+   panel.js keeps the active tab in view, so a narrow panel shows fewer tabs
+   rather than nameless ones. Only at a width where even two will not fit do
+   the inactive labels go, and the one you are on still says what it is. */
+@container (max-width: 430px) {
+  .panel-tab { padding: 4px 8px; gap: 5px; }
+}
+@container (max-width: 210px) {
+  .panel-tab:not(.active) .pt-label { display: none; }
 }
 
 .panel-stack { flex: 1; min-height: 0; display: flex; }

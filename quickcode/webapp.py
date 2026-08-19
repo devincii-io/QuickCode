@@ -115,6 +115,9 @@ async def _serve(
         allow_yolo=allow_yolo,
         default_mode=default_mode,
         plugin_tools=loader.load_tool_plugins(),
+        # Nothing on the boot path may wait on the network: the catalog starts
+        # once the port is bound (see `_when_bound`).
+        defer_catalog=True,
     )
     # The launch directory is the default project: registered, opened, and its
     # model catalog warmed so context lengths are known at first open.
@@ -124,16 +127,39 @@ async def _serve(
     app = create_app(hub, host="127.0.0.1", port=port, token=token)
 
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            # Named rather than left on "auto". Each "auto" is a try/except
+            # import chain resolved at startup, and — more to the point — a
+            # frozen build only carries what quickcode.spec was told to bundle;
+            # a probe that reached for an implementation nobody packaged would
+            # fail at the one moment there is no console to say so. These three
+            # are what "auto" already picks here: h11 (httptools is not a
+            # dependency), the sansio websockets implementation (uvicorn 0.52
+            # deprecated the older one), plain asyncio (uvloop is POSIX-only).
+            loop="asyncio",
+            http="h11",
+            ws="websockets-sansio",
+        )
     )
 
     url = f"http://127.0.0.1:{port}/#token={token}&project={hub.default_id}"
     if initial_resume:
         url += f"&resume={initial_resume}"
     if on_ready is not None:
-        # Give uvicorn a beat to bind before the window asks.
-        loop = asyncio.get_running_loop()
-        loop.call_later(0.4, on_ready, url, server)
+        # Open the window the instant uvicorn is actually listening. This used
+        # to be a flat 0.4 s guess, which was both too long (the port is
+        # usually bound in a few ms) and, on a loaded machine, too short.
+        async def _when_bound() -> None:
+            while not server.started:
+                await asyncio.sleep(0.005)
+            on_ready(url, server)
+            hub.warm_catalog()   # the window has its URL; the network can go now
+
+        asyncio.get_running_loop().create_task(_when_bound())
     # `quickcode-app` runs under pythonw, where a GUI process has no console
     # and sys.stdout is None; the URL only goes to a console that exists.
     if sys.stdout is not None:

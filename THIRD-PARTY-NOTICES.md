@@ -4,13 +4,22 @@ QuickCode itself is MIT licensed (see `LICENSE`). This file lists the
 third-party software QuickCode depends on, so that a redistributor or a
 corporate reviewer can see the whole set without resolving it themselves.
 
-QuickCode ships as Python source: a wheel/sdist installed with pip or uv, or
-the Windows installer, which creates a private virtual environment and
-pip-installs into it. It is **not** frozen into a single binary, so the
-dependencies below are fetched from PyPI at install time rather than
-redistributed inside the QuickCode artifacts. The obligation to reproduce the
-notices below therefore falls on anyone who *does* redistribute an installed
-environment (an image, a bundled venv, an offline mirror).
+QuickCode ships in two shapes, and they differ in exactly this respect:
+
+* **Wheel / sdist** (`pip install`, `uv pip install`). Python source only. The
+  dependencies below are fetched from PyPI at install time and are *not*
+  redistributed inside the artifact.
+* **The Windows installer** (`QuickCode-Setup-<version>.exe`). A frozen
+  PyInstaller build: the CPython runtime and every runtime dependency in the
+  table below are **redistributed inside it**, as `.pyc` and as the native
+  binaries listed under *Bundled native binaries*. The notices in this file
+  are therefore obligations QuickCode itself carries for that artifact, not
+  only obligations for downstream redistributors. Development-only
+  dependencies (pytest, ruff, PyInstaller itself) are excluded from the frozen
+  build and are not redistributed.
+
+Anyone redistributing an installed *environment* (an image, a bundled venv, an
+offline mirror) carries the same obligations for the same reason.
 
 ## Provenance of this file
 
@@ -131,8 +140,10 @@ redistributed.
 ## Bundled native binaries
 
 Three Python packages ship prebuilt native code inside their wheels. These land
-on disk wherever they are installed (the venv the Windows installer creates, or
-your own). QuickCode does not vendor, patch or re-sign any of them.
+on disk wherever they are installed — your own environment, or, in the frozen
+Windows build, inside the application folder the installer copies (`_internal\`
+and `_internal\winpty\`). QuickCode does not vendor, patch or re-sign any of
+them; the frozen build copies them verbatim.
 
 ### pywebview → Microsoft Edge WebView2 SDK
 

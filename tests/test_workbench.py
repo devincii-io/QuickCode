@@ -155,7 +155,7 @@ def test_resolved_for_a_subagent_matches_what_a_real_spawn_builds(tmp_path):
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
         conv = manager.get(conv_id)
         deps = conv.agent.ctx.extra["subagent"]
-        agent_id, _report = asyncio.run(
+        agent_id, _report, _status = asyncio.run(
             spawn_subagent(deps, agent_type="explore", prompt="look around")
         )
         child = deps.roster[agent_id]

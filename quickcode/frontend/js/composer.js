@@ -607,19 +607,23 @@ function pathEntriesFor(query) {
   }));
 }
 
-// Run a fully typed slash command. Returns true when it was handled.
+// Run a fully typed slash command. Three answers, not two: `false` means the
+// text is not a command at all (so it goes as a message), `"refused"` means it
+// is one but the socket could not carry it — and the composer keeps the text
+// rather than clearing a box over a command that never happened — and `true`
+// means it ran. `actions.*` return false exactly when the send was refused, so
+// the distinction costs nothing to propagate.
 function runSlash(text) {
   const parts = text.split(/\s+/);
   const c = COMMANDS.find((x) => x.name === parts[0]);
   if (!c) return false;
   const arg = parts.slice(1).join(" ").trim();
   if (c.name === "/mode") {
-    if (arg) actions.setMode(arg); else c.fallback();
-    return true;
+    if (!arg) { c.fallback(); return true; }
+    return actions.setMode(arg) || "refused";
   }
   if (!c.exec) return false;
-  c.exec();
-  return true;
+  return c.exec() === false ? "refused" : true;
 }
 
 // ---- slash menu ----
@@ -805,9 +809,18 @@ function send() {
   // A bare slash command is a button that happens to be typed; it is not a
   // message, and it does not belong in the recall of things you said. Text
   // that merely starts with "/" and matches no command still does.
-  if (text.startsWith("/") && runSlash(text)) { resetWalk(); setInput(""); return; }
+  if (text.startsWith("/")) {
+    const ran = runSlash(text);
+    if (ran === "refused") return;                    // ws.js said why
+    if (ran) { resetWalk(); setInput(""); return; }
+  }
+  // The box is cleared only once the socket has actually taken the message.
+  // It used to be cleared either way, so a send over a dead connection deleted
+  // what the user had written and told them nothing — the one bug here that
+  // costs someone work rather than a click. ws.js owns the sentence that says
+  // what happened; this only has to hold on to the words.
+  if (!actions.userMessage(text)) return;
   remember(text);
-  actions.userMessage(text);
   setInput("");
 }
 

@@ -76,6 +76,9 @@ class TranscriptRecorder:
         self.acc_text: list[str] = []
         self.acc_reasoning: list[str] = []
         self.child_pumps: dict[str, asyncio.Task] = {}
+        # The same (queue, handler) pairs as ``_queues``, indexed by agent so
+        # one child can be drained on its own -- see ``on_subagent_done``.
+        self.child_queues: dict[str, tuple[asyncio.Queue, Handler]] = {}
         self._queues: list[tuple[asyncio.Queue, Handler]] = []
 
     # ---- the log ----
@@ -194,19 +197,42 @@ class TranscriptRecorder:
         self.emit({"type": "agent_spawned", "agent_id": agent_id, "definition": definition})
         handler = self._child_handler(agent_id)
         q = self.subscribe(bus, handler, maxsize=None)
+        self.child_queues[agent_id] = (q, handler)
         self.child_pumps[agent_id] = asyncio.create_task(self._consume(q, handler))
 
     def on_subagent_done(
         self, agent_id: str, definition: str, status: str, seconds: float = 0.0
     ) -> None:
-        """The closing bracket of ``on_subagent``, for a detached job.
+        """The closing bracket of ``on_subagent`` — every child gets one.
 
-        A blocking delegation needs no such record: its result lands in the
-        transcript as the spawner's tool result, in the right place, at the
-        right time. A detached one finishes at a moment nothing else in the log
-        marks, so without this a reader sees a subagent start and then simply
-        stop having events.
+        A detached job finishes at a moment nothing else in the log marks, so
+        without this a reader sees a subagent start and then simply stop having
+        events. A blocking one does land its report in the transcript as the
+        spawner's tool result, which is why this used to be a detached-only
+        record -- but that only serves a reader following the *spawner*.
+        Anything following the child (the roster, a replay) was left inferring
+        the ending from the child's last ``assistant_message``, and a child
+        emits one of those per round, not per turn. So the bracket closes for
+        both shapes now, and nobody has to guess.
+
+        A resumed agent gets a second one, correctly: it went terminal twice.
+
+        The child's own queue is drained first. Its events reach the log
+        through a pump *task*, while this is called straight from the coroutine
+        that was running it -- so without the drain the closing bracket
+        overtakes the final message it is supposed to close, and a reader
+        walking the log in order watches a finished agent start talking again.
+        The child has already stopped emitting by now (its turn returned), so
+        this drain is complete, not merely a head start.
         """
+        pair = self.child_queues.get(agent_id)
+        if pair is not None:
+            q, handler = pair
+            while True:
+                try:
+                    handler(q.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
         self.emit({
             "type": "agent_done",
             "agent_id": agent_id,

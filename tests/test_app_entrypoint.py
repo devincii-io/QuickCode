@@ -1,4 +1,8 @@
-"""The `quickcode-app` GUI entry point and its pythonw console guards."""
+"""The windowed GUI entry point and its no-console guards.
+
+``main_app`` backs both the ``quickcode-app`` console script a wheel install
+provides and ``QuickCodeApp.exe`` in the frozen build.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +34,41 @@ def test_main_app_forwards_extra_arguments(monkeypatch):
     cli.main_app()
 
     assert seen == [["--cwd", str(Path.home()), "--no-browser"]]
+
+
+def test_a_folder_argument_wins_over_the_home_default(monkeypatch, tmp_path):
+    """The Explorer context menu runs ``QuickCodeApp.exe "%V"`` on the clicked
+    folder. Prepending ``--cwd <home>`` regardless would discard it -- argparse
+    takes the last ``--cwd``, and the folder arrives as a positional."""
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv))
+    monkeypatch.setattr(sys, "argv", ["QuickCodeApp", str(tmp_path)])
+
+    cli.main_app()
+
+    assert seen == [[str(tmp_path)]]
+
+
+def test_an_explicit_cwd_wins_over_the_home_default(monkeypatch, tmp_path):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv))
+    monkeypatch.setattr(sys, "argv", ["QuickCodeApp", "--cwd", str(tmp_path)])
+
+    cli.main_app()
+
+    assert seen == [["--cwd", str(tmp_path)]]
+
+
+def test_a_prompt_that_is_not_a_directory_still_gets_the_home_default(monkeypatch):
+    """``qc "fix the build"`` shape: a non-path positional is a prompt, not a
+    project, so the home directory is still what the window opens on."""
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda argv: seen.append(argv))
+    monkeypatch.setattr(sys, "argv", ["QuickCodeApp", "fix the build"])
+
+    cli.main_app()
+
+    assert seen == [["--cwd", str(Path.home()), "fix the build"]]
 
 
 def test_say_prints_when_there_is_a_console(capsys):

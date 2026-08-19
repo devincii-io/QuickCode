@@ -17,7 +17,7 @@
 //     hidden and revealing it later needs no extra call.
 
 import { inspectLink, wireInspect } from "../inspect.js";
-import { store, subscribe } from "../store.js";
+import { midTurn, store, subscribe } from "../store.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
 
 let root = null;
@@ -49,6 +49,11 @@ let soloId = null;             // one agent, full panel
 // them turns the panel into a scroll of noise and costs real frame time, so
 // each card shows its most recent slice and offers the rest on request.
 const EVENT_WINDOW = 60;
+
+// How a run can end badly: the three terminal job states (subagents/jobs.py)
+// minus `done`, plus the interrupt the store stamps on whatever the Stop
+// button caught mid-flight.
+const BAD_END = new Set(["error", "cancelled", "interrupted"]);
 
 // Past this many agents, building every transcript up front costs more frame
 // time than it can possibly be worth: bodies are then filled as they scroll
@@ -125,9 +130,17 @@ function onStoreChange(kind, ev) {
     return schedule();
   }
   if (kind === "replay_done") return schedule();
+  // An interrupt closes every agent in the store (store.js `endOfTurn`), and
+  // nothing else in the stream says so — without a repaint the roster keeps
+  // counting a fan-out that was killed as "running".
+  if (kind === "status") return ev.state === "interrupted" ? schedule() : undefined;
   if (kind === "event") {
     if (ev.type === "agent_spawned" || ev.type === "agent_event" || ev.type === "agent_done") {
       schedule();
+    } else if (ev.type === "tool_result") {
+      // A returning report can settle the child that wrote it (store.js
+      // `settleFromReport`); repaint only when one actually did.
+      for (const a of store.agents.values()) if (a.presumed) return schedule();
     }
     return;
   }
@@ -158,10 +171,12 @@ function buildAgents() {
     } else if (ev.type === "agent_event" && ev.ev) {
       get(ev.agent_id).events.push({ ...ev.ev, ts: ev.ts, seq: ev.seq });
     } else if (ev.type === "agent_done" && ev.agent_id) {
-      // Not emitted by the server today, but loggable — honour it as terminal.
+      // A detached job's closing bracket (recorder.on_subagent_done) — the one
+      // terminal marker a background subagent gets, carrying how it ended.
       const a = get(ev.agent_id);
       a.closed = true;
       a.closedTs = ev.ts;
+      a.endStatus = ev.status;
     }
   }
   for (const [id, rec] of store.agents) get(id, rec.definition);
@@ -170,22 +185,37 @@ function buildAgents() {
   for (const a of list) {
     let lastResult = null;
     let toolCount = 0;
-    let hasText = false;
+    // Whether the *last* thing this agent did was end its turn. A message that
+    // stopped for tool calls is mid-turn, and any tool call or result after a
+    // message means it went back to work — so the tail decides, not the first
+    // message ever seen.
+    let ended = false;
     let lastLine = "";
     for (const e of a.events) {
       if (e.type === "tool_call") {
         toolCount++;
+        ended = false;
         lastLine = `${e.name} ${argSummary(e.name, e.arguments)}`;
       } else if (e.type === "tool_result") {
         lastResult = e;
+        ended = false;
       } else if (e.type === "assistant_message") {
-        hasText = true;
+        ended = !midTurn(e.finish_reason);
         if (e.text) lastLine = e.text;
       }
     }
+    const rec = store.agents.get(a.id);
     a.toolCount = toolCount;
-    a.done = a.closed || (store.agents.get(a.id)?.done ?? hasText);
-    a.status = lastResult?.is_error ? "error" : a.done ? "done" : "running";
+    a.done = a.closed || (rec?.done ?? false) || ended;
+    // Whether it went wrong is a fact about the work; whether it is over is a
+    // different one. Collapsing them — `error` instead of `running` the moment
+    // a call failed — hid a working agent from the `running` filter and made
+    // the summary's "done" (a subtraction) print −1.
+    a.failed = !!lastResult?.is_error || BAD_END.has(a.endStatus || rec?.status);
+    a.status = !a.done ? "running" : a.failed ? "error" : "done";
+    // Over, but nothing in the log says how it ended (store.js
+    // `presumeSettled`). A green tick would be a guess; a hollow dot is not.
+    a.presumed = !a.closed && !ended && !!rec?.presumed;
     // What this agent is doing right now, for the collapsed card. A roster of
     // fifty identical headers says nothing; one live line each says a lot.
     a.lastLine = oneLine(store.agents.get(a.id)?.streamText || lastLine, 120);
@@ -194,8 +224,13 @@ function buildAgents() {
   return list;
 }
 
+// The filters read off the two facts, not off one collapsed label: "running"
+// is about being over, "errors" is about having failed — and an agent can be
+// both, which is exactly the case the old equality test dropped on the floor.
 function matches(a) {
-  if (statusFilter !== "all" && a.status !== statusFilter) return false;
+  if (statusFilter === "running" && a.done) return false;
+  if (statusFilter === "done" && (!a.done || a.failed)) return false;
+  if (statusFilter === "error" && !a.failed) return false;
   if (!query) return true;
   return `${a.id} ${a.definition} ${a.lastLine}`.toLowerCase().includes(query);
 }
@@ -301,8 +336,13 @@ function renderSummary(all, shown) {
     return;
   }
   if (!all.length) { bar.innerHTML = `<span class="pa-sum-idle">no subagents yet</span>`; return; }
+  // Counted, never subtracted: `total − running − failed` printed "−1 done"
+  // the moment one agent was both running and had a failed step. Each number
+  // now answers its own question, and "failed" is the set the red dots and the
+  // errors filter show — which is why it can overlap "running".
   const running = all.filter((a) => !a.done).length;
-  const failed = all.filter((a) => a.status === "error").length;
+  const failed = all.filter((a) => a.failed).length;
+  const done = all.filter((a) => a.done && !a.failed).length;
   const filtered = shown.length !== all.length
     ? ` <span class="pa-sep">·</span> <span class="pa-sum-filt">${shown.length} shown</span>`
     : "";
@@ -310,9 +350,10 @@ function renderSummary(all, shown) {
      <span class="pa-sep">·</span>
      <span class="pa-sum-run">${running}</span> running
      <span class="pa-sep">·</span>
-     <span class="pa-sum-done">${all.length - running - failed}</span> done${
+     <span class="pa-sum-done">${done}</span> done${
        failed ? ` <span class="pa-sep">·</span>
-         <span class="pa-sum-err">${failed}</span> failed` : ""}${filtered}`;
+         <span class="pa-sum-err" title="agents with a failed step, including ones still running"
+         >${failed}</span> failed` : ""}${filtered}`;
 }
 
 // Fill a transcript only once it can actually be seen. With fifty agents the
@@ -371,7 +412,9 @@ function cardNode(a, lazy) {
   const card = el(`<div class="pa-card ${open ? "open" : ""}" data-agent="${esc(a.id)}">
     <div class="pa-head" role="button" tabindex="0" aria-expanded="${open}">
       <span class="pa-caret">▸</span>
-      <span class="pa-dot pa-${esc(a.status)} ${a.done ? "" : "pa-live"}"></span>
+      <span class="pa-dot pa-${esc(a.failed ? "error" : a.presumed ? "stale" : a.status)} ${
+        a.done ? "" : "pa-live"}"${a.presumed
+        ? ` title="No terminal record in the log — presumed finished."` : ""}></span>
       <span class="pa-id">${esc(a.id)}</span>
       <span class="pa-def">${esc(a.definition || "agent")}</span>
       <span class="pa-count">${a.toolCount} ${a.toolCount === 1 ? "call" : "calls"}</span>
@@ -444,6 +487,16 @@ function fillBody(body, a) {
     else if (e.type === "tool_result") applyResult(body, a.id, e);
     else if (e.type === "assistant_message") {
       body.appendChild(el(`<div class="pa-text">${esc(e.text || "")}</div>`));
+    }
+  }
+  // An interrupted call never gets a `tool_result` (core/loop.py answers it in
+  // the history and emits nothing), so once the agent is over, a dot still
+  // pulsing "running" is the card claiming work that stopped long ago.
+  if (a.done) {
+    for (const dot of body.querySelectorAll(".pa-tool .pa-dot.pa-running")) {
+      dot.className = "pa-dot pa-stale";
+      dot.closest(".pa-tool").querySelector(".pa-tool-head")
+        .setAttribute("title", "No result: the agent ended before this call finished.");
     }
   }
   const live = a.done ? "" : store.agents.get(a.id)?.streamText || "";

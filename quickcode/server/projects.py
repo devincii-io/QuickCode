@@ -171,6 +171,7 @@ class ProjectHub:
         plugin_tools: list[Tool] | None = None,
         mcp_connect=None,
         trust_store=None,
+        defer_catalog: bool = False,
     ) -> None:
         self.config = config
         self.provider = provider
@@ -195,6 +196,10 @@ class ProjectHub:
         # closes over, so trust granted after open can inject MCP tools live.
         self._project_extra: dict[str, list[Tool]] = {}
         self._models: list[ModelInfo] | None = None
+        self._models_task: asyncio.Task | None = None
+        # The launcher sets this so the first project's catalog fetch waits for
+        # the window; every other caller warms as soon as a project opens.
+        self._defer_catalog = defer_catalog
         self._default_id: str | None = None
         self._lock = asyncio.Lock()
 
@@ -292,11 +297,50 @@ class ProjectHub:
         manager.mcp_servers = [s.name for s in servers]
         # One catalog per install: the provider is shared, so opening a second
         # project must not pay for a second /models round trip.
-        if self._models is None:
-            self._models = await manager.models()
-        else:
+        if self._models is not None:
             manager._models = list(self._models)
+        elif not self._defer_catalog:
+            self._warm_catalog(manager)
         return manager
+
+    def warm_catalog(self) -> None:
+        """Start the catalog fetch now — the launcher calls this once the port
+        is bound and the window is on its way.
+
+        Backgrounding the fetch was not enough on its own: parsing 400 models
+        runs on the same event loop, and it was still winning the race against
+        uvicorn's bind, which pushed the window out by ~1.5 s. Held until the
+        boot path is done, it costs nothing anyone can see.
+        """
+        self._defer_catalog = False
+        if self._models is not None or not self.managers:
+            return
+        self._warm_catalog(next(iter(self.managers.values())))
+
+    def _warm_catalog(self, manager: ConversationManager) -> None:
+        """Fetch the model catalog *beside* startup instead of in front of it.
+
+        Listing the provider's models is a 400-entry HTTP round trip — measured
+        at 3.2 s here — and it used to be awaited before uvicorn bound its port,
+        so nothing appeared on screen until it came back. Nothing on screen
+        needs it: the window, the transcript and the composer all render from
+        config. The one thing that does is a model's context length, for the
+        context meter, and that can arrive a moment later (`adopt_catalog`).
+        A failed fetch leaves `_models` as it was — an unknown catalog, which
+        the app already treats as "use the id as typed".
+        """
+        if self._models_task is not None and not self._models_task.done():
+            return  # one fetch per install, already in flight
+
+        async def warm() -> None:
+            models = await manager.models()   # never raises; [] on failure
+            if not models:
+                return
+            self._models = models
+            for other in self.managers.values():
+                other.adopt_catalog(models)
+
+        self._models_task = asyncio.create_task(warm())
 
     # ---- trust ----
     def trust_status(self, pid: str) -> dict[str, Any]:
@@ -356,6 +400,10 @@ class ProjectHub:
 
     # ---- shutdown ----
     async def close(self) -> None:
+        if self._models_task is not None:
+            self._models_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._models_task
         await asyncio.gather(
             *(m.close() for m in self.managers.values()), return_exceptions=True
         )

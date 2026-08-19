@@ -53,19 +53,19 @@ def _deps(provider, mode=Mode.ask, depth=0, cwd=None):
 
 async def test_spawn_registers_child_in_roster():
     deps = _deps(ScriptedProvider("first"))
-    agent_id, _ = await spawn_subagent(deps, agent_type="explore", prompt="find it")
+    agent_id, _, _ = await spawn_subagent(deps, agent_type="explore", prompt="find it")
     assert agent_id in deps.roster
     assert deps.roster[agent_id].name == agent_id
 
 
 async def test_resume_returns_sanitized_report_and_keeps_history():
     deps = _deps(ScriptedProvider("first reply", "second reply"))
-    agent_id, first_report = await spawn_subagent(
+    agent_id, first_report, _ = await spawn_subagent(
         deps, agent_type="general", prompt="do the first thing"
     )
     assert "first reply" in first_report
 
-    resumed_id, second_report = await resume_subagent(
+    resumed_id, second_report, _ = await resume_subagent(
         deps, agent_id=agent_id, message="now do the second thing"
     )
     assert resumed_id == agent_id
@@ -84,8 +84,8 @@ async def test_resume_returns_sanitized_report_and_keeps_history():
 
 async def test_resume_unknown_id_lists_known_ids():
     deps = _deps(ScriptedProvider("first"))
-    a1, _ = await spawn_subagent(deps, agent_type="explore", prompt="p1")
-    a2, _ = await spawn_subagent(deps, agent_type="general", prompt="p2")
+    a1, _, _ = await spawn_subagent(deps, agent_type="explore", prompt="p1")
+    a2, _, _ = await spawn_subagent(deps, agent_type="general", prompt="p2")
 
     with pytest.raises(ValueError, match="unknown agent_id 'nope'") as exc_info:
         await resume_subagent(deps, agent_id="nope", message="hi")
@@ -102,7 +102,7 @@ async def test_resume_empty_roster_reports_none():
 
 async def test_resume_while_busy_raises():
     deps = _deps(ScriptedProvider("first"))
-    agent_id, _ = await spawn_subagent(deps, agent_type="general", prompt="p")
+    agent_id, _, _ = await spawn_subagent(deps, agent_type="general", prompt="p")
     child = deps.roster[agent_id]
     child.busy = True  # simulate an in-flight turn
     with pytest.raises(ValueError, match=f"agent '{agent_id}' is still running"):
@@ -113,13 +113,13 @@ async def test_send_message_tool_round_trips_through_deps():
     from quickcode.tools.base import ReadRegistry, ToolCtx
 
     deps = _deps(ScriptedProvider("first reply", "second reply"))
-    agent_id, _ = await spawn_subagent(deps, agent_type="general", prompt="p1")
+    agent_id, _, _ = await spawn_subagent(deps, agent_type="general", prompt="p1")
 
     ctx = ToolCtx(cwd=Path.cwd(), read_registry=ReadRegistry(), extra={"subagent": deps})
     tool = SendMessageTool()
     result = await tool.run(SendMessageTool.Input(agent_id=agent_id, message="p2"), ctx)
     assert not result.is_error
-    assert f'<subagent id="{agent_id}">' in result.content
+    assert f'<subagent id="{agent_id}" status="done">' in result.content
     assert "second reply" in result.content
 
 

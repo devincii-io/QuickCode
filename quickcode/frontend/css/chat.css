@@ -20,6 +20,22 @@
   margin: 12px auto 14px;
 }
 
+/* A tool call whose result never came (interrupted, or the turn ended under
+   it). Neither green nor red: hollow, for "this stopped without an answer" —
+   the one thing the pulsing dot it replaces could not say. */
+.tool-dot.stale {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--fg-faint);
+}
+
+/* The live half of a subagent card. It is a separate node from `.agent-text`
+   because sharing one made every finished round render twice and then vanish
+   when the next round's first delta overwrote it. */
+.agent-body .agent-live {
+  font-size: 13px; color: var(--fg-dim); white-space: pre-wrap;
+}
+.agent-body .agent-live:not(:empty) { margin-top: 6px; }
+
 .step-body > .tool-card,
 .step-body > .agent-card {
   max-width: none;

@@ -38,6 +38,11 @@
 .panel-agents .pa-dot.pa-running { background: var(--chip-agent); }
 .panel-agents .pa-dot.pa-done { background: var(--success); }
 .panel-agents .pa-dot.pa-error { background: var(--error); }
+/* A call the agent never got a result for: hollow, because "we do not know how
+   this ended" is a third thing, not a quiet success. */
+.panel-agents .pa-dot.pa-stale {
+  background: transparent; box-shadow: inset 0 0 0 1.5px var(--fg-faint);
+}
 .panel-agents .pa-dot.pa-live { animation: qc-panel-pulse 1.1s ease-in-out infinite; }
 @keyframes qc-panel-pulse { 50% { opacity: .25; } }
 

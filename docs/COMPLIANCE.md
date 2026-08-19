@@ -633,6 +633,25 @@ exact match.
 
 ### 6.1 What the Windows installer downloads
 
+> **Superseded since 2.3.0 — the installer downloads nothing.** It now copies a
+> frozen PyInstaller *onedir* build (`quickcode.spec` → `dist\QuickCode`) into
+> `%LOCALAPPDATA%\Programs\QuickCode`. There is no `winget` call, no vendor
+> installer fetched and executed, no `pip install`, and no requirement that the
+> machine have Git or Python at all; `packaging/setup-quickcode.ps1` is deleted.
+> Findings 1 and 2 below are therefore moot in what now ships — not because the
+> risk was mitigated, but because the operation that carried it is gone. Finding
+> 3 changes shape rather than disappearing: the dependency set is now resolved
+> **once, on the build machine, against the committed `uv.lock`**, and the exact
+> resolution is what every user receives, so two machines can no longer end up
+> with different versions. What that trades away is that you are now trusting a
+> build produced on one developer workstation (see §6.2) rather than a
+> resolution performed on your own; and the artifact now *redistributes* its
+> dependencies rather than pointing at PyPI, which is why the licence notices in
+> `THIRD-PARTY-NOTICES.md` carry obligations they did not before.
+>
+> The original text and findings are kept below, unedited, because they are live
+> in every published artifact up to and including 2.2.0.
+
 `packaging/quickcode.iss` copies the QuickCode source tree and the PowerShell
 scripts, then runs `packaging/setup-quickcode.ps1`, which delegates dependency
 provisioning to `scripts/bootstrap.ps1`.
@@ -691,6 +710,12 @@ shipped; QuickCode is pure Python." That is true of the bundled source, but the
 pip install pulls native wheels (`pydantic-core`, `jiter`, `pywinpty`, `cffi`,
 `pythonnet` and its DLLs). The comment reads as a stronger claim than the
 installed result supports.
+
+> **Since 2.3.0** that claim is gone, and it would now be plainly false: the
+> frozen build ships a private CPython, `pydantic-core`, `jiter`, `pywinpty`
+> (with `OpenConsole.exe`, `winpty-agent.exe`, `conpty.dll`, `winpty.dll`),
+> `pythonnet`/`clr_loader` and the WebView2 loader as binaries inside
+> `_internal\`. An x64 installer is an x64 artifact and says so.
 
 ### 6.2 Release artifacts and their integrity
 

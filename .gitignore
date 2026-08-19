@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# PyInstaller's working directory (quickcode.spec), rebuilt from scratch by
+# `pyinstaller --clean` and never shipped.
+build/
 # Written by scripts/release.py alongside dist/; uploaded with the release,
 # never committed — a checksum file in git is a second source of truth for
 # bytes that live somewhere else.

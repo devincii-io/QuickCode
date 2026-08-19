@@ -71,6 +71,9 @@ function apply() {
       const on = t.id === state.tab;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
+      // The strip keeps every tab's name and scrolls when they do not fit, so
+      // the tab you just chose has to bring itself back into view.
+      if (on && state.open) btn.scrollIntoView({ inline: "nearest", block: "nearest" });
     }
     const pane = main.querySelector(`.panel-pane[data-pane="${t.id}"]`);
     if (pane) pane.classList.toggle("active", t.id === state.tab);

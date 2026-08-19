@@ -1,19 +1,22 @@
 ; ============================================================================
 ; QuickCode - Inno Setup installer script
 ;
-; Builds a per-user Windows installer that:
-;   - Copies the QuickCode source tree + packaging scripts into the install dir
-;   - Ensures Git and Python (>= 3.12) are present, then creates a private
-;     virtual environment under {app} and pip-installs QuickCode into it
-;   - Adds {app}\venv\Scripts to the user PATH, so `quickcode` and `qc` work
-;   - Creates a Start Menu (and optional Desktop) shortcut launching the web
-;     app through quickcode-app.exe - a GUI entry point, so no console window
-;   - Optionally adds an "Open QuickCode here" Explorer folder context menu
+; Builds a per-user Windows installer that copies the frozen PyInstaller
+; onedir build (dist\QuickCode, see quickcode.spec at the repo root) into
+; %LOCALAPPDATA%\Programs\QuickCode. Nothing is compiled, downloaded or
+; pip-installed on the user's machine: no Git, no Python, no network, no venv.
 ;
-; Build with the Inno Setup Compiler (ISCC.exe):
-;   ISCC.exe packaging\quickcode.iss
+; What ships in that folder:
+;   QuickCodeApp.exe  the windowed app (Start Menu, desktop, context menu)
+;   quickcode.exe     the console CLI (`quickcode -p`, `quickcode doctor`)
+;   qc.cmd            the short alias, forwarding to quickcode.exe
+;   _internal\        the Python runtime, dependencies and the frontend
 ;
-; See packaging\README.md for full build instructions.
+; Build with the Inno Setup Compiler (ISCC.exe), after PyInstaller has run:
+;   pyinstaller --noconfirm --clean quickcode.spec
+;   ISCC.exe /DMyAppVersion=<version> packaging\quickcode.iss
+;
+; scripts\release.py --build does both in order. See packaging\README.md.
 ; ============================================================================
 
 #define MyAppName "QuickCode"
@@ -30,14 +33,18 @@
 ; RepoRoot is the QuickCode repository checkout this .iss lives in
 ; (packaging\quickcode.iss -> repo root is one level up).
 #define RepoRoot ".."
+; The PyInstaller COLLECT output. Its name comes from quickcode.spec.
+#define FrozenDir RepoRoot + "\dist\QuickCode"
 
-; Everything the shortcuts, PATH and context menu point at lives in the venv
-; that setup-quickcode.ps1 builds under {app}.
-#define VenvScripts "{app}\venv\Scripts"
-#define AppExeName "quickcode-app.exe"
+; The windowed entry point cannot be called QuickCode.exe: Windows file names
+; are case-insensitive, so it would be the same file as quickcode.exe. The
+; console name is the one that had to survive, because it is what a user types.
+#define AppExeName "QuickCodeApp.exe"
 #define CliExeName "quickcode.exe"
 
 [Setup]
+; Never change this GUID: it is what Windows uses to recognise an existing
+; QuickCode install. A new one orphans every copy already out there.
 AppId={{6C8E6F2D-6E6A-4E6B-9C5A-2F5B1B8C6D3E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -48,9 +55,9 @@ AppSupportURL=mailto:{#MyAppContact}
 AppUpdatesURL={#MyAppURL}
 AppContact={#MyAppContact}
 
-; Per-user install by default; the "dialog" override lets a user elevate to
-; an all-users install from the wizard's privilege prompt if they want to.
-DefaultDirName={autopf}\{#MyAppName}
+; Per-user install: no elevation, and the same directory {autopf} already
+; resolved to under PrivilegesRequired=lowest, so an upgrade lands in place.
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
@@ -68,14 +75,20 @@ WizardStyle=modern
 
 ; The blue ghost: wizard icon, Add/Remove Programs entry, and shortcuts.
 SetupIconFile=quickcode.ico
-UninstallDisplayIcon={app}\quickcode.ico
+UninstallDisplayIcon={app}\{#AppExeName}
 
 ; We modify PATH (a user environment variable), so Explorer and other
 ; processes need to be told the environment changed.
 ChangesEnvironment=yes
 
-; No architecture-specific binaries are shipped; QuickCode is pure Python.
+; The frozen build embeds a 64-bit Python runtime and CPython extension
+; modules, so unlike the old source-copying installer this is not portable.
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+
+; Shut a running copy down before overwriting its own executables.
+CloseApplications=yes
+RestartApplications=no
 
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
@@ -91,72 +104,71 @@ Name: "addtopath"; Description: "Add QuickCode to my PATH (recommended)"; GroupD
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional tasks:"; Flags: unchecked
 Name: "contextmenu"; Description: "Add ""Open QuickCode here"" to the folder right-click menu"; GroupDescription: "Explorer integration:"; Flags: unchecked
 
+[InstallDelete]
+; Upgrading over an older install, which put a private virtual environment and
+; a copy of the source tree here. Nothing in the frozen build reads either, and
+; leaving them behind would strand ~150 MB the uninstaller no longer knows about.
+Type: filesandordirs; Name: "{app}\venv"
+Type: filesandordirs; Name: "{app}\src"
+Type: filesandordirs; Name: "{app}\scripts"
+
 [Files]
-; Bundle the full QuickCode source tree (everything pip needs to build/install
-; the package) plus the packaging scripts, excluding dev/build cruft.
-Source: "{#RepoRoot}\quickcode\*"; DestDir: "{app}\src\quickcode"; Excludes: "__pycache__,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#RepoRoot}\pyproject.toml"; DestDir: "{app}\src"; Flags: ignoreversion
-Source: "{#RepoRoot}\README.md"; DestDir: "{app}\src"; Flags: ignoreversion
-Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}\src"; Flags: ignoreversion
-Source: "{#RepoRoot}\scripts\bootstrap.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
-Source: "{#RepoRoot}\scripts\install.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
-Source: "setup-quickcode.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
-; The brand mark, kept at a stable path for shortcuts and the context menu.
+; The whole PyInstaller onedir tree: both executables plus _internal\.
+Source: "{#FrozenDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; `qc`, the short alias. A .cmd rather than a third 10 MB executable.
+Source: "qc.cmd"; DestDir: "{app}"; Flags: ignoreversion
+; The brand mark, kept at a stable path for the context menu icon.
 Source: "quickcode.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepoRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-; The web app, launched through the GUI entry point (pythonw): the browser
-; opens on the user's home directory without a console window behind it.
-Name: "{group}\{#MyAppName}"; Filename: "{#VenvScripts}\{#AppExeName}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\quickcode.ico"; Comment: "Launch QuickCode"
+; The windowed entry point: the app window opens on the user's home directory
+; with no console behind it.
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{%USERPROFILE}"; Comment: "Launch QuickCode"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{#VenvScripts}\{#AppExeName}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\quickcode.ico"; Comment: "Launch QuickCode"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{%USERPROFILE}"; Comment: "Launch QuickCode"; Tasks: desktopicon
 
 [Registry]
 ; "Open QuickCode here" - right-click a folder. %V is the folder path, which
-; the CLI accepts as its first positional argument (`quickcode "<dir>"`).
+; the windowed entry point takes as its project directory (see cli.main_app:
+; a folder handed in this way wins over the home-directory default).
 ; HKCU only, and uninsdeletekey removes the whole key on uninstall.
 Root: HKCU; Subkey: "Software\Classes\Directory\shell\QuickCode"; ValueType: string; ValueName: ""; ValueData: "Open QuickCode here"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\Directory\shell\QuickCode"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\quickcode.ico"; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Directory\shell\QuickCode\command"; ValueType: string; ValueName: ""; ValueData: """{#VenvScripts}\{#CliExeName}"" ""%V"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\QuickCode\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%V"""; Tasks: contextmenu
 ; And when right-clicking the empty background inside an open folder.
 Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\QuickCode"; ValueType: string; ValueName: ""; ValueData: "Open QuickCode here"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\QuickCode"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\quickcode.ico"; Tasks: contextmenu
-Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\QuickCode\command"; ValueType: string; ValueName: ""; ValueData: """{#VenvScripts}\{#CliExeName}"" ""%V"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\QuickCode\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%V"""; Tasks: contextmenu
 
 [Run]
-; Post-install: ensure Git/Python, build the venv and pip-install QuickCode.
-; Runs visibly (not hidden) so the user can see progress and any prompts
-; (e.g. UAC for winget/installers).
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\setup-quickcode.ps1"" -SourceDir ""{app}\src"" -VenvDir ""{app}\venv"""; \
-    WorkingDir: "{app}"; \
-    StatusMsg: "Setting up Git, Python and QuickCode (this can take a few minutes)..."; \
-    Flags: runascurrentuser waituntilterminated
-
-; Offer to start the app straight from the last wizard page.
-Filename: "{#VenvScripts}\{#AppExeName}"; \
+; Offer to start the app straight from the last wizard page. No post-install
+; setup step exists any more -- the files being copied *is* the install.
+Filename: "{app}\{#AppExeName}"; \
     Description: "Launch {#MyAppName}"; \
     WorkingDir: "{%USERPROFILE}"; \
     Flags: nowait postinstall skipifsilent skipifdoesntexist
 
 [UninstallDelete]
-; pip and venv create files Inno Setup never logged, so remove the trees it
-; would otherwise leave behind.
-Type: filesandordirs; Name: "{app}\venv"
-Type: filesandordirs; Name: "{app}\src"
+; PyInstaller's onedir tree is fully logged by Inno Setup, but the app writes
+; a WebView2 profile and session state under %USERPROFILE%\.quickcode, which is
+; the user's data and is deliberately left alone. Only the install dir goes.
+Type: dirifempty; Name: "{app}"
 
 [Code]
 { ---------------------------------------------------------------------------
-  PATH handling: add the venv's Scripts directory, which is where pip puts
-  quickcode.exe, qc.exe and quickcode-app.exe. Unlike the old `pip install
-  --user` layout this is a single, exactly-known path, so there is nothing to
-  guess and nothing left over for another Python install to inherit.
+  PATH handling: add the install directory itself, which is where the frozen
+  quickcode.exe and qc.cmd live. Older installs put the venv Scripts directory
+  under it on PATH instead; that directory is deleted by InstallDelete above,
+  so the stale entry is removed here rather than left pointing at nothing.
   --------------------------------------------------------------------------- }
 
 const
   EnvironmentKey = 'Environment';
 
-function VenvScriptsDir(): String;
+function LegacyVenvScriptsDir(): String;
 begin
   Result := ExpandConstant('{app}\venv\Scripts');
 end;
@@ -212,13 +224,18 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    { Unconditional: the directory it names no longer exists after this run. }
+    EnvRemovePath(LegacyVenvScriptsDir());
     if IsTaskSelected('addtopath') then
-      EnvAddPath(VenvScriptsDir());
+      EnvAddPath(ExpandConstant('{app}'));
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
-    EnvRemovePath(VenvScriptsDir());
+  begin
+    EnvRemovePath(ExpandConstant('{app}'));
+    EnvRemovePath(LegacyVenvScriptsDir());
+  end;
 end;

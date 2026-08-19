@@ -351,9 +351,57 @@ textarea, input { font: inherit; color: inherit; }
 .st-state.s-streaming, .st-state.s-sending { color: var(--secondary); }
 .st-state.s-executing_tools { color: var(--warning); }
 .st-state.s-error, .st-state.s-interrupted { color: var(--error); }
+/* Not an agent state at all — the honest holding value while the socket is
+   down, so the segment stops claiming the last thing it heard is still true. */
+.st-state.s-offline { color: var(--fg-faint); font-weight: 500; }
 .st-spacer { flex: 1; }
 .st-conn { color: var(--success); }
 .st-conn.off { color: var(--error); }
+
+/* ---------- the connection banner ----------
+   Docked at the top of the window rather than inside the workspace: a server
+   that has stopped is worth knowing about from Configuration and Help too, and
+   those views cover the workspace. It sits above everything except a modal
+   backdrop, and it takes pointer events only on the card itself so it can
+   never eat a click meant for the chrome underneath. */
+.conn-host {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 80;
+  display: flex; justify-content: center; padding: 8px 12px;
+  pointer-events: none;
+}
+.conn-host.hidden { display: none; }
+.conn-card {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 10px;
+  max-width: min(720px, calc(100vw - 24px));
+  padding: 8px 10px 8px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line-strong); background: var(--panel);
+  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+  font-size: 12.5px; line-height: 1.45;
+  animation: toast-in .16s ease-out;
+}
+.conn-card.warn {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, var(--panel));
+}
+.conn-text { flex: 1; min-width: 0; }
+.conn-title { font-weight: 600; margin-right: 6px; }
+.conn-body { color: var(--fg-dim); }
+.conn-act { flex: none; white-space: nowrap; }
+.conn-dot {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--warning);
+}
+/* Calm state: a pulse, so it reads as "in progress" without a spinner that
+   would look like the app is working when it is only waiting. */
+.conn-card.calm .conn-dot {
+  background: var(--fg-faint); animation: conn-pulse 1.6s ease-in-out infinite;
+}
+@keyframes conn-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) {
+  .conn-card { animation: none; }
+  .conn-card.calm .conn-dot { animation: none; }
+}
 
 /* ---------- project trust (the MCP gate) ----------
    A strip under the top bar, not a modal: the decision is about this project,

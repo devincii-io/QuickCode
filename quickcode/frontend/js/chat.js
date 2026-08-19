@@ -2,7 +2,7 @@
 
 import { highlightPayload, isJson } from "./highlight.js";
 import { renderMarkdown } from "./markdown.js";
-import { store, subscribe } from "./store.js";
+import { midTurn, store, subscribe } from "./store.js";
 import { configTarget } from "./trajectory.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
@@ -23,12 +23,95 @@ export function initChat({ openTrace }) {
 
 function onStoreChange(kind, ev) {
   if (kind === "reset") { clear(); return; }
-  if (kind === "replay_done") { scrollBottom(true); return; }
-  if (kind === "event") { renderEvent(ev); scrollBottom(); return; }
+  if (kind === "status") {
+    if (!TERMINAL_STATUS.has(ev.state)) return;
+    sweepUnresolved();
+    // An interrupt takes the subagents with it (store.js `endOfTurn`), so no
+    // card may be left mid-thought.
+    if (ev.state === "interrupted") {
+      for (const [id, card] of agentCards) {
+        if (card.querySelector(".agent-head .tool-dot.running")) {
+          closeAgentCard({ agent_id: id, status: "interrupted" });
+        }
+      }
+    }
+    return;
+  }
+  if (kind === "replay_done") {
+    // A log replays without the live status events, so an interrupted turn
+    // would spin its cut-off tool calls again on every reconnect. `busy` is
+    // the state event the server sends before the replay, and it is what says
+    // whether anything in that log is still in flight.
+    if (store.state && !store.state.busy) { sweepUnresolved(); settleAgentCards(); }
+    scrollBottom(true); return;
+  }
+  if (kind === "event") {
+    renderEvent(ev);
+    // A report landing settles the child that wrote it (store.js
+    // `settleFromReport`) — the only signal a blocking subagent that died
+    // without a closing message ever gets.
+    if (ev.type === "tool_result") settleAgentCards();
+    scrollBottom(); return;
+  }
   if (kind === "stream") { renderStream(); scrollBottom(); return; }
   if (kind === "agent_stream") { renderAgentStream(ev.agent_id); return; }
   if (kind === "tasks") { renderTasks(ev.tasks); return; }
   if (kind === "state" && ev.tasks) { renderTasks(ev.tasks); return; }
+}
+
+// The states the agent loop stops in; see store.js. Nothing of the main
+// agent's can still be running once one of them arrives.
+const TERMINAL_STATUS = new Set(["idle", "interrupted", "error"]);
+
+// A tool call cancelled by an interrupt is answered in the message history and
+// emits no `tool_result`, so its dot pulsed "running" for the rest of the
+// session — the transcript claiming work was in flight long after the turn
+// ended. Subagent cards are left alone here: a detached job outlives the main
+// turn, and each card sweeps itself when *it* goes terminal.
+function sweepUnresolved(root = transcript) {
+  if (!root) return;
+  for (const dot of root.querySelectorAll(".tool-dot.running")) {
+    const card = dot.closest(".tool-card");
+    if (!card) continue;                                  // an agent head dot
+    if (root === transcript && card.closest(".agent-card")) continue;
+    dot.classList.remove("running");
+    dot.classList.add("stale");
+    card.querySelector(".tool-head")?.setAttribute(
+      "title", "No result: the turn ended before this call finished.");
+  }
+}
+
+// Agents the store presumes finished (store.js `presumeSettled`): the replayed
+// log never said how they ended, so the dot says "stopped, cause unrecorded"
+// rather than pulsing as if the work were still going.
+function settleAgentCards() {
+  for (const [id, card] of agentCards) {
+    const rec = store.agents.get(id);
+    if (!rec?.presumed) continue;
+    const dot = card.querySelector(".agent-head .tool-dot");
+    if (!dot.classList.contains("running")) continue;
+    if (rec.status && rec.status !== "done") {
+      closeAgentCard({ agent_id: id, status: rec.status });
+      continue;
+    }
+    dot.classList.remove("running");
+    dot.classList.add("stale");
+    card.querySelector(".agent-head")
+      .setAttribute("title", "No terminal record in the log — presumed finished.");
+    sweepUnresolved(card);
+  }
+}
+
+// A presumed-finished agent that speaks again was alive all along (a detached
+// job outliving the reconnect that presumed it over): take the presumption
+// back rather than leaving a working agent shown as stopped.
+function unpresume(agentId, card) {
+  const dot = card.querySelector(".agent-head .tool-dot");
+  if (!dot.classList.contains("stale")) return;
+  if (store.agents.get(agentId)?.done) return;
+  dot.classList.remove("stale");
+  dot.classList.add("running");
+  card.querySelector(".agent-head").removeAttribute("title");
 }
 
 function clear() {
@@ -98,12 +181,22 @@ function renderEvent(ev) {
       return addNode(el(`<div class="sys-note">model → ${esc(ev.model)}</div>`));
     case "agent_spawned": return addAgentCard(ev);
     case "agent_event": return addAgentEvent(ev);
+    case "agent_done": return closeAgentCard(ev);
     // system_prompt / context_injection are trajectory-only by design.
   }
 }
 
-function addNode(node) {
+// Let go of the live bubble. It is created as soon as *anything* streams —
+// including a tool call's arguments — so a round that went straight to a tool
+// left an empty message behind, once per round, each one a stray gap in the
+// transcript. Text already streamed is kept: it is what the model said.
+function closeStream() {
+  if (streamNode && !streamNode.textContent.trim()) streamNode.remove();
   streamNode = null;
+}
+
+function addNode(node) {
+  closeStream();
   stepNode = null;   // anything that is not a tool call ends the step
   transcript.appendChild(node);
 }
@@ -128,7 +221,7 @@ function ensureStep() {
         <span class="step-title"></span>
         <span class="step-count"></span></div>
       <div class="step-body"></div></div>`);
-  streamNode = null;
+  closeStream();
   transcript.appendChild(stepNode);
   return stepNode;
 }
@@ -291,14 +384,15 @@ function attachToolResult(ev) {
 // ---- subagents ----
 
 function addAgentCard(ev) {
-  streamNode = null;
+  closeStream();
   stepNode = null;
   const card = el(`<div class="agent-card" data-agent="${esc(ev.agent_id)}">
     <div class="agent-head" aria-expanded="false"><span>⛓</span>
       <strong>${esc(ev.agent_id)}</strong>
       <span class="tool-summary">${esc(ev.definition)}</span>
       <span class="tool-dot running"></span></div>
-    <div class="agent-body"><div class="agent-text"></div></div></div>`);
+    <div class="agent-body"><div class="agent-text"></div>
+      <div class="agent-live"></div></div></div>`);
   const head = card.querySelector(".agent-head");
   clickable(head, () => {
     head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
@@ -310,6 +404,7 @@ function addAgentCard(ev) {
 function addAgentEvent(ev) {
   const card = agentCards.get(ev.agent_id);
   if (!card) return;
+  unpresume(ev.agent_id, card);
   const body = card.querySelector(".agent-body");
   const inner = ev.ev || {};
   if (inner.type === "tool_call") {
@@ -324,17 +419,44 @@ function addAgentEvent(ev) {
       if (slot) slot.innerHTML = resultHtml(inner.content, inner.is_error);
     }
   } else if (inner.type === "assistant_message") {
-    card.querySelector(".agent-text").textContent = inner.text;
-    const dot = card.querySelector(".agent-head .tool-dot");
-    dot.classList.remove("running");
-    dot.classList.add("ok");
+    // One of these per round that produced text, not one per subagent: append
+    // rather than overwrite, or every round but the last is lost. And a round
+    // that stopped to call tools has not finished — leaving the dot green there
+    // was the card claiming a still-working agent was done.
+    const text = card.querySelector(".agent-text");
+    text.textContent = text.textContent ? `${text.textContent}\n\n${inner.text}` : inner.text;
+    // The settled text has landed, so the live copy of the same round has to
+    // go: the two nodes used to be one, which rendered every round twice and
+    // then lost it when the next round's first delta overwrote the lot.
+    card.querySelector(".agent-live").textContent = "";
+    if (!midTurn(inner.finish_reason)) closeAgentCard({ agent_id: ev.agent_id });
   }
+}
+
+// The card goes terminal. `agent_done` is the only signal a *detached* job
+// finishes with — without handling it the roster said "done" while this card
+// pulsed "running" for the rest of the session — and a job that was cancelled
+// or errored must not read as a green tick.
+function closeAgentCard(ev) {
+  const card = agentCards.get(ev.agent_id);
+  if (!card) return;
+  card.querySelector(".agent-live").textContent = "";
+  const dot = card.querySelector(".agent-head .tool-dot");
+  dot.classList.remove("running");
+  dot.classList.add(ev.status && ev.status !== "done" ? "error" : "ok");
+  if (ev.status && ev.status !== "done") {
+    card.querySelector(".agent-head").setAttribute("title", `subagent ${ev.status}`);
+  }
+  // Whatever this agent was still running died with it.
+  sweepUnresolved(card);
 }
 
 function renderAgentStream(agentId) {
   const card = agentCards.get(agentId);
   const a = store.agents.get(agentId);
-  if (card && a && !a.done) card.querySelector(".agent-text").textContent = a.streamText;
+  if (!card || !a || a.done) return;
+  unpresume(agentId, card);
+  card.querySelector(".agent-live").textContent = a.streamText;
 }
 
 // ---- tasks ----

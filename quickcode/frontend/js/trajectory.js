@@ -796,8 +796,10 @@ function paintPlayhead(W) {
 function rowHTML(it, i) {
   const ms = it.inner.type === "tool_result" && it.inner.ms ? fmtMs(it.inner.ms) : "";
   let res = "";
-  if (it.ev.type === "tool_call" && it.ev.id) {
-    const r = toolResultFor(it.ev.id);
+  // A subagent's call arrives wrapped, so read the inner event: keying on
+  // `it.ev.type` left every delegated call in the log without its result.
+  if (it.inner.type === "tool_call" && it.inner.id) {
+    const r = toolResultFor(it.inner.id, it.ev.agent_id);
     if (r) res = `<span class="tj-res">→ ${esc(oneLine(r.content, 90))}</span>`;
   }
   return `<div class="tj-row${it.err ? " is-error" : ""}${it.seq === selectedSeq ? " selected" : ""}"
@@ -1024,7 +1026,7 @@ function renderDetail() {
     detailBody.innerHTML = `<pre>${esc(JSON.stringify(ev, null, 2).slice(0, 60000))}</pre>`;
   } else if (detailTab === "result") {
     let result = null;
-    if (inner.type === "tool_call") result = toolResultFor(inner.id);
+    if (inner.type === "tool_call") result = toolResultFor(inner.id, ev.agent_id);
     else if (inner.type === "tool_result") result = inner;
     detailBody.innerHTML = result
       ? `<pre>${esc(String(result.content).slice(0, 60000))}</pre>`
