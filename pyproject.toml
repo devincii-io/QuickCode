@@ -1,6 +1,6 @@
 [project]
 name = "quickcode"
-version = "2.2.0"
+version = "2.3.0"
 description = "A local-first coding agent with a traceable web UI, in the spirit of Claude Code and DeepSeek Harness."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -48,7 +48,29 @@ Issues = "https://github.com/devincii-io/QuickCode/issues"
 Changelog = "https://github.com/devincii-io/QuickCode/blob/main/CHANGELOG.md"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+# pyinstaller builds the frozen onedir app (quickcode.spec). It is a build
+# tool, not a runtime dependency: a pip/uv install of the wheel never needs it.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    # A hang guard, not a speed limit. Creating an asyncio event loop on Windows
+    # builds its self-pipe with socket.socketpair(), which binds a loopback
+    # listener and calls accept() with no timeout -- and that accept() blocks
+    # forever often enough (roughly one run in three on a loaded machine) to
+    # stall a release gate indefinitely. Confirmed with live stack dumps under
+    # both starlette's TestClient portal and pytest-asyncio's runner; it is not
+    # our code, and the selector loop uses the same self-pipe. A per-test
+    # deadline turns "the gate has been running for ten minutes" into a loud
+    # failure you can re-run.
+    "pytest-timeout>=2.3",
+    "ruff>=0.5",
+    "pyinstaller>=6.10",
+    # Also the `pty` extra, so a plain `uv sync` gives a working *build*
+    # environment: quickcode.spec refuses to build without pywinpty's ConPTY
+    # helpers, and a frozen app missing them falls back to plain subprocesses.
+    # The extra stays declared for wheel users, who choose it themselves.
+    "pywinpty>=2.0; sys_platform == 'win32'",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12"]
@@ -69,3 +91,14 @@ ignore = ["E501", "UP042", "UP046", "UP047"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Generously above the slowest honest test (a few seconds); anything that sits
+# here for two minutes is the socketpair hang described in the dev group, not
+# work. `thread` because signal-based timeouts are POSIX-only -- it dumps every
+# thread's stack, which is exactly what you want to see.
+timeout = 120
+timeout_method = "thread"
+# One event loop per module instead of one per test. Each new loop is a fresh
+# roll of the socketpair dice described above, and this suite was making ~770 of
+# them per run; per module it makes a few dozen. Module rather than session so a
+# test that leaks a task can only affect its own file.
+asyncio_default_test_loop_scope = "module"
