@@ -1042,6 +1042,22 @@ def launch_installer(
 
     if os.name != "nt":
         raise UpdateError("the Windows installer can only be run on Windows")
-    # Detached, and never with a shell: the argv is one path this module wrote.
-    subprocess.Popen([str(path)], close_fds=True)  # noqa: S603
+    # Detached for real, and never with a shell: the argv is one path this
+    # module wrote.
+    #
+    # A bare Popen leaves the installer a *child* of the app it is replacing,
+    # which is how a `taskkill /T` in the installer's own "close the running
+    # copy" step came to kill Setup itself. The flags below take it out of this
+    # process's console and process group; CREATE_BREAKAWAY_FROM_JOB also takes
+    # it out of any job object we were launched into, and is attempted
+    # separately because a job that forbids breakaway makes it fail outright --
+    # in which case not detaching is better than not installing.
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(  # noqa: S603
+            [str(path)], close_fds=True,
+            creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+        )
+    except OSError:
+        subprocess.Popen([str(path)], close_fds=True, creationflags=flags)  # noqa: S603
     return {"launched": True, "path": str(path), "sha256": recorded}

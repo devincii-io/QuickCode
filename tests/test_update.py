@@ -607,6 +607,53 @@ def test_launching_rehashes_and_refuses_bytes_that_changed_after_download(home):
     assert not target.exists()
 
 
+def test_the_installer_is_started_outside_this_process_tree(home, monkeypatch):
+    """It replaces the app that starts it, so it must not be its child.
+
+    The installer closes any running QuickCode before it copies files. When it
+    was launched with a bare Popen it was a child of that running copy, and the
+    installer's `taskkill /T` walked the tree it was standing in and killed
+    Setup itself -- the user saw an install that "thinks the installer is an
+    open window and will close it too". The tree flag is gone from the .iss and
+    the launch detaches; this pins the second half.
+    """
+    import subprocess
+
+    target, digest = _verified_file(home / "updates")
+    seen: dict = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["argv"] = argv
+        seen["flags"] = kwargs.get("creationflags", 0)
+        return object()
+
+    monkeypatch.setattr(update.os, "name", "nt")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    out = update.launch_installer(target, expected=digest, dest_dir=home / "updates")
+
+    assert out["launched"] is True
+    assert seen["argv"] == [str(target)]
+    assert seen["flags"] & subprocess.DETACHED_PROCESS
+    assert seen["flags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+
+
+def test_the_installer_never_kills_a_process_tree():
+    """`taskkill /T` in the .iss is what killed Setup. It must not come back.
+
+    Asserted against the shipped installer script rather than a comment,
+    because the failure it caused is one nobody can reproduce without building
+    an installer and running it from inside the app.
+    """
+    iss = Path(__file__).resolve().parents[1] / "packaging" / "quickcode.iss"
+    body = iss.read_text(encoding="utf-8", errors="replace")
+
+    assert "taskkill" in body, "the close-the-running-copy step went missing"
+    for line in body.splitlines():
+        if "taskkill" not in line.lower() and "/IM " not in line:
+            continue
+        assert "/T " not in line, f"taskkill kills a process tree again: {line.strip()}"
+
+
 # ---------------------------------------------------------------------------
 # the routes
 # ---------------------------------------------------------------------------

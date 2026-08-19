@@ -260,12 +260,21 @@ end;
 
   Asked, not assumed: closing someone's editor without warning is worse than
   a failed install. Declining is a clean abort, not a half-written directory.
+
+  NO /T. That flag kills the target's whole process tree, and when the update
+  is started from inside QuickCode the installer is a *child of the very
+  process being killed* -- so Setup handed taskkill a tree it was standing in
+  and was terminated by its own cleanup. Killing by image name reaches every
+  copy of the app, which is all that is needed: what holds the lock on
+  QuickCodeApp.exe is QuickCodeApp.exe. (`update.py` now also starts the
+  installer detached, so it is not in that tree either. Both, because either
+  one alone leaves this working by accident.)
   ------------------------------------------------------------------------ }
 function TerminateExe(const ExeName: String): Boolean;
 var
   ResultCode: Integer;
 begin
-  Result := Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM ' + ExeName,
+  Result := Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + ExeName,
                  '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   { 128 = "no such process", which is the outcome we want anyway. }
   Result := Result and ((ResultCode = 0) or (ResultCode = 128));
