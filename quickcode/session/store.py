@@ -66,6 +66,17 @@ _REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTAL
 # would only be a paragraph on disk.
 MAX_TITLE = 200
 
+# The shape a conversation id is allowed to have. The server enforces the same
+# rule on the way in (server/app.py `_CONV_ID_RE`), but ids also come *off the
+# disk* -- `list_sessions` and `empty_sessions` derive them from filenames --
+# so the last line of defence belongs here, next to the code that deletes.
+_SAFE_CONV_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+
+
+def safe_conv_id(conv_id: str) -> bool:
+    """Whether ``conv_id`` may be used to build a path under the project."""
+    return bool(conv_id) and _SAFE_CONV_ID.fullmatch(str(conv_id)) is not None
+
 
 def message_to_dict(msg: ChatMessage) -> dict[str, Any]:
     """Serialize a ``ChatMessage`` to a plain JSON-able dict."""
@@ -482,6 +493,12 @@ class SessionStore:
         """
         out = []
         for info in cls.list_sessions(root):
+            # Ids here come from filenames on disk, not from the server's
+            # validated routes, so a file named `...jsonl` offered `..` as a
+            # sweepable session. Nothing downstream should have trusted it —
+            # it now also never gets that far.
+            if not safe_conv_id(info.conv_id):
+                continue
             if info.message_count == 0 and cls(root, info.conv_id).is_empty():
                 out.append(info.conv_id)
         return out
@@ -508,6 +525,16 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
     doomed_refs: set[str] = set()
 
     for conv_id in conv_ids:
+        if not safe_conv_id(conv_id):
+            # `..` is the one that matters: the board path below is
+            # `.quickcode/tasks/<conv_id>`, and `.quickcode/tasks/..` is
+            # `.quickcode` itself, so one sweep took the whole directory —
+            # every other session, every board, every artifact and the project
+            # settings. A file named `...jsonl` in the sessions directory was
+            # enough to put `..` on the list, and "clean up empty sessions" is
+            # one click.
+            result.missing.append(conv_id)
+            continue
         store = SessionStore(root, conv_id)
         if not store.path.exists():
             result.missing.append(conv_id)
@@ -520,6 +547,10 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
             continue
         result.sessions.append(conv_id)
         board_dir = root / TASKS_DIRNAME / conv_id
+        # Belt and braces beside the id check above: whatever the id said, the
+        # directory being removed has to be a child of the tasks directory.
+        if board_dir.parent != root / TASKS_DIRNAME:
+            continue
         if board_dir.is_dir():
             shutil.rmtree(board_dir, ignore_errors=True)
             result.boards.append(conv_id)

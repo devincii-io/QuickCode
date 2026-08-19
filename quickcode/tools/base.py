@@ -105,6 +105,18 @@ class Tool(Generic[In]):
     async def run(self, input: In, ctx: ToolCtx) -> ToolResult:  # noqa: A002
         raise NotImplementedError
 
+    def permission_target(self, args: dict) -> str:
+        """The location this call really acts on, when one field cannot say it.
+
+        ``PermissionSpec.target_field`` names a single argument, which is right
+        for nearly every tool. ``glob`` is the exception that proves why the
+        hook exists: it gates ``path``, an *optional* field, while the place it
+        actually reads is ``path`` joined with ``pattern`` -- so
+        ``glob(pattern="../*/*.txt")`` presented an empty target and walked out
+        of the project unprompted. Returning "" means "use the declared field".
+        """
+        return ""
+
     # --- rendering (plain-string defaults; UI may override with widgets) ---
     def render_call(self, input: In) -> str:  # noqa: A002
         return f"⏺ {self.name}"

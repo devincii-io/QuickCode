@@ -19,19 +19,38 @@ ARTIFACT_HEAD_LINES = 40
 
 
 def write_artifact(cwd: Path, agent_id: str, text: str) -> Path | None:
-    """Write the full report ``text`` to ``cwd/.quickcode/artifacts/{agent_id}.md``.
+    """Write the full report ``text`` under ``cwd/.quickcode/artifacts/``.
 
-    Returns the path on success, or ``None`` on any OSError — never raises,
-    so a write failure can never take down the parent's turn.
+    Returns the path actually written, or ``None`` on any OSError — never
+    raises, so a write failure can never take down the parent's turn.
+
+    The name is *claimed*, not assumed. Agent ids come from a counter that
+    restarts at 1 in every conversation, so ``explore-1.md`` is the first
+    offloaded report of every session that ever ran one — and this used to
+    write it with a plain ``write_text``, so opening a new conversation and
+    fanning out silently destroyed the previous session's report, while its
+    transcript went on pointing at the file and now described someone else's
+    work. Three reports in this repository were already lost that way. An
+    existing file is never overwritten; the next free ``-2``, ``-3`` … is
+    taken instead, and the caller quotes the path it gets back.
     """
-    path = Path(cwd) / ".quickcode" / "artifacts" / f"{agent_id}.md"
+    directory = Path(cwd) / ".quickcode" / "artifacts"
     try:
         ensure_project_dir(cwd)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        directory.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", *(f"-{n}" for n in range(2, 1000))):
+            path = directory / f"{agent_id}{suffix}.md"
+            try:
+                # x: create-or-fail, so two subagents racing for the same name
+                # cannot both believe they got it.
+                with path.open("x", encoding="utf-8") as handle:
+                    handle.write(text)
+            except FileExistsError:
+                continue
+            return path
+        return None
     except OSError:
         return None
-    return path
 
 
 def maybe_offload(cwd: Path, agent_id: str, report: str) -> str:

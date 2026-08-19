@@ -42,6 +42,23 @@ class GlobTool(Tool[GlobInput]):
     permission = PermissionSpec(mutates=False, target_field="path", path_target=True)
     Input = GlobInput
 
+    def permission_target(self, args: dict) -> str:
+        """Where this call actually looks: the root joined with the pattern.
+
+        Gating ``path`` alone left the required argument ungated, so
+        ``glob(pattern="../*/*.txt")`` offered the engine an empty string,
+        matched nothing, and enumerated files outside the project with no
+        prompt in every mode. The pattern is part of the location, so it is
+        part of what gets checked.
+        """
+        pattern = str(args.get("pattern") or "")
+        path = str(args.get("path") or "")
+        if not pattern:
+            return path
+        if not path:
+            return pattern
+        return f"{path.rstrip('/').rstrip(chr(92))}/{pattern}"
+
     def render_call(self, input: GlobInput) -> str:  # noqa: A002
         where = f" in {input.path}" if input.path else ""
         return f'⏺ Glob "{input.pattern}"{where}'

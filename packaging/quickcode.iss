@@ -111,6 +111,13 @@ Name: "contextmenu"; Description: "Add ""Open QuickCode here"" to the folder rig
 Type: filesandordirs; Name: "{app}\venv"
 Type: filesandordirs; Name: "{app}\src"
 Type: filesandordirs; Name: "{app}\scripts"
+; The previous version's distribution metadata. `importlib.metadata` answers
+; from whatever `*.dist-info` it finds under `_internal`, and the new one is
+; called something else (quickcode-2.4.0.dist-info, not 2.3.0), so nothing
+; overwrites it -- leaving the upgraded app to report the version it replaced
+; to `--version`, `/api/health` and the update check, which then offers the
+; same update again for ever.
+Type: filesandordirs; Name: "{app}\_internal\quickcode-*.dist-info"
 
 [Files]
 ; The whole PyInstaller onedir tree: both executables plus _internal\.
@@ -238,4 +245,57 @@ begin
     EnvRemovePath(ExpandConstant('{app}'));
     EnvRemovePath(LegacyVenvScriptsDir());
   end;
+end;
+
+{ ------------------------------------------------------------------------
+  Closing a running QuickCode before overwriting it.
+
+  `CloseApplications=yes` asks Windows' Restart Manager to do this, and for a
+  WebView2 window it is not enough: RM asks politely, the window does not
+  answer in time, and Setup falls through to "DeleteFile failed; code 5 --
+  access denied" on QuickCodeApp.exe, mid-install. The update path makes that
+  the *normal* case rather than an edge one, because the app downloads the
+  installer and launches it as a detached child while continuing to run — so
+  every in-app update hit this.
+
+  Asked, not assumed: closing someone's editor without warning is worse than
+  a failed install. Declining is a clean abort, not a half-written directory.
+  ------------------------------------------------------------------------ }
+function TerminateExe(const ExeName: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM ' + ExeName,
+                 '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { 128 = "no such process", which is the outcome we want anyway. }
+  Result := Result and ((ResultCode = 0) or (ResultCode = 128));
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if WizardSilent() then
+  begin
+    { An unattended run has nobody to ask, and a silent install that fails
+      halfway is worse than one that closes the app it is replacing. }
+    TerminateExe('QuickCodeApp.exe');
+    TerminateExe('quickcode.exe');
+    Sleep(700);
+    Exit;
+  end;
+  if MsgBox('QuickCode is being replaced, so any running copy has to close first.'
+            + #13#10#13#10 + 'Close QuickCode now and continue?',
+            mbConfirmation, MB_YESNO) = IDNO then
+  begin
+    Result := 'Setup was cancelled: QuickCode has to be closed before it can be updated.';
+    Exit;
+  end;
+  if not TerminateExe('QuickCodeApp.exe') then
+    Result := 'QuickCode could not be closed automatically. Close it and run this installer again.';
+  if Result = '' then
+    if not TerminateExe('quickcode.exe') then
+      Result := 'A QuickCode command line could not be closed. Close it and run this installer again.';
+  { Give Windows a moment to release the image locks before the copy starts. }
+  if Result = '' then
+    Sleep(700);
 end;

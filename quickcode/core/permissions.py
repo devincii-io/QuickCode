@@ -34,10 +34,15 @@ _SPLIT = re.compile(r"&&|\|\||\||;|&|\n")
 # Substitution markers that forbid prefix-matching a rule.
 _COMPOUND_MARKERS = ("$(", "`", ">", "<")
 # Catastrophic patterns that prompt even in yolo.
+# The flag spelling was the whole of the check, so `rm -rf /` was caught while
+# `rm -fr /`, `rm -rf /*` and `rm --recursive --force /` -- the same command,
+# spelled the way a shell user is at least as likely to spell it -- went
+# straight through, as did `git push -f`. Written now as "the dangerous flags,
+# in any order or long form, then the dangerous target".
+_RM_FLAG = r"(?:--recursive|--force|-[a-zA-Z]*[rRf][a-zA-Z]*)"
 _CIRCUIT_BREAKERS = [
-    re.compile(r"\brm\s+-rf?\s+/(?:\s|$)"),
-    re.compile(r"\brm\s+-rf?\s+~"),
-    re.compile(r"git\s+push\s+.*--force"),
+    re.compile(rf"\brm\s+(?:{_RM_FLAG}\s+)*{_RM_FLAG}\s+[\"']?(?:/|~)(?:/?\*)?[\"']?(?:\s|$)"),
+    re.compile(r"git\s+push\s+(?:.*\s)?(?:--force\b|--force-with-lease\b|-f\b)"),
     re.compile(r":\(\)\s*\{"),  # fork bomb
 ]
 
@@ -191,7 +196,20 @@ def _glob_match(pattern: str, value: str) -> bool:
     return re.fullmatch("".join(parts), value) is not None
 
 
+# A shell word this side cannot resolve: a variable, a substitution, or a
+# Windows %VAR%. The expansion happens in the shell, long after this decision.
+_UNRESOLVABLE = re.compile(r"\$\w|\$\{|\$\(|`|%\w+%")
+
+
 def _protected(path: str, root: Path) -> bool:
+    # `cat $HOME/.aws/credentials` used to resolve as the *literal* string
+    # "$HOME/.aws/credentials" -- a relative path, therefore inside the project,
+    # therefore harmless -- and auto-allowed in every mode including dontask,
+    # while the same file named plainly prompted. Anything holding an unexpanded
+    # expansion is treated as protected: this side does not know where it
+    # points, and "unknown" is not "safe".
+    if _UNRESOLVABLE.search(path):
+        return True
     try:
         candidate = Path(path).expanduser()
         rp = (candidate if candidate.is_absolute() else root / candidate).resolve()
@@ -284,7 +302,10 @@ class PermissionEngine:
         can show the user what they are approving.
         """
         spec = getattr(tool, "permission", DEFAULT_SPEC)
-        target = self.target_for(spec, args)
+        # A tool may know its effective location better than one field can say
+        # (see Tool.permission_target). Its answer wins when it gives one.
+        declared = getattr(tool, "permission_target", None)
+        target = (declared(args) if callable(declared) else "") or self.target_for(spec, args)
         return self.evaluate(tool.name, target, spec=spec), target
 
     def evaluate(self, tool: str, arg: str, spec: PermissionSpec | None = None) -> Decision:
@@ -381,7 +402,11 @@ class PermissionEngine:
             if token.startswith("-"):
                 continue
             candidate = token.split("=", 1)[-1] if "=" in token else token
-            candidate = candidate.strip("'\"{},()")
+            # Quotes come out wherever they sit, not only at the ends: the
+            # shell concatenates `.en''v` into `.env`, so a scan that stripped
+            # only the outside compared the wrong string and waved through the
+            # very file it exists to protect.
+            candidate = candidate.replace("'", "").replace('"', "").strip("{},()")
             if candidate and _protected(candidate, self.root):
                 if self.mode is Mode.dontask:
                     return Decision.deny
