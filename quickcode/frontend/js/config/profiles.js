@@ -208,7 +208,7 @@ function editorHtml(draft, { tools, scope, isNew, builtinIds }) {
 
     <div class="set-field">
       <label for="pf-description">Description</label>
-      <textarea id="pf-description" rows="2" spellcheck="false"
+      <textarea id="pf-description" rows="3" spellcheck="false"
         placeholder="What it is for, and when you would pick it."
         >${esc(draft.description)}</textarea>
     </div>

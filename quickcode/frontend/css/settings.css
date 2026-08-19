@@ -77,8 +77,10 @@
 /* ---------- generic form bits shared by every page ---------- */
 
 .set-field { margin-bottom: 14px; max-width: 62ch; }
-.set-field label { display: block; font-size: 12px; color: var(--fg-dim); margin-bottom: 4px; }
-.set-field input, .set-field select { border-radius: 8px; }
+/* The label rule this file used to repeat now lives in app.css:.set-field
+   label, where it reads as a label rather than as the first line of the help
+   text under it; repeating it here only meant it had to be changed twice. */
+.set-field input, .set-field select, .set-field textarea { border-radius: 8px; }
 .set-filter { max-width: none; margin-bottom: 0; }
 
 .f-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -92,8 +94,8 @@
 }
 .plug-toolbar .plug-search { flex: 1 1 220px; min-width: 160px; }
 .plug-sel {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  padding: 6px 8px; font-size: 12px; color: var(--fg); outline: none;
+  background-color: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 24px 6px 9px; font-size: 12px; color: var(--fg); outline: none;
 }
 .seg {
   display: flex; background: var(--panel); border: 1px solid var(--line);
@@ -207,11 +209,15 @@
   border-left: 2px solid var(--line-strong);
 }
 .f-ctl { margin-top: 6px; }
+/* background-*color*, not the shorthand: app.css paints the select's arrow as
+   a background-image, and `background:` here would wipe it. Same reason in
+   .plug-sel, .hp-field and .tp-input. */
 .f-ctl input[type="text"], .f-ctl input[type="number"], .f-ctl select, .f-text {
-  width: 100%; background: var(--bg); border: 1px solid var(--line);
+  width: 100%; background-color: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 12.5px; color: var(--fg);
   outline: none; font-family: inherit;
 }
+.f-ctl select { padding-right: 26px; }
 .f-ctl input:focus, .f-ctl select:focus, .f-text:focus { border-color: var(--primary); }
 .f-text { font-family: var(--mono); font-size: 12px; line-height: 1.5; resize: vertical; }
 .f-num { display: flex; align-items: center; gap: 8px; }
@@ -248,13 +254,13 @@
 /* ---------- sheet (a layer over Settings) ---------- */
 
 .set-sheet {
-  position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.5);
+  position: fixed; inset: 0; z-index: 60; background: var(--scrim);
   display: grid; place-items: center; animation: fadein .1s ease-out;
 }
 .set-sheet-card {
   background: var(--surface); border: 1px solid var(--line-strong); border-radius: 14px;
   width: min(560px, 92vw); max-height: 84vh; display: flex; flex-direction: column;
-  overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,.55);
+  overflow: hidden; box-shadow: var(--shadow-2);
 }
 .set-sheet-card.wide { width: min(940px, 94vw); }
 .set-sheet-card:focus { outline: none; }

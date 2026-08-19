@@ -33,6 +33,72 @@
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
   --sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
   --radius: 10px;
+
+  /* Elevation and the dialog scrim. Both were literal rgba(0,0,0,…) in five
+     files; a half-opaque black smudge is right under a near-black page and
+     wrong over a white one, so they are tokens now. Dark mixes from --bg,
+     which is already the darkest thing in the palette; the light block mixes
+     from --fg, because a shadow is ink either way and --bg is paper there. */
+  --shadow-1: 0 12px 34px color-mix(in srgb, var(--bg) 62%, transparent);
+  --shadow-2: 0 18px 60px color-mix(in srgb, var(--bg) 66%, transparent);
+  --scrim: color-mix(in srgb, var(--bg) 62%, transparent);
+}
+
+/* ---------- the light side of the same palette ----------
+ *
+ * /api/bootstrap sends eleven colours and nothing else, so everything derived
+ * above — the four --fg/--line alphas and the eight --chip-* roles — was fixed
+ * against a near-black background and stayed there when someone picked the
+ * light preset. On white it measured: --line 1.21:1, --fg-dim 3.65:1, and
+ * every chip between 2.18:1 and 2.98:1. Borders vanished and the cyan subagent
+ * colour was the worst of them.
+ *
+ * A percentage of ink on paper is not the mirror of a percentage of paper on
+ * ink, so the numbers cannot simply be reused — each one below is re-aimed and
+ * measured against --surface (the lightest thing anything sits on, therefore
+ * the worst case) with --panel and --boost checked behind it. The targets are
+ * WCAG's: 4.5:1 for text, 3:1 for a boundary that means something.
+ *
+ * applyTheme() in js/util.js stamps data-theme from the *luminance* of the
+ * background it was handed, not from a preset name — all eleven colours are
+ * hand-editable, so a light palette the user built themselves and called
+ * anything at all still lands here. No attribute means the dark values above,
+ * which is what the shipped default wants.
+ *
+ * Whoever changes a number here: run the contrast check before and after. The
+ * floors are the point, not the exact percentages.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --fg-dim:   color-mix(in srgb, var(--fg) 66%, transparent);  /* 5.13:1 — body */
+  --fg-faint: color-mix(in srgb, var(--fg) 52%, transparent);  /* 3.33:1 — meta */
+  --line:     color-mix(in srgb, var(--fg) 42%, transparent);  /* 2.53:1 — hairline */
+  --line-strong: color-mix(in srgb, var(--fg) 55%, transparent); /* 3.65:1 — edge */
+
+  /* Same five hues, darkened against black until each clears 4.5:1 on --panel
+     (the darkest surface a chip is drawn on) — 61-72% of the dark value. They
+     encode a role, so what had to survive the darkening is the hue: mixing
+     towards black moves lightness only, and the five stay as far apart in hue
+     as they were. Their luminances are deliberately near-identical, which is
+     also true of the dark set. */
+  --chip-system:  #795fa1;   /* violet — 4.54:1 on panel */
+  --chip-user:    #476d97;   /* blue   — 4.62:1 */
+  --chip-context: #37766c;   /* teal   — 4.54:1 */
+  --chip-review:  #9d556c;   /* rose   — 4.56:1 */
+  --chip-agent:   #367381;   /* cyan   — 4.59:1 */
+  --chip-meta: color-mix(in srgb, var(--fg) 55%, transparent);  /* 3.65:1 */
+
+  /* Far softer than the dark set: on paper a card is lifted by a hint, and the
+     60px/50%-black drop the dark theme wants reads as a bruise. Two layers so
+     the near shadow gives the edge and the far one gives the lift. */
+  --shadow-1:
+    0 2px 5px color-mix(in srgb, var(--fg) 9%, transparent),
+    0 8px 22px color-mix(in srgb, var(--fg) 11%, transparent);
+  --shadow-2:
+    0 3px 9px color-mix(in srgb, var(--fg) 10%, transparent),
+    0 14px 44px color-mix(in srgb, var(--fg) 15%, transparent);
+  --scrim: color-mix(in srgb, var(--fg) 38%, transparent);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -165,6 +231,13 @@ textarea, input { font: inherit; color: inherit; }
   border: 1px solid color-mix(in srgb, var(--chip-agent) 35%, transparent);
   border-radius: var(--radius); background: var(--surface); overflow: hidden;
 }
+/* On paper a 35% tint is a rumour. The dark theme can afford it because the
+   card sits on near-black and the hue is the *light* thing on the page; in a
+   light palette the hue is the dark thing, and 35% of it lands at 1.5:1 —
+   which is what "the subagent cards have no border" was. */
+:root[data-theme="light"] .agent-card {
+  border-color: color-mix(in srgb, var(--chip-agent) 62%, transparent);
+}
 .agent-head {
   display: flex; gap: 8px; align-items: center; padding: 7px 12px; cursor: pointer;
   color: var(--chip-agent); font-size: 13px; user-select: none;
@@ -248,8 +321,14 @@ textarea, input { font: inherit; color: inherit; }
   transition: border-color .15s;
 }
 .composer-box:focus-within { border-color: color-mix(in srgb, var(--primary) 55%, transparent); }
+/* The one textarea that is not a field: it has no surface, no border and no
+   resting height of its own — .composer-box is the control and this is the
+   text inside it. So it opts out of the shared textarea shape further down
+   (padding, min-height, resize), which would otherwise give the composer a
+   four-line gutter it never asked for. */
 #input {
   width: 100%; background: none; border: none; outline: none; resize: none;
+  padding: 0; min-height: 0;
   max-height: 40vh; line-height: 1.45; font-size: 14px;
 }
 .composer-row { display: flex; align-items: center; margin-top: 6px; }
@@ -372,7 +451,7 @@ textarea, input { font: inherit; color: inherit; }
   max-width: min(720px, calc(100vw - 24px));
   padding: 8px 10px 8px 12px; border-radius: var(--radius);
   border: 1px solid var(--line-strong); background: var(--panel);
-  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+  box-shadow: var(--shadow-1);
   font-size: 12.5px; line-height: 1.45;
   animation: toast-in .16s ease-out;
 }
@@ -497,7 +576,7 @@ textarea, input { font: inherit; color: inherit; }
 
 /* ---------- modals ---------- */
 .modal-backdrop {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid;
+  position: fixed; inset: 0; background: var(--scrim); display: grid;
   place-items: center; z-index: 40; animation: fadein .12s ease-out;
 }
 @keyframes fadein { from { opacity: 0; } }
@@ -505,7 +584,7 @@ textarea, input { font: inherit; color: inherit; }
   background: var(--surface); border: 1px solid var(--line-strong);
   border-radius: 14px; width: min(720px, 92vw); max-height: 84vh;
   display: flex; flex-direction: column; overflow: hidden;
-  box-shadow: 0 18px 60px rgba(0,0,0,.5);
+  box-shadow: var(--shadow-2);
 }
 .modal-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -544,7 +623,7 @@ textarea, input { font: inherit; color: inherit; }
 .menu {
   position: fixed; z-index: 50; background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
-  box-shadow: 0 14px 44px rgba(0,0,0,.5);
+  box-shadow: var(--shadow-2);
   min-width: min(300px, calc(100vw - 24px)); max-width: min(420px, calc(100vw - 24px));
   max-height: 60vh; display: flex; flex-direction: column;
 }
@@ -596,11 +675,24 @@ textarea, input { font: inherit; color: inherit; }
 /* The catalog scrolls on its own so the filter above it stays reachable. */
 .set-scroll { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
 .set-field { margin-bottom: 14px; }
-.set-field label { display: block; font-size: 12px; color: var(--fg-dim); margin-bottom: 4px; }
-.set-field input, .set-field select {
-  width: 100%; background: var(--panel); border: 1px solid var(--line);
+/* The label and the sentence under it were the same weight and nearly the same
+   colour, so a field read as one grey paragraph with a box in it. The label is
+   now the .f-label of settings.css:169 — that page is the reference for what a
+   form looks like here, and a second vocabulary for the same idea would only
+   have to be reconciled later. The explanation stays quiet: .qs-hint, which
+   sits *inside* these labels, already declares weight 400 and --fg-faint, and
+   .pf-note does the same job as a sibling. */
+.set-field label {
+  display: block; font-size: 12.5px; font-weight: 600; color: var(--fg);
+  margin-bottom: 5px;
+}
+/* textarea joins the list: an unclassed one here used to fall through to the
+   UA's white box, in the middle of a column of themed fields. */
+.set-field input, .set-field select, .set-field textarea {
+  width: 100%; background-color: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none;
 }
+.set-field select { padding-right: 26px; }   /* the arrow lives there */
 /* The old flat plugin list lived here; Settings now renders plugins from the
    kernel API and styles them in css/settings.css. */
 
@@ -766,7 +858,7 @@ textarea, input { font: inherit; color: inherit; }
   display: flex; align-items: flex-start; gap: 10px;
   padding: 9px 10px 9px 12px; border-radius: var(--radius);
   border: 1px solid var(--line-strong); background: var(--panel);
-  box-shadow: 0 12px 34px rgba(0,0,0,.45);
+  box-shadow: var(--shadow-1);
   font-size: 12.5px; line-height: 1.45;
   animation: toast-in .16s ease-out;
 }
@@ -793,6 +885,80 @@ textarea, input { font: inherit; color: inherit; }
    short, so its label wraps instead of stretching the popover. */
 .slash-menu .sm-cmd { overflow-wrap: anywhere; }
 
+/* ---------- native form controls ---------- */
+/*
+ * Every page in the app writes its own rule for its own fields, which is fine
+ * for padding and type but left three things nobody owned: the parts of a
+ * control the UA paints and CSS cannot reach, the placeholder, and <textarea>,
+ * which was simply never mentioned anywhere <input> was. The result was a
+ * white browser-default box sitting between two themed ones in the profile
+ * editor. These are element selectors on purpose — the shared answer belongs
+ * to the element, not to a `.field` class every page would have to learn —
+ * and every component rule below/after still overrides them, as it should.
+ */
+
+/* The option popup of a <select>, the number spinner, the checkbox tick and
+   the default scrollbars are drawn by the UA from `color-scheme` alone; no
+   amount of CSS on the element reaches them, which is why a themed select
+   still dropped a white list over a dark page. Dark is the shipped default;
+   :root[data-theme="light"] above flips it, so a light palette gets a light
+   popup rather than an inverted one. */
+:root { color-scheme: dark; }
+
+/* A placeholder is a hint about the field, not a value in it. The UA default
+   sits close enough to --fg that a rules box reads as though it were already
+   filled in. `opacity: 1` because Firefox dims on top of the colour. */
+::placeholder { color: var(--fg-faint); opacity: 1; }
+
+/* textarea inherited the font from the rule at the top of this file but never
+   a surface, so an unclassed one rendered as a UA box. Prose fields also get
+   a usable default size: a two-row textarea the width of the label is a worse
+   place to write a sentence than the single-line input above it. */
+textarea {
+  width: 100%; background-color: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 10px; font-size: 13px; line-height: 1.55;
+  outline: none; resize: vertical; min-height: 4.6em;
+}
+
+/* `appearance: none` is what makes a select themeable at all; everything from
+   the arrow inwards is ours afterwards, including the arrow. It is drawn as
+   two half-filled gradient tiles rather than an inline SVG background because
+   an SVG data URI cannot read a CSS variable — it would have to carry a
+   literal colour, and the palette is swappable at runtime, so that colour
+   would survive into a theme it was never chosen for. */
+select {
+  appearance: none; -webkit-appearance: none;
+  background-color: var(--panel);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-dim) 50%),
+    linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);
+  background-position: right 15px center, right 10px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 26px 7px 10px; font-size: 13px;
+  outline: none; cursor: pointer;
+}
+/* Component rules that paint a select with the `background` shorthand would
+   wipe the arrow with it; they all use `background-color` instead. The one
+   thing they must still say is that the text stops before the arrow. */
+
+input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
+
+/* Disabled has to look unavailable rather than merely quiet — --fg-dim is
+   also what a help line uses. Locked *values* are a different case and stay
+   legible; settings.css:.f-ctl overrides this deliberately. */
+input:disabled, textarea:disabled, select:disabled {
+  opacity: .55; cursor: not-allowed;
+}
+.btn:disabled, .ghost-btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover, .ghost-btn:disabled:hover { background: var(--panel); }
+
+/* A textarea inside a labelled field is prose; one inside a grid of rule
+   boxes has its own height. Only the first needs the default. */
+.set-field textarea { min-height: 4.6em; }
+
 /* Keyboard focus has to be visible — several inputs clear the UA outline on
    purpose, so this comes last and only fires for keyboard focus. */
 button:focus-visible, input:focus-visible, textarea:focus-visible,
@@ -802,9 +968,22 @@ select:focus-visible, [tabindex]:focus-visible {
 /* Bordered fields clear the UA outline; they mark focus on the border, the
    way .dirb-path already does. */
 .deny-input:focus, .menu-search:focus, .set-filter:focus,
-.set-field input:focus, .set-field select:focus {
+.set-field input:focus, .set-field select:focus, .set-field textarea:focus {
   border-color: color-mix(in srgb, var(--primary) 55%, transparent);
 }
+/* Every one of those `:focus { outline: none }` rules is more specific than
+   the ring above and lives in a stylesheet that loads later, so on a bordered
+   field the ring lost and a keyboard user got a border tint a shade apart from
+   the resting one. Nothing anywhere sets box-shadow on a field, so a halo is
+   the one signal no component rule can quietly cancel — it stacks on top of
+   whatever border colour the component chose rather than replacing it. */
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+/* Except the composer, which has no border of its own: the halo would be a
+   rectangle floating inside .composer-box, which already lights its own edge
+   on :focus-within. */
+#input:focus-visible { box-shadow: none; }
 /* The dialog itself is focused on open so Escape works wherever you clicked;
    it is a programmatic target, not a tab stop, so it draws no ring. */
 .modal:focus { outline: none; }

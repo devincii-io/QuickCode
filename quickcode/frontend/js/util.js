@@ -64,9 +64,39 @@ const THEME_VARS = {
   accent: "--accent", success: "--success", warning: "--warning", error: "--error",
 };
 
+// Relative luminance of a #rgb / #rrggbb string, per WCAG. Anything else —
+// a name, a rgb(), an empty field — returns null, and the caller leaves the
+// theme flag alone rather than guessing wrong.
+function luminance(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex ?? "").trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1];
+  const n = parseInt(h, 16);
+  const chan = (v) => {
+    v /= 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * chan((n >> 16) & 255)
+       + 0.7152 * chan((n >> 8) & 255)
+       + 0.0722 * chan(n & 255);
+}
+
 export function applyTheme(theme) {
   for (const [key, cssVar] of Object.entries(THEME_VARS)) {
     if (theme?.[key]) document.documentElement.style.setProperty(cssVar, theme[key]);
+  }
+  // The eleven colours are only half a theme: --fg-dim, the two --line weights
+  // and the eight --chip-* roles are *derived*, and a percentage of light ink
+  // on a dark page does not survive being asked to be dark ink on a light one.
+  // css/app.css carries a second set of them under [data-theme="light"]; this
+  // is the switch. It reads the background's luminance rather than the preset's
+  // name because every colour is hand-editable — a user's own light palette is
+  // not called "light" and still has to land on the light values. Sitting on
+  // <html> rather than <body> so it also reaches :root variables and
+  // color-scheme, which is what paints the native select popup.
+  const lum = luminance(theme?.background);
+  if (lum !== null) {
+    document.documentElement.dataset.theme = lum > 0.45 ? "light" : "dark";
   }
 }
 
