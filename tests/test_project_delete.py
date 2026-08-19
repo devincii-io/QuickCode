@@ -450,7 +450,9 @@ def test_a_bulk_session_delete_reports_the_live_ones_as_skipped_rather_than_fail
             reasons = {s["conv_id"]: s["reason"] for s in body["skipped"]}
             assert reasons == {live: "live", "dddddddddddd": "missing"}
             assert SessionStore(root, "cccccccccccc").path.exists()
-            assert SessionStore(root, live).path.exists()
+            # The live one was skipped, so it is still the manager's. It has no
+            # file: nothing was said in it, and opening a window writes nothing.
+            assert live in hub.default.conversations
 
 
 def test_a_bulk_request_without_a_selection_is_rejected(tmp_path):

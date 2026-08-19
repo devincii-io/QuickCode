@@ -19,7 +19,7 @@ from pathlib import Path
 
 from quickcode.config import Config
 from quickcode.providers.base import ModelInfo
-from quickcode.server.projects import ProjectHub
+from quickcode.server.projects import ProjectHub, ProjectRegistry
 from tests.test_server import FakeProvider, make_env
 
 
@@ -45,7 +45,18 @@ async def _no_mcp(_cwd):
 def _hub(tmp_path: Path, provider, **kw) -> ProjectHub:
     cfg = Config()
     cfg.last_model = "test/model"
-    return ProjectHub(config=cfg, provider=provider, mcp_connect=_no_mcp, **kw)
+    return ProjectHub(
+        config=cfg,
+        provider=provider,
+        # Every test here opens a project, and opening one records it. With no
+        # registry that recording went to the developer's own recent-projects
+        # list -- this file is where the pytest temp directories that filled a
+        # home screen came from. A real file under tmp_path rather than
+        # `ephemeral()`, so `touch()` still runs the same save path as the app.
+        registry=ProjectRegistry(tmp_path / "registry" / "projects.json"),
+        mcp_connect=_no_mcp,
+        **kw,
+    )
 
 
 async def test_opening_a_project_never_waits_on_the_provider(tmp_path: Path) -> None:

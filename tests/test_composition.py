@@ -25,7 +25,7 @@ from quickcode.kernel.composition import (
     Resolved,
 )
 from quickcode.kernel.resolve import resolve_composition, session_pool
-from quickcode.providers.base import ModelInfo
+from quickcode.providers.base import ChatMessage, ModelInfo
 from quickcode.server.manager import ConversationManager
 from quickcode.subagents.definitions import AgentDef, builtin_defs
 from quickcode.tools.registry import default_registry
@@ -347,6 +347,11 @@ async def test_the_composition_is_frozen_for_the_life_of_a_session(tmp_path):
     conv = _manager(tmp_path).open()
     conv_id = conv.conv_id
     before = set(conv.agent.registry.tools)
+    # A word in it. Opening a window writes nothing now, and the frozen
+    # composition rides on the session's first `meta` record -- so a
+    # conversation nobody ever spoke in has no session to freeze, and
+    # reopening its id is starting fresh rather than resuming.
+    conv.store.append_message(ChatMessage(role="user", content="hello"))
 
     write_settings(tmp_path, {
         "active_preset": "p",

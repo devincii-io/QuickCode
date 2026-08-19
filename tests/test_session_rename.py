@@ -7,10 +7,28 @@ two of them, and "the title" has to mean the last one.
 
 from __future__ import annotations
 
+import json
+
+from quickcode.core.events import TextDelta, TurnDone
 from quickcode.providers.base import ChatMessage
 from quickcode.session.store import MAX_TITLE, SessionStore
 from tests.test_projects import make_app, mkdirs
 from tests.test_server import FakeProvider, recv_until, ws_connect
+
+
+def used_conversation(client, ws_path="/ws/conversation"):
+    """A conversation that is a session, because somebody spoke in it.
+
+    Opening a window no longer writes anything -- that is what stopped the app
+    leaving an empty session behind on every launch -- so a test about naming
+    or deleting a session has to make one first.
+    """
+    conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+    with ws_connect(client, f"{ws_path}/{conv_id}") as ws:
+        recv_until(ws, "replay_done")
+        ws.send_text(json.dumps({"type": "user_message", "text": "hello"}))
+        recv_until(ws, "assistant_message")
+    return conv_id
 
 
 def test_the_last_name_a_session_was_given_is_the_one_it_shows(tmp_path):
@@ -77,11 +95,14 @@ def test_renaming_a_live_conversation_is_allowed_where_deleting_is_not(tmp_path)
     session the user had merely visited could never be deleted or archived
     again and the message told them to close something that was not open.
     """
-    hub, client = make_app(tmp_path, FakeProvider([]))
+    hub, client = make_app(tmp_path, FakeProvider([[TextDelta("ok"), TurnDone("stop")]]))
     with client:
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
         with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
             recv_until(ws, "replay_done")
+            # Something said in it, so there is a session to rename at all.
+            ws.send_text(json.dumps({"type": "user_message", "text": "hello"}))
+            recv_until(ws, "assistant_message")
 
             assert client.patch(f"/api/sessions/{conv_id}",
                                 json={"title": "still running"}).status_code == 200
@@ -97,11 +118,9 @@ def test_a_session_nobody_is_watching_can_be_deleted(tmp_path):
     """The other half, and the bug: opening a conversation and moving on left
     it "live" for the life of the process, so deleting it from the list was
     refused for ever with no way to satisfy the refusal."""
-    hub, client = make_app(tmp_path, FakeProvider([]))
+    hub, client = make_app(tmp_path, FakeProvider([[TextDelta("ok"), TurnDone("stop")]]))
     with client:
-        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
-        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
-            recv_until(ws, "replay_done")
+        conv_id = used_conversation(client)
         # The window is gone; nothing is running.
         assert client.get("/api/sessions").json()[0]["live"] is False
         assert client.delete(f"/api/sessions/{conv_id}").status_code == 204
@@ -109,9 +128,9 @@ def test_a_session_nobody_is_watching_can_be_deleted(tmp_path):
 
 
 def test_a_rename_survives_resuming_the_session(tmp_path):
-    hub, client = make_app(tmp_path, FakeProvider([]))
+    hub, client = make_app(tmp_path, FakeProvider([[TextDelta("ok"), TurnDone("stop")]]))
     with client:
-        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        conv_id = used_conversation(client)
         client.patch(f"/api/sessions/{conv_id}", json={"title": "kept"})
         # Resuming re-opens the same log; it must not write a blank title over
         # the one the user chose.

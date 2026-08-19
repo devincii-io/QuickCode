@@ -189,6 +189,10 @@ class SessionStore:
         self.active_path = self.sessions_dir / f"{self.conv_id}.jsonl"
         self.archived_path = self.archive_dir / f"{self.conv_id}.jsonl"
         self._next_seq: int | None = None
+        # Set by ``hold`` for a conversation nobody has said anything in yet;
+        # records pile up here until ``release``. See ``hold``.
+        self._holding = False
+        self._deferred: list[dict[str, Any]] = []
 
     @property
     def path(self) -> Path:
@@ -240,7 +244,48 @@ class SessionStore:
         return last
 
     # ---- writing ----
+    def begin(self, **fields: Any) -> None:
+        """Open a conversation: record its first ``meta`` line, write nothing.
+
+        Opening a project opens a conversation, and a new conversation wrote
+        its ``meta`` record and its ``system_prompt`` event immediately. So
+        merely *starting the app* left a session on disk: a user who had opened
+        QuickCode seven times found seven empty sessions in their list. The
+        "clean up N empty" button in the UI is a workaround for this, not a
+        feature anyone asked for.
+
+        Held rather than dropped, because those records are not optional. The
+        meta line carries the model, the preset and the resolved composition,
+        and the trajectory and resume both read it as the first line of the
+        file. They are flushed ahead of whatever is said first, so the on-disk
+        order is exactly what it has always been -- a reader cannot tell the
+        difference. A conversation nobody says anything in simply never becomes
+        a file.
+
+        Released by anything that is an act rather than a side effect: a chat
+        message, the user speaking, a rename, a composition switch. Ambient
+        events emitted because a window happens to be open -- the system
+        prompt, a mode announcement -- are not that.
+        """
+        self._holding = True
+        self._deferred.append({"kind": "meta", **fields})
+
+    def release(self) -> None:
+        """Stop holding, writing anything held so far in the order it arrived."""
+        if not self._holding:
+            return
+        self._holding = False
+        if self._deferred:
+            pending, self._deferred = self._deferred, []
+            self._write_lines(pending)
+
     def _append_line(self, obj: dict[str, Any]) -> None:
+        if self._holding:
+            self._deferred.append(obj)
+            return
+        self._write_lines([obj])
+
+    def _write_lines(self, objs: list[dict[str, Any]]) -> None:
         target = self.path
         # The first line of the first session is what creates ``.quickcode/``
         # in a fresh project, so it is also where the directory gets the
@@ -248,9 +293,11 @@ class SessionStore:
         ensure_project_dir(self.root)
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            for obj in objs:
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def append_message(self, msg: ChatMessage) -> None:
+        self.release()
         self._append_line(
             {
                 "kind": "message",
@@ -283,6 +330,11 @@ class SessionStore:
         )
 
     def append_meta(self, **fields: Any) -> None:
+        # Metadata is written when somebody asks for it -- a rename, a
+        # composition switch. Those are acts, so they make the session real
+        # even if nothing has been said in it yet. Only the opening record,
+        # which `begin` queues directly, is held.
+        self.release()
         self._append_line({"kind": "meta", **fields})
 
     def rename(self, title: str) -> str:
@@ -317,23 +369,31 @@ class SessionStore:
         seq = self._next_seq
         self._next_seq += 1
         ts = ev["ts"] = datetime.datetime.now().isoformat()
+        # The user saying something is what turns an open window into a
+        # session. Everything before it was the app getting ready.
+        if ev.get("type") == "user_message":
+            self.release()
         self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": ev})
         return seq
 
     # ---- reading ----
     def _iter_records(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
         records: list[dict[str, Any]] = []
-        with self.path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except (json.JSONDecodeError, ValueError):
-                    continue
+        if self.path.exists():
+            with self.path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+        # Held records are part of this session as far as every reader is
+        # concerned. Only the *write* is deferred: a client that attaches to a
+        # conversation before anything is said still replays its system prompt,
+        # exactly as it did when opening the window created a file.
+        records.extend(self._deferred)
         return records
 
     def load_messages(self) -> list[ChatMessage]:

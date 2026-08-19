@@ -141,6 +141,9 @@ class Conversation:
         # preset mid-flight cannot change the tools under a conversation that
         # has already been told what it has.
         self.resolved = resolved
+        # Whether the current rendering of the system prompt has been
+        # shown. See ``emit_system_prompt``.
+        self._prompt_shown = False
         self.clients: set[Client] = set()
         self.pending: dict[str, PendingReview] = {}
         self.input_queue: list[str] = []
@@ -167,6 +170,22 @@ class Conversation:
             # replaced ``agent.ledger`` by the time we get here.
             ledger=agent.ledger,
         )
+
+    def emit_system_prompt(self) -> None:
+        """Show the model's instructions, once per rendering of them.
+
+        Not emitted when the conversation opens. A window that is merely open
+        has not sent anything, so a prompt logged there dates the session to
+        the moment the app started and leaves a stretch of idle in front of the
+        first thing the user did -- which is what the trajectory was drawing.
+        It is also not yet final: switching profile or composition before
+        typing re-renders it, so an early copy can be one the model never saw.
+
+        Emitted instead at the top of the first turn, and again by anything
+        that re-renders it, which is exactly when it becomes true.
+        """
+        self._prompt_shown = True
+        self.emit({"type": "system_prompt", "text": self.agent.history.system_prompt})
 
     def busy_reason(self) -> str | None:
         """Why this conversation must not be closed under the user, or None.
@@ -408,6 +427,10 @@ class Conversation:
     async def _worker(self) -> None:
         while True:
             text = await self._inbox.get()
+            # Ahead of the message, so the trace reads in the order the model
+            # sees it: instructions first, then what it was asked.
+            if not self._prompt_shown:
+                self.emit_system_prompt()
             self.emit({"type": "user_message", "text": text})
             self._emit_state()
             try:
@@ -702,7 +725,7 @@ class Conversation:
                 "text": f"(model “{model}” is not in the provider catalog — "
                         f"using it as typed; no context length known)",
             })
-        self.emit({"type": "system_prompt", "text": self.agent.history.system_prompt})
+        self.emit_system_prompt()
         self._emit_state()
 
     # ---- session-scoped composition switching ----
@@ -833,7 +856,7 @@ class Conversation:
                      f"({len(resolved.tools)} tools, ceiling {resolved.ceiling.value})"
                      + (f" · {' · '.join(detail)}" if detail else "")),
         })
-        self.emit({"type": "system_prompt", "text": self.agent.history.system_prompt})
+        self.emit_system_prompt()
         self._emit_state()
         return {
             "preset": preset.id,
@@ -1170,13 +1193,14 @@ class ConversationManager:
             limits=limits,
         )
         if not resuming:
-            store.append_meta(
+            # Held, not written: opening a project opens a conversation, so
+            # writing here made merely starting the app leave an empty session
+            # on disk. The record still goes in front of whatever is said
+            # first -- it just no longer creates a file nobody asked for.
+            store.begin(
                 title="", model=model, cwd=str(self.cwd), preset=preset.id,
                 composition=resolved.to_json(),
             )
-        # Log the rendered system prompt (again on resume — a new run may have
-        # re-rendered it): the trace must show everything the model sees.
-        conv.emit({"type": "system_prompt", "text": history.system_prompt})
         conv.start()
         self.conversations[store.conv_id] = conv
         return conv

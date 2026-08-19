@@ -29,6 +29,7 @@ from typing import Any
 
 from quickcode.config import CONFIG_DIR, Config, Environment
 from quickcode.providers.base import ModelInfo, Provider
+from quickcode.pty import registry as terminal_registry
 from quickcode.server.manager import ConversationManager
 from quickcode.session.store import (
     project_data_dir,
@@ -85,12 +86,36 @@ class ProjectRegistry:
     ids are recomputed on load so a stale file can never pin a wrong id.
     """
 
-    def __init__(self, path: Path | None = None, *, persist: bool = True) -> None:
-        self.path = Path(path) if path is not None else CONFIG_DIR / REGISTRY_FILENAME
+    def __init__(self, path: Path | None, *, persist: bool = True) -> None:
+        """``path`` is required, and may only be ``None`` for a non-persisting
+        registry.
+
+        It used to default to ``CONFIG_DIR / REGISTRY_FILENAME``, which made
+        "write to the user's real recent-projects list" the behaviour of the
+        shortest possible call. A test suite took that default and put 258
+        pytest temp directories in somebody's home screen. Callers that do want
+        the user's file now say so out loud: ``ProjectRegistry.user_default()``.
+        """
+        if persist and path is None:
+            raise ValueError(
+                "a persisting ProjectRegistry needs a path; "
+                "use ProjectRegistry.ephemeral() for one that writes nothing"
+            )
+        self.path = Path(path) if path is not None else None
         self.persist = persist
         self._entries: dict[str, ProjectEntry] = {}
         if self.persist:
             self._load()
+
+    @classmethod
+    def user_default(cls) -> ProjectRegistry:
+        """The real ``~/.quickcode/projects.json`` -- the app's own registry.
+
+        ``CONFIG_DIR`` is looked up when this is called, not baked into a
+        default argument, so whatever has rebound this module's copy of it is
+        honoured -- which is how the test suite keeps out (tests/conftest.py).
+        """
+        return cls(CONFIG_DIR / REGISTRY_FILENAME)
 
     @classmethod
     def ephemeral(cls) -> ProjectRegistry:
@@ -205,7 +230,12 @@ class ProjectHub:
         self.provider = provider
         self.allow_yolo = allow_yolo
         self.default_mode = default_mode
-        self.registry = registry if registry is not None else ProjectRegistry()
+        # Named, not implied: the fallback writes the user's real recent-projects
+        # list, and every caller that is not the app wants `ephemeral()` or a
+        # path of its own. Kept as a fallback rather than made required because
+        # the app is the overwhelmingly common caller and `from_manager` already
+        # passes one -- the guard against tests reaching it lives in conftest.
+        self.registry = registry if registry is not None else ProjectRegistry.user_default()
         self.plugin_tools = list(plugin_tools or [])
         # Injectable so tests never touch the real ~/.quickcode/trust.json.
         if trust_store is None:
@@ -504,6 +534,11 @@ class ProjectHub:
             "trust_revoked": False,
         }
         if manager is not None and pid != self._default_id:
+            # A terminal panel open on this project holds a login shell that
+            # nothing else would ever kill: it is not a conversation, so the
+            # liveness check above does not see it, and its socket belongs to a
+            # window that is about to be told the project is gone.
+            terminal_registry.close_for(path)
             await manager.close()
             self.managers.pop(pid, None)
             self._project_extra.pop(pid, None)
@@ -519,6 +554,9 @@ class ProjectHub:
 
     # ---- shutdown ----
     async def close(self) -> None:
+        # Terminals first: they are the only children that would survive this
+        # process, since a login shell has no parent link back to the server.
+        terminal_registry.close_all()
         if self._models_task is not None:
             self._models_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

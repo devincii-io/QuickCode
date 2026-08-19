@@ -96,6 +96,52 @@ def test_token_required_when_set(tmp_path):
         assert client.get("/api/health").status_code == 200
 
 
+def test_the_system_prompt_arrives_with_the_first_turn_not_with_the_window(tmp_path):
+    """It used to be logged when the conversation opened.
+
+    That dated the session to the moment the app started, so the trajectory
+    drew a stretch of idle in front of the first thing the user actually did.
+    It was also premature: switching profile or composition before typing
+    re-renders the prompt, so the copy logged at open could be one the model
+    never saw.
+    """
+    provider = FakeProvider([[TextDelta("ok"), TurnDone("stop")]])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            ws.receive_json()
+            recv_until(ws, "replay_done")
+
+            seen: list[str] = []
+            ws.send_text(json.dumps({"type": "user_message", "text": "hi"}))
+            while "assistant_message" not in seen:
+                seen.append(ws.receive_json()["type"])
+
+        # Instructions first, then what the model was asked with them.
+        assert "system_prompt" in seen
+        assert seen.index("system_prompt") < seen.index("user_message")
+
+    # And exactly once: a second turn does not repeat it.
+    provider2 = FakeProvider([[TextDelta("a"), TurnDone("stop")],
+                              [TextDelta("b"), TurnDone("stop")]])
+    manager2 = make_manager(tmp_path / "two", provider2)
+    with make_client(manager2) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            ws.receive_json()
+            recv_until(ws, "replay_done")
+            prompts = 0
+            for text in ("one", "two"):
+                ws.send_text(json.dumps({"type": "user_message", "text": text}))
+                while True:
+                    ev = ws.receive_json()
+                    prompts += ev["type"] == "system_prompt"
+                    if ev["type"] == "assistant_message":
+                        break
+            assert prompts == 1
+
+
 def test_chat_turn_streams_and_logs(tmp_path):
     provider = FakeProvider([
         [TextDelta("Hello "), TextDelta("world"), Usage(input_tokens=10, output_tokens=5),
@@ -162,8 +208,10 @@ def test_reattach_replays_the_whole_transcript_every_time(tmp_path):
         with ws_connect(client, f"/ws/conversation/{other_id}") as ws:
             ws.receive_json()
             other = _replay(ws)
-        # Its seqs restart at 1 — the hazard the client must not carry over.
-        assert [e["seq"] for e in other][:1] == [1]
+        # Nothing has been said in it, so it has no transcript at all -- not
+        # even a system prompt, which is now shown at the top of the first turn
+        # rather than when the window opens.
+        assert other == []
 
         # Reattaching to the first one, twice, yields the identical transcript.
         seen = []

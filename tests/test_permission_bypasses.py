@@ -145,7 +145,7 @@ def test_the_ripgrep_path_excludes_the_same_secrets_the_walk_does(tmp_path, monk
         seen["args"] = args
         return _Proc()
 
-    monkeypatch.setattr(grep_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(grep_module.subproc, "run", fake_run)
     grep_module._run_ripgrep(
         "rg", GrepTool.Input(pattern="x", output_mode="content"), tmp_path)
     assert all(f"!{name}" in seen["args"] for name in (".env", ".env.*"))

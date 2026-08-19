@@ -1,17 +1,24 @@
-"""Suite-wide test infrastructure: the socketpair hang guard and wait helpers.
+"""Suite-wide test infrastructure: the socketpair hang guard, the sandboxed
+``~/.quickcode``, and wait helpers.
 
 Nothing here is imported by the application. It exists to make the release gate
-finish in seconds and to make the one failure mode that could not fail fast --
-a blocked ``accept()`` -- impossible rather than merely loud.
+finish in seconds, to make the one failure mode that could not fail fast --
+a blocked ``accept()`` -- impossible rather than merely loud, and to make it
+impossible for a test to write into the developer's own QuickCode state.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 import socket
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # The socketpair hang
@@ -139,3 +146,155 @@ async def await_until(predicate: Callable[[], bool], *, timeout_s: float = 10.0)
             return True
         await asyncio.sleep(POLL_INTERVAL_S)
     return predicate()
+
+
+# ---------------------------------------------------------------------------
+# The developer's ~/.quickcode is not a test fixture
+# ---------------------------------------------------------------------------
+#
+# `ProjectHub` used to default its registry to the real
+# `~/.quickcode/projects.json`, so every test that opened a project registered
+# that project for real. It was found when the home screen listed 258 pytest
+# temp directories among 264 "recent projects" -- unusable, and only noticed
+# because the number got absurd.
+#
+# Fixing that one default fixes that one leak. This exists because the next
+# such default will be written by somebody who did not know this happened.
+#
+# The hard part is that `CONFIG_DIR` is a *value*, not a lookup:
+# `config.py` computes `Path.home() / ".quickcode"` at import, and at least
+# seven modules copy it into their own module namespace
+# (`kernel.state`, `security.trust`, `server.projects`, `server.auth`,
+# `update` -- which further derives `CACHE_PATH` and `DOWNLOAD_DIR` --
+# `secrets.SECRETS_DIR`, `subagents.definitions._USER_DIR`). Patching
+# `quickcode.config.CONFIG_DIR` alone therefore redirects almost nothing, which
+# is why the several tests that already patch it have to name two or three
+# modules by hand and still only cover the ones their own test touches.
+#
+# So the redirect is found by value rather than by name: every loaded
+# `quickcode.*` module is swept for module-level `Path` attributes that point at
+# the real directory, and each one is rebound at a sandbox for the duration of
+# the test. A module added tomorrow that captures `CONFIG_DIR` the same way is
+# covered the day it is written, with nothing to remember -- a hand-maintained
+# list of names is exactly the thing this guard exists to not depend on.
+#
+# Rejected: patching `Path.home()`. It would catch paths derived lazily too, but
+# it lies to every test that legitimately asks where home is (`test_app_entrypoint`
+# asserts the launcher passes `--cwd $HOME`; `/api/dir` reports it), and it would
+# not move a single one of the constants above, which were computed before any
+# test ran. The redirect below is the narrower and more complete instrument.
+#
+# Known gap: only module-level names are swept. A real path stored in a class
+# attribute, a dict or a default argument would survive -- the session snapshot
+# below is what catches that, one run late.
+
+REAL_CONFIG_DIR = Path.home() / ".quickcode"
+"""The developer's actual QuickCode directory.
+
+Exported so a test that needs the real *value* -- to assert where the default
+lives, or that nothing was written there -- can read it. Reading is fine; it is
+writing that this file exists to prevent.
+"""
+
+# `webview` is Chromium's own profile cache, handed to the embedded browser as a
+# storage path and written by it, not by any Python the suite exercises. It
+# churns whenever the developer has QuickCode open, so including it in the
+# snapshot would mean a guard that cries wolf on a normal working machine.
+_SNAPSHOT_SKIP_TOPLEVEL = {"webview"}
+
+
+def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
+    """Every file under `root` as path -> (size, mtime_ns). Missing root: empty."""
+    out: dict[str, tuple[int, int]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        if Path(dirpath) == root:
+            dirnames[:] = [d for d in dirnames if d not in _SNAPSHOT_SKIP_TOPLEVEL]
+        for name in filenames:
+            p = Path(dirpath, name)
+            try:
+                st = p.stat()
+            except OSError:
+                continue  # vanished mid-walk; the other end of the diff will show it
+            out[str(p)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _captured_real_paths() -> list[tuple[object, str, Path]]:
+    """Every `quickcode.*` module-level `Path` that points into the real dir."""
+    found: list[tuple[object, str, Path]] = []
+    for name, module in list(sys.modules.items()):
+        if module is None or not name.startswith("quickcode"):
+            continue
+        try:
+            members = list(vars(module).items())
+        except TypeError:
+            continue
+        for attr, value in members:
+            if not isinstance(value, Path):
+                continue
+            if value == REAL_CONFIG_DIR or REAL_CONFIG_DIR in value.parents:
+                found.append((module, attr, value))
+    return found
+
+
+@pytest.fixture(scope="session")
+def sandbox_config_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The throwaway `~/.quickcode` every test gets instead of the real one.
+
+    One directory for the whole session rather than a fresh one per test,
+    because constants derived from it at import time (`update.CACHE_PATH`) are
+    computed once and must keep naming a directory that still exists. It is
+    emptied before each test instead, which buys the same isolation.
+    """
+    return tmp_path_factory.mktemp("quickcode-home")
+
+
+@pytest.fixture(autouse=True)
+def _user_state_is_sandboxed(
+    monkeypatch: pytest.MonkeyPatch, sandbox_config_dir: Path
+) -> None:
+    for child in sandbox_config_dir.iterdir():
+        # Tolerant: a test that left a handle open on Windows must not take the
+        # next test down with it, and a stale file in the sandbox is harmless.
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                pass
+    for module, attr, value in _captured_real_paths():
+        rel = value.relative_to(REAL_CONFIG_DIR)
+        redirected = sandbox_config_dir if rel == Path(".") else sandbox_config_dir / rel
+        monkeypatch.setattr(module, attr, redirected)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _the_real_config_dir_is_never_written() -> Iterator[None]:
+    """Prove the redirect above worked, rather than trusting that it did.
+
+    A redirect nobody checks is a redirect that quietly stops covering the one
+    module somebody added since. This compares the real directory before and
+    after the run and fails the session if a single byte or mtime moved.
+
+    It can also fire because the developer had QuickCode itself open while the
+    suite ran, which touches `sessions/` and `projects.json` legitimately. The
+    message says so; the file list says which.
+    """
+    before = _snapshot(REAL_CONFIG_DIR)
+    yield
+    after = _snapshot(REAL_CONFIG_DIR)
+    if before == after:
+        return
+    changed = sorted(
+        set(before) ^ set(after)
+        | {k for k in before.keys() & after.keys() if before[k] != after[k]}
+    )
+    raise AssertionError(
+        "the test run changed the developer's real "
+        f"{REAL_CONFIG_DIR}:\n  " + "\n  ".join(changed)
+        + "\n\nSomething reached past the sandbox in tests/conftest.py -- most "
+        "likely a real path captured somewhere the module-level sweep cannot "
+        "see. (If QuickCode itself was running during this suite, it wrote "
+        "these and the guard is innocent; re-run with the app closed.)"
+    )

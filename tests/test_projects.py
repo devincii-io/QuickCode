@@ -18,6 +18,7 @@ from quickcode.core.events import TextDelta, TurnDone, Usage
 from quickcode.server.app import create_app
 from quickcode.server.projects import ProjectHub, ProjectRegistry, list_dirs, project_id
 from quickcode.session.store import SessionStore
+from tests.conftest import REAL_CONFIG_DIR
 from tests.test_server import FakeProvider, recv_until, ws_connect
 
 
@@ -101,6 +102,42 @@ def test_ephemeral_registry_writes_nothing(tmp_path):
     reg.touch(tmp_path)
     assert [e.id for e in reg.list()] == [project_id(tmp_path)]
     assert not (Path.home() / ".quickcode" / "projects.json.tmp").exists()
+
+
+def _real_projects_json() -> tuple[int, int] | None:
+    p = REAL_CONFIG_DIR / "projects.json"
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def test_a_hub_built_without_a_registry_does_not_write_to_the_developers_home(tmp_path):
+    """The one that got away: a hub with no `registry=` still persists, but into
+    the sandbox, never into the machine running the tests.
+
+    This is the exact shape that filled a home screen with 258 pytest temp
+    directories -- `ProjectHub(...)` with no registry, then `open()`. It is
+    pinned here rather than left to the session-wide snapshot in conftest
+    because that snapshot names the symptom at the end of a 30-second run,
+    while this names the cause in the file that owns it.
+    """
+    before = _real_projects_json()
+    cfg = Config()
+    cfg.last_model = "test/model"
+    hub = ProjectHub(config=cfg, provider=FakeProvider([]), mcp_connect=_no_mcp)
+    try:
+        asyncio.run(hub.open(tmp_path, make_default=True))
+        written = Path(hub.registry.path)
+        assert REAL_CONFIG_DIR != written.parent and REAL_CONFIG_DIR not in written.parents
+        # It really did register the project -- the leak was a real write to a
+        # real file, so a test that passes because nothing happened proves less.
+        assert written.exists()
+        assert [e.id for e in hub.registry.list()] == [project_id(tmp_path)]
+    finally:
+        asyncio.run(hub.close())
+    assert _real_projects_json() == before
 
 
 # ---- /api/projects ----
@@ -234,17 +271,54 @@ def test_delete_session(tmp_path):
 
 def test_delete_live_session_conflicts(tmp_path):
     """Live means watched. A window has to be open on it for 409 to be right."""
-    hub, client = make_app(tmp_path, FakeProvider([]))
+    provider = FakeProvider([[TextDelta("ok"), TurnDone("stop")]])
+    hub, client = make_app(tmp_path, provider)
     pid = hub.default_id
     with client:
         conv_id = client.post(f"/api/projects/{pid}/conversations", json={}).json()["conv_id"]
         with ws_connect(client, f"/ws/projects/{pid}/conversation/{conv_id}") as ws:
             recv_until(ws, "replay_done")
+            # A word in it, so there is a session on disk to argue about.
+            ws.send_text(json.dumps({"type": "user_message", "text": "hi"}))
+            recv_until(ws, "assistant_message")
             assert client.delete(f"/api/projects/{pid}/sessions/{conv_id}").status_code == 409
             assert (tmp_path / ".quickcode" / "sessions" / f"{conv_id}.jsonl").exists()
 
         # And once the window is gone it is nobody's session to protect.
         assert client.delete(f"/api/projects/{pid}/sessions/{conv_id}").status_code == 204
+
+
+def test_opening_a_window_does_not_leave_a_session_behind(tmp_path):
+    """Starting the app must not create anything.
+
+    Opening a project opens a conversation, and that used to write its `meta`
+    record immediately -- so seven launches left seven empty sessions in the
+    list, and the "clean up N empty" button existed to sweep up after it.
+    """
+    hub, client = make_app(tmp_path, FakeProvider([]))
+    pid = hub.default_id
+    with client:
+        conv_id = client.post(f"/api/projects/{pid}/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/projects/{pid}/conversation/{conv_id}") as ws:
+            # Nothing to replay, and no system prompt either: a window that is
+            # merely open has not sent anything, and the prompt is not final
+            # until it does -- switching profile or composition re-renders it.
+            replayed = _until_replay_done(ws)
+            assert not any(e.get("ev", {}).get("type") == "system_prompt"
+                           or e.get("type") == "system_prompt" for e in replayed)
+
+        assert not (tmp_path / ".quickcode" / "sessions" / f"{conv_id}.jsonl").exists()
+        assert client.get(f"/api/projects/{pid}/sessions").json() == []
+
+
+def _until_replay_done(ws):
+    """Every event a client receives up to and including replay_done."""
+    seen = []
+    while True:
+        ev = ws.receive_json()
+        seen.append(ev)
+        if ev.get("type") == "replay_done":
+            return seen
 
 
 # ---- directory browsing ----
@@ -294,7 +368,9 @@ def test_legacy_routes_address_the_default_project(tmp_path):
         # A conversation opened through the legacy route belongs to the default
         # project and is reachable through both WS paths.
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
-        assert [s["conv_id"] for s in client.get("/api/sessions").json()] == [conv_id]
+        # Not a session yet: opening a window writes nothing. It becomes one
+        # when somebody says something in it.
+        assert client.get("/api/sessions").json() == []
         for path in (
             f"/ws/conversation/{conv_id}",
             f"/ws/projects/{hub.default_id}/conversation/{conv_id}",
