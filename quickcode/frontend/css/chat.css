@@ -192,3 +192,15 @@
 .perm-detail { border-top: 1px solid var(--line); padding: 9px 11px; }
 .perm-line { font-size: 12px; color: var(--fg); }
 .perm-code { font-family: var(--mono); color: var(--fg-dim); overflow-wrap: anywhere; }
+
+/* Terminal output inside a tool result. The emulator emits one .qt-line per
+   row with the panel's colour classes, so this only has to stop the wrapping
+   the plain code block wants: a column of output that reflows is a table with
+   its cells shuffled. */
+.io pre.code.ansi {
+  white-space: pre;
+  word-break: normal;
+  background: var(--qt-bg);
+  color: var(--qt-fg);
+  tab-size: 8;
+}

@@ -18,6 +18,8 @@ export const KEYS = [
   ["/", "Open the slash-command menu; Tab completes, Enter runs, Esc closes"],
   ["@", "Complete a file path from this project; Tab or Enter inserts it, and a "
     + "directory keeps the menu open on its contents"],
+  ["Ctrl + `", "Open or close the terminal drawer at the bottom — a real shell "
+    + "in this project's directory, yours to type in"],
 ];
 
 export const SLASH = [
@@ -36,3 +38,10 @@ export const PANEL_NOTE =
   + "its left edge to resize, press ⛶ to give it the whole window (Esc brings "
   + "the chat back), and use the ⌕ trace links in the transcript to jump "
   + "straight to an event.";
+
+export const TERMINAL_NOTE =
+  "The bottom drawer (Ctrl + `) is a real terminal in this project's "
+  + "directory. Its second tab, Agent, lists every command the agent ran, "
+  + "with its output as the terminal would have drawn it; ▸ run here puts one "
+  + "at your own prompt without running it. The agent cannot type into your "
+  + "shell and never sees what you do there — the two are separate sessions.";

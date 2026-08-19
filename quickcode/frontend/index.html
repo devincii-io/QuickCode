@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="css/config.css">
 <link rel="stylesheet" href="css/help.css">
 <link rel="stylesheet" href="css/toon.css">
+<link rel="stylesheet" href="css/terminal.css">
 <link rel="icon" href="assets/favicon.ico">
 <link rel="manifest" href="assets/manifest.webmanifest">
 </head>
@@ -74,6 +75,8 @@
                 title="A newer QuickCode is available"></button>
         <button id="btn-new-chat" class="ghost-btn" title="New conversation">＋ New</button>
         <button id="btn-panel-toggle" class="ghost-btn" title="Show or hide the side panel">⧉ Panel</button>
+        <button id="btn-term-toggle" class="ghost-btn"
+                title="Show or hide the terminal (Ctrl+`)">▮ Terminal</button>
         <button id="btn-help" class="ghost-btn" title="Help — shortcuts and slash commands (/help)">?</button>
         <button id="btn-settings" class="ghost-btn" title="Settings">⚙</button>
       </div>
@@ -191,6 +194,40 @@
         </div>
       </aside>
     </main>
+
+    <!-- The terminal dock. A sibling of #main rather than a child, so it spans
+         the transcript *and* the side panel: a shell is wide, and a drawer that
+         stopped at the panel's edge would be a column, which is the shape the
+         side panel already has. js/terminal/panel.js owns everything inside. -->
+    <section id="term-dock" aria-hidden="true" aria-label="Terminal">
+      <div id="term-grip" title="Drag to resize · double-click to reset"></div>
+      <header class="qt-bar">
+        <nav id="term-tabs" class="qt-tabs" role="tablist">
+          <button class="qt-tab" data-tab="shell" role="tab"
+                  title="A shell of your own, in the project directory">▮ Shell</button>
+          <button class="qt-tab" data-tab="agent" role="tab"
+                  title="Every command the agent ran — read-only">⌁ Agent commands</button>
+        </nav>
+        <span id="term-status" data-kind="idle">not started</span>
+        <div class="qt-bar-actions">
+          <button id="btn-term-clear" class="ghost-btn" title="Clear the screen">⌫ Clear</button>
+          <button id="btn-term-restart" class="ghost-btn" title="Kill this shell and start a new one">⟳ Restart</button>
+          <button id="btn-term-close" class="ghost-btn" title="Hide the terminal (Ctrl+`)">✕</button>
+        </div>
+      </header>
+      <div class="qt-body">
+        <section class="qt-pane" data-pane="shell">
+          <!-- tabindex, because the panel only reaches the pty while it has
+               focus and a div is not focusable on its own. -->
+          <div id="term-screen" tabindex="0" role="application"
+               aria-label="Terminal — click to type"></div>
+          <div class="qt-hint">This shell is not running. Press ⟳ Restart for a new one.</div>
+        </section>
+        <section class="qt-pane" data-pane="agent">
+          <div id="term-agent"></div>
+        </section>
+      </div>
+    </section>
 
     <footer id="statusbar">
       <span id="st-state" class="st-seg st-state">idle</span>

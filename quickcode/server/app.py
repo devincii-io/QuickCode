@@ -45,6 +45,7 @@ from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectBusyError, ProjectHub, list_dirs
+from quickcode.server.terminal import register_terminal_routes
 from quickcode.session.store import (
     MAX_TITLE,
     SESSIONS_DIRNAME,
@@ -1413,6 +1414,10 @@ def create_app(
     # hub rather than the two lambdas because the session routes reach a
     # conversation by id, not only the default project.
     register_agent_routes(app, hub)
+    # The terminal panel's sockets. Handed `_ws_allowed` and the token rather
+    # than re-deriving them, so there is exactly one WebSocket auth rule in
+    # this app and the shell socket is behind that one, not a second copy.
+    register_terminal_routes(app, hub, ws_allowed=_ws_allowed, token=token)
 
     # mounted last so /api and /ws routes win; skipped when frontend/ absent (tests)
     if FRONTEND_DIR.is_dir():

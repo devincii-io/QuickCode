@@ -2,6 +2,7 @@
 
 import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
+import { renderAnsiBlock } from "./terminal/emulator.js";
 import { highlightToon, toon } from "./toon.js";
 import { configTarget } from "./trajectory.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
@@ -341,8 +342,18 @@ function toolCardNode(ev, { agent } = {}) {
 // arguments arrive as a string it wrote, which can be truncated or malformed,
 // and a tool result is only sometimes JSON: anything that will not parse falls
 // back to the raw text, because losing the call is worse than losing the shape.
+// Escape bytes, or a carriage return doing an in-place redraw. `bash` cleans
+// its own output, so what reaches here is from a tool the boundary does not
+// control: an MCP server, a plugin. Drawn as text those are line noise, and a
+// `\r` progress bar is a few hundred near-identical lines. The panel's
+// emulator already knows what a terminal would have shown, so use it.
+const ANSI_RE = /\x1b[[\]()]|\r[^\n]/;   // eslint-disable-line no-control-regex
+
 function toonBlock(raw) {
   const text = String(raw ?? "");
+  if (ANSI_RE.test(text)) {
+    return `<pre class="code ansi">${renderAnsiBlock(text)}</pre>`;
+  }
   const head = text.trim()[0];
   // Only an object or an array is worth re-encoding. Without this a bash
   // result that happens to be the single word `12345` would parse as JSON and

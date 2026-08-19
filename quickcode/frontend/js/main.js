@@ -27,6 +27,7 @@ import {
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { store, subscribe } from "./store.js";
 import { setInspector } from "./inspect.js";
+import { initTerminal, setTerminalProject } from "./terminal/panel.js";
 import { checkTrust, initTrust, resetTrust } from "./trust.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
 import { toastOk } from "./toast.js";
@@ -45,6 +46,11 @@ function showHome() {
   leaveConfig();
   leaveHelp();
   disconnect();
+  // The terminal is a live shell in *this* project's directory. Leaving the
+  // workspace closes its socket, which is what kills the process tree -- a
+  // shell left running against a project nobody is looking at is a process the
+  // user cannot see and did not ask for.
+  setTerminalProject(null);
   // The trust banner belongs to one project; leaving the workspace drops it so
   // the next project is asked about rather than inheriting an answer.
   resetTrust();
@@ -442,6 +448,7 @@ async function refreshUpdateChip() {
 async function openProject(project, { resume = null } = {}) {
   setProject(project.id);
   setPanelProject(project.id);
+  setTerminalProject(project.id);
   rememberProject(project.id);
   showWorkspace();
 
@@ -512,6 +519,7 @@ async function boot() {
   initChat({ openTrace });
   initTrajectory();
   initPanel();
+  initTerminal();
   initReviews();
   initComposer({ onNewConversation: () => openConversation(null) });
   // The second status surface. The bar at the bottom is a dense readout you

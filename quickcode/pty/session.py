@@ -35,6 +35,8 @@ import threading
 import time
 from collections import deque
 
+from quickcode import subproc
+
 IS_WINDOWS = sys.platform.startswith("win")
 
 READ_SIZE = 65536  # ~64 KB per read; chunks stay <= 128 KB
@@ -182,15 +184,13 @@ class PtySession:
 
     # ---------------------------------------------------------------- posix
     def _run_posix(self, timeout_s: float) -> tuple[bytes, int | None, bool]:
-        import subprocess
-
         try:
             master_fd, slave_fd = os.openpty()
         except Exception as exc:  # noqa: BLE001
             raise PtyError(f"openpty failed: {exc}") from exc
 
         try:
-            proc = subprocess.Popen(  # noqa: S603 - argv is caller-controlled
+            proc = subproc.popen(
                 self.argv,
                 cwd=self.cwd,
                 env=self.env,
@@ -295,10 +295,9 @@ def _kill_tree(pid: int | None) -> None:
     if pid is None:
         return
     if IS_WINDOWS:
-        import subprocess
 
         try:
-            subprocess.run(  # noqa: S603, S607
+            subproc.run(  # noqa: S607
                 ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
                 timeout=10,

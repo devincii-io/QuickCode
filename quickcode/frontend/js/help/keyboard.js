@@ -10,7 +10,7 @@
 // disagree about what a key does.
 
 import { esc } from "../util.js";
-import { KEYS, PANEL_NOTE, SLASH } from "./shortcuts.js";
+import { KEYS, PANEL_NOTE, SLASH, TERMINAL_NOTE } from "./shortcuts.js";
 import { MODES } from "./modes.js";
 import { link, note, pageHtml, sub } from "./ui.js";
 
@@ -40,6 +40,9 @@ export async function renderKeyboard(host) {
 
     ${sub("The side panel")}
     <p class="hp-p">${esc(PANEL_NOTE)}</p>
+
+    ${sub("The terminal")}
+    <p class="hp-p">${esc(TERMINAL_NOTE)}</p>
 
     ${note("Escape does one thing at a time", `
       <p class="hp-p"><kbd>Esc</kbd> peels off one layer per press: an open menu
