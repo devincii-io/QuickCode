@@ -4,6 +4,95 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] — 2026-08-19
+
+Opening the app used to create a session in whatever project it opened. Not a
+draft, a real one, written to disk, and a year of launches had left 258 of them.
+That is fixed, along with the console windows flashing past every few seconds
+and a turn that could hang forever on a single umlaut. There is also a terminal
+at the bottom now.
+
+### Added
+
+- **A terminal panel.** `Ctrl` + `` ` `` opens a drawer holding a real shell in
+  the project's directory: Git Bash on Windows, your login shell elsewhere. It
+  is a proper emulator, not a log view. 256 colours and truecolor, cursor
+  addressing, alternate screen, resize that reaches the pty so `tput cols`
+  inside it tells the truth, and `Ctrl+C` that interrupts what is running.
+  Closing the workspace kills the process tree.
+
+  Its second tab lists every command the agent ran, with each one's output
+  rendered as a terminal would have drawn it, and a "run here" button that puts
+  a command at your own prompt without running it.
+
+  The two sessions are separate on purpose, and a test asserts that nothing
+  under `quickcode/tools/` can reach the terminal route. A human types in this
+  one, so the model gets no door into it.
+
+### Fixed
+
+- **Opening the app no longer creates a session.** The session file was written
+  when a workspace opened, before anyone had typed anything, so every launch,
+  every project switch and every glance at a repository left an empty
+  conversation behind. The store now holds the opening record until there is a
+  first message to justify it (`SessionStore.begin` / `release`), and readers
+  see held records so nothing else had to learn about the delay.
+
+  Your `~/.quickcode/projects.json` will still list what the old behaviour
+  created. Removing an entry from the home screen removes it for good.
+
+  The same bug had a second source: `ProjectRegistry()` defaulted to the user's
+  real registry file, so the shortest possible call wrote to it. The test suite
+  took that default and filed 258 pytest temp directories in a home screen. The
+  path is now required, and a caller that wants the user's own file says so:
+  `ProjectRegistry.user_default()`.
+
+- **No more console windows.** A shell command spawned a visible console that
+  appeared and vanished, several times a minute, stealing focus each time.
+  Every subprocess in the app now goes through `quickcode/subproc.py`, which
+  applies `CREATE_NO_WINDOW`. A test reads the source and fails on a bare
+  `subprocess.run` or `Popen` outside that module, because this is the kind of
+  fix that a single new call site quietly undoes.
+
+- **Output in another encoding no longer hangs the turn.** A German Windows
+  writes `ä` as byte `0xE4`, which `errors="surrogateescape"` carried into the
+  string as `\udce4`. That survives happily until something encodes it, and
+  three things downstream do: the session log, the WebSocket frame and the
+  provider request. So the tool returned, the recorder died holding the result,
+  and the command stayed drawn as running. Eleven minutes, in the report.
+
+  Bytes are now decoded as UTF-8 and then as the system code page, never as
+  surrogates, and the loop scrubs any lone surrogate at the tool boundary, so an
+  MCP server or a plugin tool gets the same guarantee.
+
+- **Both command paths clean their output the same way.** The pty path stripped
+  ANSI escapes and the subprocess path handed them straight through. Since the
+  subprocess path is the default on Windows, anything that forces colour spent
+  the model's tokens on escape bytes and drew them raw in the transcript.
+  Carriage returns are applied the way a terminal applies them, so `pip
+  install` arrives as the line it finished on instead of four hundred nearly
+  identical progress bars. A tool result that still carries escapes, from an
+  MCP server the boundary does not control, renders through the panel's
+  emulator.
+
+- **The idle gap before the first message.** A session set its system prompt at
+  open, timestamped it, and then sat there, so the trajectory began with however
+  long you spent reading the screen before typing. The prompt is now emitted
+  with the first turn, which is when it is first true.
+
+- **Light theme contrast.** Borders were invisible against the page and the
+  subagent blue was too pale to read. The derived colours (`--fg-dim`, both
+  line weights, the eight chip roles) have their own values under light now,
+  because a percentage of light ink on a dark page does not survive being asked
+  to be dark ink on a light one. The switch reads the background's luminance
+  rather than the preset's name, so a hand-edited light palette that is not
+  called "light" still lands on the light values.
+
+- **The permission-profile form had no styling at all.** Native selects,
+  unstyled buttons, text in the wrong colour on the wrong surface. It is now
+  styled with the rest of the app, `color-scheme` included, which is what
+  paints the popup a native select opens.
+
 ## [2.5.1] — 2026-08-19
 
 ### Fixed
