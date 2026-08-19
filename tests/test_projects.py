@@ -179,13 +179,20 @@ def test_project_scoped_conversation_and_ws_turn(tmp_path):
             assert recv_until(ws, "user_message")["text"] == "hi"
             assert recv_until(ws, "assistant_message")["text"] == "Hello alpha"
 
+            # Live means somebody is watching, so it is only true while the
+            # socket above is still attached.
+            live = client.get(f"/api/projects/{pid}/sessions").json()
+            assert live[0]["live"] is True
+            by_id = {p["id"]: p for p in client.get("/api/projects").json()["projects"]}
+            assert by_id[pid]["live_sessions"] == 1
+
         # The transcript landed in the project, not in the launch directory.
         assert (alpha / ".quickcode" / "sessions" / f"{conv_id}.jsonl").exists()
         assert not (root / ".quickcode").exists()
 
         sessions = client.get(f"/api/projects/{pid}/sessions").json()
         assert [s["conv_id"] for s in sessions] == [conv_id]
-        assert sessions[0]["live"] is True
+        assert sessions[0]["live"] is False
         assert client.get("/api/sessions").json() == []
 
         models = client.get(f"/api/projects/{pid}/models").json()
@@ -193,9 +200,6 @@ def test_project_scoped_conversation_and_ws_turn(tmp_path):
         assert {"read", "write", "bash"} <= {
             t["name"] for t in client.get(f"/api/projects/{pid}/plugins").json()["tools"]
         }
-
-        by_id = {p["id"]: p for p in client.get("/api/projects").json()["projects"]}
-        assert by_id[pid]["live_sessions"] == 1
 
 
 def test_ws_unknown_project_closes(tmp_path):
@@ -229,12 +233,18 @@ def test_delete_session(tmp_path):
 
 
 def test_delete_live_session_conflicts(tmp_path):
+    """Live means watched. A window has to be open on it for 409 to be right."""
     hub, client = make_app(tmp_path, FakeProvider([]))
     pid = hub.default_id
     with client:
         conv_id = client.post(f"/api/projects/{pid}/conversations", json={}).json()["conv_id"]
-        assert client.delete(f"/api/projects/{pid}/sessions/{conv_id}").status_code == 409
-        assert (tmp_path / ".quickcode" / "sessions" / f"{conv_id}.jsonl").exists()
+        with ws_connect(client, f"/ws/projects/{pid}/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            assert client.delete(f"/api/projects/{pid}/sessions/{conv_id}").status_code == 409
+            assert (tmp_path / ".quickcode" / "sessions" / f"{conv_id}.jsonl").exists()
+
+        # And once the window is gone it is nobody's session to protect.
+        assert client.delete(f"/api/projects/{pid}/sessions/{conv_id}").status_code == 204
 
 
 # ---- directory browsing ----

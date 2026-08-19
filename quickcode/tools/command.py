@@ -42,6 +42,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, create_model
 
+from quickcode.context import toon
 from quickcode.core.permissions import PermissionSpec
 from quickcode.kernel.authoring import argv as argv_rules
 from quickcode.kernel.authoring.model import AuthoredPlugin, Param
@@ -336,8 +337,8 @@ def _map_output(
                          + truncate(stdout.strip(), 2000)),
                 is_error=True, ui_meta=meta,
             )
-        text = json.dumps(parsed, indent=2, ensure_ascii=False)
-        return ToolResult(content=note + truncate(text, limit), ui_meta=meta)
+        return ToolResult(content=note + truncate(_json_for_model(parsed), limit),
+                          ui_meta=meta)
 
     if plugin.output == "lines":
         lines = [line for line in stdout.splitlines() if line.strip()]
@@ -364,3 +365,20 @@ def _map_output(
     body = stdout if not stderr else "\n".join(t for t in (stdout, stderr) if t)
     return ToolResult(content=note + (truncate(body.strip(), limit) or "(no output)"),
                       ui_meta=meta)
+
+
+def _json_for_model(parsed: Any) -> str:
+    """The cheaper of TOON and indented JSON, for a payload nobody declared.
+
+    Every other converted site knows its own shape, so TOON always wins there.
+    This one does not: an authored command with ``output: json`` can print
+    anything at all. TOON is usually shorter -- it drops the braces and the
+    repeated keys -- but not always: on a bare scalar, a two-field object or a
+    single long quoted string the ```toon fence costs more than the encoding
+    saves. Rather than guess, encode both and keep the shorter; both are
+    readable, so length is the whole of the decision. Ties go to TOON, because
+    it is what the rest of the tool surface speaks.
+    """
+    as_json = json.dumps(parsed, indent=2, ensure_ascii=False)
+    as_toon = toon.fenced(parsed)
+    return as_toon if len(as_toon) <= len(as_json) else as_json

@@ -294,21 +294,59 @@ async def test_a_switch_keeps_the_always_allows_granted_in_this_session(project)
     await manager.close()
 
 
-async def test_a_switch_never_climbs_over_the_ceiling_or_into_yolo(project):
-    """A posture is a posture, not a second way to say ``--yolo``."""
+class _Sink:
+    """A websocket stand-in: collects everything a conversation broadcasts."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def send(self, text: str) -> None:
+        self.events.append(json.loads(text))
+
+
+def _reckless_project(project) -> None:
     _grant(project)
     _project_settings(project, {"profiles": {"reckless": {
         "title": "Reckless", "mode": "yolo", "allow": ["bash(**)"],
     }}})
     _grant(project)                      # the write moved the trust hash
+
+
+async def test_a_switch_never_climbs_into_yolo_and_says_so_out_loud(project):
+    """A posture is a posture, not a second way to arm yolo.
+
+    The refusal is half the behaviour. Downgrading in silence is what made a
+    profile look broken: the user picked it, the pill stayed on ``ask``, and
+    nothing in the transcript connected the two.
+    """
+    _reckless_project(project)
     manager, client = _manager_and_client(project)
+    with client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        conv = manager.conversations[conv_id]
+        sink = _Sink()
+        conv.clients.add(sink)
+        answer = client.post("/api/profiles/active",
+                             json={"id": "reckless"}).json()
+        assert answer["applied_to"][0]["mode"] != "yolo"
+        assert conv.agent.mode != Mode.yolo
+        said = [e["text"] for e in sink.events if e.get("type") == "system_note"]
+        assert any("yolo" in t and "Settings" in t for t in said), said
+    await manager.close()
+
+
+async def test_a_profile_may_ask_for_yolo_once_the_app_has_armed_it(project):
+    """Arming is what makes yolo reachable; the profile then simply applies."""
+    _reckless_project(project)
+    manager, client = _manager_and_client(project)
+    manager.config.allow_yolo = True
     with client:
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
         conv = manager.conversations[conv_id]
         answer = client.post("/api/profiles/active",
                              json={"id": "reckless"}).json()
-        assert answer["applied_to"][0]["mode"] != "yolo"
-        assert conv.agent.mode != Mode.yolo
+        assert answer["applied_to"][0]["mode"] == "yolo"
+        assert conv.agent.mode == Mode.yolo
     await manager.close()
 
 

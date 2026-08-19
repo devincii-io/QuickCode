@@ -17,6 +17,7 @@ from quickcode.search import (
     RateGuard,
     SearchConfigError,
     SearchError,
+    SearchResult,
     SearchSettings,
     chosen_provider,
     configured_providers,
@@ -29,6 +30,7 @@ from quickcode.search.brave import BraveProvider
 from quickcode.search.google_cse import GoogleCseProvider
 from quickcode.search.searxng import SearxngProvider
 from quickcode.search.tavily import TavilyProvider
+from quickcode.tools import web_search
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.web_search import WebSearchInput, WebSearchTool
 
@@ -525,12 +527,53 @@ async def test_tool_renders_a_ranked_list(tmp_path, monkeypatch):
     result = await WebSearchTool().run(WebSearchInput(query="quickcode"), ctx(tmp_path))
 
     assert not result.is_error
-    assert "1. QuickCode" in result.content
-    assert "https://example.com/qc" in result.content
+    assert "```toon\nresults[1]{title,url,snippet}:" in result.content
+    assert "  QuickCode,https://example.com/qc," in result.content
     assert "via Brave Search" in result.content
     assert result.ui_meta["provider"] == "brave"
     assert FAKE_KEY not in result.content
     assert FAKE_KEY not in str(result.ui_meta)
+
+
+def test_the_result_table_declares_a_count_the_model_can_check(tmp_path, monkeypatch):
+    """Three hits used to be three numbered blocks of indented lines with the
+    field names implied by position. One header now names them once."""
+    hits = [
+        SearchResult(title=f"Result {n}", url=f"https://example.com/{n}",
+                     snippet=f"snippet {n}")
+        for n in range(3)
+    ]
+    content = web_search._render("q", "Brave Search", hits)
+
+    lines = content.splitlines()
+    assert lines[1] == "```toon"
+    assert lines[2] == "results[3]{title,url,snippet}:"
+    assert lines[3] == "  Result 0,https://example.com/0,snippet 0"
+    assert len([ln for ln in lines if ln.startswith("  ")]) == 3
+
+
+def test_an_extract_is_a_column_on_every_row_or_on_none():
+    """A table needs its rows to agree, so the column set is decided for the
+    whole list -- one provider returning an extract cannot make the rows
+    disagree about their fields."""
+    hits = [
+        SearchResult(title="a", url="https://a", snippet="s", content="the full text"),
+        SearchResult(title="b", url="https://b", snippet="s"),
+    ]
+    content = web_search._render("q", "Tavily", hits)
+
+    assert "results[2]{title,url,snippet,extract}:" in content
+    assert content.splitlines()[3].endswith(",the full text")
+    assert content.splitlines()[4].endswith(',""')
+
+    plain = web_search._render("q", "Brave Search", [hits[1]])
+    assert "extract" not in plain
+
+
+def test_a_snippet_containing_a_comma_stays_in_its_own_column():
+    hits = [SearchResult(title="t", url="https://x", snippet="one, two, three")]
+    row = web_search._render("q", "Brave Search", hits).splitlines()[3]
+    assert row.strip() == 't,https://x,"one, two, three"'
 
 
 async def test_tool_explains_an_unconfigured_provider_instead_of_failing_blankly(

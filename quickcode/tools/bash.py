@@ -8,10 +8,11 @@ directory persists across calls within a session (a bare ``cd <dir>`` updates
 it without spawning a subprocess). Output is capped at 30000 characters
 (head+tail kept, middle elided).
 
-Commands run inside a real pseudo-terminal (ConPTY on Windows via ``pywinpty``,
-``pty`` on POSIX) so programs see a tty — colors, tty semantics, and correct
-process-tree kill on timeout. If the PTY backend is unavailable the tool falls
-back to a plain subprocess. Background execution is not yet supported.
+On POSIX, commands run inside a real pseudo-terminal so programs see a tty:
+colors, tty semantics, and correct process-tree kill on timeout. On Windows
+they do not, because ConPTY costs three seconds a call (see ``_use_pty``).
+Either way the tool falls back to a plain subprocess if the PTY backend is
+unavailable. Background execution is not yet supported.
 """
 
 from __future__ import annotations
@@ -37,6 +38,52 @@ _GIT_BASH_CANDIDATES = [
 ]
 
 _LONE_CD_RE = re.compile(r'^cd\s+(".*"|\'.*\'|\S+)\s*$')
+
+# Set to "1" to run through ConPTY on Windows anyway, for a program that
+# genuinely needs a tty and is worth the wait.
+PTY_ENV = "QUICKCODE_BASH_PTY"
+
+
+class PtyNotWorthIt(Exception):
+    """Not an error: the reason we are taking the subprocess path on purpose.
+
+    Raised rather than branched so both ways of ending up on plain pipes reach
+    the identical fallback, cancellation handling included. A parallel branch
+    would be a second copy of that, and the copy that runs on every Windows
+    command is the one that must not rot.
+    """
+
+
+def _use_pty(ctx: ToolCtx) -> bool:
+    """Whether to spend a pseudo-terminal on this command.
+
+    On POSIX, yes: ``openpty`` plus a fork is microseconds and a tty is strictly
+    more faithful.
+
+    On Windows, no. ConPTY adds a flat ~3.0 s to *every* command, measured on
+    Windows 11 26200 against four shells:
+
+        command       pty    subprocess   overhead
+        bash -c     3.113s      0.032s     +3.081s
+        bash -lc    3.330s      0.335s     +2.994s
+        cmd /c      3.028s      0.043s     +2.985s
+        powershell  3.285s      0.196s     +3.089s
+
+    It is the pseudo-console teardown, not the shell: `echo hi` finishes in
+    26 ms and the process stays alive for three more seconds. A session that
+    runs forty commands spent two minutes waiting for terminals to close.
+
+    What the tty bought does not survive the trip anyway. Colour is stripped
+    before the model sees it (``_clean_pty_output``), progress bars arrive as
+    carriage-return spam, and there is nobody to answer an interactive prompt --
+    under a pipe such a program reads EOF and exits instead of hanging until the
+    timeout. Process-tree kill is handled by ``_kill_tree`` on both paths.
+    """
+    if not ctx.platform.lower().startswith("win"):
+        return True
+    import os
+
+    return os.environ.get(PTY_ENV, "") == "1"
 
 
 class BashInput(BaseModel):
@@ -119,10 +166,13 @@ class BashTool(Tool[BashInput]):
 
         argv = _build_argv(input.command, ctx)
 
-        # Preferred path: a real pseudo-terminal. Fall back to a plain
-        # subprocess on any PTY error (backend missing, spawn failure, ...).
+        # A pseudo-terminal where it is cheap, plain pipes where it is not.
+        # Falls back to pipes on any PTY error too (backend missing, spawn
+        # failure, ...) -- which is the same code path, so it stays exercised.
         session: PtySession | None = None
         try:
+            if not _use_pty(ctx):
+                raise PtyNotWorthIt
             session = PtySession(argv, cwd=str(cwd))
             raw_out, returncode, timed_out = await asyncio.to_thread(session.run, timeout_s)
             text = _clean_pty_output(raw_out)
@@ -136,9 +186,22 @@ class BashTool(Tool[BashInput]):
                 session.kill()
             raise
         except Exception:  # noqa: BLE001 - any PTY failure -> subprocess fallback
-            return await asyncio.to_thread(
-                _run_subprocess, argv, str(cwd), timeout_s, timeout_ms, ctx
-            )
+            # The fallback needs the same cancellation handling as the PTY
+            # path, and needs it more: this is what a plain `pip install
+            # quickcode` runs, without the `pty` extra. Stop was inert here --
+            # the UI told the user and the model the command had been
+            # interrupted while it ran happily to completion. `holder` is how
+            # this coroutine reaches the process the worker thread started.
+            holder: list = []
+            try:
+                return await asyncio.to_thread(
+                    _run_subprocess, argv, str(cwd), timeout_s, timeout_ms, ctx, holder
+                )
+            except asyncio.CancelledError:
+                proc = holder[0] if holder else None
+                if proc is not None and proc.poll() is None:
+                    _kill_tree(proc.pid, ctx)
+                raise
 
         text = _cap(text)
 
@@ -201,9 +264,15 @@ def _clean_pty_output(raw: bytes) -> str:
 
 
 def _run_subprocess(
-    argv: list[str], cwd: str, timeout_s: float, timeout_ms: int, ctx: ToolCtx
+    argv: list[str], cwd: str, timeout_s: float, timeout_ms: int, ctx: ToolCtx,
+    holder: list | None = None,
 ) -> ToolResult:
-    """Fallback path when the PTY backend is unavailable. Plain pipes."""
+    """Fallback path when the PTY backend is unavailable. Plain pipes.
+
+    ``holder`` is filled with the ``Popen`` as soon as it exists, so the caller
+    -- which is waiting on a worker thread and cannot see this frame -- can
+    kill the process tree if the turn is interrupted.
+    """
     try:
         proc = subprocess.Popen(
             argv,
@@ -213,6 +282,8 @@ def _run_subprocess(
         )
     except OSError as exc:
         return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
+    if holder is not None:
+        holder.append(proc)
 
     try:
         raw_out, _ = proc.communicate(timeout=timeout_s)

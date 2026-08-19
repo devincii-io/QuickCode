@@ -156,6 +156,30 @@ class Profile:
         return self.orchestrator_model if role == "orchestrator" else self.worker_model
 
 
+# What a turn may generate, unless the user says otherwise. Deliberately well
+# under a modern model's output window: the provider reserves credit against
+# this, not against what the answer turns out to cost.
+DEFAULT_MAX_TOKENS = 16384
+MAX_MAX_TOKENS = 200_000
+
+
+def _int_or(value: object, fallback: int) -> int:
+    """A saved number, clamped -- config.json is hand-editable."""
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, min(n, MAX_MAX_TOKENS))
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(f, 2.0))
+
+
 @dataclass
 class Config:
     active_profile: str = "default"
@@ -168,6 +192,21 @@ class Config:
     # Install-wide rather than per-profile: a profile is a *model* endpoint, and
     # nothing about which search engine you use follows from which model answers.
     search: SearchSettings = field(default_factory=SearchSettings)
+    # The response budget sent with every request. OpenRouter reserves credit
+    # against this number, so an account with a small balance is refused with a
+    # 402 that names it -- "lower max_tokens ... to fit your remaining balance"
+    # -- and until this was settable there was nowhere to do that. 0 means "do
+    # not send one", which lets the provider apply its own default.
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    # None keeps the provider's default rather than pinning one here.
+    temperature: float | None = None
+    # Whether yolo mode can be entered at all. It used to be reachable only by
+    # launching with ``--yolo``, which meant it was unreachable from the
+    # installed app -- nobody starts a desktop shortcut with a flag -- and a
+    # permission profile asking for ``mode: yolo`` was silently rewritten to
+    # ``ask`` with nothing said. Arming it here is still a deliberate act the
+    # user has to perform once; it just has a door now.
+    allow_yolo: bool = False
 
     @property
     def profile(self) -> Profile:
@@ -207,6 +246,9 @@ class Config:
             last_model=raw.get("last_model", ""),
             theme=theme,
             search=SearchSettings.from_dict(raw.get("search")),
+            max_tokens=_int_or(raw.get("max_tokens"), DEFAULT_MAX_TOKENS),
+            temperature=_float_or_none(raw.get("temperature")),
+            allow_yolo=bool(raw.get("allow_yolo", False)),
         )
 
     def save(self, path: Path = CONFIG_PATH) -> None:
@@ -217,6 +259,9 @@ class Config:
             "last_model": self.last_model,
             "theme": self.theme,
             "search": self.search.to_dict(),
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "allow_yolo": self.allow_yolo,
             "profiles": {
                 name: {
                     "base_url": p.base_url,

@@ -194,13 +194,9 @@ textarea, input { font: inherit; color: inherit; }
   content: ""; flex: 1; height: 1px; background: var(--line-strong);
 }
 
-/* permission inline chip in chat */
-.perm-chip {
-  max-width: 860px; margin: 0 auto 10px; font-size: 12.5px;
-  display: flex; gap: 8px; align-items: center; color: var(--fg-dim);
-}
-.perm-chip .p-ok { color: var(--success); }
-.perm-chip .p-no { color: var(--error); }
+/* The permission chip that used to live here is gone: a decision now renders
+   inside the tool card it gates (chat.css `.tool-lock` / `.io-perm`). The
+   modal's own `.perm-tool` / `.perm-preview` are further down and still used. */
 
 /* ---------- composer ---------- */
 #composer { flex: none; padding: 8px clamp(12px, 4vw, 60px) 14px; }
@@ -812,3 +808,32 @@ select:focus-visible, [tabindex]:focus-visible {
 /* The dialog itself is focused on open so Escape works wherever you clicked;
    it is a programmatic target, not a tab stop, so it draws no ring. */
 .modal:focus { outline: none; }
+
+/* ---- copy affordances & the right-click menu (js/copy.js) ---- */
+
+/* On the block it copies, out of the way until the pointer is in there. A
+   copy button that is always visible turns every code block into a toolbar. */
+.copy-btn {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--panel); color: var(--fg-dim);
+  font: 10.5px var(--mono); padding: 2px 7px; cursor: pointer;
+  opacity: 0; transition: opacity .12s ease-out;
+}
+.copy-btn:hover { color: var(--fg); border-color: var(--primary); }
+:hover > .copy-btn,
+.copy-btn:focus-visible { opacity: 1; }
+
+.ctx-menu {
+  position: fixed; z-index: 200; min-width: 180px;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 4px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--bg) 75%, transparent);
+}
+.ctx-item {
+  text-align: left; border: 0; border-radius: 5px; background: none;
+  color: var(--fg); font: 12.5px var(--sans); padding: 6px 10px; cursor: pointer;
+}
+.ctx-item:hover { background: var(--boost); }
+.ctx-item:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }

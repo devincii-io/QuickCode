@@ -10,7 +10,7 @@ from __future__ import annotations
 from quickcode.providers.base import ChatMessage
 from quickcode.session.store import MAX_TITLE, SessionStore
 from tests.test_projects import make_app, mkdirs
-from tests.test_server import FakeProvider
+from tests.test_server import FakeProvider, recv_until, ws_connect
 
 
 def test_the_last_name_a_session_was_given_is_the_one_it_shows(tmp_path):
@@ -71,19 +71,41 @@ def test_renaming_a_live_conversation_is_allowed_where_deleting_is_not(tmp_path)
     Archiving moves the log and deleting unlinks it, both out from under the
     conversation still writing to it, so both refuse. A rename only appends —
     which is what the live writer is doing anyway — so it goes through.
+
+    "Live" means *attached*: a window is watching this conversation. It used to
+    mean "opened at some point in this process", which nothing ever undid, so a
+    session the user had merely visited could never be deleted or archived
+    again and the message told them to close something that was not open.
     """
     hub, client = make_app(tmp_path, FakeProvider([]))
     with client:
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
 
-        assert client.patch(f"/api/sessions/{conv_id}",
-                            json={"title": "still running"}).status_code == 200
-        assert client.delete(f"/api/sessions/{conv_id}").status_code == 409
-        assert client.post(f"/api/sessions/{conv_id}/archive").status_code == 409
+            assert client.patch(f"/api/sessions/{conv_id}",
+                                json={"title": "still running"}).status_code == 200
+            assert client.delete(f"/api/sessions/{conv_id}").status_code == 409
+            assert client.post(f"/api/sessions/{conv_id}/archive").status_code == 409
 
-        listed = client.get("/api/sessions").json()[0]
-        assert listed["live"] is True
-        assert listed["title"] == "still running"
+            listed = client.get("/api/sessions").json()[0]
+            assert listed["live"] is True
+            assert listed["title"] == "still running"
+
+
+def test_a_session_nobody_is_watching_can_be_deleted(tmp_path):
+    """The other half, and the bug: opening a conversation and moving on left
+    it "live" for the life of the process, so deleting it from the list was
+    refused for ever with no way to satisfy the refusal."""
+    hub, client = make_app(tmp_path, FakeProvider([]))
+    with client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+        # The window is gone; nothing is running.
+        assert client.get("/api/sessions").json()[0]["live"] is False
+        assert client.delete(f"/api/sessions/{conv_id}").status_code == 204
+        assert client.get("/api/sessions").json() == []
 
 
 def test_a_rename_survives_resuming_the_session(tmp_path):

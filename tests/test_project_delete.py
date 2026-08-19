@@ -26,7 +26,7 @@ from quickcode.session.store import (
     project_data_summary,
     purge_project_data,
 )
-from tests.test_server import FakeProvider
+from tests.test_server import FakeProvider, recv_until, ws_connect
 
 
 async def _no_mcp(cwd):
@@ -344,16 +344,25 @@ def test_a_project_with_a_live_conversation_refuses_both_removal_and_data_deleti
     with client:
         client.post("/api/projects/open", json={"path": str(alpha)})
         pid = project_id(alpha)
-        client.post(f"/api/projects/{pid}/conversations", json={})
+        conv_id = client.post(
+            f"/api/projects/{pid}/conversations", json={}
+        ).json()["conv_id"]
 
-        for path in (f"/api/projects/{pid}", f"/api/projects/{pid}/data"):
-            res = client.delete(path)
-            assert res.status_code == 409, path
-            assert "live" in res.json()["detail"]
+        # Attached: a window is watching this conversation, so both refuse.
+        with ws_connect(client, f"/ws/projects/{pid}/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            for path in (f"/api/projects/{pid}", f"/api/projects/{pid}/data"):
+                res = client.delete(path)
+                assert res.status_code == 409, path
+                assert "live" in res.json()["detail"]
 
-        # Refused means nothing happened, to the list or to the disk.
-        assert pid in {p["id"] for p in client.get("/api/projects").json()["projects"]}
-        assert paths["data"].is_dir()
+            # Refused means nothing happened, to the list or to the disk.
+            assert pid in {p["id"] for p in client.get("/api/projects").json()["projects"]}
+            assert paths["data"].is_dir()
+
+        # And once nobody is watching, the same call goes through: a project the
+        # user merely visited used to be undeletable for the life of the process.
+        assert client.delete(f"/api/projects/{pid}").status_code == 200
 
 
 # ---- bulk: honest per-item reporting ----
@@ -369,21 +378,27 @@ def test_removing_several_projects_reports_each_one_that_could_not_be_removed(tm
     with client:
         for d in (alpha, beta, busy):
             client.post("/api/projects/open", json={"path": str(d)})
-        client.post(f"/api/projects/{project_id(busy)}/conversations", json={})
+        bpid = project_id(busy)
+        conv = client.post(f"/api/projects/{bpid}/conversations", json={}).json()["conv_id"]
 
-        body = client.post("/api/projects/remove", json={
-            "ids": [project_id(alpha), project_id(busy), "deadbeefcafe", project_id(beta)],
-        }).json()
+        # Busy means *attached*. Merely having opened a conversation once used
+        # to count, for the life of the process, so a project the user had
+        # visited could never be removed again.
+        with ws_connect(client, f"/ws/projects/{bpid}/conversation/{conv}") as ws:
+            recv_until(ws, "replay_done")
+            body = client.post("/api/projects/remove", json={
+                "ids": [project_id(alpha), bpid, "deadbeefcafe", project_id(beta)],
+            }).json()
 
-        assert [r["id"] for r in body["removed"]] == [project_id(alpha), project_id(beta)]
-        assert [(s["id"], s["reason"]) for s in body["skipped"]] == [
-            (project_id(busy), "live"),
-            ("deadbeefcafe", "unknown"),
-        ]
-        # The two that worked are gone; the live one is still listed.
-        listed = {p["id"] for p in client.get("/api/projects").json()["projects"]}
-        assert project_id(alpha) not in listed
-        assert project_id(busy) in listed
+            assert [r["id"] for r in body["removed"]] == [project_id(alpha), project_id(beta)]
+            assert [(s["id"], s["reason"]) for s in body["skipped"]] == [
+                (bpid, "live"),
+                ("deadbeefcafe", "unknown"),
+            ]
+            # The two that worked are gone; the busy one is still listed.
+            listed = {p["id"] for p in client.get("/api/projects").json()["projects"]}
+            assert project_id(alpha) not in listed
+            assert bpid in listed
 
 
 def test_a_bulk_purge_deletes_only_the_data_of_the_projects_it_reports(tmp_path):
@@ -396,19 +411,22 @@ def test_a_bulk_purge_deletes_only_the_data_of_the_projects_it_reports(tmp_path)
     with client:
         for d in (alpha, busy):
             client.post("/api/projects/open", json={"path": str(d)})
-        client.post(f"/api/projects/{project_id(busy)}/conversations", json={})
+        bpid = project_id(busy)
+        conv = client.post(f"/api/projects/{bpid}/conversations", json={}).json()["conv_id"]
 
-        body = client.post("/api/projects/purge", json={
-            "ids": [project_id(alpha), project_id(busy)],
-        }).json()
+        with ws_connect(client, f"/ws/projects/{bpid}/conversation/{conv}") as ws:
+            recv_until(ws, "replay_done")
+            body = client.post("/api/projects/purge", json={
+                "ids": [project_id(alpha), bpid],
+            }).json()
 
-        assert [r["id"] for r in body["removed"]] == [project_id(alpha)]
-        assert body["skipped"][0]["reason"] == "live"
-        assert not (alpha / ".quickcode").exists()
-        assert (busy / ".quickcode").is_dir()
-        # Neither project directory itself was touched.
-        assert (alpha / "README.md").exists()
-        assert (busy / "README.md").exists()
+            assert [r["id"] for r in body["removed"]] == [project_id(alpha)]
+            assert body["skipped"][0]["reason"] == "live"
+            assert not (alpha / ".quickcode").exists()
+            assert (busy / ".quickcode").is_dir()
+            # Neither project directory itself was touched.
+            assert (alpha / "README.md").exists()
+            assert (busy / "README.md").exists()
 
 
 def test_a_bulk_session_delete_reports_the_live_ones_as_skipped_rather_than_failing_whole(tmp_path):
@@ -421,15 +439,18 @@ def test_a_bulk_session_delete_reports_the_live_ones_as_skipped_rather_than_fail
             SessionStore(root, conv_id).append_meta(title=conv_id, model="test/model")
         live = client.post(f"/api/projects/{pid}/conversations", json={}).json()["conv_id"]
 
-        body = client.post(f"/api/projects/{pid}/sessions/delete", json={
-            "conv_ids": ["aaaaaaaaaaaa", live, "bbbbbbbbbbbb", "dddddddddddd"],
-        }).json()
+        # Attached, so it is genuinely in use for the length of this block.
+        with ws_connect(client, f"/ws/projects/{pid}/conversation/{live}") as ws:
+            recv_until(ws, "replay_done")
+            body = client.post(f"/api/projects/{pid}/sessions/delete", json={
+                "conv_ids": ["aaaaaaaaaaaa", live, "bbbbbbbbbbbb", "dddddddddddd"],
+            }).json()
 
-        assert sorted(body["deleted"]) == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
-        reasons = {s["conv_id"]: s["reason"] for s in body["skipped"]}
-        assert reasons == {live: "live", "dddddddddddd": "missing"}
-        assert SessionStore(root, "cccccccccccc").path.exists()
-        assert SessionStore(root, live).path.exists()
+            assert sorted(body["deleted"]) == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
+            reasons = {s["conv_id"]: s["reason"] for s in body["skipped"]}
+            assert reasons == {live: "live", "dddddddddddd": "missing"}
+            assert SessionStore(root, "cccccccccccc").path.exists()
+            assert SessionStore(root, live).path.exists()
 
 
 def test_a_bulk_request_without_a_selection_is_rejected(tmp_path):

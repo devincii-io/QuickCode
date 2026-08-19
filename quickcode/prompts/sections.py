@@ -170,6 +170,21 @@ results honestly — if tests fail, say so with the output. Never claim
 untested work is working.
 </verification>"""
 
+# Shown, not described: the format's own guidance, and cheaper than a
+# paragraph explaining what a header line means. It is on every request, so it
+# stays at four body lines.
+_RESULT_FORMAT = """\
+<result_format>
+Structured tool results arrive as TOON — a header naming the fields, then one
+row per record:
+  matches[2]{path,line,text}:
+    src/a.py,12,def run():
+    src/b.py,44,"  run(), twice"
+The count in brackets is checkable: fewer rows than it declares means the
+result was cut, and values containing the delimiter are quoted. Fieldless
+results are plain lines behind a marker with the same count: <files count="6"/>.
+</result_format>"""
+
 _ENVIRONMENT = """\
 <environment>
   <cwd>{cwd}</cwd>
@@ -275,6 +290,9 @@ SECTIONS: list[PromptSection] = [
                   "loop and the trajectory depend on."),
     PromptSection("prompt.verification", "Verification", 70, "free",
                   lambda _: _VERIFICATION, "Checking work before claiming it done."),
+    PromptSection("prompt.result_format", "Result format", 75, "locked",
+                  lambda _: _RESULT_FORMAT,
+                  "How structured tool results are encoded, by example."),
     PromptSection("prompt.environment", "Environment", 80, "locked", _environment,
                   "Session facts: directory, platform, shell, branch, date.",
                   generated=True),

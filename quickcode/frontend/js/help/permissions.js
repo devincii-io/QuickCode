@@ -75,11 +75,14 @@ export async function renderPermissions(host) {
       <p class="hp-p"><strong>auto-edit does not auto-run shell commands.</strong>
         It auto-allows file edits inside the project. A shell command still
         asks.</p>
-      <p class="hp-p"><strong>yolo is not unconditional.</strong> A protected path
-        still prompts, and four catastrophic command shapes — <code>rm -rf /</code>,
-        <code>rm -rf ~</code>, a force push, and the classic fork bomb — still
-        prompt. Yolo also has to be unlocked at launch; if the app was not
-        started with <code>--yolo</code> the mode is not offered at all.</p>`)}
+      <p class="hp-p"><strong>yolo does not prompt on protected paths.</strong>
+        It used to, and a mode that stops is a mode that stopped — so it does
+        not any more. What still prompts however the mode is set is the circuit
+        breaker: <code>rm -rf /</code>, <code>rm -rf ~</code>, a force push, and
+        the classic fork bomb. Yolo also has to be armed before it can be
+        entered at all — Settings → General, or the <code>--yolo</code> launch
+        flag. Until it is, the mode menu does not offer it and a permission
+        profile asking for it says so instead of applying it.</p>`)}
 
     ${sub("Rules: the named exceptions")}
     <p class="hp-p">A rule is either a bare tool name, or a tool name with a
@@ -106,6 +109,35 @@ export async function renderPermissions(host) {
       <code>**</code> matches anything at all, separators included. Everything
       else in the pattern is a literal, and the whole target has to match, not
       just the start of it.</p>
+
+    ${sub("Mode, profile, ceiling: which one is deciding")}
+    <p class="hp-p">Four things in the window look like they set the same thing,
+      and they do not. In order of who wins:</p>
+    <dl class="hp-defs">
+      <dt class="hp-dt">the mode pill</dt>
+      <dd class="hp-dd">What prompts <em>right now</em>, in this conversation.
+        Changing it here changes nothing else and nothing else remembers it.</dd>
+      <dt class="hp-dt">a permission profile</dt>
+      <dd class="hp-dd">A named posture: a starting mode <em>and</em> a set of
+        allow / ask / deny rules, applied together. Picking one moves the mode
+        and swaps the rules — this is the only control that does both, which is
+        what it is for. It is not a second mode menu: a profile whose whole
+        content is a mode would be one, which is why none of the built-ins
+        is.</dd>
+      <dt class="hp-dt">the ceiling</dt>
+      <dd class="hp-dd">The most privileged mode this project permits, from its
+        config layers. A profile cannot climb over it, and neither can you. If a
+        profile's mode is capped on the way in, the transcript says so — a
+        posture that quietly landed somewhere else would be worse than one that
+        was refused.</dd>
+      <dt class="hp-dt">the yolo arming switch</dt>
+      <dd class="hp-dd">Separate from all three. Until yolo is armed in
+        Settings → General (or by launching with <code>--yolo</code>) it cannot
+        be entered by any route, including a profile that asks for it.</dd>
+    </dl>
+    <p class="hp-p">The model pill, the effort setting and <em>compact</em> are
+      not in this list at all: they choose who answers and how much context it
+      is given, and have no bearing on what may run without asking.</p>
 
     ${sub("Where the rules live")}
     <dl class="hp-defs">

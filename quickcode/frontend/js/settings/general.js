@@ -6,6 +6,7 @@
 // catalog read-only (the session model is switched from the composer pill),
 // Appearance applies a preset live and persists it.
 
+import { confirmModal, creditLine } from "../modals.js";
 import { store } from "../store.js";
 import { applyTheme, esc, fmtTokens } from "../util.js";
 import { flash } from "./ui.js";
@@ -41,18 +42,83 @@ export async function renderGeneralPage(c, { api, modes }) {
         <select id="set-mode">${modes.map(([id, t]) =>
           `<option value="${id}"${bs.default_mode === id ? " selected" : ""}>${t}</option>`).join("")}
         </select></div>
+      <div class="set-field"><label>Yolo mode
+        <span class="qs-hint">— yolo runs every tool without asking, including
+        commands that delete files and reach the network. It used to need the
+        <code>--yolo</code> launch flag, which no desktop shortcut passes, so a
+        permission profile asking for it was silently downgraded to “ask”.
+        Arming it here only makes it <em>reachable</em>: the mode switch or a
+        profile still has to select it, and a project's ceiling still caps
+        it.</span></label>
+        <label class="set-check"><input id="set-yolo" type="checkbox"${
+          bs.allow_yolo ? " checked" : ""}>
+          Allow this app to enter yolo mode</label></div>
+      <div class="set-field"><label>Credits</label>
+        <div class="qs-hint" id="set-credits">checking…</div></div>
+      <div class="set-field"><label>Max response tokens (new sessions)
+        <span class="qs-hint">— the cap sent with every request. Providers reserve
+        credit against it, so a small balance is refused outright until it is
+        lowered ("insufficient credits … lower max_tokens"). 0 sends no cap and
+        lets the provider use its own default.</span></label>
+        <input id="set-maxtok" type="number" min="0" max="200000" step="256"
+               inputmode="numeric" placeholder="16384"
+               value="${bs.max_tokens != null ? esc(String(bs.max_tokens)) : ""}"></div>
+      <div class="set-field"><label>Temperature
+        <span class="qs-hint">— blank keeps the provider's default.</span></label>
+        <input id="set-temp" type="number" min="0" max="2" step="0.1"
+               inputmode="decimal" placeholder="default"
+               value="${bs.temperature != null ? esc(String(bs.temperature)) : ""}"></div>
       <div class="f-actions">
         <button class="btn primary" id="set-save">Save</button>
         <span class="set-flash" id="set-msg"></span>
       </div>
     </div>`;
+  // Fills in on its own: a provider round trip must not hold the page.
+  (async () => {
+    const box = c.querySelector("#set-credits");
+    if (!box) return;
+    try {
+      const credits = await api.credits();
+      box.textContent = creditLine(credits);
+      box.style.color = credits.available != null && credits.available < 1
+        ? "var(--warning)" : "var(--fg-faint)";
+    } catch {
+      box.textContent = "could not be checked";
+    }
+  })();
+
   c.querySelector("#set-save").addEventListener("click", async () => {
     const msg = c.querySelector("#set-msg");
     try {
-      await api.putConfig({
+      const rawMax = c.querySelector("#set-maxtok").value.trim();
+      const rawTemp = c.querySelector("#set-temp").value.trim();
+      const patch = {
         base_url: c.querySelector("#set-baseurl").value.trim(),
         default_mode: c.querySelector("#set-mode").value,
-      });
+        // Blank means "leave it as it is"; 0 means "send no cap at all".
+        temperature: rawTemp === "" ? null : Number(rawTemp),
+      };
+      if (rawMax !== "") patch.max_tokens = Number(rawMax);
+
+      const yolo = c.querySelector("#set-yolo");
+      // Turning it ON is the one setting on this page that widens what the
+      // agent may do without asking, so it is the one that asks back. Turning
+      // it off needs no ceremony -- taking a capability away never surprises.
+      if (yolo.checked && !bs.allow_yolo) {
+        const ok = await confirmModal({
+          title: "Allow yolo mode?",
+          body: "In yolo mode QuickCode runs every command the model asks for "
+              + "without stopping — including ones that delete files, rewrite "
+              + "git history, or send data to the network. Nothing will ask "
+              + "you again while a session is in that mode.",
+          confirm: "Allow it",
+        });
+        if (!ok) { yolo.checked = false; return; }
+      }
+      patch.allow_yolo = yolo.checked;
+
+      await api.putConfig(patch);
+      store.bootstrap = { ...(store.bootstrap || {}), ...patch };
       const key = c.querySelector("#set-apikey").value.trim();
       if (key) await api.putApiKey(key);
       flash(msg, "Saved. New sessions pick this up.");

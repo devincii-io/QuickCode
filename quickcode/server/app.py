@@ -28,6 +28,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
+from quickcode.config import _float_or_none, _int_or
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.spec import (
     LockedSetting,
@@ -180,6 +181,8 @@ def create_app(
             "theme": cfg.theme_colors(),
             "has_api_key": bool(profile.api_key),
             "api_key_env": profile.api_key_env,
+            "max_tokens": cfg.max_tokens,
+            "temperature": cfg.temperature,
             "search": _search_payload(cfg),
         }
 
@@ -248,7 +251,10 @@ def create_app(
         return {"provider": chosen_provider(settings), "providers": providers}
 
     def _sessions(manager: ConversationManager, include_archived: bool = False) -> list[dict]:
-        live = set(manager.conversations)
+        # "Live" means in use -- attached, running, or holding a job -- not
+        # "was opened at some point in this process". The dot in the UI and
+        # the 409 from delete now agree, and both are true.
+        live = set(manager.live_conversations())
         out = []
         for info in SessionStore.list_sessions(
             manager.cwd, include_archived=include_archived
@@ -600,11 +606,17 @@ def create_app(
 
     # ---- session management: delete, archive, sweep ----
 
-    def _delete_session(manager: ConversationManager, conv_id: str) -> Response:
+    async def _delete_session(manager: ConversationManager, conv_id: str) -> Response:
         if not _valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
-        if manager.get(conv_id) is not None:
-            raise HTTPException(409, "conversation is live; close it first")
+        # A conversation opened earlier in this run is not "live" -- nothing is
+        # attached to it and nothing is running in it. It used to be refused
+        # anyway, for the life of the process, with a message telling the user
+        # to close something that was not open. Idle ones are closed here;
+        # busy ones still say so, and say *why*.
+        busy = await manager.release(conv_id)
+        if busy:
+            raise HTTPException(409, f"conversation is in use ({busy})")
         if not SessionStore(manager.cwd, conv_id).path.exists():
             raise HTTPException(404, "unknown conversation")
         # Everything the session owned goes with it: the transcript, the task
@@ -655,7 +667,7 @@ def create_app(
             raise HTTPException(500, f"could not rename session: {e}") from e
         return {"conv_id": conv_id, "title": effective}
 
-    def _set_archived(
+    async def _set_archived(
         manager: ConversationManager, conv_id: str, archived: bool
     ) -> dict:
         if not _valid_conv_id(conv_id):
@@ -663,10 +675,14 @@ def create_app(
         store = SessionStore(manager.cwd, conv_id)
         if not store.path.exists():
             raise HTTPException(404, "unknown conversation")
-        # Archiving moves the file; doing that under a running conversation
-        # would pull the log out from beneath its own writer.
-        if archived and manager.get(conv_id) is not None:
-            raise HTTPException(409, "conversation is live; close it first")
+        # Archiving moves the file; doing that under a *running* conversation
+        # would pull the log out from beneath its own writer. An idle one is
+        # not writing, so it is closed and archived rather than refused for
+        # the rest of the process's life.
+        if archived:
+            busy = await manager.release(conv_id)
+            if busy:
+                raise HTTPException(409, f"conversation is in use ({busy})")
         try:
             store.archive() if archived else store.unarchive()
         except OSError as e:
@@ -751,20 +767,20 @@ def create_app(
         return await _cleanup_empty(hub.default, request)
 
     @app.delete("/api/sessions/{conv_id}")
-    def delete_session(conv_id: str) -> Response:
-        return _delete_session(hub.default, conv_id)
+    async def delete_session(conv_id: str) -> Response:
+        return await _delete_session(hub.default, conv_id)
 
     @app.patch("/api/sessions/{conv_id}")
     async def rename_session(conv_id: str, request: Request) -> dict:
         return await _rename_session(hub.default, conv_id, request)
 
     @app.post("/api/sessions/{conv_id}/archive")
-    def archive_session(conv_id: str) -> dict:
-        return _set_archived(hub.default, conv_id, True)
+    async def archive_session(conv_id: str) -> dict:
+        return await _set_archived(hub.default, conv_id, True)
 
     @app.post("/api/sessions/{conv_id}/unarchive")
-    def unarchive_session(conv_id: str) -> dict:
-        return _set_archived(hub.default, conv_id, False)
+    async def unarchive_session(conv_id: str) -> dict:
+        return await _set_archived(hub.default, conv_id, False)
 
     @app.post("/api/conversations")
     async def open_conversation(request: Request) -> dict:
@@ -1004,20 +1020,20 @@ def create_app(
         return await _cleanup_empty(_project(pid), request)
 
     @app.delete("/api/projects/{pid}/sessions/{conv_id}")
-    def project_delete_session(pid: str, conv_id: str) -> Response:
-        return _delete_session(_project(pid), conv_id)
+    async def project_delete_session(pid: str, conv_id: str) -> Response:
+        return await _delete_session(_project(pid), conv_id)
 
     @app.patch("/api/projects/{pid}/sessions/{conv_id}")
     async def project_rename_session(pid: str, conv_id: str, request: Request) -> dict:
         return await _rename_session(_project(pid), conv_id, request)
 
     @app.post("/api/projects/{pid}/sessions/{conv_id}/archive")
-    def project_archive_session(pid: str, conv_id: str) -> dict:
-        return _set_archived(_project(pid), conv_id, True)
+    async def project_archive_session(pid: str, conv_id: str) -> dict:
+        return await _set_archived(_project(pid), conv_id, True)
 
     @app.post("/api/projects/{pid}/sessions/{conv_id}/unarchive")
-    def project_unarchive_session(pid: str, conv_id: str) -> dict:
-        return _set_archived(_project(pid), conv_id, False)
+    async def project_unarchive_session(pid: str, conv_id: str) -> dict:
+        return await _set_archived(_project(pid), conv_id, False)
 
     @app.post("/api/projects/{pid}/conversations")
     async def project_open_conversation(pid: str, request: Request) -> dict:
@@ -1115,6 +1131,20 @@ def create_app(
     def prompt() -> dict:
         return _prompt_payload(hub.default)
 
+    @app.get("/api/credits")
+    async def credits() -> dict:
+        """What is left to spend at the provider, when it will say.
+
+        Added after a run stopped on `402 Insufficient credits`: the balance
+        decided whether the next request would work, and there was nowhere to
+        see it. Never fails the request -- an unreachable provider answers
+        `supported: true, error: "..."`, which the UI shows as "unknown".
+        """
+        from quickcode.providers import credits as credits_mod
+
+        profile = hub.config.profile
+        return await credits_mod.fetch(profile.base_url, profile.api_key)
+
     @app.put("/api/config")
     async def put_config(request: Request) -> Response:
         body = await _read_json(request)
@@ -1137,6 +1167,19 @@ def create_app(
         search = body.get("search")
         if isinstance(search, dict):
             _apply_search(cfg, search)
+        if "max_tokens" in body:
+            # Clamped in `Config`, because config.json is hand-editable and this
+            # number is what the provider reserves credit against.
+            cfg.max_tokens = _int_or(body.get("max_tokens"), cfg.max_tokens)
+        if "temperature" in body:
+            cfg.temperature = _float_or_none(body.get("temperature"))
+        if "allow_yolo" in body:
+            # Arming, not entering. This says yolo may be *reached*; the mode
+            # switch and the profile still have to ask for it, and the
+            # composition's ceiling still caps it. Without this the only way in
+            # was a launch flag nobody can pass to a desktop shortcut, so a
+            # profile saying `mode: yolo` was rewritten to `ask` in silence.
+            cfg.allow_yolo = bool(body.get("allow_yolo"))
         cfg.save()
         return Response(status_code=204)
 

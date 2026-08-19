@@ -1,6 +1,7 @@
 from quickcode.config import Environment
 from quickcode.core.events import AssembledToolCall, AssistantMessage
 from quickcode.core.history import History
+from quickcode.prompts.sections import PromptContext
 from quickcode.prompts.system import render_system_prompt, system_reminder
 
 
@@ -17,6 +18,28 @@ def test_prompt_is_pure_and_stable():
     assert a == b  # byte-identical → cache-stable
     assert "<identity>" in a and "<environment>" in a
     assert "/proj" in a
+
+
+def test_the_result_format_is_shown_by_example_and_stays_short():
+    """It is on every request, so its cost is paid on every request. Showing a
+    header, a count and two rows is the format's own guidance -- a paragraph
+    describing what a header line means would be longer and vaguer."""
+    prompt = render_system_prompt(_env())
+    block = prompt.split("<result_format>")[1].split("</result_format>")[0]
+
+    assert "matches[2]{path,line,text}:" in block
+    assert block.count("\n") <= 9
+    # The two claims that make the encoding usable, and no others.
+    assert "checkable" in block and "quoted" in block
+
+
+def test_the_result_format_cannot_be_rewritten_to_describe_a_different_encoding():
+    from quickcode.prompts.sections import get
+
+    section = get("prompt.result_format")
+    assert section.tier == "locked"
+    ctx = PromptContext(env=_env(), overrides={"prompt.result_format": "lies"})
+    assert "matches[2]" in section.body(ctx)
 
 
 def test_plan_and_headless_sections_append():

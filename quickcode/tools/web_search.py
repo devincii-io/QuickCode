@@ -28,6 +28,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from quickcode.context import toon
 from quickcode.search import (
     DEFAULT_COUNT,
     MAX_COUNT,
@@ -129,14 +130,37 @@ def _clip(text: str, limit: int) -> str:
 
 
 def _render(query: str, label: str, results: list[SearchResult]) -> str:
-    lines = [f'{len(results)} results for "{query}" via {label}:', ""]
-    for n, result in enumerate(results, start=1):
-        lines.append(f"{n}. {result.title or result.url}")
-        lines.append(f"   {result.url}")
-        if result.snippet:
-            lines.append(f"   {_clip(result.snippet, SNIPPET_CHARS)}")
-        if result.content and result.content != result.snippet:
-            lines.append(f"   extract: {_clip(result.content, CONTENT_CHARS)}")
-        lines.append("")
-    lines.append("Use web_fetch on a URL above to read the full page.")
-    return "\n".join(lines)
+    """The hit list as one TOON table.
+
+    Each hit used to cost a numbered line, an indented URL line and one or two
+    more indented lines, with the field names implied by position. The table
+    declares ``title,url,snippet`` once and spends one line per hit -- the
+    largest saving of any result QuickCode renders, because the repetition was
+    per hit rather than per file.
+
+    The column set is decided once for the whole list, not per row: a table
+    needs every row to carry the same fields, so ``extract`` is either present
+    on all of them or on none.
+
+    Snippets are prose and prose has commas, so nearly every cell here ends up
+    quoted. ``toon.TAB`` would avoid that -- ``_clip`` collapses whitespace, so
+    no value can contain a tab -- but it saves two characters a row and costs
+    the one thing worth more: every result QuickCode renders, and the example
+    in the system prompt, using the same delimiter.
+    """
+    with_extract = any(r.content and r.content != r.snippet for r in results)
+    rows = []
+    for result in results:
+        row = {
+            "title": result.title or result.url,
+            "url": result.url,
+            "snippet": _clip(result.snippet or "", SNIPPET_CHARS),
+        }
+        if with_extract:
+            row["extract"] = _clip(result.content or "", CONTENT_CHARS)
+        rows.append(row)
+    return (
+        f'Results for "{query}" via {label}:\n'
+        + toon.fenced({"results": rows})
+        + "\nUse web_fetch on a URL above to read the full page."
+    )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from quickcode import webapp
 from quickcode.ui import window
 
@@ -35,10 +37,25 @@ def test_available_false_without_pywebview(monkeypatch):
     assert window.available() is False
 
 
-def test_running_instance_health_none_when_unreachable():
+@pytest.fixture
+def impatient_probes(monkeypatch):
+    """Shrink the two single-instance probe budgets for the unreachable tests.
+
+    "Nothing is listening" is not a fast refusal here: a host firewall that
+    drops loopback SYNs instead of rejecting them makes the connect sit for the
+    whole timeout, so these two tests used to spend 2.6s between them doing
+    nothing. What they actually assert is the *shape* of the failure -- probe
+    returns None, hand-off returns False rather than raising -- and that is
+    identical whether the budget is two seconds or fifty milliseconds.
+    """
+    monkeypatch.setattr(webapp, "HEALTH_PROBE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(webapp, "HAND_OFF_TIMEOUT_S", 0.05)
+
+
+def test_running_instance_health_none_when_unreachable(impatient_probes):
     # Nothing is listening on this high port during the test run.
     assert webapp._running_instance_health(58643) is None
 
 
-def test_hand_off_returns_false_when_unreachable(tmp_path):
+def test_hand_off_returns_false_when_unreachable(tmp_path, impatient_probes):
     assert webapp._hand_off_to_running_instance(58643, tmp_path) is False

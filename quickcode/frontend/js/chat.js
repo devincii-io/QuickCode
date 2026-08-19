@@ -1,8 +1,8 @@
 // Chat view: incremental transcript renderer over the event store.
 
-import { highlightPayload, isJson } from "./highlight.js";
 import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
+import { highlightToon, toon } from "./toon.js";
 import { configTarget } from "./trajectory.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
@@ -14,6 +14,10 @@ let onOpenTrace = () => {};
 // of stacking as loose cards. Closed by anything that is not a tool call.
 let stepNode = null;
 let lastAssistantText = "";
+// req_id -> {ev, card} for a permission still awaiting its answer. The resolved
+// event carries only the verdict, so the request has to be held until then or
+// the card cannot show what was actually asked.
+let openPerms = new Map();
 
 export function initChat({ openTrace }) {
   transcript = document.getElementById("transcript");
@@ -119,6 +123,7 @@ function clear() {
   streamNode = null;
   stepNode = null;
   lastAssistantText = "";
+  openPerms = new Map();
   agentCards = new Map();
   taskStrip = null;
 }
@@ -164,12 +169,8 @@ function renderEvent(ev) {
     case "error": return addNode(el(`<div class="err-note">${esc(ev.message)}</div>`));
     case "compacted":
       return addNode(el(`<div class="compact-divider">compacted</div>`));
-    case "permission_resolved": {
-      const icon = ev.allow ? `<span class="p-ok">✓ allowed</span>`
-                            : `<span class="p-no">✗ denied</span>`;
-      return addNode(el(`<div class="perm-chip">🔒 <span class="perm-tool">${esc(ev.tool)}</span>
-        <span>${esc(oneLine(ev.arg, 80))}</span> ${icon}</div>`));
-    }
+    case "permission_request": return permissionRequested(ev);
+    case "permission_resolved": return permissionResolved(ev);
     case "plan_resolved": {
       const txt = ev.approved ? `plan approved → ${esc(ev.mode_after || "ask")} mode`
                               : "plan sent back for revision";
@@ -317,9 +318,7 @@ function toolCardNode(ev, { agent } = {}) {
     <div class="tool-body"></div></div>`);
   const body = card.querySelector(".tool-body");
   const diff = diffBody(ev.name, ev.arguments);
-  const input = diff
-    ? `<div class="io-diff">${diff}</div>`
-    : `<pre class="code">${highlightPayload(ev.arguments || "{}")}</pre>`;
+  const input = diff ? `<div class="io-diff">${diff}</div>` : toonBlock(ev.arguments);
   body.innerHTML =
     `<details class="io io-in"><summary><span class="io-tag">IN</span>
        <span class="io-hint">arguments</span></summary>${input}</details>` +
@@ -337,11 +336,30 @@ function toolCardNode(ev, { agent } = {}) {
   return card;
 }
 
+// A JSON payload as TOON — the encoding the model was actually handed, so the
+// card shows what was sent rather than a JSON re-render of it. The model's
+// arguments arrive as a string it wrote, which can be truncated or malformed,
+// and a tool result is only sometimes JSON: anything that will not parse falls
+// back to the raw text, because losing the call is worse than losing the shape.
+function toonBlock(raw) {
+  const text = String(raw ?? "");
+  const head = text.trim()[0];
+  // Only an object or an array is worth re-encoding. Without this a bash
+  // result that happens to be the single word `12345` would parse as JSON and
+  // come back through TOON with its whitespace quietly rewritten.
+  if (head !== "{" && head !== "[") return `<pre class="code">${esc(text)}</pre>`;
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return `<pre class="code">${esc(text)}</pre>`; }
+  const encoded = toon(parsed);
+  // `{}` and `[]` encode to nothing at all. Showing the two characters the
+  // model sent says more than an empty box.
+  if (!encoded.trim()) return `<pre class="code">${esc(text)}</pre>`;
+  return `<pre class="toon">${highlightToon(encoded)}</pre>`;
+}
+
 function resultHtml(content, isError) {
   const text = String(content ?? "");
-  const pane = isJson(text)
-    ? `<pre class="code">${highlightPayload(text)}</pre>`
-    : `<pre class="code">${esc(text)}</pre>`;
+  const pane = toonBlock(text);
   const tag = isError ? "ERR" : "OUT";
   return `<details class="io io-out${isError ? " io-error" : ""}"${isError ? " open" : ""}>
       <summary><span class="io-tag">${tag}</span>
@@ -379,6 +397,100 @@ function attachToolResult(ev) {
   const slot = card.querySelector(".result-slot");
   if (slot) slot.innerHTML = resultHtml(ev.content, ev.is_error);
   if (ev.is_error) card.classList.add("open");
+}
+
+// ---- permissions ----
+//
+// A decision belongs to the call it gates. It used to render as a chip of its
+// own under the card, which repeated the tool and the argument already on the
+// card and — being a node that is not a tool call — closed the step the card
+// was sitting in, so every gated call split its round in two. The badge and the
+// detail block below live inside the card instead.
+
+const LOCKS = {
+  pending: { glyph: "🔒", hint: "waiting for your decision" },
+  allowed: { glyph: "🔓", hint: "allowed" },
+  // The struck lock, not a bare ✗: the glyph has to keep saying "permission"
+  // next to a status dot that is already red for a failed call.
+  denied: { glyph: "🔒", hint: "denied" },
+};
+
+function permissionRequested(ev) {
+  const card = permCard(ev);
+  openPerms.set(ev.req_id, { ev, card });
+  if (card) markPerm(card, "pending", ev, null);
+}
+
+function permissionResolved(ev) {
+  const open = openPerms.get(ev.req_id);
+  openPerms.delete(ev.req_id);
+  // The request is the half that carries the preview and the offered rule, so
+  // prefer the card it already found; without it the card is now decided and
+  // the undecided-card fallback below would not match.
+  const card = open?.card || permCard(ev);
+  if (!card) return;
+  markPerm(card, ev.allow ? "allowed" : "denied", open?.ev || null, ev);
+}
+
+// Sessions logged before the wire carried `call_id` still replay, so a missing
+// id falls back to the one undecided card with the same tool. Ambiguity drops
+// the event: a badge on the wrong call is worse than no badge at all.
+function permCard(ev) {
+  if (ev.call_id) {
+    const byId = transcript.querySelector(`.tool-card[data-call="${CSS.escape(ev.call_id)}"]`);
+    if (byId) return byId;
+  }
+  const undecided = [...transcript.querySelectorAll(".tool-card:not([data-perm])")]
+    .filter((c) => c.querySelector(".tool-name")?.textContent === ev.tool);
+  if (!undecided.length) return null;
+  const arg = oneLine(ev.arg, 200);
+  return undecided.find((c) => arg && c.querySelector(".tool-summary")?.textContent === arg)
+    || undecided[0];
+}
+
+function markPerm(card, state, reqEv, resEv) {
+  card.dataset.perm = state;
+  const lock = LOCKS[state];
+  let badge = card.querySelector(".tool-lock");
+  if (!badge) {
+    badge = el(`<span class="tool-lock"></span>`);
+    card.querySelector(".tool-head .tool-dot").after(badge);
+  }
+  badge.textContent = lock.glyph;
+  badge.title = `Permission — ${lock.hint}`;
+  const body = card.querySelector(".tool-body");
+  let block = body.querySelector(".io-perm");
+  if (!block) {
+    block = el(`<details class="io io-perm"><summary><span class="io-tag">ASK</span>
+      <span class="io-hint"></span></summary><div class="perm-detail"></div></details>`);
+    body.insertBefore(block, body.querySelector(".result-slot"));
+  }
+  block.querySelector(".io-hint").textContent = `permission — ${lock.hint}`;
+  block.querySelector(".perm-detail").innerHTML = permDetailHtml(reqEv, resEv);
+  // Open for the two states that want an answer or explain a failure, closed
+  // for a plain "allowed" — the same call `io-error` makes one block down.
+  block.open = state !== "allowed";
+}
+
+function permDetailHtml(reqEv, resEv) {
+  const verdict = !resEv ? "waiting for your decision"
+    : resEv.allow
+      ? (resEv.persist ? "allowed, and remembered as a rule" : "allowed, this once")
+      : "denied";
+  const rows = [`<div class="lbl">decision</div><div class="perm-line">${esc(verdict)}</div>`];
+  // The preview is the tool's own rendering of the call and the argument is
+  // what the rules matched on; showing both put the same string on screen
+  // twice for every path tool. The preview wins when there is one.
+  const asked = reqEv?.preview || reqEv?.arg || resEv?.arg || "";
+  if (asked) rows.push(`<div class="lbl">what it asked to do</div><pre>${esc(asked)}</pre>`);
+  if (reqEv?.rule_suggestion) {
+    rows.push(`<div class="lbl">rule offered</div>
+      <div class="perm-line perm-code">${esc(reqEv.rule_suggestion)}</div>`);
+  }
+  if (reqEv?.agent && reqEv.agent !== "main") {
+    rows.push(`<div class="lbl">agent</div><div class="perm-line">${esc(reqEv.agent)}</div>`);
+  }
+  return rows.join("");
 }
 
 // ---- subagents ----

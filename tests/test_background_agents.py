@@ -146,8 +146,8 @@ async def test_a_background_spawn_returns_a_handle_before_the_child_finishes(tmp
     result = await _start(deps, tmp_path)
 
     assert not result.is_error
-    assert '<agent_job id="explore-1"' in result.content
-    assert 'status="running"' in result.content
+    assert "agent_jobs[1]{id,type,status,seconds,collected,description}:" in result.content
+    assert result.content.splitlines()[2].startswith("  explore-1,explore,running,")
     await provider.started.wait()
     assert deps.jobs["explore-1"].status == RUNNING
 
@@ -185,7 +185,7 @@ async def test_agent_result_reports_a_running_job_instead_of_inventing_a_report(
     result = await AgentResultTool().run(
         AgentResultInput(agent_id="explore-1"), _ctx(deps, tmp_path)
     )
-    assert 'status="running"' in result.content
+    assert ",explore,running," in result.content
     assert "no report yet" in result.content
     assert "<subagent" not in result.content
     assert deps.jobs["explore-1"].collected is False
@@ -233,20 +233,27 @@ async def test_agent_status_lists_every_job_and_answers_about_one(tmp_path):
     deps, tasks = _deps(provider, cwd=tmp_path)
 
     empty = await AgentStatusTool().run(AgentStatusInput(), _ctx(deps, tmp_path))
-    assert 'count="0"' in empty.content
+    assert empty.content == "No background jobs have been started in this conversation."
 
     await _start(deps, tmp_path)
     await _start(deps, tmp_path, description="read the docs")
     await provider.started.wait()
 
     listing = await AgentStatusTool().run(AgentStatusInput(), _ctx(deps, tmp_path))
-    assert 'count="2"' in listing.content and 'running="2"' in listing.content
-    assert "explore-1" in listing.content and "explore-2" in listing.content
+    lines = listing.content.splitlines()
+    # The row count lives in the table header, so nothing else restates it.
+    assert lines[1] == "running: 2"
+    assert lines[2] == "uncollected: 0"
+    assert lines[3] == "agent_jobs[2]{id,type,status,seconds,collected,description}:"
+    assert lines[4].startswith("  explore-1,") and lines[5].startswith("  explore-2,")
+    assert "count=" not in listing.content
 
     one = await AgentStatusTool().run(
         AgentStatusInput(agent_id="explore-2"), _ctx(deps, tmp_path)
     )
-    assert one.content.startswith('<agent_job id="explore-2"')
+    # One job is reported in the same shape a listing of many uses.
+    assert one.content.splitlines()[1].startswith("agent_jobs[1]{")
+    assert one.content.splitlines()[2].startswith("  explore-2,")
     assert "read the docs" in one.content
 
     provider.gate.set()

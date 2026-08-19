@@ -2,7 +2,11 @@
 //
 // Four lanes (Input / Model / Tools / Agents) of duration bars sit on a
 // wall-clock x axis with collapsible idle gaps, a hover crosshair with a rich
-// card, and a persistent playhead. Below them the dense event table — windowed,
+// card, and a persistent playhead. The axis is labelled in clock time rather
+// than elapsed-since-start, and while a turn is open its right edge tracks the
+// wall clock, so a running tool draws as a bar that grows.
+//
+// Below them the dense event table — windowed,
 // selection-synced with the lanes both ways — and the right-hand inspector
 // (Summary / Payload / Result / Timing), which is unchanged.
 //
@@ -35,7 +39,17 @@ const HIT_SLOP_PX = 5;
 const LANE_OVERSCAN_PX = 240;
 const MAX_BARS = 2400;      // backstop; pixel dedup normally keeps us far below
 const ROW_OVERSCAN = 8;
-const TICK_TARGET_PX = 96;
+// Clock pills are wider than the bare offsets they replaced, so ticks need
+// more room than they used to before they start colliding.
+const TICK_TARGET_PX = 118;
+// How often the live edge is re-pinned to the wall clock. Four times a second
+// is enough for a running tool's bar to look like it is growing, and cheap
+// because the tick only moves the open bars — it never rebuilds the model.
+const LIVE_TICK_MS = 250;
+// The three states store.js treats as the end of a turn. Anything else, or a
+// tool that was called and has not answered, means the right edge is still
+// moving and "now" has to keep up with it.
+const SETTLED = new Set(["idle", "interrupted", "error"]);
 
 let table, detail, detailBody, detailTitle, searchBox, followBtn;
 let timelineEl, axisEl, plotEl, gutterEl, bandsEl, cursorEl, playEl, hoverEl;
@@ -63,16 +77,24 @@ let playV = null;            // playhead position, in virtual ms
 let rowH = 24;
 let dirty = 0;               // bit 1 = model, bit 2 = lanes, bit 4 = rows
 let frame = 0;
+let liveTimer = 0;           // the "now" ticker; only runs while a turn is open
 
 // An empty log still needs a coordinate system, or every mapping below would
 // have to special-case "no events yet".
 function emptyModel() {
   const t = Date.now();
   return {
-    items: [], bySeq: new Map(), agentDefs: new Map(),
+    items: [], bySeq: new Map(), agentDefs: new Map(), open: [], live: false,
     segs: [{ r0: t, r1: t + 1000, v0: 0, v1: 1000, collapsed: false }],
     tMin: t, tMax: t + 1000, totalV: 1000,
   };
+}
+
+// The right edge is still moving while a turn is in flight, or while a tool has
+// been called and has not answered. A settled session must not keep growing an
+// axis nobody is adding to.
+function isLive() {
+  return store.runningTools.size > 0 || !SETTLED.has(store.agentStatus);
 }
 
 // ---- classification (unchanged semantics) --------------------------------
@@ -249,6 +271,9 @@ export function initTrajectory() {
     }
     if (kind === "replay_done") { renderAll(); fit(); return; }
     if (kind === "event" && !store.replaying) appendEvent(ev);
+    // A status flip is the only signal that a turn started or ended without a
+    // logged event to go with it, and it is what decides whether "now" moves.
+    if (kind === "status") invalidate(1);
   });
 
   setFollowing(true);
@@ -300,10 +325,17 @@ function wireToolbar() {
   followBtn.addEventListener("click", () => setFollowing(!following, { jump: true }));
   document.getElementById("traj-fit").addEventListener("click", () => fit());
   const gapBtn = document.getElementById("traj-gaps");
-  gapBtn.addEventListener("click", () => {
-    collapseGaps = !collapseGaps;
+  const syncGapBtn = () => {
     gapBtn.classList.toggle("is-on", collapseGaps);
     gapBtn.setAttribute("aria-pressed", collapseGaps ? "true" : "false");
+    gapBtn.title = collapseGaps
+      ? "Idle stretches are collapsed to a marked band — click for true scale"
+      : "True scale: every idle minute takes its full width — click to collapse";
+  };
+  syncGapBtn();
+  gapBtn.addEventListener("click", () => {
+    collapseGaps = !collapseGaps;
+    syncGapBtn();
     renderAll();
     fit();
   });
@@ -449,7 +481,9 @@ function buildModel() {
   if (!n) { model = emptyModel(); return; }
 
   const raw = eventTimes(evs);
-  const resultAt = new Map();      // tool_call id -> index of its tool_result
+  const now = Date.now();
+  const live = isLive();
+  const resultAt = new Map();      // agent|call id -> index of its tool_result
   const agentPrev = new Map();     // agent_id -> index of that agent's last event
   const agentEnd = new Map();      // agent_id -> last time seen (for agent_spawned)
   // agent_id -> the definition it was spawned from. Only `agent_spawned`
@@ -458,7 +492,13 @@ function buildModel() {
   const agentDefs = new Map();
   for (let i = 0; i < n; i++) {
     const ev = evs[i];
-    if (ev.type === "tool_result" && ev.id) resultAt.set(ev.id, i);
+    const inner = ev.type === "agent_event" ? (ev.ev || {}) : ev;
+    // Keyed by agent as well as id: a subagent's ids are only unique within its
+    // own stream, and matching on the bare id left every delegated call either
+    // undated or paired with the wrong result.
+    if (inner.type === "tool_result" && inner.id != null) {
+      resultAt.set(callKey(ev, inner.id), i);
+    }
     if (ev.agent_id) agentEnd.set(ev.agent_id, raw[i]);
     if (ev.type === "agent_spawned" && ev.agent_id && ev.definition) {
       agentDefs.set(ev.agent_id, ev.definition);
@@ -467,6 +507,7 @@ function buildModel() {
 
   const items = new Array(n);
   const bySeq = new Map();
+  const open = [];                 // bars whose end is still the wall clock
   for (let i = 0; i < n; i++) {
     const ev = evs[i];
     const inner = ev.type === "agent_event" ? (ev.ev || {}) : ev;
@@ -474,13 +515,17 @@ function buildModel() {
     let t0 = raw[i];
     let t1 = raw[i];
     let inferred = false;
+    let running = false;
 
-    if (ev.type === "tool_call") {
-      const j = ev.id != null ? resultAt.get(ev.id) : undefined;
-      const res = j != null ? evs[j] : null;
+    if (inner.type === "tool_call") {
+      const j = inner.id != null ? resultAt.get(callKey(ev, inner.id)) : undefined;
+      const res = j != null ? (evs[j].type === "agent_event" ? evs[j].ev : evs[j]) : null;
       if (res) t1 = Math.max(raw[j], t0 + (res.ms || 0));
-      else if (i === n - 1) t1 = t0;   // still running; no honest end yet
-    } else if (ev.type === "tool_result") {
+      else if (live) { t1 = now; running = true; }
+      // A call with no result in a settled session never finished. Drawing it
+      // out to "now" would invent a duration nobody measured, so it stays a
+      // point — the row still says the call was made.
+    } else if (inner.type === "tool_result") {
       t0 = t1 = raw[i];
     } else if (inner.type === "assistant_message") {
       // The record lands when the turn completes, so the model was busy from
@@ -499,32 +544,46 @@ function buildModel() {
     const it = {
       i, seq: ev.seq, ev, inner, role,
       lane: LANE_OF[role] ?? 1,
-      t0, t1,
+      t0, t1, running,
       err: !!(inner.is_error || inner.type === "error"),
-      shown: true,
+      // Decided here rather than in rebuildRows because the segment layout
+      // below needs it: the gaps worth collapsing are the gaps in what the
+      // filters and the search box actually left on screen.
+      shown: visible(ev),
       v0: 0, v1: 0,
     };
     items[i] = it;
     bySeq.set(ev.seq, it);
+    if (running) open.push(it);
   }
 
   const tMin = Math.min(raw[0], items[0].t0);
   let tMax = tMin;
   for (const it of items) if (it.t1 > tMax) tMax = it.t1;
+  if (live && now > tMax) tMax = now;
 
   const segs = buildSegments(items, tMin, tMax);
   for (const it of items) {
     // Pin a bar into the segment its end lives in, so nothing is ever drawn
-    // straddling a collapsed band.
-    const s = segAt(segs, it.t1);
+    // straddling a collapsed band. A bar that ends exactly where a gap begins
+    // — a tool call, then twenty idle minutes — belongs to the segment it ran
+    // in, not to the gap; segAt alone picks the gap and used to shrink such a
+    // call to a dot inside the band that skipped over it.
+    const at = segAt(segs, it.t1);
+    const s = at.i > 0 && at.r0 === it.t1 ? segs[at.i - 1] : at;
     if (it.t0 < s.r0) it.t0 = s.r0;
     it.v0 = toVirt(segs, it.t0);
     it.v1 = Math.max(it.v0, toVirt(segs, it.t1));
   }
 
   const lastSeg = segs[segs.length - 1];
-  model = { items, bySeq, segs, agentDefs, tMin, tMax, totalV: Math.max(1, lastSeg.v1) };
+  model = {
+    items, bySeq, segs, agentDefs, open, live,
+    tMin, tMax, totalV: Math.max(1, lastSeg.v1),
+  };
 }
+
+function callKey(ev, id) { return (ev.agent_id ?? "") + "|" + id; }
 
 // Merge every bar's [t0,t1] into coverage; whatever is left uncovered and long
 // enough becomes a collapsed segment. Collapsing keeps a 90-minute session with
@@ -535,13 +594,24 @@ function buildSegments(items, tMin, tMax) {
     // synthetic second so bars and ticks have somewhere to live.
     return [{ r0: tMin, r1: tMin + 1000, v0: 0, v1: 1000, collapsed: false }];
   }
-  const spans = items.map((it) => [it.t0, it.t1]).sort((a, b) => a[0] - b[0]);
+  // Coverage comes from the events the filters and the search box left on
+  // screen. Filtering to TOOL should collapse the minutes where only the model
+  // was talking — otherwise the "gap filter" answers a question about a view
+  // nobody is looking at.
+  const spans = items.filter((it) => it.shown).map((it) => [it.t0, it.t1])
+    .sort((a, b) => a[0] - b[0]);
   const covered = [];
   for (const [a, b] of spans) {
     const last = covered[covered.length - 1];
     if (last && a <= last[1]) last[1] = Math.max(last[1], b);
     else covered.push([a, b]);
   }
+  // The axis always spans session start → now, so an idle head or tail is a
+  // gap like any other. Zero-length sentinels let the loop below find them
+  // without a second code path; in the unfiltered case they are no-ops.
+  if (!covered.length) covered.push([tMin, tMin]);
+  if (covered[0][0] > tMin) covered.unshift([tMin, tMin]);
+  if (covered[covered.length - 1][1] < tMax) covered.push([tMax, tMax]);
   const thr = Math.max(GAP_MIN_MS, (tMax - tMin) * 0.02);
   const gaps = [];
   if (collapseGaps) {
@@ -563,6 +633,7 @@ function buildSegments(items, tMin, tMax) {
     v += gapV; r = b;
   }
   segs.push({ r0: r, r1: Math.max(tMax, r + 1), v0: v, v1: v + Math.max(1, tMax - r), collapsed: false });
+  segs.forEach((s, i) => { s.i = i; });
   return segs;
 }
 
@@ -619,6 +690,25 @@ function fit() {
   setView(0, model.totalV);
 }
 
+// Whether the viewport currently shows the whole session. Asked *before* the
+// model grows, so a fitted view stays fitted as time passes instead of letting
+// the newest work slide off the right-hand edge.
+function isFitted() {
+  // Relative, not exact: setView keeps a 2% margin either side of a fitted
+  // view, so an exact test would report "the reader has zoomed in" the first
+  // time anything nudged the viewport by a pixel.
+  const tol = Math.max(4, model.totalV * 0.035);
+  return view.v0 <= tol && view.v0 + view.span >= model.totalV - tol;
+}
+
+// Reconcile the viewport with a model that just got longer. A fitted view keeps
+// showing everything; a followed one keeps the live edge in frame at whatever
+// zoom the reader chose; a view they panned somewhere else is left alone.
+function keepUp(wasFit) {
+  if (wasFit) fit();
+  else if (following) ensureVisible(model.totalV);
+}
+
 function panBy(dv) { setView(view.v0 + dv, view.span); }
 
 function zoomAt(px, k) {
@@ -635,15 +725,75 @@ function ensureVisible(v, { center = false } = {}) {
   else if (v > view.v0 + view.span - pad) setView(v - view.span + pad, view.span);
 }
 
+// ---- the moving present --------------------------------------------------
+//
+// Every event in the log is a fact about the past, but a turn in flight has a
+// right edge that is still moving: a tool called eight seconds ago has been
+// running for eight seconds, and its bar has to say so without waiting for the
+// result to land. Rebuilding the model four times a second would be the obvious
+// way and the wrong one — it is O(n log n) in a log that can hold thousands of
+// events. A passing second only changes two things, so only those are touched.
+
+function advanceLive() {
+  if (!model.live) return false;
+  const now = Date.now();
+  const last = model.segs[model.segs.length - 1];
+  // A collapsed tail can only happen when a filter hid everything recent; the
+  // next full rebuild sorts it out, and stretching a hatched band meanwhile
+  // would misreport the very thing the band exists to report.
+  if (last.collapsed || now <= last.r1) return false;
+  last.r1 = now;
+  last.v1 = last.v0 + (last.r1 - last.r0);
+  model.tMax = now;
+  model.totalV = Math.max(1, last.v1);
+  for (const it of model.open) {
+    it.t1 = now;
+    it.v1 = Math.max(it.v0, toVirt(model.segs, now));
+  }
+  return true;
+}
+
+function syncLiveTicker() {
+  const want = isLive();
+  if (want === !!liveTimer) return;
+  if (!want) {
+    clearInterval(liveTimer);
+    liveTimer = 0;
+    // The turn is over: rebuild so the open bars settle onto the ends the log
+    // actually recorded rather than on whichever millisecond the ticker died.
+    invalidate(1);
+    return;
+  }
+  liveTimer = setInterval(() => {
+    if (!isLive()) { syncLiveTicker(); return; }
+    // A hidden panel has no width, so there is nothing to paint and no point
+    // walking the model for it.
+    if (!plotEl.clientWidth) return;
+    const wasFit = isFitted();
+    if (!advanceLive()) return;
+    keepUp(wasFit);
+    invalidate(2);
+  }, LIVE_TICK_MS);
+}
+
 // ---- painting ------------------------------------------------------------
 
 function invalidate(bits) {
   dirty |= bits;
   if (frame) return;
   frame = requestAnimationFrame(() => {
-    frame = 0;
     const d = dirty; dirty = 0;
-    if (d & 1) { buildModel(); rebuildRows(); }
+    if (d & 1) {
+      const wasFit = isFitted();
+      buildModel(); rebuildRows();
+      keepUp(wasFit);
+      syncLiveTicker();
+      // keepUp moves the viewport, which asks for a repaint we are about to do
+      // anyway — clearing it here is what keeps that from costing a whole
+      // extra frame on every event.
+      dirty &= ~2;
+    }
+    frame = 0;
     if (d & (2 | 1)) paintLanes();
     if (d & (4 | 1)) paintRows();
   });
@@ -658,18 +808,17 @@ function renderAll() {
   measure();
   buildModel();
   rebuildRows();
+  syncLiveTicker();
   if (playV != null) playV = Math.min(playV, model.totalV);
   paintLanes();
   paintRows();
   if (following) scrollToNewest();
 }
 
+// `shown` is decided in buildModel (the segment layout depends on it); this is
+// only the list the table paints from.
 function rebuildRows() {
-  rows = [];
-  for (const it of model.items) {
-    it.shown = visible(it.ev);
-    if (it.shown) rows.push(it);
-  }
+  rows = model.items.filter((it) => it.shown);
 }
 
 function newestSeq() {
@@ -697,6 +846,7 @@ function paintLanes() {
       seen.add(key);
     }
     let cls = "tj-bar r-" + it.role;
+    if (it.running) cls += " is-run";
     if (it.err) cls += " is-err";
     if (it.seq === selectedSeq) cls += " is-sel";
     if (it.seq === newest) cls += " is-newest";
@@ -761,24 +911,68 @@ function paintAxis(W) {
   let step = STEPS[STEPS.length - 1];
   for (const st of STEPS) if (Math.max(1, active) / st <= target) { step = st; break; }
 
-  const marks = [];
+  const resumes = [];   // the clock work restarted at, on the far side of a gap
+  const grid = [];
   for (const { s, r0, r1 } of vis) {
     if (s.collapsed) continue;
-    marks.push(r0);                                 // the moment work resumes
+    // A segment merely clipped by the viewport edge gets no resume mark: there
+    // the clock is a scroll position, not something that happened.
+    if (s.v0 >= view.v0) resumes.push(r0);
     for (let t = Math.ceil(r0 / step) * step, g = 0; t <= r1 && g < 200; t += step, g++) {
-      marks.push(t);
+      grid.push(t);
     }
   }
-  marks.sort((a, b) => a - b);
 
-  let html = "";
-  let lastX = -1e9;
-  for (const t of marks) {
+  // Sessions almost never cross a midnight, and the ones that do must not read
+  // as if they happened in one afternoon — so the date is spent only on the
+  // pills where the day actually turns over.
+  const crossesDay = vis.length && dayOf(vis[0].r0) !== dayOf(vis[vis.length - 1].r1);
+
+  // Pills are claimed in order of what the reader loses least by not seeing.
+  // A round number can be inferred from its neighbours; the live edge and the
+  // clock on the far side of a collapsed gap cannot, and dropping the latter
+  // was exactly how the old axis got away with hiding twenty minutes.
+  //
+  // Collision is tested on the box the pill will occupy rather than on a fixed
+  // spacing, because a pill anchored at the viewport edge takes its whole
+  // width to one side and a centred one straddles its tick.
+  const placed = [];
+  const chosen = [];
+  const take = (t, kind) => {
     const x = xOf(toVirt(segs, t));
-    if (x < 0 || x > W) continue;
-    if (x - lastX < 54) continue;
-    lastX = x;
-    html += `<i class="tj-tick" style="left:${x.toFixed(1)}px"><b>${esc(fmtRel(t - model.tMin))}</b></i>`;
+    if (x < 0 || x > W) return;
+    // Estimated, not measured: measuring would mean a layout per tick per
+    // frame. The mono font makes the estimate good to a couple of pixels.
+    const chars = (kind === "now" ? 12 : kind === "grid" && step >= 60000 ? 5 : 8)
+      + (crossesDay ? 7 : 0);
+    const w = chars * 5.9 + 16;
+    const lo = x < 36 ? x : x > W - 36 ? x - w : x - w / 2;
+    const box = [lo - 4, lo + w + 4];
+    for (const [a, b] of placed) if (box[0] < b && a < box[1]) return;
+    placed.push(box);
+    chosen.push({ t, x, kind });
+  };
+  if (model.live) take(model.tMax, "now");
+  for (const t of resumes) take(t, "resume");
+  for (const t of grid) take(t, "grid");
+  chosen.sort((a, b) => a.t - b.t);
+
+  let lastDay = crossesDay ? "" : dayOf(model.tMin);
+  let html = "";
+  for (const { t, x, kind } of chosen) {
+    const day = dayOf(t);
+    // A grid pill says as much as its spacing can distinguish; the other two
+    // are single instants and get the seconds whatever the spacing is.
+    const prec = kind === "grid" ? step : Math.min(step, 1000);
+    const label = kind === "now"
+      ? "now " + clockLabel(t, prec)
+      : (day === lastDay ? "" : dayOf(t, true) + " ") + clockLabel(t, prec);
+    lastDay = day;
+    // Pills are centred on their tick, which would clip the two at the ends of
+    // a viewport that has nowhere to spill into; those anchor inwards instead.
+    const anchor = x < 36 ? " a-s" : x > W - 36 ? " a-e" : "";
+    html += `<i class="tj-tick${anchor}${kind === "now" ? " is-now" : ""}"
+      style="left:${x.toFixed(1)}px"><b>${esc(label)}</b></i>`;
   }
   axisEl.innerHTML = html;
 }
@@ -836,7 +1030,9 @@ function scrollToNewest() {
   const last = model.items[model.items.length - 1];
   if (last) {
     playV = last.v1;
-    ensureVisible(last.v1);
+    // Not ensureVisible: its padding would pan a fitted view off its own left
+    // edge, and the next event would then find it "zoomed in".
+    keepUp(isFitted());
     invalidate(2);
   }
   invalidate(4);
@@ -923,9 +1119,10 @@ function showHoverCard(it, x, rect) {
      <div class="hc-prev">${esc(oneLine(previewOf(it.ev), 150))}</div>
      <div class="hc-time"><span>${esc(clock(it.t0))}</span>
        <span class="hc-arrow">→</span>
-       <span>${esc(clock(it.t1))}</span>
+       <span>${it.running ? "now" : esc(clock(it.t1))}</span>
        <span class="hc-dur">${esc(ms ? fmtMs(Math.round(ms)) : "0 ms")}</span></div>
-     <div class="hc-off">at ${esc(fmtRel(it.t0 - model.tMin))}${dur ? " · spans " + esc(fmtDur(dur)) : ""}${
+     <div class="hc-off">at ${esc(fmtRel(it.t0 - model.tMin))}${
+       it.running ? " · still running" : dur ? " · spans " + esc(fmtDur(dur)) : ""}${
        target ? " · governed by " + esc(target.label) : ""}</div>`;
   hoverEl.classList.remove("hidden");
   const w = hoverEl.offsetWidth || 240;
@@ -972,6 +1169,30 @@ export function selectSeq(seq, { scroll = false, center = false, keepFollow = fa
 function clock(ms) {
   const d = new Date(ms);
   return isNaN(d) ? "–" : d.toLocaleTimeString();
+}
+
+const pad2 = (x) => String(x).padStart(2, "0");
+
+// Day identity, or the label for one. Two returns from one function because the
+// caller needs both for the same instant and they must never disagree.
+function dayOf(ms, label = false) {
+  const d = new Date(ms);
+  return label
+    ? d.toLocaleDateString([], { month: "short", day: "numeric" })
+    : `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+// The axis reads clock time, so a pill says only as much of it as the tick
+// spacing can actually distinguish: minutes across an hour-long session,
+// tenths across a burst of tool calls a few hundred milliseconds wide.
+function clockLabel(ms, step) {
+  const d = new Date(ms);
+  if (step >= 60000) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (step >= 1000) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${
+    Math.floor(d.getMilliseconds() / 100)}`;
 }
 
 function fmtRel(ms) {
@@ -1036,6 +1257,7 @@ function renderDetail() {
     const rowsKv = [
       ["Started", fmtTime(ev.ts) || "–"],
       inner.ms != null ? ["Duration", fmtMs(inner.ms)] : null,
+      it && it.running ? ["Ended", "still running"] : null,
       it ? ["Offset", fmtRel(it.t0 - model.tMin)] : null,
       it && it.t1 > it.t0 ? ["Span", fmtDur(it.t1 - it.t0)] : null,
       ["Source", ev.agent_id ? `subagent ${ev.agent_id}` : "main agent"],

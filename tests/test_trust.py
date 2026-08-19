@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from quickcode.plugins import mcp
 from quickcode.security import trust
 from quickcode.security.trust import TrustStore
+from tests.conftest import await_until
 
 
 def _write_settings(project: Path, servers: dict) -> None:
@@ -36,6 +38,23 @@ def _marker_server(marker: Path) -> dict:
             "args": ["-c", f"open(r'{marker}', 'w').write('spawned')"],
         }
     }
+
+
+def _let_an_ungated_copy_finish(tmp_path: Path) -> None:
+    """Run the marker command with nothing in its way, and wait for it to exit.
+
+    The tests below that assert a marker *never* appears need to have waited
+    long enough for it to have appeared if it were coming, and a magic
+    `sleep(1)` is both a guess and a permanent tax on the suite. This is the
+    calibrated version: spawn the identical command ungated and block until the
+    OS has run it to completion. Once an unobstructed copy has been and gone, a
+    gated one that has written nothing was never spawned at all.
+    """
+    control = tmp_path / "CONTROL.txt"
+    subprocess.run(
+        [sys.executable, "-c", f"open(r'{control}', 'w').write('control')"], check=True
+    )
+    assert control.exists(), "the control spawn itself did not run"
 
 
 # ---- hashing / status ----
@@ -74,6 +93,7 @@ def test_untrusted_project_does_not_spawn(tmp_path):
         return servers, tools
 
     servers, tools = asyncio.run(go())
+    _let_an_ungated_copy_finish(tmp_path)
     assert marker.exists() is False, "untrusted project must not execute its MCP command"
     assert servers == []
     assert tools == []
@@ -89,8 +109,10 @@ def test_trusted_project_spawns(tmp_path):
 
     async def go():
         servers, _ = await mcp.connect_servers(project, store=store)
-        # give the spawned interpreter a moment to write its marker
-        await asyncio.sleep(2.0)
+        # Wait for the marker itself, not for a fixed guess at how long an
+        # interpreter takes to start: this lands in milliseconds when it works
+        # and still reports a real failure when it does not.
+        await await_until(marker.exists)
         for s in servers:
             await s.stop()
 
@@ -259,11 +281,11 @@ def test_revoked_project_does_not_spawn(tmp_path):
 
     async def go():
         servers, _ = await mcp.connect_servers(project, store=store)
-        await asyncio.sleep(1.0)
         for s in servers:
             await s.stop()
 
     asyncio.run(go())
+    _let_an_ungated_copy_finish(tmp_path)
     assert marker.exists() is False
 
 
@@ -288,7 +310,7 @@ def test_user_scope_servers_bypass_gate(tmp_path, monkeypatch):
 
     async def go():
         servers, _ = await mcp.connect_servers(project, store=store)
-        await asyncio.sleep(2.0)
+        await await_until(marker.exists)
         for s in servers:
             await s.stop()
 

@@ -80,6 +80,8 @@ export const api = {
   cleanupSessions: (dryRun = false) => req("POST", P("/sessions/cleanup"), { dry_run: dryRun }),
   openConversation: (resume) => req("POST", P("/conversations"), resume ? { resume } : {}),
   models: (refresh = false) => req("GET", P(`/models?refresh=${refresh}`)),
+  // Install-wide, like the endpoint it asks about — never project-scoped.
+  credits: () => req("GET", "/credits"),
   plugins: () => req("GET", P("/plugins")),
   gitStatus: () => req("GET", P("/git/status")),
   gitDiff: (path) => req("GET", P(`/git/diff?path=${encodeURIComponent(path)}`)),

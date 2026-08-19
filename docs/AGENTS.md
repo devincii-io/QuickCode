@@ -41,7 +41,7 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 
 ### 1.1 Detached jobs (`background: true`)
 
-`background: true` starts the child on a task the **conversation** owns and returns a handle immediately — `<agent_job id="explore-3" type="explore" status="running" seconds="0.0"/>` — so the model spends the rest of its turn on other work instead of blocking on a report it does not need yet.
+`background: true` starts the child on a task the **conversation** owns and returns a handle immediately — a one-row TOON table, `agent_jobs[1]{id,type,status,seconds,collected,description}:` over `explore-3,explore,running,0.0,false,""` — so the model spends the rest of its turn on other work instead of blocking on a report it does not need yet.
 
 - **Refusals stay synchronous.** Preparation (definition lookup, composition resolve, budget and depth checks, id minting) runs before the tool result is written, so an unknown `agent_type` or an exhausted budget is still a tool error rather than a job that exists only to report that it should not.
 - **Collection:** `agent_status` (all jobs, or one by id) and `agent_result(agent_id, wait_s?)`. The report is the same one a blocking call returns — sanitized and artifact-offloaded through the same `_run_and_finish` path — so collecting is exactly as safe as reading the spawn result. `wait_s` (max 600) turns `agent_result` into a bounded join for the moment the parent genuinely needs the answer.

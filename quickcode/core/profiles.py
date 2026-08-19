@@ -68,7 +68,11 @@ PROFILE_REFUSED = "profile_refused"
 # about what the pattern means, only about whether the engine could ever look
 # at it. Anything else the engine silently reads as a bare tool name that no
 # tool is called, so it matches nothing, forever, without saying so.
-_RULE_SHAPE = re.compile(r"\w+(\(.*\))?")
+#
+# The tool-name character set matches ``permissions._RULE_TOOL`` and is wider
+# than ``\w`` for the same reason: ``mcp__company-kb__kb_search`` is a real tool
+# name, and calling it junk was this validator's own bug rather than the user's.
+_RULE_SHAPE = re.compile(r"[\w.:-]+(\(.*\))?")
 
 
 def _clean_rules(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:

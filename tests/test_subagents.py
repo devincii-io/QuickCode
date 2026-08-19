@@ -76,6 +76,42 @@ def test_sanitize_neutralizes_harness_syntax():
     assert out.startswith("[quickcode: sanitized")
 
 
+def test_a_toon_table_in_a_report_is_left_alone():
+    """The deliberate half of the sanitizer's scope.
+
+    A ``<system-reminder>`` is mangled because it carries no author -- it reads
+    as the harness speaking. A TOON table is data, it arrives inside the
+    sanitized-report marker, and a forged one is worth what "I found three
+    matches" is worth from the same child. The subagents most likely to emit
+    one are the search-and-report agents quoting their own tool output back,
+    so mangling it would cost real findings.
+    """
+    report = 'matches[3]{path,line,text}:\n  a.py,1,x\n  b.py,2,y\n  c.py,3,z'
+    out = sanitize_report(report)
+
+    assert report in out
+    assert out.startswith("[quickcode: sanitized")
+
+
+def test_a_job_row_escapes_what_the_xml_attributes_hand_rolled():
+    """``to_tag`` escaped ``&<>"`` and newlines itself. The encoder owns that
+    now, and a description can no longer end the record it sits in."""
+    from quickcode.subagents.jobs import JobRecord
+
+    job = JobRecord(agent_id="explore-1", agent_type="explore",
+                    description='say "hi", then\nstop')
+    body = job.to_toon()
+
+    assert body.splitlines()[1] == (
+        "agent_jobs[1]{id,type,status,seconds,collected,description}:"
+    )
+    row = body.splitlines()[2]
+    assert row.startswith("  explore-1,explore,running,")
+    assert row.endswith(r'"say \"hi\", then\nstop"')
+    # Every field on every row, so a listing of many is one table.
+    assert ",false," in row
+
+
 def test_builtins_present_and_explore_is_read_only():
     defs = builtin_defs()
     assert set(defs) == {"explore", "general"}

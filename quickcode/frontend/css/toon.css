@@ -1,0 +1,49 @@
+/* TOON blocks: the model's view of structured data, shown as the model got it.
+ *
+ * Only structure is coloured. Values stay in the body colour on purpose: a
+ * grep result whose text is dimmed reads as metadata, and it is the answer.
+ *
+ * Every colour here is a theme variable from app.css, with no hardcoded hex
+ * fallback. A literal colour survives a user swapping the palette and then
+ * sits there in the wrong hue, which is worse than inheriting.
+ *
+ * Loaded after chat.css and trajectory.css so `.toon` inside a tool card or a
+ * trajectory row wins over their generic `pre` rules. */
+
+.toon {
+  margin: 0;
+  padding: 8px 10px;
+  font: 12px/1.55 var(--mono);
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--fg);
+  background: var(--panel);
+  border-radius: 6px;
+  tab-size: 2;
+}
+
+/* The key of a field, and the name in front of a table header. */
+.toon .tn-key { color: var(--accent); }
+
+/* `[50]` / `[2:]`. The row count is the part worth finding by eye, because it
+ * is what tells you whether the result was cut. */
+.toon .tn-count {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* `{path,line,text}`, the field list, declared once. */
+.toon .tn-fields { color: var(--fg-dim); }
+
+.toon .tn-punc { color: var(--fg-faint); }
+.toon .tn-val,
+.toon .tn-row { color: var(--fg); }
+
+/* A TOON block inside a tool card's IN/OUT slot, or a subagent card, already
+ * has the card's own padding and surface around it. */
+.io .toon,
+.result-slot .toon,
+.pa-tool-body .toon {
+  background: transparent;
+  padding: 6px 0 2px;
+}

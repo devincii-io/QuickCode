@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from quickcode.config import DEFAULT_MAX_TOKENS
 from quickcode.core.events import AgentEvent, Usage
 from quickcode.core.history import History
 from quickcode.core.loop import run_turn
@@ -28,6 +29,10 @@ class PermissionRequest:
     rule_suggestion: str
     preview: str = ""
     agent_name: str = "main"
+    # Which tool call is waiting. The UI folds the decision into that call's
+    # card, and parallel read-only calls mean several requests can be open at
+    # once — "the most recent card" would attach the wrong one.
+    call_id: str = ""
 
 
 @dataclass
@@ -199,6 +204,13 @@ class AgentInstance:
         # than a conversation already running. A direct embedder that passes
         # nothing gets the declared defaults.
         self.limits = limits or RuntimeLimits()
+        # What one turn may generate, and how sharp it is. Set from the user's
+        # config at open; 0 / None mean "send nothing and let the provider
+        # decide". The response budget matters beyond taste: OpenRouter checks
+        # credit against it, so an account with a small balance is refused
+        # outright until it is lowered.
+        self.max_tokens: int = DEFAULT_MAX_TOKENS
+        self.temperature: float | None = None
         self.ledger = Ledger()
         self.context_length = context_length
         self._cancel = asyncio.Event()

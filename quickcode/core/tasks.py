@@ -13,9 +13,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quickcode.context import toon
 from quickcode.workspace import ensure_project_dir_for
 
 STATUSES = ("pending", "in_progress", "completed", "deleted")
+DESCRIPTION_CHARS = 200
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 @dataclass
@@ -193,19 +200,42 @@ class TaskBoard:
         return board
 
     # --- rendering -----------------------------------------------------
-    def render_checklist(self) -> str:
+    def render_table(self) -> str:
+        """The board as the model reads it: one TOON row per task.
+
+        The markdown checklist this replaces could only carry a mark, an id
+        and a subject, so ``owner``, ``blocks`` and ``description`` were
+        silently dropped -- a coordination board whose rendering hid who had
+        claimed what. A table has columns for them.
+
+        ``description`` is clipped rather than dropped: the whole point is
+        that it stops vanishing, but ``task_list`` runs often enough that a
+        paragraph per row would be paid for on every call. ``task_get``
+        returns the full text.
+        """
         tasks = self.list()
         if not tasks:
             return "(no tasks)"
-        lines = []
-        marks = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}
-        for task in tasks:
-            mark = marks.get(task.status, "[ ]")
-            line = f"{mark} {task.id} {task.subject}"
-            incomplete_blockers = [
-                b for b in task.blocked_by if not (self.tasks.get(b) and self.tasks[b].status == "completed")
-            ]
-            if incomplete_blockers:
-                line += f" (blocked by {', '.join(incomplete_blockers)})"
-            lines.append(line)
-        return "\n".join(lines)
+        rows = [
+            {
+                "id": task.id,
+                "status": task.status,
+                "subject": task.subject,
+                "owner": task.owner or "",
+                # Space-joined, not comma-joined: a list has nowhere to go in a
+                # flat row, and a comma would only force the cell to be quoted.
+                "blocked_by": " ".join(self._open_blockers(task)),
+                "blocks": " ".join(task.blocks),
+                "description": _clip(task.description, DESCRIPTION_CHARS),
+            }
+            for task in tasks
+        ]
+        return toon.fenced({"tasks": rows})
+
+    def _open_blockers(self, task: Task) -> list[str]:
+        """Blockers that are not completed yet -- the only ones that still stop
+        this task from starting."""
+        return [
+            b for b in task.blocked_by
+            if not (self.tasks.get(b) and self.tasks[b].status == "completed")
+        ]

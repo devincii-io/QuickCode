@@ -641,6 +641,14 @@ _SECTION_PROSE: dict[str, tuple[str, str, str]] = {
         "Instruction text only. It does not run anything and does not know which "
         "test command this project uses.",
     ),
+    "prompt.result_format": (
+        "One worked example of the TOON encoding structured tool results arrive in.",
+        "It is how the agent knows a row count it can check against what it "
+        "actually read, so a truncated search stops looking like an exhaustive "
+        "one.",
+        "Four lines showing a header, a count and two rows. It describes what "
+        "the tools already emit; it does not decide the encoding.",
+    ),
     "prompt.environment": (
         "The session's facts: directory, platform, shell, date and git branch.",
         "Read from the machine when the session opens. It is what the agent "
@@ -689,6 +697,13 @@ _SECTION_LOCKED: dict[str, tuple[str, Recourse]] = {
         "read correctly in the transcript and behave differently in the loop.",
         Recourse("author", "Write your own section to run after this one",
                  "prompt_section"),
+    ),
+    "prompt.result_format": (
+        "This block describes what the tools actually encode. Rewriting it to "
+        "describe a different format would not change a single tool result — "
+        "it would only teach the agent to read them wrongly.",
+        Recourse("docs", "The encoder is the source of truth for this block",
+                 "docs/PROMPTS.md#1-system-prompt-template"),
     ),
     "prompt.environment": (
         "These are observations, not instructions. A hand-edited environment "

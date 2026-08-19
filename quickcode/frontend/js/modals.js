@@ -69,6 +69,43 @@ function modal(title, bodyHtml, footHtml = "", { dismissible = true } = {}) {
   return m;
 }
 
+/** A yes/no the caller can await. Resolves false on cancel, Escape or backdrop.
+ *
+ * `window.confirm` would do this in one line and is not used anywhere in the
+ * app: it blocks the whole window, which in a WebView2 shell means the socket
+ * stops being read and a streaming turn stalls behind a dialog nobody is
+ * looking at. Everything that needs an answer goes through the modal layer.
+ */
+export function confirmModal({ title, body, confirm = "Confirm", danger = true }) {
+  return new Promise((resolve) => {
+    let answered = false;
+    const done = (value) => {
+      if (answered) return;
+      answered = true;
+      resolve(value);
+    };
+    const m = modal(
+      esc(title),
+      `<div class="cf-body">${body}</div>`,
+      `<button class="btn" data-close>Cancel</button>
+       <button class="btn ${danger ? "danger" : "primary"}" data-yes>${esc(confirm)}</button>`,
+    );
+    m.querySelector("[data-yes]").addEventListener("click", () => {
+      done(true);
+      closeModal();
+    });
+    // Every other way out of the dialog is a no, and there are four of them
+    // (✕, Cancel, backdrop, Escape). Watching for the node leaving the DOM
+    // catches all four without wiring each one.
+    new MutationObserver((_records, obs) => {
+      if (!m.isConnected) {
+        obs.disconnect();
+        done(false);
+      }
+    }).observe(root(), { childList: true });
+  });
+}
+
 // ---- permission review ----
 //
 // Reviews are a QUEUE, not a single slot. Read-only tool calls in one assistant
@@ -1010,6 +1047,15 @@ export function openDirBrowser(onPick) {
 /** The three install-level things worth changing without leaving the chat.
  *  Everything else — plugins, prompt, agents, compositions — lives in the
  *  configuration view, and the footer link is how you get there. */
+/** The balance as a sentence, including the honest "we cannot know" cases. */
+export function creditLine(c) {
+  if (!c || !c.supported) return c?.error || "this provider does not publish a balance";
+  if (c.available == null) return c.error || "unknown";
+  const money = (n) => `$${Number(n).toFixed(2)}`;
+  const left = `${money(c.available)} left`;
+  return c.total != null ? `${left} of ${money(c.total)}` : left;
+}
+
 export function openQuickSettings({ onFull } = {}) {
   const m = modal(
     "Quick settings",
@@ -1020,6 +1066,18 @@ export function openQuickSettings({ onFull } = {}) {
        <input id="qs-baseurl" spellcheck="false" placeholder="loading…" disabled></div>
      <div class="set-field"><label>API key <span id="qs-key-state"></span></label>
        <input id="qs-apikey" type="password" placeholder="sk-… (stored encrypted at rest)"></div>
+     <div class="set-field"><label>Credits <span id="qs-credits-state"></span></label>
+       <div class="qs-hint" id="qs-credits">checking…</div></div>
+     <div class="set-field"><label>Max response tokens
+       <span class="qs-hint">— the provider reserves credit against this; lower it
+       if you are told the balance will not cover the request. 0 = provider's own
+       default.</span></label>
+       <input id="qs-maxtok" type="number" min="0" max="200000" step="256"
+              inputmode="numeric" placeholder="16384"></div>
+     <div class="set-field"><label>Temperature
+       <span class="qs-hint">— blank keeps the provider's default.</span></label>
+       <input id="qs-temp" type="number" min="0" max="2" step="0.1"
+              inputmode="decimal" placeholder="default"></div>
      <div class="set-field"><label>Theme</label>
        <div class="qs-themes" id="qs-themes"></div></div>
      <span class="set-flash" id="qs-msg"></span>`,
@@ -1043,6 +1101,24 @@ export function openQuickSettings({ onFull } = {}) {
     url.disabled = false;
     url.value = bs.base_url || "";
     url.placeholder = "https://…";
+    // The balance is a network round trip, so it fills in on its own rather
+    // than holding the dialog closed until the provider answers.
+    (async () => {
+      const box = m.querySelector("#qs-credits");
+      try {
+        const c = await api.credits();
+        if (!m.isConnected) return;
+        box.textContent = creditLine(c);
+        box.style.color = c.available != null && c.available < 1
+          ? "var(--warning)" : "var(--fg-faint)";
+      } catch {
+        if (m.isConnected) box.textContent = "could not be checked";
+      }
+    })();
+    const maxTok = m.querySelector("#qs-maxtok");
+    const temp = m.querySelector("#qs-temp");
+    if (bs.max_tokens != null) maxTok.value = String(bs.max_tokens);
+    if (bs.temperature != null) temp.value = String(bs.temperature);
     m.querySelector("#qs-key-state").innerHTML = bs.has_api_key
       ? '<span class="ok-note">· saved</span>'
       : `<span class="warn-note">· not set (or $${esc(bs.api_key_env || "")})</span>`;
@@ -1075,10 +1151,21 @@ export function openQuickSettings({ onFull } = {}) {
 
   m.querySelector("#qs-save").addEventListener("click", async () => {
     try {
-      await api.putConfig({ base_url: url.value.trim() });
+      // An empty box means "leave it alone"; 0 means "send no cap".
+      const rawMax = m.querySelector("#qs-maxtok").value.trim();
+      const rawTemp = m.querySelector("#qs-temp").value.trim();
+      const patch = { base_url: url.value.trim() };
+      if (rawMax !== "") patch.max_tokens = Number(rawMax);
+      patch.temperature = rawTemp === "" ? null : Number(rawTemp);
+      await api.putConfig(patch);
       const key = m.querySelector("#qs-apikey").value.trim();
       if (key) await api.putApiKey(key);
-      store.bootstrap = { ...(store.bootstrap || {}), base_url: url.value.trim() };
+      store.bootstrap = {
+        ...(store.bootstrap || {}),
+        base_url: url.value.trim(),
+        ...(patch.max_tokens != null ? { max_tokens: patch.max_tokens } : {}),
+        temperature: patch.temperature,
+      };
       flashMsg("Saved. New sessions pick this up.");
     } catch (err) {
       flashMsg("Save failed: " + err.message, "err");

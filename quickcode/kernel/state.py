@@ -302,4 +302,11 @@ def save_entry(cwd: Path, plugin_id: str, *, enabled: bool | None = None,
     section[plugin_id] = entry
     raw[PLUGINS_KEY] = section
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    # The project settings file is covered by the trust hash, so saving a
+    # setting from the Settings page untrusted the project it was saved in --
+    # silently switching off its allow rules and its MCP servers. A change the
+    # user made here is not a reason to stop trusting the project.
+    from quickcode.security.trust import keep_trust
+
+    with keep_trust(cwd):
+        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")

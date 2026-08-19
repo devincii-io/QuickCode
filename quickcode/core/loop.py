@@ -142,6 +142,8 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
         model=agent.model,
         messages=agent.history.build_messages(),
         tools=_tools_for(agent),
+        max_tokens=agent.max_tokens or None,
+        temperature=agent.temperature,
     )
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -346,6 +348,7 @@ async def _run_tool(
             rule_suggestion=agent.permissions.suggest_rule(call.name, arg_target),
             preview=tool.render_call(inp),
             agent_name=agent.name,
+            call_id=call.id,
         )
         outcome = await agent.permission_cb(req)
         if not outcome.allow:

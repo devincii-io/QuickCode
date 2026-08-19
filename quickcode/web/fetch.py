@@ -33,6 +33,10 @@ MAX_BYTES = 4_000_000
 MAX_REDIRECTS = 5
 DEFAULT_TIMEOUT_S = 30.0
 MAX_TIMEOUT_S = 120.0
+# The floor a caller's `timeout_s` is clamped up to. A model that asks for
+# 0.001s has not configured a fast fetch, it has configured a fetch that always
+# reports a timeout, so the floor exists to stop the tool lying about the web.
+MIN_TIMEOUT_S = 1.0
 
 # Content types worth handing a language model. Anything else is refused with
 # its type named, which is more useful than 400 KB of decoded PNG.
@@ -135,7 +139,7 @@ async def fetch_url(
     max_redirects: int = MAX_REDIRECTS,
 ) -> FetchOutcome:
     """Fetch one URL, validating every hop. Raises :class:`FetchError`."""
-    timeout_s = max(1.0, min(float(timeout_s), MAX_TIMEOUT_S))
+    timeout_s = max(MIN_TIMEOUT_S, min(float(timeout_s), MAX_TIMEOUT_S))
     try:
         async with asyncio.timeout(timeout_s):
             return await _fetch(url, transport, resolve, max_bytes, max_redirects)

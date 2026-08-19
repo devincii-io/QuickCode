@@ -12,6 +12,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from quickcode.context import toon
 from quickcode.core.tasks import TaskBoard
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
@@ -115,7 +116,11 @@ class TaskListInput(BaseModel):
 
 class TaskListTool(Tool[TaskListInput]):
     name: ClassVar[str] = "task_list"
-    description: ClassVar[str] = "Lists all non-deleted tasks on the task board as a checklist."
+    description: ClassVar[str] = (
+        "Lists all non-deleted tasks on the task board as a TOON table: "
+        "id, status, subject, owner, blocked_by, blocks and a clipped "
+        "description, one row per task."
+    )
     is_read_only: ClassVar[bool] = True
     permission = PermissionSpec(mutates=False)
     Input = TaskListInput
@@ -125,7 +130,7 @@ class TaskListTool(Tool[TaskListInput]):
 
     async def run(self, input: TaskListInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
         board = _board(ctx)
-        return ToolResult(content=board.render_checklist())
+        return ToolResult(content=board.render_table())
 
 
 class TaskGetInput(BaseModel):
@@ -148,17 +153,11 @@ class TaskGetTool(Tool[TaskGetInput]):
             task = board.get(input.task_id)
         except KeyError as exc:
             return ToolResult(content=f"Error: {exc}", is_error=True)
-        lines = [
-            f"id: {task.id}",
-            f"subject: {task.subject}",
-            f"description: {task.description}",
-            f"active_form: {task.active_form}",
-            f"status: {task.status}",
-            f"owner: {task.owner}",
-            f"blocked_by: {', '.join(task.blocked_by) or '(none)'}",
-            f"blocks: {', '.join(task.blocks) or '(none)'}",
-        ]
-        return ToolResult(content="\n".join(lines))
+        # The same ``key: value`` shape it always had, but encoded rather than
+        # formatted: a description containing a newline used to produce lines
+        # indistinguishable from the record's own fields, so a task could be
+        # written whose text read as `status: completed`.
+        return ToolResult(content=toon.fenced(task.to_dict()))
 
 
 def task_tools() -> list[Tool]:

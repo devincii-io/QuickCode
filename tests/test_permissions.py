@@ -98,3 +98,25 @@ def test_mode_cycle():
     assert next_mode(Mode.ask, allow_yolo=False) == Mode.auto_edit
     assert next_mode(Mode.auto_edit, allow_yolo=False) == Mode.plan
     assert next_mode(Mode.auto_edit, allow_yolo=True) == Mode.yolo
+
+
+def test_a_rule_can_name_an_mcp_tool_whose_server_has_a_hyphen():
+    r"""`mcp__<server>__<tool>` is built from names we do not choose.
+
+    The rule grammar used to spell the tool half as `\w+`, so a server called
+    `company-kb` produced a tool no rule could ever name: the engine read
+    `mcp__company-kb__kb_search(...)` as a bare tool name nothing is called,
+    and it matched nothing without saying so.
+    """
+    name = "mcp__company-kb__kb_search"
+    e = engine(mode=Mode.ask, allow=[f"{name}(*)"])
+    assert e.evaluate(name, "anything") == Decision.allow
+
+    denied = engine(mode=Mode.dontask, deny=[name])
+    assert denied.evaluate(name, "anything") == Decision.deny
+
+
+def test_a_rule_naming_a_dotted_tool_is_matched_not_dropped():
+    e = engine(mode=Mode.ask, allow=["vendor.tool(src/**)"])
+    assert e.evaluate("vendor.tool", "src/a.py") == Decision.allow
+    assert e.evaluate("vendor.tool", "other/a.py") == Decision.ask

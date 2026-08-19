@@ -164,13 +164,31 @@ class Rules:
         allow = perms.setdefault("allow", [])
         if rule not in allow:
             allow.append(rule)
-        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # This file is part of the project's trust hash, so writing to it used
+        # to untrust the project -- and an untrusted project's allow rules are
+        # ignored (see `load`). Answering "Always allow" therefore switched off
+        # every allow rule the user had ever saved, and put the project's MCP
+        # servers back behind the gate. A project that was not trusted stays
+        # untrusted.
+        from quickcode.security.trust import keep_trust
+
+        with keep_trust(root):
+            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.allow.append(rule)
+
+
+# The tool-name half of a rule. Not `\w+`: an MCP tool is named
+# ``mcp__<server>__<tool>`` and both halves come from outside -- a server called
+# `company-kb` produces `mcp__company-kb__kb_search`, which `\w+` cannot spell.
+# Rules naming one were read as a bare tool name nothing is called, so they
+# matched nothing, forever, and the validator called them junk. Dots and colons
+# are here for the same reason: servers name tools, we do not.
+_RULE_TOOL = r"[\w.:-]+"
 
 
 def _rule_matches(rule: str, tool: str, arg: str) -> bool:
     """Match a rule like ``bash(npm *)`` / ``edit(src/**)`` / bare ``write``."""
-    m = re.fullmatch(r"(\w+)\((.*)\)", rule)
+    m = re.fullmatch(rf"({_RULE_TOOL})\((.*)\)", rule)
     if not m:
         return rule.strip() == tool  # bare tool name
     rtool, pattern = m.group(1), m.group(2)
@@ -393,7 +411,15 @@ class PermissionEngine:
             has_env_prefix = has_env_prefix or bool(_ENV_ASSIGNMENT.fullmatch(tokens[idx]))
             idx += 1
         stripped = " ".join(tokens[idx:])
-        first = tokens[idx].split("/")[-1] if idx < len(tokens) else ""
+        first = tokens[idx].split("/")[-1].split("\\")[-1] if idx < len(tokens) else ""
+        # The command as its bare name: `/bin/cat x` -> `cat x`. The auto-allow
+        # for read-only builtins already worked on the basename, so `/bin/cat`
+        # was auto-allowed -- while a deny rule was matched against the full
+        # string and `bash(cat **)` did not cover it. Writing the absolute path
+        # therefore walked straight through the rule that forbade the command,
+        # which is how the built-in "Survey" posture stopped holding. Rules that
+        # *restrict* (deny, ask) are matched against this form too.
+        by_name = " ".join([first, *tokens[idx + 1 :]]) if idx < len(tokens) else stripped
 
         # Shell reads must respect the same protected-path boundary as the
         # dedicated read tool. Treat every non-option argument as a potential
@@ -419,7 +445,11 @@ class PermissionEngine:
 
         # deny rules first (against the substitution-free subcommand)
         for r in self.rules.deny:
-            if _rule_matches(r, "bash", sub) or _rule_matches(r, "bash", stripped):
+            if (
+                _rule_matches(r, "bash", sub)
+                or _rule_matches(r, "bash", stripped)
+                or _rule_matches(r, "bash", by_name)
+            ):
                 return Decision.deny
 
         # Builtin read-only → auto-allow (only when no substitution smuggling
@@ -446,7 +476,7 @@ class PermissionEngine:
             return Decision.deny  # only read-only builtins allowed in plan
 
         for r in self.rules.ask:
-            if _rule_matches(r, "bash", sub):
+            if _rule_matches(r, "bash", sub) or _rule_matches(r, "bash", by_name):
                 return Decision.ask
         # Allow rules never prefix-match a compound/substitution line, and the
         # env-stripped form is not offered to them either: approving

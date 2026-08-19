@@ -36,6 +36,15 @@ log = logging.getLogger("quickcode.webapp")
 
 DEFAULT_PORT = 8642
 
+# How long the two single-instance probes below may wait on loopback. Named
+# rather than inlined because "nothing is listening" is not always a fast
+# refusal: a host firewall that drops (rather than rejects) loopback SYNs makes
+# the connect sit here for the whole budget, so these numbers are the entire
+# cost of the "is one already running?" check on a cold start -- and the entire
+# cost of the tests that exercise the unreachable case.
+HEALTH_PROBE_TIMEOUT_S = 0.6
+HAND_OFF_TIMEOUT_S = 2.0
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -58,7 +67,9 @@ def _running_instance_health(port: int) -> dict | None:
     import urllib.request
 
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.6) as resp:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=HEALTH_PROBE_TIMEOUT_S
+        ) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
@@ -83,7 +94,7 @@ def _hand_off_to_running_instance(port: int, cwd: Path) -> bool:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=2.0) as resp:
+        with urllib.request.urlopen(request, timeout=HAND_OFF_TIMEOUT_S) as resp:
             if resp.status != 200:
                 return False
     except Exception:

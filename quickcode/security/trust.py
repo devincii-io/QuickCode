@@ -38,6 +38,7 @@ Only project-scope config passes through this gate.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
 import json
@@ -477,3 +478,48 @@ def resolve_trust(cwd: str | os.PathLike[str] | None, override: bool | None = No
 
 def status(cwd: str | os.PathLike[str]) -> TrustStatus:
     return default_store().status(cwd)
+
+
+def reaffirm(cwd: str | os.PathLike[str], *, store: TrustStore | None = None) -> bool:
+    """Re-bind an existing grant to this project's config as it is now.
+
+    Only ever a re-bind: the caller has to have established that the project
+    was trusted *before* whatever it just changed, because by the time the file
+    is written the hash no longer matches and `status()` already says False.
+    Use :func:`keep_trust`, which handles that ordering.
+    """
+    store = store or default_store()
+    try:
+        store.grant(cwd)
+    except Exception:  # never let bookkeeping break the write it follows
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def keep_trust(cwd: str | os.PathLike[str], *, store: TrustStore | None = None):
+    """Let this app change a project's config without untrusting the project.
+
+    The trust hash covers ``.quickcode/settings.json`` and
+    ``settings.local.json``, so *any* write to either invalidates it -- and the
+    app writes to both on the user's behalf. Clicking "Always allow" appended a
+    rule to settings.local.json and thereby untrusted the project, which meant
+    that rule, and every allow rule saved before it, was ignored from the next
+    session on, and the project's MCP servers went inert. The user had answered
+    a permission prompt; nothing about that says "and stop trusting this".
+
+    Trust is read *before* the block and re-bound after, because afterwards the
+    hash has already moved. A project that was not trusted stays untrusted, so
+    this can never grant trust by a side door, and an edit made outside the app
+    still invalidates the hash exactly as it did before.
+    """
+    store = store or default_store()
+    try:
+        was_trusted = store.status(cwd).trusted
+    except Exception:
+        was_trusted = False
+    try:
+        yield
+    finally:
+        if was_trusted:
+            reaffirm(cwd, store=store)

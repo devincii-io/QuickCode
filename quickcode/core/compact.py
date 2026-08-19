@@ -51,7 +51,10 @@ async def _summarize(agent: AgentInstance) -> str:
     """Run the compaction request (no tools) and return the summary text."""
     messages = agent.history.build_messages()  # [system, *history]
     messages = [*messages, ChatMessage(role="user", content=COMPACTION_PROMPT)]
-    req = ChatRequest(model=agent.model, messages=messages, tools=[])
+    req = ChatRequest(
+        model=agent.model, messages=messages, tools=[],
+        max_tokens=getattr(agent, "max_tokens", 0) or None,
+    )
     parts: list[str] = []
     async for ev in agent.provider.stream_chat(req):
         if isinstance(ev, TextDelta):

@@ -482,8 +482,13 @@ class ProjectHub:
         """
         path = self.path_of(pid)
         manager = self.managers.get(pid)
-        if manager is not None and manager.conversations:
-            raise ProjectBusyError(pid, len(manager.conversations))
+        if manager is not None:
+            # Conversations opened earlier in this run and since abandoned are
+            # not a reason to refuse: nothing is attached and nothing is
+            # running. Only the ones actually in use are.
+            live = manager.live_conversations()
+            if live:
+                raise ProjectBusyError(pid, len(live))
         # Prove the target before anything is closed or unlinked, so a refusal
         # leaves the project exactly as it was.
         if purge_data:

@@ -15,6 +15,7 @@ import pytest
 
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.web_fetch import WebFetchInput, WebFetchTool
+from quickcode.web import fetch as fetch_mod
 from quickcode.web.fetch import FetchError, build_request, fetch_url, user_agent
 from quickcode.web.markdown import html_to_markdown
 from quickcode.web.ssrf import BlockedURL, classify_host, classify_ip, validate_url
@@ -385,17 +386,26 @@ async def test_http_errors_are_reported_not_returned_as_content():
         )
 
 
-async def test_the_whole_fetch_is_time_capped():
-    async def slow(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(5)
+async def test_the_whole_fetch_is_time_capped(monkeypatch):
+    """A transport that never answers must be cut off by the cap, not waited on.
+
+    `MIN_TIMEOUT_S` is lowered rather than passing a small `timeout_s`, because
+    the production floor would clamp anything below a second straight back up
+    and the test would then spend that second proving it. What is under test is
+    the cap firing at all, and that is the same mechanism at 20ms as at 1s.
+    """
+    monkeypatch.setattr(fetch_mod, "MIN_TIMEOUT_S", 0.02)
+
+    async def never_answers(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
         return httpx.Response(200, text="late")
 
     with pytest.raises(FetchError, match="timed out"):
         await fetch_url(
             "https://example.com/slow",
-            transport=httpx.MockTransport(slow),
+            transport=httpx.MockTransport(never_answers),
             resolve=resolver({}),
-            timeout_s=1,
+            timeout_s=0.02,
         )
 
 

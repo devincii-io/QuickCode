@@ -12,6 +12,7 @@
 
 import { initActivity } from "./activity.js";
 import { api, currentProject, initAuth, setProject } from "./api.js";
+import { initCopy } from "./copy.js";
 import { initChat } from "./chat.js";
 import { initComposer, refreshCompositionPill, refreshProfilePill } from "./composer.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
@@ -507,6 +508,7 @@ async function boot() {
     selectSeq(seq, { scroll: true });
   };
   setInspector(openTrace);
+  initCopy();
   initChat({ openTrace });
   initTrajectory();
   initPanel();

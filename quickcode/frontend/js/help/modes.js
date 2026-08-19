@@ -75,15 +75,17 @@ export const MODES = [
   {
     id: "yolo",
     title: "Yolo mode",
-    what: "Skips the prompts. Has to be unlocked at launch with --yolo, and is "
-        + "not offered in the mode menu otherwise.",
+    what: "Skips the prompts. Has to be armed first — Settings → General, or "
+        + "the --yolo launch flag — and is not offered in the mode menu, or "
+        + "applied from a permission profile, until it is.",
     write: "allowed",
     read: "allowed",
     shell: "allowed",
-    protected: "still prompts",
+    protected: "allowed",
     withholds: false,
-    caveat: "Not unconditional. Protected paths still prompt, and four "
-          + "catastrophic command shapes still prompt however the mode is set: "
+    caveat: "Protected paths do not prompt here. Yolo means yolo, and a mode "
+          + "that stops on ~/.aws/credentials is a mode that stopped. What "
+          + "still prompts however the mode is set is the circuit breaker: "
           + "rm -rf on / or ~, a git push --force, and the fork bomb.",
   },
 ];

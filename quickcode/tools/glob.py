@@ -33,7 +33,8 @@ class GlobTool(Tool[GlobInput]):
         "matches). Use this to locate files by name or extension when you know "
         "roughly what you're looking for but not the exact path; for searching "
         "file contents use Grep instead. Skips .git, node_modules, "
-        "__pycache__, and .venv. Returns up to 200 matches, newest first."
+        "__pycache__, and .venv. Returns up to 200 matches, newest first, one "
+        "path per line, after a marker declaring how many came back."
     )
     is_read_only: ClassVar[bool] = True
     # A path target, gated as ``read`` is: listing a directory is a smaller
@@ -95,10 +96,18 @@ class GlobTool(Tool[GlobInput]):
         if not results:
             return ToolResult(content="No files matched.")
 
+        # Paths, one per line, with a count in front. A TOON table was tried
+        # here and reverted: a one-column table costs 10% more tokens (measured
+        # with o200k_base over 60 paths) and a path list had no ambiguity for
+        # the quoting to fix. What the table was actually worth is the count --
+        # without it a listing cut at MAX_RESULTS looks exactly like a listing
+        # that found that many -- and a marker carries that for eight tokens.
         truncated = len(results) > MAX_RESULTS
         shown = results[:MAX_RESULTS]
-        lines = [_norm(p) for _, p in shown]
-        body = "\n".join(lines)
+        body = "\n".join([
+            f'<files count="{len(shown)}"/>',
+            *(_norm(p) for _, p in shown),
+        ])
         if truncated:
             body += f'\n<truncated shown="{MAX_RESULTS}" total="{len(results)}" hint="narrow the pattern"/>'
         body = truncate(body, 40_000, hint="narrow the pattern")

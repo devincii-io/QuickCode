@@ -149,3 +149,46 @@
 /* Notes sat centred while everything around them was left-aligned, which read
    as a third margin. One left edge for the whole column. */
 .sys-note { text-align: left; }
+
+/* ---- the permission decision, inside the call it gates ----
+ *
+ * This replaces the `.perm-chip` row that used to sit under the card. The chip
+ * repeated the tool name and the argument that were already on the card, and
+ * a decision is not a fact about the transcript — it is a fact about one call.
+ * The badge states it in the head; the `.io-perm` block says what was asked.
+ * Hues follow the allow/ask/deny badge in help.css so the two agree.
+ */
+
+.tool-lock {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: var(--boost);
+  color: var(--fg-dim);
+}
+
+.tool-card[data-perm="pending"] .tool-lock {
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning);
+}
+.tool-card[data-perm="allowed"] .tool-lock {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+/* A struck lock. The emoji ignores `color`, so the strike and the pill are the
+   only parts that can carry "refused" — both are used. */
+.tool-card[data-perm="denied"] .tool-lock {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+  text-decoration: line-through;
+}
+
+.tool-card[data-perm="pending"] .io-perm .io-tag { color: var(--warning); }
+.tool-card[data-perm="allowed"] .io-perm .io-tag { color: var(--success); }
+.tool-card[data-perm="denied"] .io-perm .io-tag { color: var(--error); }
+
+.perm-detail { border-top: 1px solid var(--line); padding: 9px 11px; }
+.perm-line { font-size: 12px; color: var(--fg); }
+.perm-code { font-family: var(--mono); color: var(--fg-dim); overflow-wrap: anywhere; }

@@ -310,6 +310,11 @@ class TranscriptRecorder:
             return False
         # History was rebuilt wholesale; without this the summary seed and the
         # kept tail would be appended a second time on the next persist.
+        # The rebuilt history goes into the log as well, or the work is
+        # undone by the next resume: `load_messages` would replay every
+        # original message and hand the model exactly the context compaction
+        # existed to remove.
+        self.store.append_compaction(agent.history.messages)
         self.persisted = len(agent.history.messages)
         self.emit({"type": "compacted", "summary_chars": len(summary), "manual": False})
         self.emit(

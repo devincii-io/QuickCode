@@ -18,6 +18,7 @@
 
 import { inspectLink, wireInspect } from "../inspect.js";
 import { midTurn, store, subscribe } from "../store.js";
+import { highlightToon, toon } from "../toon.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
 
 let root = null;
@@ -526,8 +527,18 @@ function argSummary(name, argsRaw) {
     Object.entries(a).map(([k, v]) => `${k}: ${oneLine(String(v), 32)}`).join(", "), 100);
 }
 
+// Arguments are shown in the encoding the model reads them in, not re-rendered
+// as JSON. The model's own tool-call arguments arrive as a JSON string on the
+// wire; what a subagent's context actually looks like is TOON, and a panel that
+// shows a different shape than the agent sees is a panel that misleads while
+// you are debugging.
 function pretty(argsRaw) {
-  try { return JSON.stringify(JSON.parse(argsRaw || "{}"), null, 2); } catch { return argsRaw ?? ""; }
+  try {
+    return highlightToon(toon(JSON.parse(argsRaw || "{}")));
+  } catch {
+    // Malformed or partial arguments (a cut-off stream) still have to show.
+    return esc(argsRaw ?? "");
+  }
 }
 
 function toolNode(agentId, ev) {
@@ -541,7 +552,7 @@ function toolNode(agentId, ev) {
       <span class="pa-tool-ms"></span>
     </div>
     <div class="pa-tool-body">
-      <div class="pa-lbl">Arguments</div><pre>${esc(pretty(ev.arguments))}</pre>
+      <div class="pa-lbl">Arguments</div><pre class="toon">${pretty(ev.arguments)}</pre>
       <div class="pa-result"></div>
       ${ev.seq != null ? `<div class="pa-lbl pa-trace">${inspectLink(ev.seq)}</div>` : ""}
     </div></div>`);

@@ -26,9 +26,11 @@ Two consequences worth knowing:
 - **Sections are overridable by tier.** `<tone_and_style>`, `<conventions>`,
   `<task_management>`, `<verification>` and `<project_instructions>` are `free`;
   `<identity>`, `<autonomy>`, `<orchestration>`, `<send_message_hint>`,
-  `<plan_mode>` and `<headless_mode>` are `confirm`; `<tool_use_policy>` and
-  `<environment>` are `locked` — how tools are called is the contract the loop
-  and the trajectory depend on. `<environment>` and `<project_instructions>` are
+  `<plan_mode>` and `<headless_mode>` are `confirm`; `<tool_use_policy>`,
+  `<environment>` and `<result_format>` are `locked` — how tools are called is
+  the contract the loop and the trajectory depend on, and how their results are
+  encoded is decided by the encoder, not by prose. `<environment>` and
+  `<project_instructions>` are
   additionally flagged `generated`: their bodies come from session facts rather
   than authored prose, so they ignore an override whatever their tier says.
   Overrides live in `.quickcode/settings.json` under
@@ -122,6 +124,17 @@ linter if they exist (check package.json scripts / Makefile). Report
 results honestly — if tests fail, say so with the output. Never claim
 untested work is working.
 </verification>
+
+<result_format>
+Structured tool results arrive as TOON — a header naming the fields, then one
+row per record:
+  matches[2]{path,line,text}:
+    src/a.py,12,def run():
+    src/b.py,44,"  run(), twice"
+The count in brackets is checkable: fewer rows than it declares means the
+result was cut, and values containing the delimiter are quoted. Fieldless
+results are plain lines behind a marker with the same count: <files count="6"/>.
+</result_format>
 
 <environment>
   <cwd>{cwd}</cwd>

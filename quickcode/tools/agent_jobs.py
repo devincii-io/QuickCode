@@ -20,6 +20,7 @@ import contextlib
 
 from pydantic import BaseModel, Field
 
+from quickcode.context import toon
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
 
 # The longest ``agent_result`` will hold a turn open waiting for a job. Long
@@ -80,22 +81,22 @@ class AgentStatusTool(Tool[AgentStatusInput]):
                     f"unknown background job '{input.agent_id}'. Known jobs: {known}",
                     is_error=True,
                 )
-            return ToolResult(job.to_tag())
+            return ToolResult(job.to_toon())
 
         if not jobs:
             return ToolResult(
-                "<agent_jobs count=\"0\"/>\nNo background jobs have been started "
-                "in this conversation."
+                "No background jobs have been started in this conversation."
             )
-        running = sum(1 for j in jobs.values() if j.running)
-        uncollected = sum(1 for j in jobs.values() if not j.running and not j.collected)
-        lines = [
-            f'<agent_jobs count="{len(jobs)}" running="{running}" '
-            f'uncollected="{uncollected}">',
-            *(job.to_tag() for job in jobs.values()),
-            "</agent_jobs>",
-        ]
-        return ToolResult("\n".join(lines))
+        # ``count`` is gone: the table header declares it, and two numbers for
+        # one fact is one of them going stale. ``running`` and ``uncollected``
+        # are not derivable from the header, so they stay.
+        return ToolResult(toon.fenced({
+            "running": sum(1 for j in jobs.values() if j.running),
+            "uncollected": sum(
+                1 for j in jobs.values() if not j.running and not j.collected
+            ),
+            "agent_jobs": [job.to_row() for job in jobs.values()],
+        }))
 
 
 class AgentResultInput(BaseModel):
@@ -155,7 +156,7 @@ class AgentResultTool(Tool[AgentResultInput]):
 
         if job.running:
             return ToolResult(
-                f"{job.to_tag()}\nStill running after {job.seconds()}s — there is no "
+                f"{job.to_toon()}\nStill running after {job.seconds()}s — there is no "
                 "report yet. Do something else and call agent_result again, or pass "
                 "wait_s to wait for it."
             )

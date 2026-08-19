@@ -404,6 +404,17 @@
 .mr-id { font-family: var(--mono); font-size: 11.5px; }
 .mr-meta { margin-left: auto; color: var(--fg-faint); font-size: 11px; white-space: nowrap; }
 
+/* A setting that is a switch rather than a value. The label wraps the box so
+ * the whole line is the hit target -- a 13px checkbox alone is not one. */
+.set-check {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; cursor: pointer; user-select: none;
+}
+.set-check input { flex: none; margin: 0; accent-color: var(--primary); }
+
+/* Body of a yes/no dialog. */
+.cf-body { font-size: 13px; line-height: 1.55; max-width: 46ch; }
+
 /* ---------- narrow windows ---------- */
 
 @media (max-width: 720px) {

@@ -168,6 +168,27 @@ class Conversation:
             ledger=agent.ledger,
         )
 
+    def busy_reason(self) -> str | None:
+        """Why this conversation must not be closed under the user, or None.
+
+        "Live" used to mean "present in ``manager.conversations``", and nothing
+        ever removes an entry from there — so a conversation was live from the
+        moment it was first opened until the process exited. Deleting or
+        archiving it, or removing its project, was refused for ever, with a
+        message telling the user to close something that was not open. What
+        actually matters is whether anyone is watching, whether a turn is
+        running, and whether a detached job is still going.
+        """
+        if self.clients:
+            return f"{len(self.clients)} window(s) attached"
+        if self.agent.busy:
+            return "a turn is running"
+        if any(not t.done() for t in self._jobs):
+            return "a background subagent job is running"
+        if self.pending:
+            return "a permission prompt is waiting for an answer"
+        return None
+
     # ---- lifecycle ----
     def start(self) -> None:
         self._tasks.append(asyncio.create_task(self.rec.pump(self.agent.bus)))
@@ -430,6 +451,11 @@ class Conversation:
             self.emit({"type": "error", "message": f"compaction failed: {e}"})
             return
         # History was rebuilt wholesale; future messages persist from here.
+        # The rebuilt history goes into the log as well, or the work is
+        # undone by the next resume: `load_messages` would replay every
+        # original message and hand the model exactly the context compaction
+        # existed to remove.
+        self.store.append_compaction(self.agent.history.messages)
         self.rec.persisted = len(self.agent.history.messages)
         self.emit({"type": "compacted", "summary_chars": len(summary), "manual": manual})
         self.emit(
@@ -452,6 +478,7 @@ class Conversation:
             "rule_suggestion": req.rule_suggestion,
             "preview": req.preview,
             "agent": req.agent_name,
+            "call_id": req.call_id,
         }
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[req_id] = PendingReview(req_id, "permission", payload, fut)
@@ -468,6 +495,7 @@ class Conversation:
                 "persist": outcome.persist,
                 "tool": req.tool,
                 "arg": req.arg,
+                "call_id": req.call_id,
             }
         )
         return outcome
@@ -515,14 +543,32 @@ class Conversation:
         return True
 
     # ---- settings ----
+
+    # What the user has to do about it, said once so the mode switch and the
+    # profile switch cannot drift into two different explanations.
+    YOLO_UNARMED = ("yolo mode is not enabled for this app — turn it on in "
+                    "Settings → General")
+
+    @property
+    def yolo_allowed(self) -> bool:
+        """Whether yolo is armed, asked of the app rather than of this session.
+
+        The engine's ``yolo_accepted`` was frozen when the session opened, and
+        the session someone arms yolo from is precisely the one they expect it
+        to reach. Kept in step so nothing reading the engine disagrees.
+        """
+        allowed = self.manager.allow_yolo
+        self.agent.permissions.yolo_accepted = allowed
+        return allowed
+
     def set_mode(self, mode_str: str) -> None:
         try:
             mode = Mode(mode_str)
         except ValueError:
             self.emit({"type": "error", "message": f"unknown mode: {mode_str}"})
             return
-        if mode == Mode.yolo and not self.agent.permissions.yolo_accepted:
-            self.emit({"type": "error", "message": "yolo mode requires launching with --yolo"})
+        if mode == Mode.yolo and not self.yolo_allowed:
+            self.emit({"type": "error", "message": self.YOLO_UNARMED})
             return
         ceiling = self.resolved.ceiling
         if MODE_PRIVILEGE[mode] > MODE_PRIVILEGE[ceiling]:
@@ -551,8 +597,9 @@ class Conversation:
         be the friction the pill exists to remove.
 
         The mode moves too. It is still capped by the composition's ceiling,
-        and yolo still needs the launch flag -- a profile is a posture, not a
-        way around either.
+        and yolo still needs the app to have armed it -- a profile is a
+        posture, not a way around either. What it no longer does is fail
+        quietly: a mode it could not have is refused out loud.
 
         What is carried across rather than recomputed is the "always allow"
         the user answered *during this session*. It is in the live engine and,
@@ -576,9 +623,28 @@ class Conversation:
         self.profile_id = profile.id if profile else ""
 
         ceiling = self.resolved.ceiling
-        if mode == Mode.yolo and not self.agent.permissions.yolo_accepted:
+        asked = mode
+        yolo_blocked = mode == Mode.yolo and not self.yolo_allowed
+        if yolo_blocked:
             mode = Mode.ask
-        mode = narrower_mode(mode, ceiling)
+        capped = narrower_mode(mode, ceiling)
+        # A profile whose mode could not be honoured used to land somewhere
+        # else in complete silence, which reads as the profile not applying at
+        # all -- the gate is right, the silence was the bug. Both refusals are
+        # named, because a profile can hit them one after the other.
+        reasons = []
+        if yolo_blocked:
+            reasons.append(self.YOLO_UNARMED)
+        if capped != mode:
+            reasons.append(f"this session is capped at {ceiling.value} by its composition")
+        mode = capped
+        if reasons:
+            name = f"profile {profile.title}" if profile else "this profile"
+            self.emit({
+                "type": "system_note",
+                "text": (f"{name} asks for {asked.value} mode: "
+                         f"{'; '.join(reasons)}. Applied {mode.value} instead."),
+            })
         if mode != self.agent.mode:
             self.agent.set_mode(mode)
             self.emit({"type": "mode_changed", "mode": mode.value})
@@ -798,7 +864,7 @@ class ConversationManager:
         self.config = config
         self.env = env
         self.provider = provider
-        self.allow_yolo = allow_yolo
+        self._allow_yolo_flag = allow_yolo
         self.default_mode = default_mode
         self.conversations: dict[str, Conversation] = {}
         self._models: list[ModelInfo] | None = None
@@ -814,6 +880,18 @@ class ConversationManager:
         self.registry_factory = registry_factory
         # Names of connected MCP servers, set by the launcher for display.
         self.mcp_servers: list[str] = []
+
+    @property
+    def allow_yolo(self) -> bool:
+        """Is yolo mode reachable in this app at all?
+
+        Read live rather than frozen at construction. ``--yolo`` on the command
+        line still arms it, but nobody starts a desktop shortcut with a flag,
+        so the setting in Settings → General is the way it is actually reached
+        -- and a setting that needed a relaunch to take effect would look just
+        as broken as the flag it replaces.
+        """
+        return self._allow_yolo_flag or bool(self.config.allow_yolo)
 
     # ---- plugin inventory (for the Settings → Plugins page) ----
     def plugin_inventory(self) -> dict[str, Any]:
@@ -1044,6 +1122,13 @@ class ConversationManager:
             limits=limits,
         )
 
+        # The user's generation settings, applied as each session opens so a
+        # change reaches the next one without a restart. The response budget in
+        # particular is not a preference: the provider reserves credit against
+        # it, and a balance too small for it is refused outright.
+        agent.max_tokens = self.config.max_tokens
+        agent.temperature = self.config.temperature
+
         if resuming:
             # Spend belongs to the session, not to this process: restore it
             # from the log so a reopened conversation does not claim it cost
@@ -1095,6 +1180,32 @@ class ConversationManager:
         conv.start()
         self.conversations[store.conv_id] = conv
         return conv
+
+    def live_conversations(self) -> dict[str, str]:
+        """Open conversations that are genuinely in use, id -> why."""
+        out = {}
+        for conv_id, conv in self.conversations.items():
+            reason = conv.busy_reason()
+            if reason:
+                out[conv_id] = reason
+        return out
+
+    async def release(self, conv_id: str) -> str | None:
+        """Close and forget an idle conversation. Returns why not, or None.
+
+        This is what makes "delete this session" work on a session the user
+        opened earlier in the same run: it is not in use, so it is closed
+        first rather than being refused for the rest of the process's life.
+        """
+        conv = self.conversations.get(conv_id)
+        if conv is None:
+            return None
+        reason = conv.busy_reason()
+        if reason:
+            return reason
+        await conv.close()
+        self.conversations.pop(conv_id, None)
+        return None
 
     async def close(self) -> None:
         await asyncio.gather(

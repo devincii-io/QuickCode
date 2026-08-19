@@ -279,7 +279,20 @@ def _resolve_role(deps: SubagentDeps, spec: str) -> str:
 
 def sanitize_report(text: str) -> str:
     """Neutralize harness-impersonating syntax in untrusted subagent output
-    before it enters the parent's context, and mark it as sanitized."""
+    before it enters the parent's context, and mark it as sanitized.
+
+    TOON is deliberately *not* on the list. What this function mangles are
+    tags that carry no author -- a ``<system-reminder>`` in a report reads as
+    the harness speaking, and nothing in the surrounding text says otherwise.
+    A TOON table carries no such authority: it is data, it arrives inside the
+    ``[quickcode: sanitized subagent report]`` marker and the ``<subagent
+    id=... status=...>`` wrapper the collector adds, and a forged
+    ``matches[3]{path,line,text}:`` block is worth exactly what the sentence
+    "I found three matches" is worth from the same child. Mangling it would
+    cost more than it buys: the subagents most likely to emit a TOON block are
+    the search-and-report ones, whose findings *are* tool output they are
+    quoting back.
+    """
     for tag in ("system-reminder", "task", "objective", "context", "boundaries"):
         text = text.replace(f"<{tag}>", f"‹{tag}›").replace(f"</{tag}>", f"‹/{tag}›")
     text = text.replace("<system-reminder", "‹system-reminder")

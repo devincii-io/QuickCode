@@ -259,6 +259,29 @@ class SessionStore:
             }
         )
 
+    def append_compaction(self, messages: Iterable[ChatMessage]) -> None:
+        """Record that the model's context was rebuilt, and what it became.
+
+        Compaction replaces the history wholesale with a summary plus a tail,
+        and until this existed that only happened in memory: the log kept every
+        original message, so *reopening a compacted session reloaded the entire
+        pre-compaction transcript*. The work was undone, silently, and the
+        first request after the resume carried exactly the context compaction
+        had been run to avoid -- at full price, or straight into a
+        context-length rejection.
+
+        Appended like everything else here; nothing is rewritten. A reader that
+        has never heard of this record ignores it and loads the messages as
+        before, which is the behaviour it has today.
+        """
+        self._append_line(
+            {
+                "kind": "compaction",
+                "ts": datetime.datetime.now().isoformat(),
+                "messages": [message_to_dict(m) for m in messages],
+            }
+        )
+
     def append_meta(self, **fields: Any) -> None:
         self._append_line({"kind": "meta", **fields})
 
@@ -280,19 +303,21 @@ class SessionStore:
         return self.title()
 
     def append_event(self, ev: dict[str, Any]) -> int:
-        """Append one trace event; returns the sequence number assigned."""
+        """Append one trace event; returns the sequence number assigned.
+
+        The timestamp is stamped *into* ``ev`` as well as onto the record. The
+        caller broadcasts this same dict to attached clients, and stamping only
+        the record left every live event on the wire with no wall clock at all
+        -- so a running turn drew as a pile of events on one instant, and only
+        a reload (which replays from disk, where ``load_events`` folds the
+        record's ``ts`` back in) put them where they actually happened.
+        """
         if self._next_seq is None:
             self._next_seq = self._scan_last_seq() + 1
         seq = self._next_seq
         self._next_seq += 1
-        self._append_line(
-            {
-                "kind": "event",
-                "seq": seq,
-                "ts": datetime.datetime.now().isoformat(),
-                "ev": ev,
-            }
-        )
+        ts = ev["ts"] = datetime.datetime.now().isoformat()
+        self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": ev})
         return seq
 
     # ---- reading ----
@@ -312,9 +337,26 @@ class SessionStore:
         return records
 
     def load_messages(self) -> list[ChatMessage]:
+        """The model context to resume with.
+
+        A ``compaction`` record replaces everything before it: it *is* the
+        history as of that moment, so messages logged earlier are the ones
+        compaction removed and must not come back. Messages appended after it
+        are the turns that followed and are kept. The last such record wins,
+        because a long session compacts more than once.
+        """
         messages: list[ChatMessage] = []
         for rec in self._iter_records():
-            if rec.get("kind") == "message" and "message" in rec:
+            kind = rec.get("kind")
+            if kind == "compaction" and isinstance(rec.get("messages"), list):
+                rebuilt: list[ChatMessage] = []
+                for raw in rec["messages"]:
+                    try:
+                        rebuilt.append(message_from_dict(raw))
+                    except (KeyError, TypeError):
+                        continue
+                messages = rebuilt
+            elif kind == "message" and "message" in rec:
                 try:
                     messages.append(message_from_dict(rec["message"]))
                 except (KeyError, TypeError):

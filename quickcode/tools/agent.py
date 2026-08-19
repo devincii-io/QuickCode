@@ -119,7 +119,7 @@ class AgentTool(Tool[AgentInput]):
                 return ToolResult(str(e), is_error=True)
             else:
                 return ToolResult(
-                    f"{job.to_tag()}\nStarted in the background. Carry on with other "
+                    f"{job.to_toon()}\nStarted in the background. Carry on with other "
                     f'work, then call agent_result with agent_id="{job.agent_id}" to '
                     "read the report. Do not end your turn with it uncollected."
                 )
