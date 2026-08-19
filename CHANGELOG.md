@@ -4,6 +4,75 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.4.1] — 2026-08-19
+
+An adversarial sweep of 2.4.0 by seven independent agents, each required to
+reproduce what it claimed. This release is the part of the result that could
+hurt someone: four ways past the permission boundary, two ways to lose data,
+and an update that could not be installed.
+
+### Fixed
+
+- **The installer could not replace a running QuickCode.** `DeleteFile failed;
+  code 5 — access denied`, halfway through, on `QuickCodeApp.exe`. Windows'
+  Restart Manager (`CloseApplications=yes`) asks a window to close and a
+  WebView2 app does not answer in time, so Setup fell through to overwriting a
+  file that was locked. The update path made this the *normal* case rather than
+  an edge one: the app downloads the installer, launches it as a detached
+  child, and keeps running — so every in-app update hit it. Setup now asks, then
+  closes the running copy itself before it copies anything, and a silent
+  install does it without asking. Declining is a clean abort rather than a
+  half-written directory.
+- **An upgraded install reported the version it replaced, for ever.** The
+  frozen build carries its own distribution metadata, and the new one is called
+  `quickcode-2.4.1.dist-info` — a *different* directory from
+  `quickcode-2.4.0.dist-info`, so nothing overwrote it and
+  `importlib.metadata` kept answering with the older of the two. `--version`,
+  `/api/health` and the update check all lied, and the update check therefore
+  offered the same update again every time. The stale metadata is removed on
+  upgrade.
+- **A path built from a shell expansion escaped the project boundary.**
+  `cat $HOME/.aws/credentials` was **auto-allowed in every mode**, including
+  `plan` — which the docs sell as read-only research — and `dontask`, because
+  the engine compared the literal string `$HOME/.aws/credentials`, saw a
+  relative path, and concluded it was inside the project. The same file named
+  plainly prompted. Anything holding an unexpanded `$VAR`, `${VAR}`, `$(…)`,
+  backticks or `%VAR%` is now treated as protected: the shell expands it long
+  after this decision is made, and "unknown" is not "safe". The cost is that a
+  read-only builtin referencing a variable (`echo $HOME`) now prompts too — the
+  engine genuinely cannot tell that from `cat $SECRETS`.
+- **Quoting hid a protected name from the same check.** `cat .en''v` reached
+  `.env` with no prompt in any mode, because quotes were stripped only from the
+  ends of a token while the shell concatenates them in the middle. They now come
+  out wherever they sit.
+- **`glob` never gated its pattern.** It declared `path` as its permission
+  target — an *optional* argument — while the place it actually reads is `path`
+  joined with the required `pattern`. So `glob(pattern="../*/*.txt")` handed the
+  engine an empty target and enumerated filenames anywhere the process could
+  reach, unprompted, in every mode. A tool can now declare its effective
+  location (`Tool.permission_target`), and `glob` does.
+- **The catastrophic-command breakers matched one spelling each.** `rm -rf /`
+  stopped; `rm -fr /`, `rm -rf /*`, `rm --recursive --force /` and `git push -f`
+  did not — the same commands, and in yolo the breakers are the only thing
+  left. They are written now as "those flags, in any order or long form, then
+  that target".
+- **"Clean up empty sessions" could delete the entire project directory.** A
+  file named `...jsonl` in `.quickcode/sessions/` made the sweep offer `..` as a
+  session id; the task board it then removed is `.quickcode/tasks/<id>`, and
+  `.quickcode/tasks/..` is `.quickcode` itself. One click took every session,
+  every task board, every artifact and the project's settings. Ids that are
+  really paths are refused now, both where they are listed and where they are
+  deleted.
+- **Two sessions offloading the same subagent id destroyed each other's
+  reports.** Agent ids come from a counter that restarts at 1 in every
+  conversation, so `explore-1.md` is the first offloaded report of *every*
+  session — and it was written with a plain overwrite. Opening a new
+  conversation and fanning out silently destroyed the previous session's
+  report, while that session's transcript went on pointing at the file, now
+  describing someone else's work. Three reports in this repository were already
+  lost that way. The name is claimed with `open(..., "x")` and the next free
+  `-2`, `-3` … is taken instead.
+
 ## [2.4.0] — 2026-08-19
 
 ### Added
@@ -870,7 +939,8 @@ provider abstraction, tool registry, PTY sessions, plan mode, compaction,
 subagent delegation via the agent tool) before the web UI rewrite replaced
 it. Not published as a release artifact.
 
-[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/devincii-io/QuickCode/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/devincii-io/QuickCode/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/devincii-io/QuickCode/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/devincii-io/QuickCode/compare/v2.1.0...v2.2.0
