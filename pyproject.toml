@@ -1,6 +1,6 @@
 [project]
 name = "quickcode"
-version = "2.4.1"
+version = "2.5.0"
 description = "A local-first coding agent with a traceable web UI, in the spirit of Claude Code and DeepSeek Harness."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -59,9 +59,9 @@ dev = [
     # forever often enough (roughly one run in three on a loaded machine) to
     # stall a release gate indefinitely. Confirmed with live stack dumps under
     # both starlette's TestClient portal and pytest-asyncio's runner; it is not
-    # our code, and the selector loop uses the same self-pipe. A per-test
-    # deadline turns "the gate has been running for ten minutes" into a loud
-    # failure you can re-run.
+    # our code, and the selector loop uses the same self-pipe. tests/conftest.py
+    # now bounds and retries that accept() so the hang cannot happen at all;
+    # this stays as the backstop for anything else that sits still.
     "pytest-timeout>=2.3",
     "ruff>=0.5",
     "pyinstaller>=6.10",
@@ -91,11 +91,15 @@ ignore = ["E501", "UP042", "UP046", "UP047"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# Generously above the slowest honest test (a few seconds); anything that sits
-# here for two minutes is the socketpair hang described in the dev group, not
-# work. `thread` because signal-based timeouts are POSIX-only -- it dumps every
+# A backstop, not the first line of defence: tests/conftest.py replaces
+# socket.socketpair() with one that cannot block forever, which is what the
+# hang described in the dev group actually needed. This catches whatever else
+# might sit still. The slowest honest test is ~6s (a Git Bash login shell,
+# spawned once and shared), so 30s is a 5x margin on a loaded machine and still
+# turns a stall into a fast, loud failure instead of a two-minute one.
+# `thread` because signal-based timeouts are POSIX-only -- it dumps every
 # thread's stack, which is exactly what you want to see.
-timeout = 120
+timeout = 30
 timeout_method = "thread"
 # One event loop per module instead of one per test. Each new loop is a fresh
 # roll of the socketpair dice described above, and this suite was making ~770 of
