@@ -20,10 +20,13 @@ reader to misread a record it does not know.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
+import os
 import re
 import shutil
+import stat
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -33,10 +36,11 @@ from typing import Any
 from quickcode.providers.base import ChatMessage
 from quickcode.workspace import ensure_project_dir
 
-SESSIONS_DIRNAME = Path(".quickcode") / "sessions"
+PROJECT_DIRNAME = ".quickcode"
+SESSIONS_DIRNAME = Path(PROJECT_DIRNAME) / "sessions"
 ARCHIVE_DIRNAME = "archive"
-TASKS_DIRNAME = Path(".quickcode") / "tasks"
-ARTIFACTS_DIRNAME = Path(".quickcode") / "artifacts"
+TASKS_DIRNAME = Path(PROJECT_DIRNAME) / "tasks"
+ARTIFACTS_DIRNAME = Path(PROJECT_DIRNAME) / "artifacts"
 
 # Subagent artifacts are named ``{agent-name}-{n}.md`` from a per-conversation
 # counter, so the filename alone says nothing about which session owns it —
@@ -535,4 +539,174 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
             except OSError:
                 continue
             result.artifacts.append(name)
+    return result
+
+
+# ---- deleting everything QuickCode wrote for one project ----
+#
+# This is the only code in the app that removes a whole directory tree inside a
+# user's project, so the containment check is written before the delete and is
+# the part the tests weigh most. The rule it enforces has no exceptions:
+#
+#   the only removable path is ``<realpath(project root)>/.quickcode``, it must
+#   be a real directory, and it must not be a symlink or a junction.
+#
+# Everything else in the project — the source code, the .git directory, a
+# sibling that merely looks like ours — is out of reach by construction, and a
+# path that cannot be proved to be the one directory raises instead of guessing.
+
+
+@dataclass
+class ProjectPurgeResult:
+    """What deleting a project's QuickCode data actually did."""
+
+    #: The resolved directory that was (or would have been) removed.
+    path: str
+    #: False when there was nothing there — not an error, just nothing to do.
+    existed: bool = False
+    removed: bool = False
+
+
+def project_data_dir(root: str | os.PathLike[str]) -> Path:
+    """The one directory a project purge is allowed to remove.
+
+    Raises ``ValueError`` rather than returning something unproven. The check is
+    the same containment idiom ``server.gitinfo._safe_rel`` uses — resolve both
+    ends with ``realpath`` and compare — with one extra refusal: a symlinked (or
+    junctioned) ``.quickcode`` is rejected outright rather than followed, because
+    following it would delete a tree that is, by definition, somewhere else.
+
+    Note what this does *not* do: it never returns the project root itself. The
+    name it appends is a non-empty constant, so the answer is always strictly
+    below the root, and ``purge_project_data`` re-checks that before unlinking.
+    """
+    try:
+        base = Path(os.path.realpath(root))
+    except (OSError, ValueError) as e:  # pragma: no cover - platform-specific
+        raise ValueError(f"cannot resolve project directory: {root}") from e
+    if not base.is_dir():
+        raise ValueError(f"not a project directory: {root}")
+    candidate = base / PROJECT_DIRNAME
+    if candidate.is_symlink():
+        raise ValueError(
+            f"{candidate} is a link, not a directory; refusing to delete what it points at"
+        )
+    # ``is_symlink`` is not enough on Windows: a *directory junction* answers
+    # False there while still pointing somewhere else entirely. The realpath
+    # comparison below is what actually catches it, and is therefore the check
+    # that carries the guarantee — the explicit symlink refusal above only
+    # exists so the common case says why in words.
+    target = Path(os.path.realpath(candidate))
+    if target.parent != base or target.name != PROJECT_DIRNAME or target == base:
+        raise ValueError(
+            f"{candidate} does not resolve to a directory inside {base}; refusing to delete it"
+        )
+    return target
+
+
+def project_data_summary(root: str | os.PathLike[str]) -> dict[str, Any]:
+    """What a purge would remove, for the dialog that has to name it.
+
+    Counts only; nothing here reads a transcript. ``exists: false`` is the
+    ordinary answer for a project that was opened once and never used.
+    """
+    target = project_data_dir(root)
+    out: dict[str, Any] = {
+        "path": str(target),
+        "exists": target.is_dir(),
+        "sessions": 0,
+        "archived": 0,
+        "boards": 0,
+        "artifacts": 0,
+        "bytes": 0,
+        "entries": [],
+    }
+    if not out["exists"]:
+        return out
+    base = Path(os.path.realpath(root))
+    sessions_dir = base / SESSIONS_DIRNAME
+    with contextlib.suppress(OSError):
+        out["sessions"] = sum(1 for _ in sessions_dir.glob("*.jsonl"))
+    with contextlib.suppress(OSError):
+        out["archived"] = sum(1 for _ in (sessions_dir / ARCHIVE_DIRNAME).glob("*.jsonl"))
+    with contextlib.suppress(OSError):
+        out["boards"] = sum(1 for p in (base / TASKS_DIRNAME).iterdir() if p.is_dir())
+    with contextlib.suppress(OSError):
+        out["artifacts"] = sum(1 for _ in (base / ARTIFACTS_DIRNAME).glob("*.md"))
+    with contextlib.suppress(OSError):
+        out["entries"] = sorted(p.name for p in target.iterdir())
+    total = 0
+    for dirpath, _dirs, files in os.walk(target):
+        for name in files:
+            with contextlib.suppress(OSError):
+                total += os.path.getsize(os.path.join(dirpath, name))
+    out["bytes"] = total
+    return out
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """Whether ``path`` is a link of any kind, junctions included.
+
+    ``Path.is_symlink()`` answers False for a Windows directory junction, which
+    is exactly the case that matters here, so the reparse-point attribute is
+    checked directly where the platform offers it.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if os.path.islink(path):
+        return True
+    attrs = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(attrs and reparse and attrs & reparse)
+
+
+def _first_reparse_point(root: Path) -> Path | None:
+    """The first link found anywhere under ``root``, or None. Never follows one."""
+    for parent, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in list(dirnames) + list(filenames):
+            candidate = Path(parent) / name
+            if _is_reparse_point(candidate):
+                return candidate
+        # A junction answers True for is_dir(), so os.walk would descend into
+        # it on the next iteration; drop them before it gets the chance.
+        dirnames[:] = [d for d in dirnames if not _is_reparse_point(Path(parent) / d)]
+    return None
+
+
+def purge_project_data(root: str | os.PathLike[str]) -> ProjectPurgeResult:
+    """Delete ``<project>/.quickcode`` and nothing else.
+
+    Raises ``ValueError`` for any path that cannot be proved to be exactly that
+    directory, and ``OSError`` if the removal itself fails. A project with no
+    ``.quickcode`` is not an error: the result simply says nothing existed.
+    """
+    target = project_data_dir(root)
+    result = ProjectPurgeResult(path=str(target))
+    if not target.exists():
+        return result
+    result.existed = True
+    if not target.is_dir():
+        raise ValueError(f"{target} is not a directory")
+    escape = _first_reparse_point(target)
+    if escape is not None:
+        # The containment check above proves `.quickcode` itself is inside the
+        # project. It says nothing about what is inside `.quickcode`, and
+        # `shutil.rmtree` recurses into a Windows directory junction — which
+        # reports as an ordinary directory, not a link — so a junction in here
+        # would carry the delete out of the project entirely. QuickCode never
+        # creates one; refusing costs nothing and the alternative is silent
+        # data loss somewhere the user never named.
+        raise ValueError(
+            f"{escape} points outside {target}; refusing to delete this directory. "
+            "Remove that link yourself, then try again."
+        )
+    # Belt and braces: the last thing checked before the tree goes is that we
+    # are still strictly below the project root and not standing on it.
+    base = Path(os.path.realpath(root))
+    if target == base or target.parent != base:  # pragma: no cover - unreachable
+        raise ValueError(f"refusing to delete {target}")
+    shutil.rmtree(target)
+    result.removed = not target.exists()
     return result

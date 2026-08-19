@@ -43,7 +43,7 @@ from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
-from quickcode.server.projects import ProjectHub, list_dirs
+from quickcode.server.projects import ProjectBusyError, ProjectHub, list_dirs
 from quickcode.session.store import (
     MAX_TITLE,
     SESSIONS_DIRNAME,
@@ -814,6 +814,102 @@ def create_app(
             "path": str(manager.cwd),
             "name": manager.cwd.name,
         }
+
+    # ---- forgetting a project: the list entry, or QuickCode's data for it ----
+    #
+    # Two clearly separate acts, never one route with a mood:
+    #
+    #   DELETE /api/projects/{pid}        drops the registry entry. Nothing
+    #                                     inside the project is touched.
+    #   DELETE /api/projects/{pid}/data   additionally deletes
+    #                                     <project>/.quickcode and the project's
+    #                                     entry in the trust store.
+    #
+    # Neither ever removes the project directory itself, and neither can reach
+    # anything outside <project>/.quickcode — the containment proof lives in
+    # session.store.project_data_dir and raises rather than guessing, which
+    # surfaces here as a 400.
+    #
+    # Both refuse a project with live conversations (409), which is the answer
+    # DELETE /api/sessions/{conv_id} already gives for a live session.
+
+    async def _forget(pid: str, *, purge_data: bool) -> dict:
+        try:
+            return await hub.forget(pid, purge_data=purge_data)
+        except KeyError as e:
+            raise HTTPException(404, f"unknown project: {pid}") from e
+        except ProjectBusyError as e:
+            raise HTTPException(409, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except OSError as e:
+            raise HTTPException(500, f"could not delete project data: {e}") from e
+
+    def _data_summary(pid: str) -> dict:
+        try:
+            return {"id": pid, "project": str(hub.path_of(pid)), **hub.data_summary(pid)}
+        except KeyError as e:
+            raise HTTPException(404, f"unknown project: {pid}") from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    async def _forget_many(request: Request, *, purge_data: bool) -> dict:
+        """Remove a selection, reporting each id that could not be removed.
+
+        Same contract as the bulk session delete: what worked is in ``removed``,
+        what did not is in ``skipped`` with a reason, and the response is a 200
+        either way. A bulk action that failed whole on the first live project
+        would leave the user guessing which of ten rows went through.
+        """
+        body = await _read_json(request)
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(400, "body must be {'ids': [<project id>, …]}")
+        if len(ids) > 200:
+            raise HTTPException(400, "too many projects in one request")
+        removed: list[dict] = []
+        skipped: list[dict] = []
+        for raw in ids:
+            if not isinstance(raw, str):
+                raise HTTPException(400, f"invalid project id: {raw!r}")
+            try:
+                removed.append(await hub.forget(raw, purge_data=purge_data))
+            except KeyError:
+                skipped.append({"id": raw, "reason": "unknown"})
+            except ProjectBusyError as e:
+                skipped.append({"id": raw, "reason": "live", "detail": str(e)})
+            except (ValueError, OSError) as e:
+                skipped.append({"id": raw, "reason": "failed", "detail": str(e)})
+        return {"removed": removed, "skipped": skipped}
+
+    # Literal segments first, so neither can be read as a project id.
+    @app.post("/api/projects/remove")
+    async def remove_projects(request: Request) -> dict:
+        return await _forget_many(request, purge_data=False)
+
+    @app.post("/api/projects/purge")
+    async def purge_projects(request: Request) -> dict:
+        return await _forget_many(request, purge_data=True)
+
+    @app.get("/api/data")
+    def data_summary() -> dict:
+        return _data_summary(hub.default_id)
+
+    @app.delete("/api/data")
+    async def purge_data() -> dict:
+        return await _forget(hub.default_id, purge_data=True)
+
+    @app.get("/api/projects/{pid}/data")
+    def project_data_summary_route(pid: str) -> dict:
+        return _data_summary(pid)
+
+    @app.delete("/api/projects/{pid}/data")
+    async def project_purge_data(pid: str) -> dict:
+        return await _forget(pid, purge_data=True)
+
+    @app.delete("/api/projects/{pid}")
+    async def remove_project(pid: str) -> dict:
+        return await _forget(pid, purge_data=False)
 
     @app.get("/api/dir")
     def browse_dir(path: str | None = None) -> dict:

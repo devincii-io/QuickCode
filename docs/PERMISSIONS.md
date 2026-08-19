@@ -79,15 +79,24 @@ today.
   `git push … --force` (any remote, any branch — not only the default one), and
   the `:(){` fork bomb. Two things the old text promised are not breakers:
   substitution forms like `$(rm -rf /)` are not matched by these regexes, and
-  there is no breaker for recursive deletes outside the project. Both still
-  prompt in yolo, but by a different mechanism — see the bash pipeline below.
-- **Protected paths always prompt** regardless of mode or allow rules: `.git/`,
+  there is no breaker for recursive deletes outside the project. Neither is
+  caught in yolo any more: the protected-path prompt that used to catch them
+  by a side door is not raised in yolo (see the next bullet), so in that mode
+  the four patterns above are the whole of what stops.
+- **Protected paths prompt in every mode except `yolo`**, regardless of allow
+  rules: `.git/`,
   `.quickcode/`, `.ssh/`, `.env` and `.env.*`, and anything outside the project
   root. The test is on the *resolved* path's components, so `~/.quickcode/` is
   caught twice over — once as a `.quickcode` component, once as outside the
   root. Checked *before* allow-rule
   evaluation so no rule can accidentally unprotect them. In `dontask` the same
-  check denies instead of prompting, because there is nobody to ask. The prompt
+  check denies instead of prompting, because there is nobody to ask. In `yolo`
+  it does neither: the mode exists to stop asking, and asking anyway made a
+  plain `find / -name "*x*"` stop and wait — `bash` treats every non-option
+  token as a possible path, so the `/` was enough. The gate is entry to the
+  mode (a confirmation screen, a persisted acceptance, a red status bar), not
+  a second conversation per command. Deny rules still deny in yolo, and the
+  four circuit breakers still prompt. The prompt
   is the ordinary three-button one; there is no "allow self-config edits for
   this session" option — an always-allow on a `.quickcode/` path writes an
   ordinary persisted rule like any other.

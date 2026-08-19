@@ -83,6 +83,14 @@ class Tool(Generic[In]):
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
     is_read_only: ClassVar[bool] = False
+    # Whether Stop may cut this tool off mid-run. Off by default, and that is
+    # the safe default rather than a shrug: killing `write` or `edit` halfway
+    # through trades a slow interrupt for a truncated file. A tool sets this
+    # when it can be stopped without leaving a mess -- and when it owns the
+    # child process it must kill on the way out, which `run` does by catching
+    # CancelledError. The one that matters is `bash`: without it, Stop cannot
+    # end a `find /` and the turn sits there until the command's own timeout.
+    interruptible: ClassVar[bool] = False
     permission: ClassVar[PermissionSpec] = DEFAULT_SPEC
     # Where this tool came from: "internal" (shipped), "entrypoint" (a plugin
     # package) or "config" (an MCP server). Carried on the tool rather than

@@ -30,12 +30,27 @@ from typing import Any
 from quickcode.config import CONFIG_DIR, Config, Environment
 from quickcode.providers.base import ModelInfo, Provider
 from quickcode.server.manager import ConversationManager
+from quickcode.session.store import (
+    project_data_dir,
+    project_data_summary,
+    purge_project_data,
+)
 from quickcode.tools.base import Tool
 from quickcode.tools.registry import ToolRegistry, default_registry
 
 log = logging.getLogger("quickcode.server")
 
 REGISTRY_FILENAME = "projects.json"
+
+
+class ProjectBusyError(RuntimeError):
+    """A project cannot be forgotten while conversations are live in it."""
+
+    def __init__(self, pid: str, live: int) -> None:
+        self.pid = pid
+        self.live = live
+        word = "conversation" if live == 1 else "conversations"
+        super().__init__(f"{live} live {word} in this project; close them first")
 
 
 def project_id(path: str | os.PathLike[str]) -> str:
@@ -151,6 +166,19 @@ class ProjectRegistry:
 
     def get(self, pid: str) -> ProjectEntry | None:
         return self._entries.get(pid)
+
+    def remove(self, pid: str) -> ProjectEntry | None:
+        """Forget one entry and persist. Returns what was dropped, or ``None``.
+
+        This is a *list* operation and nothing more: it touches
+        ``~/.quickcode/projects.json`` and never the project directory. Opening
+        the same folder again re-adds it, unchanged, with everything inside it
+        exactly as it was.
+        """
+        entry = self._entries.pop(pid, None)
+        if entry is not None:
+            self.save()
+        return entry
 
 
 async def _no_mcp(cwd) -> tuple[list, list]:
@@ -397,6 +425,92 @@ class ProjectHub:
             raise KeyError(pid)
         existed = self._trust_store.revoke(manager.cwd)
         return {**self._trust_store.status(manager.cwd).to_json(), "revoked": existed}
+
+    # ---- forgetting a project ----
+    def data_summary(self, pid: str) -> dict[str, Any]:
+        """What ``forget(purge_data=True)`` would remove, for the confirmation.
+
+        Answers for a project that is merely *listed* as well as one that is
+        open — the home view offers this on a card that was never expanded.
+        """
+        return project_data_summary(self.path_of(pid))
+
+    def path_of(self, pid: str) -> Path:
+        """The directory a project id names. Raises ``KeyError`` if unknown.
+
+        The registry is asked first, because a project can be on the list
+        without a manager; an open project that somehow left the list still
+        answers, so no id the app is currently serving can become unaddressable.
+        """
+        entry = self.registry.get(pid)
+        if entry is not None:
+            return Path(entry.path)
+        manager = self.managers.get(pid)
+        if manager is not None:
+            return Path(manager.cwd)
+        raise KeyError(pid)
+
+    async def forget(self, pid: str, *, purge_data: bool = False) -> dict[str, Any]:
+        """Drop a project from the recent list; optionally delete its data too.
+
+        Two different acts behind one door, and the caller says which:
+
+        * ``purge_data=False`` — the registry entry goes and **nothing on disk
+          is touched**. This is "remove from the list".
+        * ``purge_data=True`` — additionally ``<project>/.quickcode`` is deleted
+          and the project's grant is dropped from the trust store. The project
+          directory itself, and everything else in it, is never touched; see
+          ``session.store.project_data_dir`` for the containment proof.
+
+        A project with live conversations is **refused** (``ProjectBusyError``)
+        rather than closed from under them. That is the precedent
+        ``DELETE /api/sessions/{conv_id}`` already sets for a live session, and
+        the reasons are the same: a live conversation has a websocket, a running
+        turn and possibly a tool mid-flight, and pulling its log away is a
+        different and worse failure than being told to close it first. Closing
+        it silently would also be an unaskable question — "delete" was clicked
+        on a list row, not on the conversation.
+
+        A project that is open but *idle* is closed and dropped from the hub, so
+        nothing keeps running against a directory the user just took off the
+        list. The one exception is the default project: this app process is
+        serving it, and ``hub.default`` must keep answering.
+
+        Raises ``KeyError`` (unknown id), ``ProjectBusyError`` (live), or
+        ``ValueError`` (a data directory that could not be proved safe — nothing
+        is deleted and nothing is closed when that happens).
+        """
+        path = self.path_of(pid)
+        manager = self.managers.get(pid)
+        if manager is not None and manager.conversations:
+            raise ProjectBusyError(pid, len(manager.conversations))
+        # Prove the target before anything is closed or unlinked, so a refusal
+        # leaves the project exactly as it was.
+        if purge_data:
+            project_data_dir(path)
+        result: dict[str, Any] = {
+            "id": pid,
+            "path": str(path),
+            "removed_from_list": False,
+            "closed": False,
+            "data_dir": None,
+            "data_existed": False,
+            "data_deleted": False,
+            "trust_revoked": False,
+        }
+        if manager is not None and pid != self._default_id:
+            await manager.close()
+            self.managers.pop(pid, None)
+            self._project_extra.pop(pid, None)
+            result["closed"] = True
+        if purge_data:
+            purge = purge_project_data(path)
+            result["data_dir"] = purge.path
+            result["data_existed"] = purge.existed
+            result["data_deleted"] = purge.removed
+            result["trust_revoked"] = self._trust_store.revoke(path)
+        result["removed_from_list"] = self.registry.remove(pid) is not None
+        return result
 
     # ---- shutdown ----
     async def close(self) -> None:

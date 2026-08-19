@@ -280,7 +280,32 @@ async def _execute_tools(
         for c in mutating:
             if agent.cancelled:
                 break
-            await run_one(c)
+            tool = agent.registry.get(c.name)
+            if not (tool and tool.interruptible):
+                # Not interruptible on purpose: a `write` or `edit` stopped
+                # halfway leaves a truncated file, which is worse than a slow
+                # Stop. These are also fast.
+                await run_one(c)
+                continue
+            # Interruptible — race it against the cancel the same way the
+            # read-only batch is raced. Awaiting it outright is what made Stop
+            # look ignored: the flag was set, the transcript said "(interrupt
+            # requested)" as many times as it was pressed, and the loop stayed
+            # parked inside a `find /` until the command's own timeout. The
+            # tool kills its child on the way out.
+            running = asyncio.ensure_future(run_one(c))
+            interrupted = asyncio.create_task(agent._cancel.wait())
+            done, _ = await asyncio.wait(
+                {running, interrupted}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if interrupted in done and agent.cancelled:
+                running.cancel()
+                await asyncio.gather(running, return_exceptions=True)
+                break
+            interrupted.cancel()
+            await asyncio.gather(interrupted, return_exceptions=True)
+            if running.done() and not running.cancelled():
+                running.exception()   # see the read-only branch above
     finally:
         for c in calls:
             record(c, "[interrupted]" if agent.cancelled else "[no result]", True)

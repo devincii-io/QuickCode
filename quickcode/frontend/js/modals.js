@@ -11,7 +11,7 @@ import { api } from "./api.js";
 import { KEYS, PANEL_NOTE, SLASH } from "./help/shortcuts.js";
 import { sheetOpen } from "./settings/ui.js";
 import { store, subscribe } from "./store.js";
-import { toastOk } from "./toast.js";
+import { toast, toastError, toastOk } from "./toast.js";
 import { actions } from "./ws.js";
 import { applyTheme, el, esc, fmtTokens, oneLine, relTime } from "./util.js";
 
@@ -459,6 +459,174 @@ export function openHelp({ onFull } = {}) {
   return m;
 }
 
+// ---- multi-select ----
+//
+// One selection model, shared by the three lists that have one: the session
+// rows on a Home card, the session rows in this file's switcher popover, and
+// the project cards. It is deliberately dumb — a set of ids plus the anchor a
+// shift-click extends from — and it never re-renders anything itself. Callers
+// mutate it and then redraw, which is what lets a selection survive a re-render
+// (the ids outlive the DOM) while a caller that drops the model on view change
+// gets the other half of the rule for free.
+
+/** A set of selected ids with shift-range extension. `order` is always the ids
+ *  currently on screen, in display order — the model holds no DOM. */
+export function makeSelection() {
+  const ids = new Set();
+  let anchor = null;
+  return {
+    get size() { return ids.size; },
+    has: (id) => ids.has(id),
+    clear() {
+      const had = ids.size > 0;
+      ids.clear();
+      anchor = null;
+      return had;   // so Escape can tell whether it consumed the keystroke
+    },
+    /** Toggle one row. With `shift`, every row between the anchor and this one
+     *  takes this row's new state — the ordinary list-box behaviour. */
+    toggle(id, order = [], shift = false) {
+      const from = order.indexOf(anchor);
+      const to = order.indexOf(id);
+      if (shift && anchor !== null && from !== -1 && to !== -1 && from !== to) {
+        const on = !ids.has(id);
+        const [lo, hi] = from < to ? [from, to] : [to, from];
+        for (const other of order.slice(lo, hi + 1)) {
+          if (on) ids.add(other); else ids.delete(other);
+        }
+      } else {
+        if (ids.has(id)) ids.delete(id); else ids.add(id);
+      }
+      anchor = id;
+    },
+    setAll(order, on) {
+      for (const id of order) { if (on) ids.add(id); else ids.delete(id); }
+      anchor = null;
+    },
+    /** Forget ids that are no longer on screen. Called after every reload, so a
+     *  row deleted by somebody else cannot linger in a count. */
+    keepOnly(order) {
+      const live = new Set(order);
+      for (const id of [...ids]) if (!live.has(id)) ids.delete(id);
+    },
+    inOrder(order) { return order.filter((id) => ids.has(id)); },
+  };
+}
+
+const REASON_WORDS = {
+  live: (n) => `${n} still open`,
+  missing: (n) => `${n} already gone`,
+  unknown: (n) => `${n} no longer listed`,
+  failed: (n) => `${n} could not be deleted`,
+};
+
+/** Report a bulk result honestly: three of five is never "done".
+ *
+ *  `skipped` is the backend's per-row list, `[{reason, …}]`; both bulk routes
+ *  answer in that shape. A partial result is deliberately not an error toast —
+ *  something did happen — but it never reads as a plain success either. */
+export function reportBulk(doneCount, skipped, { one, many, verb = "Deleted" }) {
+  const count = (n) => `${n} ${n === 1 ? one : many}`;
+  const groups = new Map();
+  for (const s of skipped || []) {
+    groups.set(s.reason, (groups.get(s.reason) || 0) + 1);
+  }
+  const why = [...groups].map(([reason, n]) =>
+    (REASON_WORDS[reason] || ((k) => `${k} skipped`))(n)).join(", ");
+  if (!why) {
+    if (doneCount) toastOk(`${verb} ${count(doneCount)}.`);
+    return;
+  }
+  if (!doneCount) {
+    toastError(`Nothing was deleted — ${why}.`);
+    return;
+  }
+  toast(`${verb} ${count(doneCount)}; ${skipped.length} left alone (${why}).`,
+    { kind: "info", timeout: 7000 });
+}
+
+// ---- deleting QuickCode's data for a project ----
+
+/** The one destructive action here that gets a real dialog rather than the
+ *  arm-then-act button.
+ *
+ *  Removing a project from the list is reversible by reopening the folder, so
+ *  a two-click button is proportionate. This is not: it unlinks transcripts,
+ *  task boards and artifacts that exist nowhere else. So it names the exact
+ *  directory it will remove, lists what is inside it, and says out loud the
+ *  thing the user actually needs to know — that the code is not part of it.
+ *
+ *  `projects` is `[{id, name, path}]`; the same dialog covers a bulk purge. */
+export function openPurgeProjects(projects, { onDone } = {}) {
+  const many = projects.length > 1;
+  const m = modal(
+    many ? `Delete QuickCode data for ${projects.length} projects` : "Delete QuickCode data",
+    `<div class="purge">
+       <div class="purge-lead">This removes the <code>.quickcode</code> folder inside
+         ${many ? "each project" : "the project"} and forgets
+         ${many ? "their" : "its"} trust decision. It cannot be undone.</div>
+       <div class="purge-list"><div class="hs-note">reading…</div></div>
+       <div class="purge-safe">Your files are not touched. Nothing outside
+         <code>.quickcode</code> is removed, and the project folder itself stays
+         exactly where it is.</div>
+       <div class="rn-err"></div>
+     </div>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn danger" data-purge disabled>Delete the data</button>`,
+  );
+  const list = m.querySelector(".purge-list");
+  const err = m.querySelector(".rn-err");
+  const go = m.querySelector("[data-purge]");
+
+  const line = (p, d) => {
+    const bits = [];
+    if (d?.sessions) bits.push(`${d.sessions} session${d.sessions === 1 ? "" : "s"}`);
+    if (d?.archived) bits.push(`${d.archived} archived`);
+    if (d?.boards) bits.push(`${d.boards} task board${d.boards === 1 ? "" : "s"}`);
+    if (d?.artifacts) bits.push(`${d.artifacts} artifact${d.artifacts === 1 ? "" : "s"}`);
+    const what = !d
+      ? "could not read this project's data directory"
+      : d.exists
+        ? (bits.length ? bits.join(" · ") : "settings and cached state only")
+        : "nothing stored here yet";
+    return `<div class="purge-item">
+      <div class="purge-name">${esc(p.name || p.path)}</div>
+      <div class="purge-path"><code>${esc(d?.path || p.path)}</code></div>
+      <div class="purge-what">${esc(what)}</div>
+    </div>`;
+  };
+
+  (async () => {
+    const summaries = await Promise.all(projects.map(async (p) => {
+      try { return await api.projectData(p.id); } catch { return null; }
+    }));
+    list.innerHTML = projects.map((p, i) => line(p, summaries[i])).join("");
+    go.disabled = false;
+  })();
+
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    go.textContent = "Deleting…";
+    err.textContent = "";
+    let result;
+    try {
+      result = many
+        ? await api.purgeProjects(projects.map((p) => p.id))
+        : { removed: [await api.purgeProjectData(projects[0].id)], skipped: [] };
+    } catch (e) {
+      go.disabled = false;
+      go.textContent = "Delete the data";
+      err.textContent = e.message;
+      return;
+    }
+    closeModal();
+    reportBulk(result.removed.length, result.skipped,
+      { one: "project", many: "projects", verb: "Deleted the QuickCode data of" });
+    if (onDone) onDone(result);
+  });
+  return m;
+}
+
 // ---- sessions ----
 
 /** Arm-then-act on one button: the first click relabels it, the second runs.
@@ -545,6 +713,10 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
   try { sessions = await api.sessions(true); } catch { /* server gone */ }
   let revealed = false;
   const cur = store.convId;
+  // Local to this popover: closing it is leaving the list, and a selection must
+  // not outlive the list it was made in.
+  const sel = makeSelection();
+  let order = [];
 
   const m = menuAt(
     anchor,
@@ -558,7 +730,11 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
   m.appendChild(foot);
 
   const row = (s) => `
-    <div class="menu-row${s.archived ? " archived" : ""}">
+    <div class="menu-row${s.archived ? " archived" : ""}${
+      sel.has(s.conv_id) ? " picked" : ""}">
+      <label class="mi-pick" title="Select this session (shift-click for a range)">
+        <input type="checkbox" data-pick="${esc(s.conv_id)}"${
+          sel.has(s.conv_id) ? " checked" : ""}></label>
       <button class="menu-item" data-conv="${esc(s.conv_id)}"
               title="${esc(oneLine(s.title, 200))}">
         <div class="mi-title"><span class="mi-name">${esc(oneLine(s.title, 90))}</span>${
@@ -582,19 +758,35 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
       .filter((s) => !s.archived && !s.live && !s.message_count)
       .map((s) => s.conv_id);
     const visible = sessions.filter((s) => revealed || !s.archived);
+    // The rows on screen, in the order they are drawn: what a shift-click
+    // ranges over and what "select all" means.
+    order = visible.map((s) => s.conv_id);
+    sel.keepOnly(order);
     rowsEl.innerHTML = visible.length
       ? visible.map(row).join("")
       : `<div class="menu-note">${archivedCount && !revealed
           ? "Nothing here but the archive." : "No saved sessions in this project yet."}</div>`;
+    const n = sel.size;
+    const allOn = order.length > 0 && n === order.length;
     foot.innerHTML = `
+      ${n ? `<div class="menu-selbar">
+         <span class="msb-count">${n} selected</span>
+         <button class="menu-tool" data-all="${allOn ? "off" : "on"}">${
+           allOn ? "select none" : `select all ${order.length}`}</button>
+         <button class="menu-tool msb-del" data-bulk-del>delete ${n} session${
+           n === 1 ? "" : "s"}</button>
+         <span class="msb-hint">Esc clears</span>
+       </div>` : ""}
+      ${order.length && !n ? `<button class="menu-tool" data-all="on"
+         >select all ${order.length}</button>` : ""}
       ${emptyIds.length ? `<button class="menu-tool" data-sweep
          >clean up ${emptyIds.length} empty</button>` : ""}
       ${archivedCount ? `<button class="menu-tool" data-toggle-arch
          aria-pressed="${revealed}">${revealed ? "hide" : "show"} archived
          (${archivedCount})</button>` : ""}
       <div class="menu-err"></div>`;
-    // Nothing to sweep and nothing archived: no footer rule, no empty strip.
-    foot.style.display = emptyIds.length || archivedCount ? "" : "none";
+    // Nothing to select, nothing to sweep and nothing archived: no footer rule.
+    foot.style.display = order.length || emptyIds.length || archivedCount ? "" : "none";
   }
 
   const fail = (err) => {
@@ -614,8 +806,59 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
 
   render();
 
+  // Escape clears the selection before it closes the popover. Registered now,
+  // synchronously, so it runs ahead of menuAt's own Escape handler — which is
+  // added on a timeout and would otherwise close the menu out from under a
+  // keystroke the user meant as "never mind, deselect".
+  const onSelEsc = (e) => {
+    if (!m.isConnected) { document.removeEventListener("keydown", onSelEsc, true); return; }
+    if (e.key !== "Escape" || !sel.size) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    sel.clear();
+    render();
+  };
+  document.addEventListener("keydown", onSelEsc, true);
+
   m.addEventListener("click", async (e) => {
     if (e.target.closest("[data-new]")) { m.closeMenu(); onNew(); return; }
+
+    const pick = e.target.closest("[data-pick]");
+    if (pick) {
+      // The checkbox's own state is thrown away and redrawn from the model:
+      // a shift-click changes rows other than the one that was clicked.
+      sel.toggle(pick.dataset.pick, order, e.shiftKey);
+      render();
+      return;
+    }
+
+    const all = e.target.closest("[data-all]");
+    if (all) { sel.setAll(order, all.dataset.all === "on"); render(); return; }
+
+    const bulk = e.target.closest("[data-bulk-del]");
+    if (bulk) {
+      const picked = sel.inOrder(order);
+      const resting = `delete ${picked.length} session${picked.length === 1 ? "" : "s"}`;
+      if (!armButton(bulk, `delete ${picked.length}?`, resting)) return;
+      bulk.textContent = "…";
+      let result;
+      try {
+        result = await api.removeSessions(picked);
+      } catch (err) {
+        // The whole request failed, so nothing was deleted: hand the button
+        // back rather than leaving an ellipsis where a control used to be.
+        delete bulk.dataset.armed;
+        bulk.classList.remove("armed");
+        bulk.textContent = resting;
+        fail(err);
+        return;
+      }
+      sel.clear();
+      reportBulk(result.deleted.length, result.skipped,
+        { one: "session", many: "sessions" });
+      await refresh();
+      return;
+    }
 
     const toggle = e.target.closest("[data-toggle-arch]");
     if (toggle) { revealed = !revealed; render(); return; }

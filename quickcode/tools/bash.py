@@ -65,6 +65,9 @@ class BashTool(Tool[BashInput]):
         f"caps at {MAX_TIMEOUT_MS}. run_in_background is not yet supported."
     )
     is_read_only: ClassVar[bool] = False
+    # Stop must be able to end a command. `run` kills the process tree on the
+    # way out, so cancelling is clean rather than an abandoned child.
+    interruptible: ClassVar[bool] = True
     permission = PermissionSpec(mutates=True, target_field="command", shell=True)
     Input = BashInput
 
@@ -118,10 +121,20 @@ class BashTool(Tool[BashInput]):
 
         # Preferred path: a real pseudo-terminal. Fall back to a plain
         # subprocess on any PTY error (backend missing, spawn failure, ...).
+        session: PtySession | None = None
         try:
             session = PtySession(argv, cwd=str(cwd))
             raw_out, returncode, timed_out = await asyncio.to_thread(session.run, timeout_s)
             text = _clean_pty_output(raw_out)
+        except asyncio.CancelledError:
+            # Stop, mid-command. Cancelling this coroutine does not reach the
+            # child -- `run` is parked in a worker thread and `find /` would
+            # keep going to its own timeout, which is exactly what made the
+            # interrupt look ignored. Kill the tree, then let the cancellation
+            # continue on its way.
+            if session is not None:
+                session.kill()
+            raise
         except Exception:  # noqa: BLE001 - any PTY failure -> subprocess fallback
             return await asyncio.to_thread(
                 _run_subprocess, argv, str(cwd), timeout_s, timeout_ms, ctx

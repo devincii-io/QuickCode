@@ -56,11 +56,12 @@ def test_the_read_tool_itself_reads_an_artifact_without_a_prompt(project):
     assert target == ARTIFACT
 
 
-@pytest.mark.parametrize("mode", [Mode.ask, Mode.auto_edit, Mode.yolo])
+@pytest.mark.parametrize("mode", [Mode.ask, Mode.auto_edit])
 def test_writing_to_the_artifacts_directory_still_prompts(mode, project):
     """The exception is read-only. A tool that mutates the same path is asked
     about exactly as before -- the agent writing its own report goes through
-    ``artifacts.py``, not through a gated tool call."""
+    ``artifacts.py``, not through a gated tool call. Yolo is not in the list
+    because yolo does not prompt for anything; see the last test in this file."""
     e = engine(mode, root=project, allow=["write", "edit"])
     assert e.evaluate("write", ARTIFACT) == Decision.ask
     assert e.evaluate("edit", ARTIFACT) == Decision.ask
@@ -82,7 +83,10 @@ def test_the_rest_of_the_quickcode_directory_still_asks_for_reads(path, project)
 
 @pytest.mark.parametrize("path", [".git/config", ".ssh/id_rsa", ".env", ".env.local"])
 def test_the_other_protected_paths_are_untouched_by_the_exception(path, project):
-    assert engine(Mode.yolo, root=project, allow=["read"]).evaluate("read", path) == Decision.ask
+    assert engine(root=project, allow=["read"]).evaluate("read", path) == Decision.ask
+    assert engine(Mode.dontask, root=project, allow=["read"]).evaluate("read", path) == (
+        Decision.deny
+    )
 
 
 @pytest.mark.parametrize("path", [
@@ -92,7 +96,7 @@ def test_the_other_protected_paths_are_untouched_by_the_exception(path, project)
 ])
 def test_a_path_that_only_starts_inside_the_artifacts_directory_still_asks(path, project):
     """The prefix is not the test; the resolved location is."""
-    assert engine(Mode.yolo, root=project, allow=["read"]).evaluate("read", path) == Decision.ask
+    assert engine(root=project, allow=["read"]).evaluate("read", path) == Decision.ask
 
 
 def test_a_symlink_out_of_the_artifacts_directory_still_asks(project, tmp_path):
@@ -104,7 +108,7 @@ def test_a_symlink_out_of_the_artifacts_directory_still_asks(project, tmp_path):
         link.symlink_to(secret)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not permitted on this machine")
-    assert engine(Mode.yolo, root=project).evaluate("read", str(link)) == Decision.ask
+    assert engine(root=project).evaluate("read", str(link)) == Decision.ask
 
 
 def test_an_artifact_read_falls_through_to_the_rules_rather_than_being_allowed(project):
@@ -123,4 +127,27 @@ def test_a_shell_read_of_an_artifact_is_not_covered_by_the_exception(project):
 def test_an_artifacts_directory_of_another_project_is_still_protected(project, tmp_path):
     other = tmp_path / "other" / ".quickcode" / "artifacts" / "explore-1.md"
     other.parent.mkdir(parents=True)
-    assert engine(Mode.yolo, root=project).evaluate("read", str(other)) == Decision.ask
+    assert engine(root=project).evaluate("read", str(other)) == Decision.ask
+
+
+def test_yolo_does_not_ask_about_protected_paths_because_that_is_what_yolo_means(project):
+    """The mode's whole promise is that it does not interrupt.
+
+    It used to prompt anyway for anything protected — and for `bash`, where
+    every non-option token is treated as a possible path, that meant a plain
+    `find / -name "*x*"` stopped and waited on the `/`. Turning yolo on,
+    confirming it, and watching the pill go red is the conversation; having it
+    again per command is not a safety boundary, it is a mode that lies about
+    what it is. Deny rules and the catastrophic-command breakers still stand.
+    """
+    e = engine(Mode.yolo, root=project)
+    assert e.evaluate("read", ".env") == Decision.allow
+    assert e.evaluate("read", ".git/config") == Decision.allow
+    assert e.evaluate("bash", 'find / -name "*nimocam*" -type f') == Decision.allow
+    assert e.evaluate("bash", "ls /etc") == Decision.allow
+    # Still stopped: an explicit deny rule, and the patterns nobody means.
+    assert engine(Mode.yolo, root=project, deny=["read(.env)"]).evaluate("read", ".env") == (
+        Decision.deny
+    )
+    assert e.evaluate("bash", "rm -rf /") == Decision.ask
+    assert e.evaluate("bash", ":(){ :|:& };:") == Decision.ask

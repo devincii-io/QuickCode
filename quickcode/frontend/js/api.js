@@ -199,6 +199,26 @@ export const api = {
   openProject: (path) => req("POST", "/api/projects/open", { path }),
   dir: (path) => req("GET", "/api/dir" + (path ? `?path=${encodeURIComponent(path)}` : "")),
 
+  // ---- forgetting a project ----
+  // Two different acts, never one call with a flag, because the difference is
+  // the whole point: `remove*` drops the entry in ~/.quickcode/projects.json
+  // and touches nothing inside the project; `purge*` additionally deletes
+  // <project>/.quickcode and the project's grant in the trust store. Neither
+  // ever removes the project directory, and the backend refuses (400) any
+  // target it cannot prove is exactly that one directory.
+  //
+  // 409 = the project has live conversations; close them first. The bulk paths
+  // answer per row — {removed: [...], skipped: [{id, reason}]} — and are a 200
+  // even when nothing could be done, so the caller reports what happened
+  // rather than a blanket success.
+  removeProject: (pid) => req("DELETE", `/api/projects/${encodeURIComponent(pid)}`),
+  removeProjects: (ids) => req("POST", "/api/projects/remove", { ids }),
+  // What a purge would delete: the resolved path, and counts per kind.
+  projectData: (pid) => req("GET", `/api/projects/${encodeURIComponent(pid)}/data`),
+  purgeProjectData: (pid) =>
+    req("DELETE", `/api/projects/${encodeURIComponent(pid)}/data`),
+  purgeProjects: (ids) => req("POST", "/api/projects/purge", { ids }),
+
   // ---- another project than the current one (the Home view) ----
   sessionsOf: (pid, archived = false) =>
     req("GET", `/api/projects/${encodeURIComponent(pid)}/sessions?archived=${archived}`),
@@ -212,6 +232,10 @@ export const api = {
       encodeURIComponent(convId)}`, { title }),
   cleanupSessionsOf: (pid, dryRun = false) =>
     req("POST", `/api/projects/${encodeURIComponent(pid)}/sessions/cleanup`, { dry_run: dryRun }),
+  // Per-row answers: {deleted, boards, artifacts, skipped:[{conv_id, reason}]}.
+  removeSessionsOf: (pid, convIds) =>
+    req("POST", `/api/projects/${encodeURIComponent(pid)}/sessions/delete`,
+        { conv_ids: convIds }),
 
   // ---- per install ----
   putConfig: (cfg) => req("PUT", "/api/config", cfg),

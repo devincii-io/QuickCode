@@ -710,6 +710,53 @@ textarea, input { font: inherit; color: inherit; }
 }
 .menu-err { flex: 1 0 100%; font-size: 11px; color: var(--error); }
 
+/* Multi-select in the session switcher. The box is always there — a checkbox
+   that appears on hover is a control you have to find twice — but it stays
+   quiet until it is ticked. */
+.mi-pick {
+  flex: none; display: grid; place-items: center; padding: 0 4px 0 8px;
+  opacity: .35; transition: opacity .1s;
+}
+.menu-row:hover .mi-pick, .menu-row.picked .mi-pick, .mi-pick:focus-within { opacity: 1; }
+.mi-pick input { accent-color: var(--primary); cursor: pointer; }
+.menu-row.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.menu-selbar {
+  flex: 1 0 100%; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 2px 0 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.msb-count {
+  font-family: var(--mono); font-size: 10.5px; color: var(--primary); font-weight: 600;
+}
+.msb-hint { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+.msb-del:hover {
+  color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+/* ---------- deleting a project's QuickCode data (js/modals.js) ---------- */
+/* The one destructive action that gets a dialog. It has to answer two
+   questions before the button is pressed: exactly which directory, and what is
+   in it — and it has to say what is *not* going, because "delete the project"
+   is the thing the user is afraid this means. */
+.purge { display: flex; flex-direction: column; gap: 12px; }
+.purge-lead { font-size: 13px; color: var(--fg); }
+.purge-list {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px;
+  background: var(--panel);
+}
+.purge-item { display: flex; flex-direction: column; gap: 2px; }
+.purge-name { font-size: 13px; font-weight: 600; }
+.purge-path { font-size: 11.5px; word-break: break-all; }
+.purge-path code { font-family: var(--mono); color: var(--fg-dim); }
+.purge-what { font-size: 11.5px; color: var(--fg-faint); font-family: var(--mono); }
+.purge-safe {
+  font-size: 12px; color: var(--fg-dim); border-left: 3px solid var(--success);
+  padding: 6px 10px; background: color-mix(in srgb, var(--success) 6%, transparent);
+  border-radius: 0 8px 8px 0;
+}
+.purge-safe code { font-family: var(--mono); }
+
 /* ---------- toasts (js/toast.js) ---------- */
 /* Bottom-right, above the composer's menus in z-order but out of the click
    path: the host itself never takes a pointer event, only the cards do. */

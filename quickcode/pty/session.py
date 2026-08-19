@@ -75,6 +75,17 @@ class PtySession:
         self.pid: int | None = None
 
     # ------------------------------------------------------------------ run
+    def kill(self) -> None:
+        """Kill the process tree from outside the thread running ``run``.
+
+        ``run`` blocks in a worker thread, and cancelling the asyncio task that
+        awaits it does not reach the child -- the command keeps going and the
+        thread stays parked on it. Killing the tree is what actually ends both:
+        the reader sees EOF, ``run`` returns, and the thread exits. Safe to
+        call before the spawn, after the exit, or twice.
+        """
+        _kill_tree(getattr(self, "pid", None))
+
     def run(self, timeout_s: float) -> tuple[bytes, int | None, bool]:
         """Spawn, stream to completion (or timeout), and return.
 

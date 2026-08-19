@@ -36,11 +36,61 @@
 }
 
 .home-card {
+  position: relative;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); overflow: hidden;
   transition: border-color .12s, transform .12s;
 }
 .home-card:hover { border-color: var(--line-strong); }
+
+/* ---------- multi-select ---------- */
+/* One selection model, two lists: the cards here and the session rows inside
+   one of them. The bar only exists while something is ticked, so an untouched
+   Home looks exactly as it always did. */
+
+.hc-pick {
+  position: absolute; top: 8px; right: 8px; z-index: 2;
+  display: grid; place-items: center; padding: 4px;
+  opacity: .3; transition: opacity .1s;
+}
+.home-card:hover .hc-pick, .home-card.picked .hc-pick, .hc-pick:focus-within { opacity: 1; }
+.hc-pick input { accent-color: var(--primary); cursor: pointer; }
+.home-card.picked { border-color: color-mix(in srgb, var(--primary) 60%, transparent); }
+.home-card.picked .hc-main { background: color-mix(in srgb, var(--primary) 9%, transparent); }
+/* The card title must not run under the checkbox. */
+.home-card .hc-top { padding-right: 22px; }
+
+/* The projects bar spans the whole grid rather than sitting in one column. */
+.home-selbar {
+  grid-column: 1 / -1;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+/* Inside a card, above its rows. */
+.hs-selbar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 6px 12px; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+.hsb-count {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--primary);
+}
+.hsb-spacer { flex: 1; }
+.hsb-hint { font-size: 10px; color: var(--fg-faint); }
+.hsb-remove:hover, .hsb-del:hover, .hsb-purge:hover {
+  color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+.hs-pick {
+  flex: none; display: grid; place-items: center; padding: 0 2px 0 10px;
+  opacity: .3; transition: opacity .1s;
+}
+.hs-row:hover .hs-pick, .hs-row.picked .hs-pick, .hs-pick:focus-within { opacity: 1; }
+.hs-pick input { accent-color: var(--primary); cursor: pointer; }
+.hs-row.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+/* The checkbox has taken over the row's left gutter. */
+.hs-pick + .hs-open { padding-left: 4px; }
 .home-card.open { border-color: color-mix(in srgb, var(--primary) 45%, transparent); }
 
 .hc-main { display: block; width: 100%; text-align: left; padding: 12px 14px 10px; }

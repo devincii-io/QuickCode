@@ -363,13 +363,15 @@ PROTECTED_CLAIMS = [".git/config", ".quickcode/settings.json", ".ssh/id_rsa", ".
 
 
 @pytest.mark.parametrize("path", PROTECTED_CLAIMS)
-def test_protected_paths_prompt_in_every_mode_and_deny_in_dontask(path, tmp_path):
-    """'Protected paths always prompt regardless of mode or allow rules ... In
-    `dontask` the same check denies instead of prompting.'"""
+def test_protected_paths_prompt_in_every_mode_but_yolo_and_deny_in_dontask(path, tmp_path):
+    """'Protected paths prompt in every mode except `yolo`, regardless of allow
+    rules ... In `dontask` the same check denies instead of prompting, because
+    there is nobody to ask. In `yolo` it does neither.'"""
     wide_open = {"allow": ["read", "write", "edit"]}
-    for mode in (Mode.ask, Mode.auto_edit, Mode.yolo):
+    for mode in (Mode.ask, Mode.auto_edit):
         assert engine(mode, root=tmp_path, **wide_open).evaluate("read", path) == Decision.ask
     assert engine(Mode.dontask, root=tmp_path, **wide_open).evaluate("read", path) == Decision.deny
+    assert engine(Mode.yolo, root=tmp_path, **wide_open).evaluate("read", path) == Decision.allow
 
 
 def test_read_only_tools_respect_the_protected_path_boundary(tmp_path):
@@ -380,13 +382,22 @@ def test_read_only_tools_respect_the_protected_path_boundary(tmp_path):
         assert engine(root=tmp_path).evaluate(tool, ".ssh") == Decision.ask
 
 
-def test_substitution_and_outside_deletes_still_prompt_in_yolo_by_another_route(tmp_path):
-    """docs/PERMISSIONS.md is explicit that these two are *not* circuit breakers
-    and prompt through the bash pipeline's protected-path scan instead. If a
-    breaker is ever added for them, that paragraph is the one to correct."""
-    e = engine(Mode.yolo, root=tmp_path)
-    assert e.evaluate("bash", "echo $(rm -rf /)") == Decision.ask
-    assert e.evaluate("bash", "rm -rf ../outside") == Decision.ask
+def test_substitution_and_outside_deletes_are_not_caught_in_yolo(tmp_path):
+    """docs/PERMISSIONS.md is explicit that these two are *not* circuit breakers.
+    They used to prompt in yolo anyway, through the bash pipeline's
+    protected-path scan; that scan no longer runs in yolo, so in that mode the
+    four breakers are the whole of what stops. The paragraph says so, and this
+    is the test that makes it stay true — in every *other* mode they still ask.
+    """
+    yolo = engine(Mode.yolo, root=tmp_path)
+    assert yolo.evaluate("bash", "echo $(rm -rf /)") == Decision.allow
+    assert yolo.evaluate("bash", "rm -rf ../outside") == Decision.allow
+    asking = engine(root=tmp_path)
+    assert asking.evaluate("bash", "echo $(rm -rf /)") == Decision.ask
+    assert asking.evaluate("bash", "rm -rf ../outside") == Decision.ask
+    # The four that stop even there.
+    assert yolo.evaluate("bash", "rm -rf /") == Decision.ask
+    assert yolo.evaluate("bash", "rm -rf ~") == Decision.ask
 
 
 def test_a_deny_rule_does_not_withhold_the_tool_from_the_model():

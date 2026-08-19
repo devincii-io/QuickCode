@@ -294,13 +294,20 @@ class PermissionEngine:
         is_write = spec.mutates
         is_read = not spec.mutates
 
-        # 1. Protected paths always prompt (before any allow rule). The one
-        #    exception is reading back the session's own subagent artifacts.
+        # 1. Protected paths prompt before any allow rule — except in yolo,
+        #    which is the mode whose entire promise is that it does not ask.
+        #    Prompting there was the rule outliving its reason: it exists so an
+        #    ordinary session cannot wander into `.git`, `.env` or the world
+        #    outside the project without a word, and somebody who has turned on
+        #    the mode named yolo, confirmed it, and watched it go red has
+        #    already had that conversation. A deny rule still denies below;
+        #    this only stops the asking.
         if spec.path_target and _protected(arg, self.root):
             if not (is_read and _is_subagent_artifact(arg, self.root)):
-                if self.mode in (Mode.dontask,):
+                if self.mode is Mode.dontask:
                     return Decision.deny
-                return Decision.ask
+                if self.mode is not Mode.yolo:
+                    return Decision.ask
 
         # 2. Shell tools get decomposed and evaluated per subcommand (handles
         #    plan mode itself — read-only builtins stay allowed, rest denied).
@@ -376,7 +383,14 @@ class PermissionEngine:
             candidate = token.split("=", 1)[-1] if "=" in token else token
             candidate = candidate.strip("'\"{},()")
             if candidate and _protected(candidate, self.root):
-                return Decision.deny if self.mode == Mode.dontask else Decision.ask
+                if self.mode is Mode.dontask:
+                    return Decision.deny
+                # Same exemption as the path tools above, and this is where it
+                # was felt: every non-option token is treated as a possible
+                # path, so `find / -name "*x*"` prompted in yolo because of the
+                # `/`. A mode that promises not to ask must not ask here.
+                if self.mode is not Mode.yolo:
+                    return Decision.ask
 
         # deny rules first (against the substitution-free subcommand)
         for r in self.rules.deny:
