@@ -4,6 +4,105 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-08-19
+
+### Changed
+
+- **QuickCode is a frozen application now.** The Windows installer used to
+  require Git and Python ≥3.12 on your machine, build a private virtualenv
+  under the install directory and pip-install into it. It now copies a
+  self-contained PyInstaller *onedir* build into
+  `%LOCALAPPDATA%\Programs\QuickCode`: no Python, no venv, no network, nothing
+  to go wrong on a machine that happens to have an odd Python. Startup got
+  faster rather than slower — process start to the port answering is **1.06 s
+  frozen against 1.57 s from source**, because a onedir build memory-maps its
+  interpreter out of the install folder instead of paying import cost through a
+  venv. Note the CLI keeps the name `quickcode.exe`; the windowed entry point is
+  `QuickCodeApp.exe`, because Windows filenames are case-insensitive and
+  `QuickCode.exe` and `quickcode.exe` are the same file — PyInstaller built both
+  and silently kept one, which is a footgun the spec now fails loudly on.
+  `pip install quickcode` is unaffected; the wheel and sdist still ship.
+
+### Fixed
+
+- **Starting the app waited on the network.** Opening a project awaited the
+  provider's model catalog — 415 models, measured at 3.2 s — before uvicorn had
+  even bound its port, and then the launcher slept a further hardcoded 400 ms
+  before asking for a window. So "QuickCode is slow to start" was really
+  "QuickCode is waiting for openrouter.ai", and on a slow link it was worse.
+  The catalog is now fetched *after* the port is bound; backgrounding it alone
+  was not enough, because parsing 400 models runs on the same event loop and
+  still beat uvicorn to the punch. The window opens the moment the server is
+  listening, context lengths fill themselves in when the catalog lands, and
+  **time to window went from ~4.1 s to ~1.15 s**. Five tests pin the contract —
+  nothing on the boot path may ask the provider for anything — rather than
+  pinning a stopwatch.
+- **The side-panel tabs lost their names.** A container query dropped every
+  label below 490 px — one pixel under the default panel width — so narrowing
+  the panel at all left five two-character sigils with no way to tell
+  Trajectory from Tasks. Labels now survive at every width; the strip scrolls
+  and keeps the active tab in view.
+- **The agents roster lied about what was running.** The provider emits
+  `TurnDone` once per *round*, not once per turn, so a subagent that said
+  anything before calling a tool was marked finished within seconds of starting
+  — counted as done, hidden behind the "running" filter, and its live output no
+  longer rendered at all. `finish_reason` was already on the event and simply
+  unused. Alongside it: the roster printed **“−1 done”** because it collapsed
+  *failed* and *done* into one status and then subtracted; chat cards rendered
+  every round twice and then lost it; tool calls cut off by Stop span forever
+  and leaked into the next turn's activity line; subagents killed by an
+  interrupt read as running for the rest of the session; a subagent that died
+  without a closing message never went terminal at all; and the trajectory
+  inspector claimed every subagent tool call had no result, because it only
+  matched top-level `tool_result` events and a subagent's are wrapped.
+- **The UI stayed cheerful while disconnected.** A dropped socket left the
+  status line saying `streaming`, the Stop button visible and inert, and — worst
+  — **a message typed into a dead socket was cleared from the composer and
+  thrown away**, because `send()` returned `false` and nobody looked. The
+  composer now only clears once the socket takes it, every refused frame says
+  what did not happen, and a graded banner reports the outage: silent under
+  1.2 s (the server closes with 1013 on purpose to force a replay), then
+  "Reconnecting…", then an alert with the outage length and a retry button. Two
+  reconnect bugs went with it: a conversation the server no longer has closed
+  4404 *after* accepting, and the backoff reset on `onopen`, so the client
+  retried twice a second forever in silence; and the transcript blanked for the
+  entire outage because the reset ran on the drop rather than on the first frame
+  of the socket that replaces it.
+- **A sleeping laptop left a socket that was open and dead.** Sends succeeded
+  into the void and, on an idle conversation, no frame ever arrived to prove
+  otherwise. The server now sends a heartbeat every 15 s of quiet and the client
+  closes a socket that has missed three, turning an invisible dead connection
+  into the ordinary reconnect it already knows how to do.
+- **`quickcode -p` never compacted**, because its agent was built with no
+  context length, so the threshold check could not fire and a `--continue` chain
+  grew without bound. The model's context window is now learned alongside the
+  turn rather than in front of it.
+- **Endings are announced now, instead of inferred.** An audit of every way a
+  run can stop found several that said nothing at all, and readers were left to
+  guess from the last event they happened to see. A `tool_call` cut off by an
+  interrupt never got a `tool_result` — on three separate paths — so its spinner
+  turned forever, on replay as well as live; every result now goes through one
+  recorder with a `finally` sweep that guarantees exactly one per call. An
+  interrupt during streaming emitted no status at all, so the half-sentence sat
+  in the accumulator and reappeared glued to the front of the *next* turn's
+  message. A round cut off mid-flight logged its usage but never counted it, so
+  the same session cost two different amounts depending on whether you read it
+  live or reopened it. `busy` could stay true forever — Stop up, composer dead —
+  if the interrupt landed while a permission modal was pending, because nothing
+  resolved the future the tool was waiting on. `agent_done` fired only for
+  detached jobs; blocking spawns and resumes emit it too now, and it no longer
+  overtakes the events it closes. And a subagent that errored or was cancelled
+  handed its parent a report marked as success, which is how a green tick ended
+  up over a dead agent — the tool result carries the run's real status.
+- **The test suite could hang indefinitely**, taking a release gate with it.
+  Diagnosed with live stack dumps: creating an asyncio event loop on Windows
+  builds its self-pipe with `socket.socketpair()`, which binds a loopback
+  listener and calls `accept()` with no timeout — and that call blocks forever
+  often enough to matter. It is not this codebase's code and the selector loop
+  shares the same self-pipe, so there is nothing here to fix; a per-test
+  deadline (`pytest-timeout`) now turns a hang into a loud failure with a stack
+  instead of a gate that never returns.
+
 ## [2.2.0] — 2026-08-18
 
 ### Fixed
@@ -713,7 +812,8 @@ provider abstraction, tool registry, PTY sessions, plan mode, compaction,
 subagent delegation via the agent tool) before the web UI rewrite replaced
 it. Not published as a release artifact.
 
-[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/devincii-io/QuickCode/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/devincii-io/QuickCode/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/devincii-io/QuickCode/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/devincii-io/QuickCode/compare/v1.0.0...v2.0.0
