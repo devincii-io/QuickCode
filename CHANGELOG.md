@@ -4,6 +4,64 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-08-19
+
+### Added
+
+- **Projects can be deleted, which was previously impossible.** `ProjectRegistry`
+  had `touch`, `list` and `get` and no way to remove anything, and no route
+  called for one: a directory opened once sat on the home screen for good. It is
+  two separate actions, because "delete a project" is an ambiguous thing to ask
+  a program to do. **Remove from list** drops the entry in
+  `~/.quickcode/projects.json` and touches nothing on disk — reopening the folder
+  brings it back unchanged. **Delete QuickCode's data** removes
+  `<project>/.quickcode` (sessions, task boards, artifacts, project settings)
+  and the project's trust grant, behind a dialog that names the resolved
+  directory and counts what is in it. Both refuse a project with a live
+  conversation, the same way deleting a live session already did.
+
+  The deletion is gated by one function that resolves both ends with `realpath`
+  and returns a path only when it is *exactly* `<resolved root>/.quickcode`,
+  re-checked immediately before the tree goes. Two ways out of that boundary are
+  closed explicitly, and both are tested against the real thing rather than a
+  mock: a **Windows directory junction answers `False` to `Path.is_symlink()`**,
+  so the symlink refusal is not what protects you — the realpath comparison is;
+  and `shutil.rmtree` *recurses into* a junction found inside the tree, so a
+  link under `.quickcode` would have carried the delete out of the project
+  entirely. A link anywhere in there now stops the purge and gets named.
+- **Multi-select on projects and sessions**, in all three lists — the home
+  cards, the per-project session rows, and the session switcher. Checkboxes,
+  select-all, shift-click ranges, Escape to clear, a bar that names the action
+  in full ("Delete 3 sessions", "Remove 2 projects from the list"), and
+  selection that survives a re-render but never crosses a project or a view.
+  Results are reported per item: *"Deleted 3 sessions; 2 left alone (2 still
+  open)"* rather than a blanket success.
+
+### Fixed
+
+- **Yolo asked for permission.** The mode whose entire promise is that it does
+  not interrupt stopped and waited anyway, because the protected-path rule ran
+  before the mode was ever consulted. For `bash` that was constant: every
+  non-option token is treated as a possible path, so a plain
+  `find / -name "*x*"` prompted on the `/`. The gate for yolo is entering it —
+  a confirmation screen, a persisted acceptance, a red status pill — not a
+  second conversation per command. It no longer prompts. Deny rules still deny
+  in yolo and the four circuit breakers still stop; `docs/PERMISSIONS.md` and
+  its machine-checked tests were rewritten to state the new boundary rather
+  than quietly relaxed, including that `$(rm -rf /)` and `rm -rf ../outside`
+  are no longer caught there — they used to be, through the protected-path
+  scan, and in yolo the four breakers are now the whole of what stops.
+- **Stop did not stop anything.** The read-only batch raced the cancel signal;
+  mutating calls were awaited outright. So pressing Stop during a long command
+  set a flag nobody was waiting on — the transcript printed "(interrupt
+  requested)" once per press while the turn sat inside the command until its
+  own timeout, which for a `find /` is minutes. Cancelling the coroutine alone
+  would not have been enough either: `bash` runs in a worker thread and the
+  child process outlives it. Tools now declare whether they may be cut off,
+  `bash` does and kills its process tree on the way out, and the loop races it
+  against the interrupt. `write` and `edit` stay uninterruptible on purpose — a
+  file truncated halfway is worse than an interrupt that waits for it to land.
+
 ## [2.3.0] — 2026-08-19
 
 ### Changed
@@ -812,7 +870,8 @@ provider abstraction, tool registry, PTY sessions, plan mode, compaction,
 subagent delegation via the agent tool) before the web UI rewrite replaced
 it. Not published as a release artifact.
 
-[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/devincii-io/QuickCode/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/devincii-io/QuickCode/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/devincii-io/QuickCode/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/devincii-io/QuickCode/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/devincii-io/QuickCode/compare/v2.0.0...v2.1.0
