@@ -4,6 +4,166 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-08-19
+
+Two numbers explain most of this release. A shell command that runs in 26ms
+took **4.4 seconds** to come back, on every call, because of a terminal nobody
+was looking at. And TOON, adopted to save tokens, turned out to cost 10% more
+of them — so it was kept only where it fixes something and reverted where it
+did not.
+
+### Added
+
+- **TOON for structured tool results.** `grep` content mode, `web_search`,
+  `task_list`, `task_get`, `agent_status` and authored `output: json` command
+  tools now hand the model a header declaring the fields once, then one row per
+  record:
+
+  ```toon
+  matches[2]{path,line,text}:
+    C:\src\a.py,12,def run():
+    src/b.py,44,"  run(), twice"
+  ```
+
+  The encoder is `quickcode/context/toon.py`, written against the spec rather
+  than pulled in as a dependency, and pinned by 43 tests. The browser has a
+  second copy — the model's tool arguments never pass through the server as
+  text, so a TOON view of them can only be built there — and
+  `tests/test_toon_parity.py` runs the same fixtures through both and demands
+  identical bytes, because two implementations of one format drift.
+
+  This is **not** the token saving TOON advertises, and the measurements are in
+  the "Changed" section below. What it buys is a row count the model can check
+  against the rows it actually got, and an unambiguous split. `path:line:text`
+  was ambiguous the moment a Windows drive letter put a colon in the first
+  field: every `C:\src\a.py:12:text` in this codebase's own search results
+  parsed to a path of `C`.
+
+- **Yolo mode can be reached without a launch flag.** Settings → General has an
+  arming switch behind a confirmation. It was previously reachable only by
+  starting the process with `--yolo`, which no desktop shortcut passes, so on an
+  installed copy yolo did not exist. See the silent downgrade under "Fixed".
+
+- **The provider balance, the response cap, and temperature are settings.**
+  `GET /api/credits` reports what is left at OpenRouter (and says plainly that
+  another provider does not publish one, rather than guessing). `max_tokens` and
+  `temperature` are editable in Settings and in Quick settings. A provider
+  reserves credit against `max_tokens`, so a small balance is refused outright
+  with "insufficient credits … lower max_tokens" — and until now there was
+  nowhere to lower it.
+
+- **Copy buttons and a right-click menu.** Code blocks, message bubbles and
+  agent output get a copy button; right-click offers copy, cut, paste and
+  select-all. A WebView2 window has no browser chrome, so there was no menu at
+  all for anyone who does not know Ctrl+C.
+
+- **Compaction survives a restart.** A compacted conversation recorded its
+  summary in the transcript but replayed the full history from disk, so reopening
+  a session undid the compaction and the next turn paid for the whole thing
+  again.
+
+### Changed
+
+- **The trajectory timeline is wall-clock.** The ruler read `+0.0s +0.1s +0.2s`,
+  which was accumulated processing time, not time. It now spans session start to
+  now, with clock-time pills across the axis, idle stretches collapsible so a
+  20-minute think does not squeeze the work into a pixel, and a live edge that
+  keeps moving while a tool runs.
+
+- **A permission decision lives inside the tool call it decided.** It used to be
+  a separate row underneath, which meant a card and its verdict could be pages
+  apart, and the row broke the step grouping it landed in. The card now carries a
+  lock badge — pending, allowed, denied — and the details on expand: what was
+  asked, the rule that was offered, whether it was remembered. The decision is
+  matched to its call by id (`call_id` now rides both permission events), so four
+  parallel calls resolving out of order each badge the right card.
+
+- **Tool arguments are shown as TOON, not re-rendered as JSON**, in the
+  transcript and in the agents panel, so the panel shows what the agent got.
+
+- **TOON was reverted where it cost tokens and fixed nothing.** Measured with
+  `o200k_base` against this codebase's own output:
+
+  | result | before | after |
+  |---|---|---|
+  | grep content, 20 matches | 440 tok | 493 tok (+12%) |
+  | web_search, 5 hits | 250 tok | 250 tok |
+  | task_list, 6 tasks | 88 tok | 122 tok (+39%) |
+  | agent_status, 3 jobs | 132 tok | 82 tok (−38%) |
+  | glob, 60 paths | 719 tok | 791 tok (+10%) |
+
+  TOON's own benchmarks compare against JSON, which spends most of its tokens on
+  braces and repeated field names. QuickCode never used JSON here; it used
+  `path:line:text` and bare path lists, which are already at or below TOON's
+  density. `grep` content keeps the table because the drive-letter split is a
+  real defect. `agent_status` keeps it because XML attributes really were
+  verbose. `task_list` keeps it and grew, because it now carries the owner,
+  blocks and description that the old checklist silently dropped. `glob` and
+  `grep`'s count and files-only modes went back to plain lines behind a
+  `<files count="60"/>` marker, which is the half that was worth keeping: without
+  it, a listing cut at the 200 cap looks exactly like a listing that found 200.
+
+- **The test suite runs in 28 seconds instead of 60**, with 936 tests instead of
+  860. Most of the saving was not the tests: `socket.socketpair()` on Windows
+  falls back to a loopback TCP handshake whose `accept()` has no timeout, and
+  asyncio builds every event loop's self-pipe with it. It was failing constantly
+  rather than rarely, costing seconds per occurrence, spread invisibly across
+  four files. The rest was sleeps replaced with waits on the actual condition,
+  and two probe timeouts lifted into named constants so tests can drive them
+  small.
+
+### Fixed
+
+- **Every shell command paid three seconds for a terminal.** `echo hi` returned
+  in 4.4 seconds. ConPTY adds a flat ~3.0s to *every* command on Windows —
+  measured at 3.113s for `bash -c`, 3.028s for `cmd /c`, 3.285s for PowerShell,
+  against 0.03-0.20s as plain subprocesses. It is the pseudo-console teardown,
+  not the shell: the command finishes in 26ms and the process stays alive for
+  three more seconds. A session running forty commands spent two minutes waiting
+  for terminals to close. Windows now runs commands on plain pipes (`QUICKCODE_BASH_PTY=1`
+  restores the old behaviour); POSIX still gets a real pty, where it costs
+  microseconds. Nothing is lost: colour was stripped before the model saw it
+  anyway, progress bars arrived as carriage-return spam, and a program that
+  prompts for input now reads EOF and exits instead of hanging until the timeout.
+  `echo hi` is now 0.20s.
+
+- **A permission profile asking for yolo was rewritten to `ask` in silence.**
+  The gate was correct; saying nothing about it was not. The mode switch and the
+  profile path now both state the refusal and what was applied instead, and the
+  same goes for a mode capped by the project's ceiling.
+
+- **No permission rule could name an MCP tool.** The rule grammar spelled the
+  tool half as `\w+`, so a server called `company-kb` produced
+  `mcp__company-kb__kb_search`, which no rule could match — and the profile
+  validator called such a rule junk and dropped it. Tool names may now contain
+  `-`, `.` and `:`, because servers name tools, we do not.
+
+- **"Live" meant "opened once, ever".** A conversation opened earlier in the run
+  was refused deletion and renaming for the life of the process, with a message
+  telling the user to close a window that was not open. Live now means a socket
+  is attached or a turn is running.
+
+- **The copy button copied its own label.** It sits inside the block so it can be
+  positioned against it, and `textContent` walks the subtree, so every copied code
+  block ended with the literal word `copy`.
+
+- **An always-allow could revoke the trust it was granted under.** Persisting a
+  rule writes to `settings.local.json`, which moves the config hash the trust
+  grant is keyed to, so approving something could untrust the project. The write
+  is now wrapped in a re-grant that reads trust *before* it, and never grants to
+  a project that was not trusted to begin with.
+
+- **`/bin/cat` walked past a `bash(cat **)` deny rule**, because deny and ask
+  rules were matched against the raw command rather than the normalised one.
+
+- **Interrupt was inert on the subprocess path.** Stop told the user and the model
+  the command had been interrupted while it ran happily to completion. That path
+  is now the default on Windows, so it mattered more than it did.
+
+- **The help panel said yolo still prompts on protected paths.** It has not since
+  2.4.0. It also gains a section explaining what the mode pill, a permission
+  profile, the ceiling and the yolo switch each decide, and which one wins.
+
 ## [2.4.1] — 2026-08-19
 
 An adversarial sweep of 2.4.0 by seven independent agents, each required to
