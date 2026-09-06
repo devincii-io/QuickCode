@@ -4,7 +4,7 @@
 
 import { api, currentProject } from "./api.js";
 import { openHelp, openModeMenu, openModelMenu } from "./modals.js";
-import { store } from "./store.js";
+import { store, subscribe } from "./store.js";
 import { toast, toastError } from "./toast.js";
 import { debounce, esc } from "./util.js";
 import { actions } from "./ws.js";
@@ -736,6 +736,27 @@ function setInput(text) {
   input.value = text;
   input.selectionStart = input.selectionEnd = text.length;
   autosize();
+  saveDraft();
+}
+
+let draftKey = null;
+function saveDraft() {
+  if (!draftKey || !input) return;
+  try {
+    if (input.value) sessionStorage.setItem(draftKey, input.value);
+    else sessionStorage.removeItem(draftKey);
+  } catch { /* retain the draft in the mounted composer */ }
+}
+
+function restoreDraft() {
+  if (!store.convId) return;
+  const paneId = new URLSearchParams(location.search).get("view");
+  const key = `qc-draft:${currentProject()}:${paneId || store.convId}`;
+  if (key === draftKey) return; // Reconnect must not overwrite active typing.
+  saveDraft();
+  draftKey = key;
+  try { input.value = sessionStorage.getItem(key) || ""; } catch { input.value = ""; }
+  autosize();
 }
 
 function resetWalk() {
@@ -833,12 +854,14 @@ export function initComposer(h) {
   mountProfilePill();
 
   input.addEventListener("input", () => {
+    saveDraft();
     resetWalk();                  // typing leaves history browsing
     autosize();
     refreshSlash();
   });
 
   input.addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (slashOpen()) {
@@ -881,6 +904,8 @@ export function initComposer(h) {
   input.addEventListener("blur", () => setTimeout(hideSlash, 0));
 
   $("btn-send").addEventListener("click", send);
+  subscribe((kind) => { if (kind === "reset" || kind === "state") restoreDraft(); });
+  window.addEventListener("pagehide", saveDraft);
   $("btn-interrupt").addEventListener("click", () => actions.interrupt());
   $("btn-compact").addEventListener("click", () => actions.compact());
   $("mode-pill").addEventListener("click", (e) => openModeMenu(e.currentTarget));

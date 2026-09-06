@@ -34,16 +34,13 @@ export function renderInstall(host, ctx, tab = "general") {
   const current = TABS.find(([id]) => id === tab) || TABS[0];
   host.innerHTML = `<div class="cfg-page-inner">
     <header class="cfg-head">
-      <div class="cfg-crumbs">Install</div>
+      <div class="cfg-crumbs">Settings / Application</div>
       <div class="cfg-head-main">
         <span class="k-sigil big" data-kind="provider">»</span>
-        <h2>Install</h2>
+        <h2>${esc(current[1])}</h2>
       </div>
     </header>
-    <div class="cfg-lede">Per install, not per project and not per session:
-      the endpoint tokens come from, the key, the mode new sessions start in,
-      which search engine the agent may ask, how the app looks, and which
-      version of it this is.</div>
+    <div class="cfg-lede">Application settings are shared across projects. Model and permission defaults apply to new conversations.</div>
     <div class="seg cfg-tabs">${TABS.map(([id, label]) =>
       `<a href="#/config/install/${id}" class="${id === current[0] ? "active" : ""}"
         >${esc(label)}</a>`).join("")}</div>

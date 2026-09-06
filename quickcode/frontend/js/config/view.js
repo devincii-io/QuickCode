@@ -35,6 +35,7 @@ let loading = null;      // in-flight load, so two navigations share one fetch
 let pendingHighlight = null;
 let lastRoute = "#/config/agents";
 let wired = false;
+let renderTicket = 0;
 
 export const DEFAULT_ROUTE = "#/config/agents";
 
@@ -137,8 +138,13 @@ export function refreshIfOpen() {
 // ---- rendering ------------------------------------------------------------
 
 export async function render() {
-  const page = $("cfg-page");
-  if (!page) return;
+  const outer = $("cfg-page");
+  if (!outer) return;
+  const ticket = ++renderTicket;
+  // Async pages keep their own host. A late provider response can only write
+  // into the old detached host, never over the settings page just selected.
+  const page = document.createElement("div");
+  outer.replaceChildren(page);
   const route = parseRoute(location.hash);
   lastRoute = isConfigRoute(location.hash) ? location.hash : lastRoute;
 
@@ -159,8 +165,9 @@ export async function render() {
     }
   }
 
+  if (ticket !== renderTicket) return;
   renderRail($("cfg-rail"), ctx, route);
-  page.scrollTop = 0;
+  outer.scrollTop = 0;
   const [head, a, b] = route.path;
 
   try {
@@ -204,7 +211,7 @@ export async function render() {
       failed to render: ${esc(err.message)}</div></div>`;
     return;
   }
-  applyHighlight(page);
+  if (ticket === renderTicket) applyHighlight(page);
 }
 
 async function renderPluginPage(page, id, crumb, lede = "") {

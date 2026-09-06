@@ -10,11 +10,11 @@ import { confirmModal, creditLine } from "../modals.js";
 import { store } from "../store.js";
 import { applyTheme, esc, fmtTokens } from "../util.js";
 import { flash } from "./ui.js";
+import { renderAppearanceControls } from "../appearance.js";
 
 async function bootstrap(api) {
   // Settings is reachable from Home, where nothing has filled store.bootstrap —
   // fetch it on demand (unscoped, so it describes the launch project).
-  if (store.bootstrap) return store.bootstrap;
   try {
     store.bootstrap = await api.bootstrap();
   } catch {
@@ -32,8 +32,8 @@ export async function renderGeneralPage(c, { api, modes }) {
         may do before it asks. These are per install and apply to new sessions.</div>
       <div class="set-field"><label>Project</label>
         <input value="${esc(bs.cwd || "")}" disabled></div>
-      <div class="set-field"><label>Provider endpoint (base URL)</label>
-        <input id="set-baseurl" spellcheck="false" value="${esc(bs.base_url || "")}"></div>
+      <div class="set-field"><label for="set-baseurl">Provider endpoint (base URL)</label>
+        <input id="set-baseurl" type="url" required spellcheck="false" value="${esc(bs.base_url || "")}"></div>
       <div class="set-field"><label>API key ${bs.has_api_key
         ? '<span class="ok-note">· saved</span>'
         : `<span class="warn-note">· not set (or $${esc(bs.api_key_env || "")})</span>`}</label>
@@ -60,7 +60,7 @@ export async function renderGeneralPage(c, { api, modes }) {
         credit against it, so a small balance is refused outright until it is
         lowered ("insufficient credits … lower max_tokens"). 0 sends no cap and
         lets the provider use its own default.</span></label>
-        <input id="set-maxtok" type="number" min="0" max="200000" step="256"
+        <input id="set-maxtok" type="number" min="0" max="200000" step="1"
                inputmode="numeric" placeholder="16384"
                value="${bs.max_tokens != null ? esc(String(bs.max_tokens)) : ""}"></div>
       <div class="set-field"><label>Temperature
@@ -89,6 +89,11 @@ export async function renderGeneralPage(c, { api, modes }) {
 
   c.querySelector("#set-save").addEventListener("click", async () => {
     const msg = c.querySelector("#set-msg");
+    const save = c.querySelector("#set-save");
+    if (save.disabled) return;
+    for (const input of c.querySelectorAll("input")) if (!input.reportValidity()) return;
+    save.disabled = true;
+    save.textContent = "Saving…";
     try {
       const rawMax = c.querySelector("#set-maxtok").value.trim();
       const rawTemp = c.querySelector("#set-temp").value.trim();
@@ -121,9 +126,14 @@ export async function renderGeneralPage(c, { api, modes }) {
       store.bootstrap = { ...(store.bootstrap || {}), ...patch };
       const key = c.querySelector("#set-apikey").value.trim();
       if (key) await api.putApiKey(key);
+      Object.assign(bs, patch);
+      c.querySelector("#set-apikey").value = "";
       flash(msg, "Saved. New sessions pick this up.");
     } catch (err) {
       flash(msg, "Save failed: " + err.message, "err");
+    } finally {
+      save.disabled = false;
+      save.textContent = "Save";
     }
   });
 }
@@ -190,19 +200,25 @@ export async function renderAppearancePage(c, ctx) {
         saves it.</div>
       <div class="theme-grid">${cards || "<div class='set-empty'>No presets available.</div>"}</div>
       <span class="set-flash" id="theme-msg"></span>
+      <h3 class="cfg-sub">Workspace layout and reading</h3>
+      <div id="workspace-appearance"></div>
     </div>`;
+  renderAppearanceControls(c.querySelector("#workspace-appearance"));
   c.querySelector(".theme-grid")?.addEventListener("click", async (e) => {
     const b = e.target.closest("[data-theme]");
     if (!b) return;
     const colors = presets[b.dataset.theme];
-    applyTheme(colors);
-    store.bootstrap = { ...(store.bootstrap || {}), theme: colors };
+    c.querySelectorAll(".theme-card").forEach((button) => { button.disabled = true; });
     try {
       await api.putConfig({ theme: colors });
+      applyTheme(colors);
+      store.bootstrap = { ...(store.bootstrap || {}), theme: colors };
+      try { localStorage.setItem("qc-theme-change", JSON.stringify({ theme: colors, time: Date.now() })); } catch { /* current view still updated */ }
       await renderAppearancePage(c, ctx);
       flash(c.querySelector("#theme-msg"), `Saved “${b.dataset.theme}”.`);
     } catch (err) {
       flash(c.querySelector("#theme-msg"), "Save failed: " + err.message, "err");
+      c.querySelectorAll(".theme-card").forEach((button) => { button.disabled = false; });
     }
   });
 }

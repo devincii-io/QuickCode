@@ -148,13 +148,20 @@ async def test_a_backslash_in_matched_text_is_no_longer_rewritten(tmp_path):
     assert BACKSLASH in body
 
 
-async def test_the_declared_count_and_the_truncation_marker_agree(tmp_path):
+@pytest.mark.parametrize("backend", ["ripgrep", "fallback"])
+async def test_the_declared_count_and_the_truncation_marker_agree(tmp_path, monkeypatch, backend):
     (tmp_path / "e.py").write_text("hit\nhit\nhit\n", encoding="utf-8")
+    if backend == "ripgrep":
+        fake_rg(monkeypatch, rg_json(*[("e.py", line, "hit") for line in (1, 2, 3)]))
+    else:
+        monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
     body = await grep(tmp_path, pattern="hit", output_mode="content", head_limit=1)
 
     assert body.splitlines()[1].startswith("matches[1]{")
     assert len(rows(body)) == 1
-    assert '<truncated shown="1" total="3+"' in body
+    # ripgrep scans all matches; the fallback may stop before visiting every file.
+    total = "3" if backend == "ripgrep" else "3+"
+    assert f'<truncated shown="1" total="{total}"' in body
 
 
 def test_capping_by_characters_drops_rows_so_the_header_stays_honest(monkeypatch):

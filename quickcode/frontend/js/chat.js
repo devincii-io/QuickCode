@@ -24,6 +24,7 @@ export function initChat({ openTrace }) {
   transcript = document.getElementById("transcript");
   onOpenTrace = openTrace;
   subscribe(onStoreChange);
+  clear();
 }
 
 function onStoreChange(kind, ev) {
@@ -51,6 +52,7 @@ function onStoreChange(kind, ev) {
     scrollBottom(true); return;
   }
   if (kind === "event") {
+    transcript.querySelector(".chat-welcome")?.remove();
     renderEvent(ev);
     // A report landing settles the child that wrote it (store.js
     // `settleFromReport`) — the only signal a blocking subagent that died
@@ -58,7 +60,7 @@ function onStoreChange(kind, ev) {
     if (ev.type === "tool_result") settleAgentCards();
     scrollBottom(); return;
   }
-  if (kind === "stream") { renderStream(); scrollBottom(); return; }
+  if (kind === "stream") { transcript.querySelector(".chat-welcome")?.remove(); renderStream(); scrollBottom(); return; }
   if (kind === "agent_stream") { renderAgentStream(ev.agent_id); return; }
   if (kind === "tasks") { renderTasks(ev.tasks); return; }
   if (kind === "state" && ev.tasks) { renderTasks(ev.tasks); return; }
@@ -120,7 +122,7 @@ function unpresume(agentId, card) {
 }
 
 function clear() {
-  transcript.innerHTML = "";
+  transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
   streamNode = null;
   stepNode = null;
   lastAssistantText = "";

@@ -146,10 +146,7 @@ export function initPanel() {
   tabsEl.addEventListener("click", (e) => {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
-    // Clicking the active tab of an open panel closes it — the tab strip
-    // doubles as the panel's own toggle.
-    if (state.open && state.tab === b.dataset.tab) togglePanel(false);
-    else openPanelTab(b.dataset.tab);
+    openPanelTab(b.dataset.tab);
   });
 
   $("btn-panel-close").addEventListener("click", () => togglePanel(false));

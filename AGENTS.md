@@ -77,6 +77,21 @@ uv run --no-sync ruff check quickcode tests scripts
 
 ## Conventions
 
+- The frontend entry is `js/entry.js`. The outer `workspaces.js` owns the
+  workspace sidebar, split tree, and saved layout. Each `?pane=1` iframe runs
+  `main.js` with its own store, socket, composer, and reviews. Never reparent
+  mounted iframes: moving their DOM nodes reloads them. Layout changes update
+  absolute boxes using `split_tree.js`, adapted from QuickTerm. Message bridges
+  validate both origin and the exact window source. Tokens remain in tab
+  sessionStorage; workspace localStorage holds only names and session/layout
+  identifiers. Empty conversations are not restored by ID after server restart.
+- `tests/js/*.test.mjs` runs through Node's built-in test runner and is included
+  in `scripts/release.py --check`. `scripts/workspace_smoke_server.py` provides
+  a disposable project/provider environment for the browser workflow in
+  `scripts/smoke_workspaces.js`. It must never use the user's real config or API.
+- Appearance preferences are shared through `js/appearance.js`. Theme save
+  broadcasts use storage events so existing panes update without reloading.
+
 - Server handlers that need to be stubbable in tests import via
   `importlib.import_module("quickcode.X")`, same convention as QuickTerm —
   don't switch these to a plain `import` without checking why they were

@@ -26,6 +26,7 @@ import { renderPermissions } from "./permissions.js";
 import { renderTutorial } from "./tutorial.js";
 import { renderHandsOn } from "./handson.js";
 import { renderKeyboard } from "./keyboard.js";
+import { renderWorkspaces } from "./workspaces.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,6 +35,8 @@ export const DEFAULT_ROUTE = "#/help/overview";
 // The pages, in rail order. One table: the rail reads it, the router reads it,
 // so a section can never exist in the navigation and not in the router.
 export const SECTIONS = [
+  { slug: "workspaces", title: "Workspaces & panes", sigil: "◫",
+    blurb: "Arrange agents and customize your workspace.", render: renderWorkspaces },
   { slug: "overview", title: "The big picture", sigil: "◎",
     blurb: "How one message becomes an answer.", render: renderOverview },
   { slug: "plugins", title: "The plugin model", sigil: "::",

@@ -1,0 +1,158 @@
+/* Shared chrome for workspaces, agent views, settings, and dialogs. */
+:root { --chat-size: 14px; --content-width: 860px; }
+button, input, select, textarea { font-family: var(--sans); }
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 2px;
+}
+button:disabled { opacity: .45; cursor: default; }
+[hidden] { display: none !important; }
+.workspace-shell { overflow: hidden; }
+#workspace-shell { height: 100dvh; display: flex; background: var(--bg); }
+.ws-sidebar {
+  width: var(--sidebar-width, 232px); position: relative; flex: none; display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 12px 12px; border-right: 1px solid var(--line-strong); background: var(--surface);
+}
+.ws-brand { display: flex; align-items: center; gap: 9px; padding: 2px 6px 14px; flex-wrap: wrap; }
+.ws-brand strong { font-size: 16px; letter-spacing: -.4px; }
+.ws-brand > span { width: 100%; padding-left: 34px; margin-top: -7px; color: var(--fg-dim); font-size: 11px; }
+.ws-open { width: 100%; text-align: left; border: 1px solid var(--line-strong); background: var(--panel); }
+.ws-sidebar-grip { position: absolute; right: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; touch-action: none; z-index: 4; }
+.ws-sidebar-grip:hover, .ws-sidebar-grip:focus-visible { background: var(--primary); }
+.ws-section-label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); padding: 6px 8px 0; }
+#ws-list { flex: 1; overflow-y: auto; min-height: 0; }
+.ws-group { margin-bottom: 14px; }
+.ws-project-row { display: flex; align-items: center; }
+.ws-project-row .ws-project { min-width: 0; flex: 1; }
+.ws-manage { width: 24px; }
+.ws-project, .ws-agent { display: flex; width: 100%; gap: 8px; align-items: center; text-align: left; padding: 9px 8px; border-radius: 6px; }
+.ws-project { font-weight: 600; font-size: 13px; }
+.ws-project-name, .ws-agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.ws-count { color: var(--fg-dim); font-size: 11px; }
+.ws-project:hover, .ws-agent:hover, .ws-sidebar-bottom button:hover { background: var(--panel); }
+.ws-project[aria-current="true"] { color: var(--primary); }
+.ws-agents { margin-left: 8px; border-left: 1px solid var(--line-strong); padding-left: 6px; }
+.ws-agent { font-size: 12px; color: var(--fg-dim); gap: 7px; flex-wrap: wrap; }
+.ws-agent.active { background: var(--boost); color: var(--fg); box-shadow: inset 2px 0 var(--primary); }
+.ws-agent-state { width: 100%; padding-left: 13px; font-size: 10px; color: var(--fg-dim); }
+.ws-agent-state:empty { display: none; }
+.ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dim); flex: none; }
+[data-state="Ready"] > .ws-dot, [data-state="Ready"] > header > .ws-dot { background: var(--success); }
+[data-state="Working"] > .ws-dot, [data-state="Working"] > header > .ws-dot { background: var(--primary); }
+[data-state="Needs approval"] > .ws-dot, [data-state="Needs approval"] > header > .ws-dot { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent); }
+.ws-sidebar-bottom { display: grid; gap: 2px; padding-top: 12px; border-top: 1px solid var(--line-strong); }
+.ws-sidebar-bottom button { text-align: left; color: var(--fg-dim); padding: 9px 10px; border-radius: 6px; font-size: 13px; }
+.ws-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ws-toolbar { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+.ws-location { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.ws-location strong { font-size: 14px; }
+.ws-location span { color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-icon { width: 29px; height: 29px; border-radius: 5px; font-size: 17px; flex: none; color: var(--fg-dim); display: grid; place-items: center; }
+.ws-icon:hover { color: var(--fg); background: var(--boost); }
+.ws-content > #app { display: none; flex: 1; min-height: 0; height: auto; }
+.ws-content > #app > #view-workspace { display: none; }
+.ws-home .ws-content > #app { display: flex; }
+.ws-home #ws-grid { display: none; }
+.ws-content > #app #view-home { height: 100%; }
+#ws-grid { flex: 1; min-height: 0; position: relative; margin: 10px; overflow: hidden; }
+.ws-pane { position: absolute; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); }
+.ws-pane.focused { border-color: color-mix(in srgb, var(--primary) 70%, var(--line)); }
+.ws-pane-head { height: 38px; flex: none; display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 12px; border-bottom: 1px solid var(--line); background: var(--surface); cursor: grab; }
+.ws-pane-name { min-width: 0; flex: 1; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; text-align: left; font-size: 12px; font-weight: 600; padding: 4px; }
+.ws-pane-status { font-size: 10px; color: var(--fg-dim); white-space: nowrap; }
+.ws-pane iframe { display: block; flex: 1; width: 100%; min-height: 0; border: 0; background: var(--bg); }
+.ws-pane-head [data-action="close"]:hover { color: var(--error); }
+.ws-divider { position: absolute; z-index: 3; border-radius: 3px; touch-action: none; }
+.ws-divider.horizontal { cursor: col-resize; }
+.ws-divider.vertical { cursor: row-resize; }
+.ws-divider:hover, .ws-divider:focus-visible { background: var(--primary); }
+.ws-resizing iframe, .ws-moving iframe { pointer-events: none; }
+.ws-moving .ws-pane[data-drop]::after { content: ""; position: absolute; pointer-events: none; background: color-mix(in srgb, var(--primary) 18%, transparent); border: 2px solid var(--primary); inset: 0; }
+.ws-moving .ws-pane[data-drop="left"]::after { right: 50%; }
+.ws-moving .ws-pane[data-drop="right"]::after { left: 50%; }
+.ws-moving .ws-pane[data-drop="top"]::after { bottom: 50%; }
+.ws-moving .ws-pane[data-drop="bottom"]::after { top: 50%; }
+#ws-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 30px; }
+#ws-empty h2 { font-size: 22px; font-weight: 600; }
+#ws-empty p { color: var(--fg-dim); }
+.ws-collapsed .ws-sidebar { display: none; }
+.ws-utility { position: fixed; inset: 0; margin: auto; padding: 0; width: calc(100vw - 44px); height: calc(100dvh - 44px); max-width: 1400px; max-height: 1000px; border: 1px solid var(--line-strong); background: var(--bg); border-radius: 12px; box-shadow: var(--shadow-2); overflow: hidden; }
+.ws-utility::backdrop { background: var(--scrim); }
+.ws-utility iframe { border: 0; width: 100%; height: 100%; }
+.ws-dialog { color: var(--fg); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; padding: 0; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); margin: auto; box-shadow: var(--shadow-2); }
+.ws-dialog::backdrop { background: var(--scrim); }
+.ws-dialog header { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+.ws-dialog h2 { font-size: 17px; font-weight: 600; }
+.ws-form { display: grid; gap: 20px; padding: 22px; }
+.ws-form p { color: var(--fg-dim); font-size: 13px; line-height: 1.6; margin: 0; }
+.ws-form label { display: grid; gap: 9px; font-size: 13px; }
+.ws-form input:not([type="checkbox"]):not([type="range"]), .ws-form select { background: var(--bg); border: 1px solid var(--line-strong); padding: 9px 11px; border-radius: 6px; color: var(--fg); width: 100%; }
+.ws-form .ws-check { display: flex; gap: 10px; align-items: center; }
+.ws-form input { accent-color: var(--primary); }
+.ws-form .ws-error { color: var(--error); }
+.ws-form .ws-error:empty { display: none; }
+.ws-form output { color: var(--primary); }
+
+/* An embedded agent already has its workspace and conversation in the frame header. */
+.agent-view #topbar { gap: 6px; padding: 6px 10px; min-height: 42px; flex-wrap: wrap; }
+.agent-view #brand-home, .agent-view #project-chip, .agent-view #session-tabs, .agent-view #btn-new-chat { display: none; }
+.agent-view #session-chip { max-width: 130px; background: none; font-size: 12px; padding: 4px; }
+.agent-view #topbar .topbar-actions { margin-left: auto; gap: 2px; flex-wrap: wrap; }
+.agent-view .topbar-actions .ghost-btn { font-size: 12px; padding: 4px 6px; }
+.agent-view #composer { padding: 6px 18px 16px; }
+.agent-view .transcript { padding: 20px 22px 10px; }
+.bubble, #input { font-size: var(--chat-size); line-height: 1.65; }
+.chat-welcome { max-width: 520px; margin: 8vh auto 24px; padding: 0 8px; }
+.chat-welcome > span { color: var(--primary); font-size: 10px; font-weight: 600; letter-spacing: .1em; }
+.chat-welcome h2 { font-size: clamp(17px, 2.8vw, 24px); font-weight: 600; letter-spacing: -.5px; margin: 10px 0; }
+.chat-welcome p { color: var(--fg-dim); font-size: 13px; line-height: 1.7; }
+.msg, .step, .transcript > .tool-card, .transcript > .agent-card, .composer-box, .activity, .queue-strip { max-width: var(--content-width); }
+.bubble pre code { font-size: calc(var(--chat-size) - 1px); }
+.composer-row, .composer-left { flex-wrap: wrap; }
+.composer-left { min-width: 0; }
+.composer-box { border-radius: 10px; }
+:root[data-metrics="false"] #st-work, :root[data-metrics="false"] #st-time,
+:root[data-metrics="false"] #st-speed, :root[data-metrics="false"] #st-cache,
+:root[data-metrics="false"] #st-tokens { display: none; }
+#statusbar { overflow-x: auto; white-space: nowrap; }
+:root[data-spacing="compact"] .agent-view .transcript { padding: 10px 14px; }
+:root[data-spacing="compact"] .msg { margin-bottom: 8px; }
+:root[data-spacing="compact"] .ws-agent { padding-top: 6px; padding-bottom: 6px; }
+:root[data-motion="false"] *, :root[data-motion="false"] *::before, :root[data-motion="false"] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* Settings use the same typography, spacing and boundaries as the workspace. */
+#config-top, #help-top { min-height: 64px; padding: 12px 20px; gap: 16px; }
+.cfg-rail { flex-basis: 220px; padding: 20px 12px; }
+.rail-item { border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+.rail-sec h3 { color: var(--fg-dim); font-size: 10px; margin-bottom: 9px; }
+.cfg-page-inner, .cfg-detail { padding: 30px 36px 60px; margin: 0 auto; }
+.cfg-where { font-weight: 600; color: var(--fg); }
+.home-inner { max-width: 1100px; padding: 36px; }
+.home-head { margin-bottom: 32px; }
+.home-sub { line-height: 1.6; }
+.modal { border-radius: 12px; border-color: var(--line-strong); }
+
+@media (max-width: 900px) {
+  .ws-sidebar { padding-inline: 8px; }
+  .ws-toolbar { padding-inline: 10px; }
+  .cfg-page-inner, .cfg-detail { padding: 22px 20px 44px; }
+}
+@media (max-width: 620px) {
+  .ws-sidebar { width: min(var(--sidebar-width, 232px), 180px); }
+  .ws-brand > span, .ws-pane-status, #ws-path { display: none; }
+  .ws-toolbar { min-height: 50px; gap: 6px; }
+  .ws-toolbar .btn { font-size: 11px; padding: 6px; }
+  .ws-utility { inset: 6px; }
+  .cfg-body { flex-direction: column; }
+  .cfg-rail { flex: 0 0 138px; border-right: 0; border-bottom: 1px solid var(--line-strong); padding: 10px; }
+  #config-top, #help-top { flex-wrap: wrap; gap: 8px; padding: 10px; }
+  #config-top .brand-name, #help-top .brand-name { display: none; }
+  .cfg-search-wrap { order: 2; flex-basis: 100%; }
+  .agent-view .transcript { padding: 12px; }
+  .agent-view #composer { padding: 6px 10px 10px; }
+  .agent-view #session-chip { max-width: 90px; }
+  .agent-view #main.panel-open:not(.panel-max) #side-panel { width: min(var(--panel-w), 90vw); max-width: 90vw; }
+  .home-inner { padding: 20px 14px; }
+}

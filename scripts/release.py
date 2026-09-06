@@ -104,9 +104,7 @@ def set_version(new_version: str) -> None:
 
 
 def check_javascript() -> None:
-    """Syntax-check every ES module. No JS test suite exists yet (unlike
-    QuickTerm's Node test runner) -- add one under tests/js/ and wire it in
-    here if the frontend grows logic worth unit testing directly."""
+    """Syntax-check ES modules and exercise the workspace split/persistence logic."""
     node = shutil.which("node")
     if node is None:
         print("node not found on PATH; skipping JavaScript syntax check", flush=True)
@@ -116,6 +114,9 @@ def check_javascript() -> None:
         raise RuntimeError("no frontend JavaScript files found")
     for path in js_files:
         run(node, "--check", str(path))
+    tests = sorted((ROOT / "tests" / "js").glob("*.test.mjs"))
+    if tests:
+        run(node, "--test", *(str(path) for path in tests))
 
 
 # pytest-timeout's banner. Seeing it means a test was killed on the clock, and

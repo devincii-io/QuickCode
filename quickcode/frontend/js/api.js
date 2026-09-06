@@ -26,6 +26,11 @@ export function initAuth() {
   } else {
     token = sessionStorage.getItem("qc-token") || "";
   }
+  const query = new URLSearchParams(location.search);
+  if (query.get("pane") === "1") {
+    project ||= query.get("project");
+    resumeHint ||= query.get("resume");
+  }
   return { token, project, resumeHint };
 }
 
@@ -81,7 +86,7 @@ export const api = {
   openConversation: (resume) => req("POST", P("/conversations"), resume ? { resume } : {}),
   models: (refresh = false) => req("GET", P(`/models?refresh=${refresh}`)),
   // Install-wide, like the endpoint it asks about — never project-scoped.
-  credits: () => req("GET", "/credits"),
+  credits: () => req("GET", "/api/credits"),
   plugins: () => req("GET", P("/plugins")),
   gitStatus: () => req("GET", P("/git/status")),
   gitDiff: (path) => req("GET", P(`/git/diff?path=${encodeURIComponent(path)}`)),

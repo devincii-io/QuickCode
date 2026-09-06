@@ -9,6 +9,10 @@
 // actually runs when you type one.
 
 export const KEYS = [
+  ["Alt + N", "Open a new agent pane in this workspace"],
+  ["Alt + Z", "Maximize the focused agent or restore the pane layout"],
+  ["Alt + B", "Show or hide the workspace sidebar"],
+  ["Alt + arrow keys", "Move focus between agent panes"],
   ["Enter", "Send the message"],
   ["Shift + Enter", "Newline inside the composer"],
   ["Esc", "Close the topmost menu or dialog — and, when none is open, interrupt the agent"],

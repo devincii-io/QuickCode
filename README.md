@@ -34,15 +34,28 @@ uv run quickcode --no-browser           # print the URL instead of opening it
 uv run quickcode -p "explain this repo" # headless / print mode
 ```
 
-One running app hosts many projects (like editor windows): the launch
-directory is the default project, and further directories are opened on demand
-through `/api/projects/open`. Recently-opened projects are remembered in
-`~/.quickcode/projects.json`.
+One running app hosts many project workspaces. Open a folder in the sidebar,
+then use New agent to work with independent conversations side by side. Split
+right or below, drag pane headers to rearrange them, resize the dividers, and
+maximize a pane when it needs the space. Switching workspaces keeps mounted
+agents connected. Layouts restore on this device; session history remains in
+the project's existing event logs.
+
+`Alt+N` opens an agent, `Alt+Z` maximizes or restores it, `Alt+B` toggles the
+sidebar, and `Alt+arrow keys` focus another pane. Closing a pane keeps the
+conversation and lets its agent continue; use Stop first to interrupt it.
+Reopen closed pane restores the most recently closed view. Unsent drafts
+survive pane closure and reload within the same browser tab.
+
+Appearance controls text size, spacing, conversation width, metrics, and
+animation. Settings offers provider defaults, themes, agents, tools, and
+permissions. Theme changes apply across open panes. Workspace names, sidebar
+width, pane positions, and split ratios are saved locally.
 
 In the app: `Enter` send · `Shift+Enter` newline · `Esc` interrupt · mode,
 model and composition pickers live on the composer · `⚙` opens
-**Configuration**, a view organised around agents (Agents → Compositions →
-Parts → Machine room → Install) rather than a flat list of settings ·
+**Configuration**, with application settings first, followed by agents,
+compositions, permission profiles, and tools ·
 messages sent while the agent is busy are queued. Tests: `uv run pytest -q`.
 
 ### Plugins (agent capabilities)

@@ -46,6 +46,14 @@ export function renderRail(node, ctx, route) {
   const alerts = alertCount(ctx.kernel.problems);
 
   node.innerHTML = `
+    <section class="rail-sec">
+      <h3>Application</h3>
+      ${item("#/config/install/general", "Provider & defaults", { active: at("install", "general") || at("install") })}
+      ${item("#/config/install/appearance", "Appearance", { active: at("install", "appearance") })}
+      ${item("#/config/install/models", "Models", { active: at("install", "models") })}
+      ${item("#/config/install/search", "Web search", { active: at("install", "search") })}
+      ${item("#/config/install/updates", "Updates", { active: at("install", "updates") })}
+    </section>
     ${alerts ? `<section class="rail-sec">
       ${item("#/config/problems", "Problems", {
         sigil: "!", count: alerts, alert: true, active: startsAt("problems"),
@@ -110,6 +118,5 @@ export function renderRail(node, ctx, route) {
         sigil: "§", count: lockedPlugins(ctx.kernel).length,
         active: startsAt("machine-room"),
       })}
-      ${item("#/config/install", "Install", { sigil: "»", active: startsAt("install") })}
     </section>`;
 }

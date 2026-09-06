@@ -35,6 +35,21 @@ import { applyTheme, debounce, esc, fmtCost, fmtMs, fmtTokens, oneLine, wireLogo
 import { connect, connectionHealth, disconnect, retryNow } from "./ws.js";
 
 const $ = (id) => document.getElementById(id);
+const embedded = window.parent !== window && new URLSearchParams(location.search).get("pane") === "1";
+const utility = new URLSearchParams(location.search).get("utility") === "1";
+const pendingReviews = new Set();
+function tellWorkspace(action, data = {}) {
+  if (embedded) window.parent.postMessage({ source: "qc-agent", action, ...data }, location.origin);
+}
+function reportPane(title) {
+  tellWorkspace("state", {
+    convId: store.convId,
+    ...(title ? { title } : {}),
+    connection: store.connection, busy: !!store.state?.busy,
+    review: pendingReviews.size > 0,
+    persisted: store.events.some((e) => e.type === "user_message"),
+  });
+}
 
 // ---- view switching ----
 
@@ -43,6 +58,7 @@ const $ = (id) => document.getElementById(id);
 let cameFrom = "home";
 
 function showHome() {
+  if (embedded && !utility && store.convId) { tellWorkspace("home"); return; }
   leaveConfig();
   leaveHelp();
   disconnect();
@@ -77,6 +93,11 @@ function showWorkspace() {
  *  it never calls disconnect(). The workspace stays mounted and hidden with
  *  its socket open, so changing a setting does not cost the session. */
 function showConfig(route) {
+  if (embedded && !utility) {
+    tellWorkspace("settings", { route: route || location.hash });
+    if (isConfigRoute(location.hash)) history.replaceState(null, "", location.pathname + location.search);
+    return;
+  }
   const app = document.getElementById("app");
   if (!app.classList.contains("showing-config")) {
     cameFrom = app.classList.contains("showing-home") ? "home" : "workspace";
@@ -109,6 +130,11 @@ function leaveHelp() {
 /** Same contract as showConfig(): never calls disconnect(), so reading the
  *  help while a turn is running does not cost the session. */
 function showHelp(route) {
+  if (embedded && !utility) {
+    tellWorkspace("settings", { route: route || location.hash });
+    if (isHelpRoute(location.hash)) history.replaceState(null, "", location.pathname + location.search);
+    return;
+  }
   const app = document.getElementById("app");
   if (!app.classList.contains("showing-help")) {
     cameFrom = app.classList.contains("showing-home") ? "home" : "workspace";
@@ -121,6 +147,7 @@ function showHelp(route) {
 }
 
 function closeHelp() {
+  if (utility) { tellWorkspace("utility-close"); return; }
   leaveHelp();
   if (cameFrom === "home") { showHome(); return; }
   showWorkspace();
@@ -129,6 +156,7 @@ function closeHelp() {
 }
 
 function closeConfig() {
+  if (utility) { tellWorkspace("utility-close"); return; }
   if (cameFrom === "home") { showHome(); return; }
   showWorkspace();
   document.title = store.bootstrap?.project
@@ -359,6 +387,7 @@ function label(s, n = 90) {
 
 function tabHint(s, active) {
   if (active) return `This session: ${label(s)}`;
+  if (embedded) return `Open ${label(s)} in an agent pane`;
   return `Switch to “${label(s)}” — QuickCode runs one conversation at a time, `
     + "so this leaves the one you are in.";
 }
@@ -405,6 +434,7 @@ async function refreshSessionBar() {
   chip.textContent = label(mine, 42) + " ▾";
   chip.title = `Session ${convId} — click for the full list`;
   renderSessionTabs(sessions, convId, mine);
+  reportPane(label(mine, 120));
 }
 
 const bumpSessionBar = debounce(refreshSessionBar, 800);
@@ -465,11 +495,12 @@ async function openProject(project, { resume = null } = {}) {
   } catch (err) {
     showHome();
     $("home-projects").insertAdjacentHTML("afterbegin",
-      `<div class="home-err">Could not open that project (${err.message}).</div>`);
+      `<div class="home-err">Could not open that project (${esc(err.message)}).</div>`);
     return;
   }
   store.bootstrap = bs;
   applyTheme(bs.theme);
+  tellWorkspace("theme", { theme: bs.theme });
   const chip = $("project-chip");
   chip.textContent = bs.project + (bs.git_branch ? ` · ${bs.git_branch}` : "");
   chip.title = bs.cwd;
@@ -485,6 +516,10 @@ async function openProject(project, { resume = null } = {}) {
 }
 
 async function openConversation(resume) {
+  if (embedded && store.convId) {
+    tellWorkspace("open-session", { convId: resume || null });
+    return;
+  }
   const pid = currentProject();
   queuedTexts = [];             // the queue belongs to the conversation
   renderQueue();
@@ -493,7 +528,7 @@ async function openConversation(resume) {
     connect(pid, conv_id);
   } catch (err) {
     $("transcript").innerHTML =
-      `<div class="err-note">Could not start a conversation (${err.message}).</div>`;
+      `<div class="err-note">Could not start a conversation (${esc(err.message)}).</div>`;
     return;
   }
   refreshSessionBar();
@@ -507,6 +542,27 @@ async function boot() {
   const wantsConfig = isConfigRoute(location.hash);
   const wantsHelp = isHelpRoute(location.hash);
   const { token, project, resumeHint } = initAuth();
+  if (embedded) {
+    if (utility) document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !document.querySelector(".modal-backdrop, .menu")) {
+        e.preventDefault(); e.stopImmediatePropagation(); tellWorkspace("utility-close");
+      }
+    }, true);
+    window.addEventListener("pointerdown", () => tellWorkspace("focus"), true);
+    window.addEventListener("focus", () => tellWorkspace("focus"));
+    document.addEventListener("keydown", (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (document.querySelector(".modal-backdrop, .menu, dialog[open]")) return;
+      if (!["n", "z", "b", "arrowleft", "arrowright", "arrowup", "arrowdown"].includes(e.key.toLowerCase())) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      tellWorkspace("shortcut", { key: e.key, altKey: true });
+    }, true);
+    window.addEventListener("message", (e) => {
+      if (e.origin !== location.origin || e.source !== window.parent || e.data?.source !== "qc-workspace") return;
+      if (e.data.action === "focus") $("input")?.focus();
+      if (e.data.action === "renamed") refreshSessionBar();
+    });
+  }
 
   // One inspector for every surface: chat, the agents panel and the
   // trajectory table all land on the same Summary/Payload/Result/Timing view.
@@ -585,6 +641,18 @@ async function boot() {
   }
 
   subscribe((kind, ev) => {
+    if (kind === "reset" || kind === "state") {
+      pendingReviews.clear();
+      for (const review of store.state?.pending || []) pendingReviews.add(review.req_id);
+    }
+    if (kind === "event" && ["permission_request", "plan_request"].includes(ev.type)) {
+      if (!store.replaying || store.state?.pending?.some((p) => p.req_id === ev.req_id)) pendingReviews.add(ev.req_id);
+      reportPane();
+    }
+    if (kind === "event" && ["permission_resolved", "plan_resolved"].includes(ev.type)) {
+      pendingReviews.delete(ev.req_id); reportPane();
+    }
+    if (["state", "connection", "review", "replay_done"].includes(kind)) reportPane();
     if (kind === "state") refreshState();
     if (kind === "status") { refreshStatus(ev.state); refreshCompositionPill(); }
     if (kind === "queued") { queuedTexts.push(ev.text); renderQueue(); }
@@ -646,7 +714,10 @@ async function boot() {
   refreshUpdateChip();
 
   // Only a fragment-carried project skips Home.
-  if (project) {
+  if (utility) {
+    setProject(project);
+    try { store.bootstrap = await api.bootstrap(); applyTheme(store.bootstrap.theme); } catch { /* settings shows its own error */ }
+  } else if (project) {
     await openProject({ id: project }, { resume: resumeHint });
   } else {
     showHome();
