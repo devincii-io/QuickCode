@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-09-06
+
+### Added
+
+- Project workspaces with independent agent panes, adapted from QuickTerm's
+  split-tree layout. Split right or below, drag headers to rearrange, resize
+  with the pointer or keyboard, maximize, and reopen the last closed pane.
+- A workspace sidebar with live agent status, custom workspace names, saved
+  width and visibility, and controls to equalize panes or close a workspace.
+- Saved layouts and session restoration. Switching workspaces preserves live
+  views. Unsent drafts survive pane closure and reload in the same browser tab.
+- Shared appearance controls for text size, spacing, conversation width,
+  detailed metrics, and reduced motion. Theme changes reach all open panes.
+- Workspace shortcuts and an in-app guide. JavaScript layout and API regression
+  checks now run as part of the release gate.
+
+### Changed
+
+- Settings opens in a bounded window with application settings at the top of
+  its navigation. Agent settings retain the selected project's scope.
+- Consistent pane headers, focus indicators, dialog spacing, and responsive
+  settings layouts. Closing a pane detaches its view and keeps the conversation;
+  Stop remains the explicit way to interrupt its agent.
+
+### Fixed
+
+- Selecting the active side-panel tab no longer closes the panel.
+- Enter during IME text composition no longer sends an unfinished message.
+- Credits now use the correct authenticated API endpoint.
+- Late settings responses cannot overwrite a newer settings page. Provider
+  settings validate inputs and prevent duplicate saves; failed theme saves
+  no longer leave an unsaved theme applied.
+- The grep truncation test now checks both the exact ripgrep count and the
+  fallback's approximate count, independent of the installed search backend.
+
 ## [2.6.0] — 2026-08-19
 
 Opening the app used to create a session in whatever project it opened. Not a
