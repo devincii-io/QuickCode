@@ -201,6 +201,8 @@
                   title="A shell of your own, in the project directory">▮ Shell</button>
           <button class="qt-tab" data-tab="agent" role="tab"
                   title="Every command the agent ran — read-only">⌁ Agent commands</button>
+          <button class="qt-tab" data-tab="jobs" role="tab"
+                  title="Commands the agent left running in the background — live output, kill">⧗ Jobs<span class="qt-tab-count" hidden></span></button>
         </nav>
         <span id="term-status" data-kind="idle">not started</span>
         <div class="qt-bar-actions">
@@ -219,6 +221,9 @@
         </section>
         <section class="qt-pane" data-pane="agent">
           <div id="term-agent"></div>
+        </section>
+        <section class="qt-pane" data-pane="jobs">
+          <div id="term-jobs"></div>
         </section>
       </div>
     </section>

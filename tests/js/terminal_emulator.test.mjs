@@ -214,3 +214,11 @@ test("renderAnsiBlock survives what an MCP server might send", () => {
   assert.ok(Date.now() - started < 500);
   assert.equal(typeof html, "string");
 });
+
+test("renderAnsiBlock can keep only the newest lines, for a live tail", () => {
+  const text = Array.from({ length: 30 }, (_, i) => `\x1b[32mline ${i}\x1b[0m`).join("\n");
+  const html = renderAnsiBlock(text, 80, 5);
+  assert.equal(html.match(/class="qt-line"/g).length, 5);
+  assert.ok(html.includes("line 25") && html.includes("line 29") && !html.includes("line 24"), html);
+  assert.equal(renderAnsiBlock(text).match(/class="qt-line"/g).length, 30);
+});

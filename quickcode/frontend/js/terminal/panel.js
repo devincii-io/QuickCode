@@ -7,16 +7,19 @@
 // that has both puts the panel on the right and the terminal along the bottom
 // for those reasons, and the user asked for it there.
 //
-// Two tabs, and the split is by who is typing:
+// Three tabs, and the split is by who is typing:
 //
 //   Shell   — the live pty. The user's own shell, in the project directory.
 //   Agent   — every `bash` the agent ran, read-only (see agentfeed.js).
+//   Jobs    — the commands the agent left running in the background, live,
+//             with a Kill button (see jobs.js).
 //
 // The height, the open state and the chosen tab are remembered per project,
 // like the side panel's width — "I keep a terminal open in this repo" is a
 // per-repo habit.
 
 import { initAgentFeed } from "./agentfeed.js";
+import { initJobs } from "./jobs.js";
 import { inputChunks, keyToBytes, pasteBytes, stagedCommand } from "./keys.js";
 import { TerminalSocket } from "./socket.js";
 import { TerminalView } from "./view.js";
@@ -30,6 +33,7 @@ const maxHeight = () => Math.round(window.innerHeight * 0.8);
 let dock, grip, screenHost, statusEl, tabsEl;
 let view = null;
 let socket = null;
+let jobsView = null;
 let projectId = null;
 let started = false;              // has a shell ever been asked for?
 let state = { open: false, tab: "shell", height: DEFAULT_H };
@@ -37,13 +41,14 @@ let state = { open: false, tab: "shell", height: DEFAULT_H };
 // ---- persistence ----
 
 const storeKey = (pid) => `qc-terminal:${pid || "default"}`;
+const TABS = ["shell", "agent", "jobs"];
 
 function load(pid) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(storeKey(pid)) || "{}"); } catch { /* corrupt */ }
   return {
     open: saved.open === true,
-    tab: saved.tab === "agent" ? "agent" : "shell",
+    tab: TABS.includes(saved.tab) ? saved.tab : "shell",
     height: clampHeight(Number(saved.height) || DEFAULT_H),
   };
 }
@@ -62,6 +67,8 @@ function clampHeight(h) {
 
 function apply() {
   dock.classList.toggle("open", state.open);
+  // Clear and Restart act on the shell; the other tabs hide them.
+  dock.dataset.tab = state.tab;
   dock.style.setProperty("--term-h", state.height + "px");
   dock.setAttribute("aria-hidden", state.open ? "false" : "true");
   for (const btn of tabsEl.querySelectorAll("[data-tab]")) {
@@ -75,6 +82,7 @@ function apply() {
   const toggle = $("btn-term-toggle");
   if (toggle) toggle.classList.toggle("on", state.open);
   if (state.open && state.tab === "shell") ensureShell();
+  if (jobsView) jobsView.setVisible(state.open && state.tab === "jobs");
   fit();
 }
 
@@ -168,6 +176,24 @@ function sendText(text) {
   for (const chunk of inputChunks(text, INPUT_CHUNK)) socket.input(chunk);
 }
 
+/** How many background jobs are running, on the Jobs tab and the toolbar
+ *  toggle — a server the agent left running is worth seeing with the drawer
+ *  shut. */
+function showJobCount(n) {
+  const badge = tabsEl.querySelector('[data-tab="jobs"] .qt-tab-count');
+  if (badge) {
+    badge.textContent = n ? String(n) : "";
+    badge.hidden = !n;
+  }
+  const toggle = $("btn-term-toggle");
+  if (!toggle) return;
+  if (n) toggle.dataset.jobs = String(n);
+  else delete toggle.dataset.jobs;
+  toggle.title = n
+    ? `Show or hide the terminal (Ctrl+\`) — ${n} background job${n === 1 ? "" : "s"} running`
+    : "Show or hide the terminal (Ctrl+`)";
+}
+
 // ---- wiring ----
 
 export function initTerminal() {
@@ -184,6 +210,7 @@ export function initTerminal() {
     onStatus: (kind, detail) => setStatus(kind, detail),
   });
   initAgentFeed($("term-agent"), { onRerun: stageCommand });
+  jobsView = initJobs($("term-jobs"), { onCount: showJobCount });
 
   tabsEl.addEventListener("click", (e) => {
     const b = e.target.closest("[data-tab]");

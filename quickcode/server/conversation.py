@@ -216,7 +216,7 @@ class Conversation:
         await asyncio.gather(*self._tasks, *children, *jobs, return_exceptions=True)
         # A shell job is a process, not a task: nothing above reaches it, and
         # it would outlive the conversation, the project and the app itself.
-        shell_jobs = self._bash_jobs()
+        shell_jobs = self.bash_jobs()
         if shell_jobs is not None:
             await asyncio.to_thread(shell_jobs.close)
         await asyncio.to_thread(close_worktrees, self._subagent_deps())
@@ -236,24 +236,30 @@ class Conversation:
         return self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
 
     # ---- background shell jobs ----
-    def _bash_jobs(self):
+    def bash_jobs(self):
         return self.agent.ctx.extra.get("bash_jobs") if self.agent.ctx else None
 
     def on_bash_job(self, ev: dict[str, Any]) -> None:
-        """A background shell job started or ended; called on the loop thread.
+        """A background shell job started, wrote output or ended; called on the
+        loop thread. ``bash_job_output`` is live-only (not a logged type).
 
-        The transcript gets a note only when a job ends on its own. A kill was
-        either asked for (the ``bash_kill`` result already says so) or is the
-        conversation closing, when nobody is reading.
+        The transcript gets a note when a job ends on its own, and when a
+        person killed it from the Jobs tab -- nothing else in the transcript
+        says so. The model's own kill already has a ``bash_kill`` result, and
+        the conversation closing is a moment nobody is reading.
         """
         self.emit(ev)
-        if ev.get("type") != "bash_job_done" or ev.get("status") != "exited":
+        if ev.get("type") != "bash_job_done":
             return
-        self.emit({
-            "type": "system_note",
-            "text": f"(background job {ev.get('job_id')} exited with code "
-                    f"{ev.get('exit_code')} after {ev.get('seconds')}s)",
-        })
+        if ev.get("status") == "exited":
+            text = (f"(background job {ev.get('job_id')} exited with code "
+                    f"{ev.get('exit_code')} after {ev.get('seconds')}s)")
+        elif ev.get("killed_by") == "user":
+            text = (f"(background job {ev.get('job_id')} was killed from the Jobs tab "
+                    f"after {ev.get('seconds')}s)")
+        else:
+            return
+        self.emit({"type": "system_note", "text": text})
 
     def _queue_bash_notices(self) -> None:
         """Tell the model about job endings it has not seen, as a turn starts.
@@ -262,7 +268,7 @@ class Conversation:
         the model -- or a subagent sharing the table -- may still read the
         ending itself, and a reminder about something already read is noise.
         """
-        jobs = self._bash_jobs()
+        jobs = self.bash_jobs()
         if jobs is None:
             return
         for text in jobs.exit_notices():
