@@ -242,6 +242,30 @@ async def test_a_rule_that_cannot_be_saved_does_not_fail_the_call_it_allowed(pro
     assert len(agent.permissions.rules.allow) == 1
 
 
+async def test_a_rule_that_cannot_be_saved_says_so_in_the_conversation(project):
+    """Otherwise the next session prompts again for what the user answered
+    "always" to, and nothing ever said the answer was not kept."""
+    from quickcode.core.agent import PermissionOutcome
+    from quickcode.core.events import SystemNote, TurnDone
+    from quickcode.core.permissions import Mode
+    from tests.test_loop import Scripted, _agent, _call, _drain
+
+    _unwritable(project)
+    provider = Scripted([[_call("w", "write", file_path=str(project / "n.txt"), content="x"),
+                          TurnDone("tool_calls")]])
+    agent = _agent(project, provider, mode=Mode.ask)
+    q = agent.bus.subscribe(maxsize=0)
+
+    async def always(_req):
+        return PermissionOutcome(allow=True, persist=True)
+    agent.permission_cb = always
+
+    await agent.run_turn("write it")
+
+    notes = [ev.text for ev in _drain(q) if isinstance(ev, SystemNote)]
+    assert any("this session only" in note and "write" in note for note in notes), notes
+
+
 def _symlink(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)
