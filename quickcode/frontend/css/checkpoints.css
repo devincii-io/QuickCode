@@ -1,0 +1,95 @@
+/* File checkpoints: the "Rewind files" button on a user turn and the note a
+ * rewind leaves (js/chat/rewind.js), and the rewind dialog
+ * (js/checkpoints/dialog.js). Diff lines reuse the transcript's .diff-add and
+ * .diff-del colours from app.css. */
+
+/* ---------- in the transcript ---------- */
+.msg-user.has-rewind { flex-direction: column; align-items: flex-end; }
+.turn-rewind {
+  margin-top: 3px; padding: 1px 8px; border-radius: 10px;
+  font-size: 11px; color: var(--fg-faint); background: none;
+  border: 1px solid transparent;
+}
+.turn-rewind:hover, .turn-rewind:focus-visible {
+  color: var(--fg); border-color: var(--line-strong); background: var(--panel);
+}
+
+.rewind-note details { display: inline-block; text-align: left; max-width: 100%; }
+.rewind-note summary { cursor: pointer; color: var(--fg-dim); }
+.rewind-note ul { margin: 6px 0 0 18px; }
+.rewind-note code { font-family: var(--mono); font-size: 11.5px; }
+
+/* ---------- the dialog ---------- */
+.rw-modal { width: min(880px, 94vw); }
+.rw-intro { font-size: 13px; color: var(--fg-dim); margin: 0 0 10px; }
+.rw-busy:not([hidden]), .rw-untracked {
+  font-size: 12.5px; border-radius: 8px; padding: 7px 10px; margin: 10px 0;
+}
+.rw-busy:not([hidden]) {
+  color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.rw-untracked {
+  color: var(--fg-dim); background: var(--panel); border: 1px solid var(--line);
+}
+.rw-untracked strong { color: var(--fg); }
+
+.rw-all {
+  display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--fg-dim);
+  padding: 4px 8px;
+}
+.rw-files { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.rw-file { border-top: 1px solid var(--line); }
+.rw-file:first-child { border-top: 0; }
+.rw-file.rw-conflicted { box-shadow: inset 3px 0 0 var(--error); }
+.rw-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px; min-width: 0; }
+.rw-toggle {
+  flex: 1; min-width: 0; display: flex; gap: 6px; align-items: center;
+  text-align: left; background: none; padding: 2px 4px; border-radius: 6px;
+}
+.rw-toggle:hover { background: var(--panel); }
+.rw-caret::before { content: "▸"; color: var(--fg-faint); font-size: 11px; }
+.rw-toggle[aria-expanded="true"] .rw-caret::before { content: "▾"; }
+.rw-path {
+  font-family: var(--mono); font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rw-file.rw-off .rw-path { color: var(--fg-dim); }
+.rw-action {
+  flex: none; font-size: 11px; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: 9px; padding: 0 7px;
+}
+.rw-action.rw-delete { color: var(--error); }
+.rw-action.rw-create { color: var(--success); }
+.rw-counts { flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint); }
+.rw-conflicts {
+  list-style: none; margin: 0; padding: 0 10px 6px 34px; font-size: 12px; color: var(--error);
+}
+.rw-reason, .rw-hint { font-size: 12px; color: var(--fg-faint); }
+.rw-file > .rw-reason { padding: 0 10px 6px 34px; }
+.rw-diff { padding: 0 8px 8px 30px; }
+.rw-legend { font-size: 11px; color: var(--fg-faint); margin-bottom: 4px; white-space: pre; }
+.rw-pre {
+  font-family: var(--mono); font-size: 12px; line-height: 1.45; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  max-height: 42vh; overflow: auto; white-space: pre; margin: 0;
+}
+.rw-pre .diff-hunk, .rw-pre .diff-meta { color: var(--fg-faint); }
+
+.rw-force {
+  display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; padding: 8px 10px;
+  font-size: 12.5px; color: var(--error); border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--error) 45%, transparent);
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+.rw-force input { margin-top: 2px; }
+.rw-msg:not(:empty), .rw-error { font-size: 12.5px; color: var(--error); margin-top: 8px; }
+.rw-empty, .rw-loading { font-size: 13px; color: var(--fg-dim); padding: 8px 0; }
+
+.rw-headline { font-weight: 600; margin: 0 0 8px; }
+.rw-done { list-style: none; margin: 0 0 10px; padding: 0; font-size: 12.5px; }
+.rw-done li { padding: 2px 0; }
+.rw-done .rw-action { margin-left: 6px; }
+.rw-sub {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--fg-faint);
+  margin: 10px 0 4px;
+}
