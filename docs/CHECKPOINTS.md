@@ -10,7 +10,7 @@ part of the app that drives it (§In the app).
 
 The code is `quickcode/checkpoints/` (one module per concern: store, snapshot,
 recorder, hook, rewind, diff, paths, events) and `quickcode/server/checkpoints_api.py`;
-the UI is `js/chat/rewind.js` and `js/checkpoints/`.
+the UI is `js/chat/rewind.js`, `js/checkpoints/` and `js/panels/checkpoints.js`.
 
 ## What is recorded
 
@@ -302,6 +302,14 @@ given. A conflict that appears between the preview and the click (the 409's
 overwriting them. Afterwards the dialog shows what was restored, deleted,
 re-created or left alone and why. The Files panel refreshes on `files_rewound`.
 
+**The Checkpoints tab** of the side panel (`js/panels/checkpoints.js`) lists
+the listing route's answer, newest turn first: each file with what the turn
+did to it, its line counts, the subagent that changed it, and whether a rewind
+already undid it or its copy was not kept; the storage the checkpoints use;
+and a **Rewind…** button per turn that opens the same dialog. It is the way
+back to a turn whose message is far up the transcript, and it refreshes on
+the two records.
+
 **In the Trajectory**, both records read as a sentence: `checkpoint
 src/app.py · turn 3 · saved before its first change · edit`, and `files
 rewound to before turn 3 · 2 files: src/app.py restored, notes.md deleted`.
@@ -328,6 +336,3 @@ are most of what a build or a generator creates. Cheap and robust it is not.
 - **Undo a rewind** from the backups each rewind keeps.
 - **The limits as settings** rather than constants in
   `quickcode/checkpoints/store.py`.
-- **A checkpoint list** outside the transcript (a side-panel tab over
-  `GET …/checkpoints`), for turns whose message is no longer drawn and for
-  the storage the checkpoints use.

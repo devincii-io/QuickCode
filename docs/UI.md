@@ -69,9 +69,9 @@ change reaches every open pane without a reload.
   the agent is busy are queued. Beside it: the mode pill, the model pill, the
   composition and permission-profile pickers, *compact*, quick settings,
   Stop and Send.
-- **Side panel** — **Trajectory**, **Agents**, **Tasks**, **Files** and
-  **Usage** tabs (`js/panel.js`, `js/panels/`). The panel can be resized or
-  maximised.
+- **Side panel** — **Trajectory**, **Agents**, **Tasks**, **Files**,
+  **Checkpoints** and **Usage** tabs (`js/panel.js`, `js/panels/`). The panel
+  can be resized or maximised.
 - **Terminal drawer** (`Ctrl` + `` ` ``, `js/terminal/`) — a real shell in the
   project directory for *you* (`pty/interactive.py`, `server/terminal.py`),
   plus an *Agent* tab listing every command the agent ran with its output. The
@@ -145,7 +145,8 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 
 ## Rewinding files
 
-**Rewind files** under a user message opens `js/checkpoints/dialog.js` on the
+**Rewind files** under a user message, or **Rewind…** on a turn in the
+Checkpoints tab, opens `js/checkpoints/dialog.js` on the
 preview of putting files back to before that turn: each file with what would
 happen to it, its `+`/`−` counts and an expandable diff, a checkbox per file,
 conflicts in red behind an explicit **Overwrite anyway**, and the notice that
