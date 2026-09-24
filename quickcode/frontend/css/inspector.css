@@ -28,3 +28,8 @@
 .detail-body .json .j-lit { color: var(--chip-agent); }
 
 .detail-tabs button:focus-visible { outline: 1px solid var(--primary); outline-offset: 1px; }
+
+/* The transcript's one line for the system prompt (inspect.js promptNote). */
+.sys-note.sys-prompt { cursor: pointer; }
+.sys-note.sys-prompt:hover .trace-link { color: var(--accent); }
+.sys-note.sys-prompt:focus-visible { outline: 1px solid var(--primary); outline-offset: 2px; }

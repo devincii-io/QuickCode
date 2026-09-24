@@ -1,5 +1,6 @@
 // Chat view: incremental transcript renderer over the event store.
 
+import { promptNote } from "./inspect.js";
 import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
 import { renderAnsiBlock } from "./terminal/emulator.js";
@@ -186,7 +187,9 @@ function renderEvent(ev) {
     case "agent_spawned": return addAgentCard(ev);
     case "agent_event": return addAgentEvent(ev);
     case "agent_done": return closeAgentCard(ev);
-    // system_prompt / context_injection are trajectory-only by design.
+    // The prompt is one line that opens the inspector on its full text;
+    // context_injection stays trajectory-only.
+    case "system_prompt": return addNode(promptNote(ev));
   }
 }
 
