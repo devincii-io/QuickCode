@@ -287,13 +287,3 @@ class PtySession:
                 stable = 0
                 last = cur
             time.sleep(0.05)
-
-
-def run_pty(
-    argv: list[str],
-    cwd: str | os.PathLike[str] | None,
-    env: dict[str, str] | None,
-    timeout_s: float,
-) -> tuple[bytes, int | None, bool]:
-    """Convenience wrapper: build a :class:`PtySession` and run it once."""
-    return PtySession(argv, cwd=cwd, env=env).run(timeout_s)

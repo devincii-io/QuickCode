@@ -264,9 +264,6 @@ class AgentInstance:
         # The mode the model has actually been told about. None until the first
         # turn announces it.
         self._announced_mode: str | None = None
-        # Optional hooks set by the app: called with a ChatMessage after each
-        # message is appended (session persistence).
-        self.on_message = None
         # Set by the app to review plans via the PlanReviewModal; None -> the
         # loop treats a plan call as recorded-without-review (headless).
         self.plan_cb = None
