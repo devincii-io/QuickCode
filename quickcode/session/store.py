@@ -111,6 +111,17 @@ def message_from_dict(d: dict[str, Any]) -> ChatMessage:
     )
 
 
+def _events_of(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for rec in records:
+        if rec.get("kind") == "event" and isinstance(rec.get("ev"), dict):
+            ev = dict(rec["ev"])
+            ev["seq"] = rec.get("seq")
+            ev["ts"] = rec.get("ts")
+            events.append(ev)
+    return events
+
+
 def _events_from_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     """Project a model-context message list onto the trace-event vocabulary.
 
@@ -519,14 +530,7 @@ class SessionStore:
 
     def load_events(self) -> list[dict[str, Any]]:
         """All trace events, oldest first, with ``seq``/``ts`` folded in."""
-        events: list[dict[str, Any]] = []
-        for rec in self._iter_records():
-            if rec.get("kind") == "event" and isinstance(rec.get("ev"), dict):
-                ev = dict(rec["ev"])
-                ev["seq"] = rec.get("seq")
-                ev["ts"] = rec.get("ts")
-                events.append(ev)
-        return events
+        return _events_of(self._iter_records())
 
     def replay_events(self) -> list[dict[str, Any]]:
         """The event stream a freshly attached client should replay.
@@ -858,16 +862,67 @@ def _is_reparse_point(path: Path) -> bool:
     return bool(attrs and reparse and attrs & reparse)
 
 
-def _first_reparse_point(root: Path) -> Path | None:
-    """The first link found anywhere under ``root``, or None. Never follows one."""
+_MOUNTINFO = Path("/proc/self/mountinfo")
+_MOUNT_ESCAPE = re.compile(rb"\\([0-7]{3})")
+
+
+def _parse_mountinfo(raw: bytes) -> set[str]:
+    """Mount points out of a ``/proc/self/mountinfo`` table (field five)."""
+    out: set[str] = set()
+    for line in raw.splitlines():
+        fields = line.split(b" ")
+        if len(fields) < 5:
+            continue
+        point = _MOUNT_ESCAPE.sub(lambda m: bytes([int(m.group(1), 8)]), fields[4])
+        out.add(os.fsdecode(point))
+    return out
+
+
+def _mount_points() -> set[str]:
+    """Every mount point this process can see, where the platform will say.
+
+    Linux only. Elsewhere the ``st_dev`` comparison in ``_first_escape`` is the
+    whole check, which covers every mount except a same-filesystem bind -- and
+    that is a Linux construct.
+    """
+    try:
+        return _parse_mountinfo(_MOUNTINFO.read_bytes())
+    except OSError:
+        return set()
+
+
+def _leads_out(path: Path, dev: int, mounts: set[str]) -> bool:
+    if _is_reparse_point(path):
+        return True
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    return info.st_dev != dev or str(path) in mounts
+
+
+def _first_escape(root: Path) -> Path | None:
+    """``root`` itself, or the first entry under it, when it leads elsewhere.
+
+    A link of any kind, or a directory with something mounted on it:
+    ``shutil.rmtree`` recurses into a bind mount as into any directory, so a
+    mount at or under ``root`` would carry the delete into whatever was
+    mounted there. Never follows either.
+    """
+    try:
+        dev = os.lstat(root.parent).st_dev
+    except OSError:
+        return None
+    mounts = _mount_points()
+    if _leads_out(root, dev, mounts):
+        return root
     for parent, dirnames, filenames in os.walk(root, followlinks=False):
         for name in list(dirnames) + list(filenames):
             candidate = Path(parent) / name
-            if _is_reparse_point(candidate):
+            if _leads_out(candidate, dev, mounts):
                 return candidate
-        # A junction answers True for is_dir(), so os.walk would descend into
-        # it on the next iteration; drop them before it gets the chance.
-        dirnames[:] = [d for d in dirnames if not _is_reparse_point(Path(parent) / d)]
     return None
 
 
@@ -885,18 +940,19 @@ def purge_project_data(root: str | os.PathLike[str]) -> ProjectPurgeResult:
     result.existed = True
     if not target.is_dir():
         raise ValueError(f"{target} is not a directory")
-    escape = _first_reparse_point(target)
+    escape = _first_escape(target)
     if escape is not None:
-        # The containment check above proves `.quickcode` itself is inside the
-        # project. It says nothing about what is inside `.quickcode`, and
-        # `shutil.rmtree` recurses into a Windows directory junction — which
-        # reports as an ordinary directory, not a link — so a junction in here
-        # would carry the delete out of the project entirely. QuickCode never
-        # creates one; refusing costs nothing and the alternative is silent
-        # data loss somewhere the user never named.
+        # The containment check above proves the *path* `.quickcode` is inside
+        # the project. It says nothing about what is mounted on it or inside
+        # it, and `shutil.rmtree` recurses into a Windows directory junction or
+        # a bind mount — both report as ordinary directories, not links — so
+        # either would carry the delete out of the project entirely. QuickCode
+        # never creates one; refusing costs nothing and the alternative is
+        # silent data loss somewhere the user never named.
         raise ValueError(
-            f"{escape} points outside {target}; refusing to delete this directory. "
-            "Remove that link yourself, then try again."
+            f"{escape} points outside {target.parent if escape == target else target}; "
+            "refusing to delete this directory. Remove that link or mount "
+            "yourself, then try again."
         )
     # Belt and braces: the last thing checked before the tree goes is that we
     # are still strictly below the project root and not standing on it.

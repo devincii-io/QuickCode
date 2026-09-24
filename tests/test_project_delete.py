@@ -294,6 +294,32 @@ def test_an_idle_open_project_is_closed_when_it_is_removed_but_the_default_is_ke
 # ---- deleting QuickCode's data: the "completely" one ----
 
 
+def test_deleting_the_default_projects_data_closes_its_idle_conversations(tmp_path):
+    """The default project's manager stays -- this process is serving it --
+    but the conversations it holds in memory are the data that was just
+    deleted. Left open, one would replay an empty transcript while its model
+    still remembered the whole conversation, and its next message would
+    write a headless log back into the directory the user just emptied."""
+    from quickcode.core.events import TextDelta, TurnDone
+
+    root = tmp_path / "root"
+    root.mkdir()
+    hub, client = make_app(tmp_path, root)
+    hub.default.provider.scripts = [[TextDelta("noted"), TurnDone("stop")]]
+    with client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_json({"type": "user_message", "text": "remember the launch codes"})
+            recv_until(ws, "assistant_message")
+        assert SessionStore(root, conv_id).path.exists()
+
+        body = client.delete("/api/data").json()
+        assert body["data_deleted"] is True
+        assert conv_id not in hub.default.conversations
+        assert not (root / ".quickcode").exists()
+
+
 def test_deleting_quickcode_data_removes_that_directory_the_trust_grant_and_the_list_entry(tmp_path):
     root, alpha = tmp_path / "root", tmp_path / "alpha"
     root.mkdir()
@@ -466,6 +492,8 @@ def test_a_bulk_request_without_a_selection_is_rejected(tmp_path):
             assert client.post(path, json={"ids": [1, 2]}).status_code == 400
 
 
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions (mklink /J) are Windows-only; "
+                    "the POSIX symlink and mount variants below cover the same escape")
 def test_a_junction_inside_the_data_directory_stops_the_purge(tmp_path: Path) -> None:
     """The containment check proves `.quickcode` is inside the project. It says
     nothing about what is inside `.quickcode` — and `shutil.rmtree` recurses
@@ -491,3 +519,72 @@ def test_a_junction_inside_the_data_directory_stops_the_purge(tmp_path: Path) ->
         purge_project_data(project)
     assert (outside / "keep.txt").exists(), "the junction's target was deleted"
     assert (project / ".quickcode").is_dir(), "the data directory went anyway"
+
+
+def _escape_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    project = tmp_path / "proj"
+    (project / ".quickcode" / "artifacts").mkdir(parents=True)
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("do not delete me", encoding="utf-8")
+    return project, outside, project / ".quickcode" / "artifacts" / "linked"
+
+
+def test_a_symlink_inside_the_data_directory_stops_the_purge(tmp_path: Path) -> None:
+    """The POSIX shape of the junction case: a directory symlink under
+    `.quickcode` that points out of the project."""
+    if not can_symlink(tmp_path):
+        pytest.skip("no symlink privilege on this machine")
+    project, outside, link = _escape_fixture(tmp_path)
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="points outside"):
+        purge_project_data(project)
+    assert (outside / "keep.txt").exists(), "the symlink's target was deleted"
+    assert (project / ".quickcode").is_dir(), "the data directory went anyway"
+
+
+def test_a_mount_inside_the_data_directory_stops_the_purge(tmp_path: Path, monkeypatch) -> None:
+    """A bind mount is an ordinary directory to `lstat` -- no link bit, and on
+    the same filesystem not even a different device -- and `shutil.rmtree`
+    walks straight into it, deleting whatever was mounted there. The purge
+    asks the mount table instead of trusting the directory's own answer."""
+    from quickcode.session import store
+
+    project, outside, mounted = _escape_fixture(tmp_path)
+    mounted.mkdir()
+    (mounted / "keep.txt").write_text("the mounted tree", encoding="utf-8")
+    monkeypatch.setattr(store, "_mount_points", lambda: {os.path.realpath(mounted)})
+
+    with pytest.raises(ValueError, match="points outside"):
+        purge_project_data(project)
+    assert (mounted / "keep.txt").exists(), "the mounted tree was deleted"
+
+
+def test_a_data_directory_that_is_itself_a_mount_is_not_purged(tmp_path: Path, monkeypatch) -> None:
+    """`realpath` cannot see a bind mount, so the containment proof passes for
+    a `.quickcode` that is one; the purge must still not empty the tree that
+    was mounted onto it."""
+    from quickcode.session import store
+
+    project, _outside, _link = _escape_fixture(tmp_path)
+    data = project / ".quickcode"
+    (data / "keep.txt").write_text("the mounted tree", encoding="utf-8")
+    monkeypatch.setattr(store, "_mount_points", lambda: {os.path.realpath(data)})
+
+    with pytest.raises(ValueError, match="points outside"):
+        purge_project_data(project)
+    assert (data / "keep.txt").exists()
+
+
+def test_the_mount_table_is_read_with_its_escapes_undone(tmp_path: Path) -> None:
+    """`/proc/self/mountinfo` writes a space in a mount point as `\\040`; a
+    reader that did not undo that would never match a path that has one."""
+    from quickcode.session.store import _parse_mountinfo
+
+    table = (
+        b"23 28 0:22 / /proc rw,relatime - proc proc rw\n"
+        b"91 28 8:1 /src /home/me/my\\040proj/.quickcode/x rw - ext4 /dev/sda1 rw\n"
+        b"garbage\n"
+    )
+    assert _parse_mountinfo(table) == {"/proc", "/home/me/my proj/.quickcode/x"}

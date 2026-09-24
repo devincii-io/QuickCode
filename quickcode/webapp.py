@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hmac
+import http.client
+import json
 import logging
+import secrets
 import socket
 import sys
 import threading
@@ -45,6 +49,11 @@ DEFAULT_PORT = 8642
 HEALTH_PROBE_TIMEOUT_S = 0.6
 HAND_OFF_TIMEOUT_S = 2.0
 
+# How long shutdown lets open requests finish before cancelling them, inside
+# the time the window gives the whole server thread to unwind.
+SHUTDOWN_GRACE_S = 3
+_WINDOW_JOIN_S = 10
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -61,19 +70,39 @@ def _port_available(port: int) -> bool:
             return False
 
 
-def _running_instance_health(port: int) -> dict | None:
-    """The ``/api/health`` payload if a QuickCode instance answers on `port`, else None."""
-    import json
-    import urllib.request
+def _proven_health(conn: http.client.HTTPConnection, port: int, token: str) -> dict | None:
+    """The ``/api/health`` payload, if whatever answers on ``conn`` proves it
+    holds ``token`` (see ``auth.instance_proof``). Raises on transport errors."""
+    challenge = secrets.token_hex(16)
+    conn.request("GET", f"/api/health?challenge={challenge}")
+    resp = conn.getresponse()
+    raw = resp.read()
+    if resp.status != 200:
+        return None
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict) or data.get("app") != "quickcode":
+        return None
+    proof = data.get("proof")
+    expected = auth.instance_proof(token, port, challenge)
+    if not isinstance(proof, str) or not hmac.compare_digest(proof, expected):
+        return None
+    return data
 
+
+def _running_instance_health(port: int) -> dict | None:
+    """The ``/api/health`` payload if *our* QuickCode answers on `port`, else None.
+
+    Plain ``http.client`` rather than ``urllib``: urllib routes even 127.0.0.1
+    through ``HTTP_PROXY`` (or the Windows system proxy) unless ``NO_PROXY``
+    names it, and nothing here should leave the machine.
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=HEALTH_PROBE_TIMEOUT_S)
     try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/api/health", timeout=HEALTH_PROBE_TIMEOUT_S
-        ) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        return _proven_health(conn, port, auth.get_or_create_token())
     except Exception:
         return None
-    return data if isinstance(data, dict) and data.get("app") == "quickcode" else None
+    finally:
+        conn.close()
 
 
 def _hand_off_to_running_instance(port: int, cwd: Path) -> bool:
@@ -83,27 +112,69 @@ def _hand_off_to_running_instance(port: int, cwd: Path) -> bool:
     only duplicates provider clients and risks racing the same on-disk
     session files. Best-effort: any failure here just falls through to
     starting our own instance, exactly as before this existed.
-    """
-    import json
-    import urllib.request
 
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/projects/open",
-        data=json.dumps({"path": str(cwd)}).encode("utf-8"),
-        headers={"Content-Type": "application/json", auth.HEADER: auth.get_or_create_token()},
-        method="POST",
-    )
+    The request carries the token, and any local process can hold a free
+    port, so the instance proves it already has the token first -- on the
+    same connection the token then travels over.
+    """
+    token = auth.get_or_create_token()
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=HAND_OFF_TIMEOUT_S)
     try:
-        with urllib.request.urlopen(request, timeout=HAND_OFF_TIMEOUT_S) as resp:
-            if resp.status != 200:
-                return False
+        if _proven_health(conn, port, token) is None:
+            return False
+        conn.request(
+            "POST",
+            "/api/projects/open",
+            body=json.dumps({"path": str(cwd)}).encode("utf-8"),
+            headers={"Content-Type": "application/json", auth.HEADER: token},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status != 200:
+            return False
     except Exception:
         log.warning("running-instance project hand-off failed", exc_info=True)
         return False
+    finally:
+        conn.close()
     window.focus_existing()
     if sys.stdout is not None:
         print(f"QuickCode is already running; opened {cwd} there.")
     return True
+
+
+def _printable(url: str, *, opened: bool) -> str:
+    """The URL for the console line. It carries the token in its fragment, and
+    a console is read by more than the user -- a terminal panel, an agent's
+    shell tool, a log -- so it is only printed whole when nothing else will
+    open it (``--no-browser``)."""
+    return url.split("#", 1)[0] if opened else url
+
+
+def _server_config(app, port: int) -> uvicorn.Config:
+    return uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        # Named rather than left on "auto". Each "auto" is a try/except
+        # import chain resolved at startup, and — more to the point — a
+        # frozen build only carries what quickcode.spec was told to bundle;
+        # a probe that reached for an implementation nobody packaged would
+        # fail at the one moment there is no console to say so. These three
+        # are what "auto" already picks here: h11 (httptools is not a
+        # dependency), the sansio websockets implementation (uvicorn 0.52
+        # deprecated the older one), plain asyncio (uvloop is POSIX-only).
+        loop="asyncio",
+        http="h11",
+        ws="websockets-sansio",
+        # Unbounded by default: uvicorn waits for every open request before
+        # it returns, and only then does ``_serve`` close the hub -- the
+        # terminals and MCP servers that would otherwise outlive this process.
+        # Closing the window waits ``_WINDOW_JOIN_S`` for all of that, so one
+        # slow request (an installer download) must not be able to use it up.
+        timeout_graceful_shutdown=SHUTDOWN_GRACE_S,
+    )
 
 
 async def _serve(
@@ -137,25 +208,7 @@ async def _serve(
     token = auth.get_or_create_token()
     app = create_app(hub, host="127.0.0.1", port=port, token=token)
 
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-            # Named rather than left on "auto". Each "auto" is a try/except
-            # import chain resolved at startup, and — more to the point — a
-            # frozen build only carries what quickcode.spec was told to bundle;
-            # a probe that reached for an implementation nobody packaged would
-            # fail at the one moment there is no console to say so. These three
-            # are what "auto" already picks here: h11 (httptools is not a
-            # dependency), the sansio websockets implementation (uvicorn 0.52
-            # deprecated the older one), plain asyncio (uvloop is POSIX-only).
-            loop="asyncio",
-            http="h11",
-            ws="websockets-sansio",
-        )
-    )
+    server = uvicorn.Server(_server_config(app, port))
 
     url = f"http://127.0.0.1:{port}/#token={token}&project={hub.default_id}"
     if initial_resume:
@@ -174,7 +227,7 @@ async def _serve(
     # `quickcode-app` runs under pythonw, where a GUI process has no console
     # and sys.stdout is None; the URL only goes to a console that exists.
     if sys.stdout is not None:
-        print(f"QuickCode running at {url}")
+        print(f"QuickCode running at {_printable(url, opened=on_ready is not None)}")
 
     try:
         await server.serve()
@@ -260,4 +313,4 @@ def _run_windowed(serve: Callable[..., object]) -> None:
     window.run(str(state["url"]), on_close=_shutdown)
     # Closing the window shuts the agent down: wait for the server to unwind
     # its sessions rather than killing them with the process.
-    thread.join(timeout=10)
+    thread.join(timeout=_WINDOW_JOIN_S)

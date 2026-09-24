@@ -40,6 +40,7 @@ from quickcode.server import auth, provider_settings
 from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
+from quickcode.server.headers import security_headers
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectBusyError, ProjectHub, list_dirs
@@ -105,6 +106,7 @@ def create_app(
     hub = target if isinstance(target, ProjectHub) else ProjectHub.from_manager(target)
     app = FastAPI(title="QuickCode", docs_url=None, redoc_url=None)
     allowed_hosts, allowed_origins = _allowed_origins(host, port)
+    hardening = security_headers(allowed_hosts)
 
     def _project(pid: str) -> ConversationManager:
         manager = hub.get(pid)
@@ -116,16 +118,22 @@ def create_app(
         path = request.url.path
         return path.startswith("/api/") and path != "/api/health"
 
+    def _refuse(reason: str) -> Response:
+        return Response(f"forbidden: {reason}", status_code=403, headers=hardening)
+
     @app.middleware("http")
     async def _local_guard(request: Request, call_next):
         if request.headers.get("host", "") not in allowed_hosts:
-            return Response("forbidden: bad host", status_code=403)
+            return _refuse("bad host")
         origin = request.headers.get("origin")
         if origin is not None and origin not in allowed_origins:
-            return Response("forbidden: bad origin", status_code=403)
-        if token and _token_required(request) and request.headers.get(auth.HEADER) != token:
-            return Response("forbidden: bad token", status_code=403)
+            return _refuse("bad origin")
+        if (token and _token_required(request)
+                and not auth.matches(request.headers.get(auth.HEADER), token)):
+            return _refuse("bad token")
         response = await call_next(request)
+        for name, value in hardening.items():
+            response.headers.setdefault(name, value)
         path = request.url.path
         if path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
@@ -143,19 +151,27 @@ def create_app(
         if not (origin is None or origin in allowed_origins):
             return False
         if token:
-            offered = ws.headers.get("sec-websocket-protocol", "")
-            wanted = auth.SUBPROTOCOL_PREFIX + token
-            if wanted not in [p.strip() for p in offered.split(",")]:
+            prefix = auth.SUBPROTOCOL_PREFIX
+            offered = [p.strip() for p in ws.headers.get("sec-websocket-protocol", "").split(",")]
+            if not any(
+                auth.matches(p[len(prefix):], token) for p in offered if p.startswith(prefix)
+            ):
                 return False
         return True
 
     # ---- REST ----
 
     @app.get("/api/health")
-    def health() -> dict:
+    def health(challenge: str = "") -> dict:
         from quickcode.cli import __version__
 
-        return {"app": "quickcode", "version": __version__}
+        out: dict[str, Any] = {"app": "quickcode", "version": __version__}
+        # Unauthenticated like the rest of this route, and safe to be: the
+        # answer is an HMAC under the token, which does not reveal it. See
+        # ``auth.instance_proof`` for who asks and why.
+        if token and auth.valid_challenge(challenge):
+            out["proof"] = auth.instance_proof(token, port, challenge)
+        return out
 
     # ---- per-project payload builders (shared by both route shapes) ----
 
@@ -382,7 +398,7 @@ def create_app(
         presets = preset_module.load_presets(manager.cwd)
         active = preset_module.active_preset_id(manager.cwd)
         live = {
-            conv_id: conv.store.meta().get("preset", "")
+            conv_id: conv.preset_id
             for conv_id, conv in manager.conversations.items()
         }
         return {
@@ -1484,7 +1500,12 @@ async def _pump_out(ws: WebSocket, client: Client) -> None:
 
 async def _pump_in(ws: WebSocket, conv: Conversation) -> None:
     while True:
-        raw = await ws.receive_text()
+        message = await ws.receive()
+        if message["type"] == "websocket.disconnect":
+            raise WebSocketDisconnect(message.get("code", 1000), message.get("reason"))
+        raw = message.get("text")
+        if raw is None:
+            continue  # a binary frame: the protocol is JSON text, so drop it
         try:
             msg = json.loads(raw)
         except (TypeError, json.JSONDecodeError):

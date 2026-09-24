@@ -209,3 +209,80 @@ async def test_interrupting_a_turn_parked_on_a_permission_prompt_ends_it(tmp_pat
         assert not (tmp_path / "x.txt").exists()
     finally:
         await manager.close()
+
+
+class RaisingProvider:
+    """Says a few words, then fails with something that is not a ProviderError."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream_chat(self, _req):
+        self.calls += 1
+        if self.calls == 1:
+            yield TextDelta("the first half")
+            raise RuntimeError("socket went away")
+        yield TextDelta("a fresh answer")
+        yield TurnDone("stop")
+
+    async def list_models(self):
+        return [ModelInfo(id="test/model", name="Test", context_length=100_000)]
+
+
+def _drain_wire(client) -> list[dict]:
+    out = []
+    while not client.queue.empty():
+        item = client.queue.get_nowait()
+        if item is not None:
+            out.append(json.loads(item))
+    return out
+
+
+async def test_a_client_hears_how_a_turn_ended_before_it_hears_that_it_ended(tmp_path):
+    """``busy: false`` is what re-enables the composer. The turn's own closing
+    events -- the cut-off message, the ``(interrupted)`` note -- ride the bus
+    and reach the log through the recorder's pump *task*, so without a drain
+    the worker's state event overtook them and a client saw an idle turn
+    that then kept talking."""
+    from quickcode.server.manager import Client
+
+    provider = StallingProvider()
+    manager = make_manager(tmp_path, provider)
+    conv = manager.open()
+    client = Client()
+    conv.clients.add(client)
+    try:
+        conv.submit("think out loud")
+        await provider.talking.wait()
+        conv.interrupt()
+        await _settle(conv)
+        await asyncio.sleep(0.05)
+
+        wire = _drain_wire(client)
+        asked = next(i for i, e in enumerate(wire)
+                     if e["type"] == "system_note" and e["text"].startswith("(interrupt req"))
+        idle = [i for i, e in enumerate(wire)
+                if i > asked and e["type"] == "state" and not e["busy"]]
+        closing = [i for i, e in enumerate(wire) if e["type"] == "assistant_message"
+                   or (e["type"] == "system_note" and e["text"] == "(interrupted)")]
+        assert len(closing) == 2 and idle
+        assert max(closing) < min(idle), "the turn went idle before it was closed"
+    finally:
+        await manager.close()
+
+
+async def test_a_turn_that_raises_mid_stream_does_not_leak_its_text_into_the_next(tmp_path):
+    provider = RaisingProvider()
+    manager = make_manager(tmp_path, provider)
+    conv = manager.open()
+    try:
+        conv.submit("first")
+        await _settle(conv)
+        conv.submit("second")
+        await _settle(conv)
+        await asyncio.sleep(0.05)
+
+        messages = [(m["turn"], m["text"]) for m in _by_type(conv, "assistant_message")]
+        assert messages == [(1, "the first half"), (2, "a fresh answer")]
+    finally:
+        await manager.close()

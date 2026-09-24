@@ -559,6 +559,12 @@ class ProjectHub:
             self.managers.pop(pid, None)
             self._project_extra.pop(pid, None)
             result["closed"] = True
+        elif manager is not None and purge_data:
+            # The default project stays open, but its idle conversations are
+            # in-memory copies of the data about to go; kept, one would write
+            # a headless log back into the emptied directory on its next turn.
+            for conv_id in list(manager.conversations):
+                await manager.release(conv_id)
         if purge_data:
             purge = purge_project_data(path)
             result["data_dir"] = purge.path

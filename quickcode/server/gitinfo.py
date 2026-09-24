@@ -15,7 +15,7 @@ import logging
 import os
 import subprocess
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -29,11 +29,27 @@ GIT_TIMEOUT = 5.0
 DIFF_CAP = 200_000
 
 
+# Options every panel call carries. The panel runs the moment a project opens,
+# before anyone has trusted it, so nothing the repository's own config names
+# may run: no fsmonitor hook here, and ``_DIFF_SAFE`` keeps external diff and
+# textconv drivers out of every diff. ``--literal-pathspecs`` because a path
+# that ``_safe_rel`` proved is inside the project would otherwise still be
+# read as pathspec magic -- ``:(top)``/``:/`` name the repository root, which
+# for a project nested in a larger repository is above it. And no optional
+# locks, so a status refresh never leaves the user's own ``git commit``
+# failing on a held ``index.lock``.
+_GIT_BASE = (
+    "--literal-pathspecs", "--no-optional-locks",
+    "-c", "core.quotepath=off", "-c", "core.fsmonitor=false",
+)
+_DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
+
+
 def _run(cwd: Path, *args: str) -> tuple[bool, str]:
     """Run one git command; return (ok, stdout). Never raises."""
     try:
         proc = subproc.run(
-            ["git", "-C", str(cwd), "-c", "core.quotepath=off", *args],
+            ["git", "-C", str(cwd), *_GIT_BASE, *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -79,7 +95,7 @@ def _status(cwd: Path) -> dict[str, Any]:
 
 
 def _diff(cwd: Path, rel: str) -> str:
-    ok, out = _run(cwd, "diff", "HEAD", "--", rel)
+    ok, out = _run(cwd, "diff", *_DIFF_SAFE, "HEAD", "--", rel)
     if ok and out.strip():
         return out
     tracked_ok, tracked = _run(cwd, "ls-files", "--", rel)
@@ -88,7 +104,7 @@ def _diff(cwd: Path, rel: str) -> str:
     # Untracked file: synthesize an all-added diff against the null device.
     for null in (os.devnull, "/dev/null"):
         # --no-index exits 1 when the files differ, which is the success case.
-        _, out = _run(cwd, "diff", "--no-index", "--", null, rel)
+        _, out = _run(cwd, "diff", *_DIFF_SAFE, "--no-index", "--", null, rel)
         if out.strip():
             return out
     return ""
@@ -99,6 +115,10 @@ def _safe_rel(root: Path, raw: str) -> str:
     candidate = (raw or "").strip().replace("\\", "/")
     if not candidate:
         raise HTTPException(400, "path is required")
+    # Refused before anything touches the filesystem: on Windows, resolving a
+    # UNC path is a connection to that host, credentials and all.
+    if os.path.isabs(candidate) or PureWindowsPath(candidate).anchor:
+        raise HTTPException(400, "path must be relative to the project root")
     base = os.path.realpath(root)
     target = os.path.realpath(os.path.join(base, candidate))
     if target != base and not target.startswith(base + os.sep):

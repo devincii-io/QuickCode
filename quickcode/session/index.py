@@ -29,7 +29,7 @@ from quickcode.session.records import parse
 from quickcode.session.summary import Summary
 
 INDEX_NAME = "index.json"
-VERSION = 1
+VERSION = 2
 # How many bytes before the recorded offset must still match for a grown log
 # to be read from there. Enough to cover the end of the last record folded.
 _TAIL = 64
@@ -42,11 +42,21 @@ class _Entry:
     offset: int
     tail: str
     summary: Summary
+    # Size and mtime are what an append moves; a rewrite of the same length
+    # with its mtime put back is still caught by the inode and ctime, which
+    # nothing can set back (st_ctime is the creation time on Windows).
+    ino: int = 0
+    ctime_ns: int = 0
+
+    def matches(self, st: os.stat_result) -> bool:
+        return (self.size, self.mtime_ns, self.ino, self.ctime_ns) == (
+            st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "size": self.size, "mtime_ns": self.mtime_ns, "offset": self.offset,
             "tail": self.tail, "summary": self.summary.to_json(),
+            "ino": self.ino, "ctime_ns": self.ctime_ns,
         }
 
     @classmethod
@@ -60,6 +70,7 @@ class _Entry:
             return cls(
                 size=int(raw["size"]), mtime_ns=int(raw["mtime_ns"]),
                 offset=int(raw["offset"]), tail=str(raw["tail"]), summary=summary,
+                ino=int(raw.get("ino", 0)), ctime_ns=int(raw.get("ctime_ns", 0)),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -93,9 +104,12 @@ class SessionIndex:
         Raises ``OSError`` if the log cannot be read at all.
         """
         entry = self._entries.get(key)
-        if entry is not None and (entry.size, entry.mtime_ns) == (st.st_size, st.st_mtime_ns):
+        if entry is not None and entry.matches(st):
             return entry.summary
-        if entry is not None and 0 < entry.offset <= st.st_size:
+        # Only a log that grew is read from where the last pass stopped; one
+        # rewritten in place (same length, new ctime) is read again whole.
+        if (entry is not None and entry.ino == st.st_ino and st.st_size > entry.size
+                and 0 < entry.offset <= st.st_size):
             grown = self._extend(entry, path, st)
             if grown is not None:
                 self._entries[key] = grown
@@ -135,7 +149,8 @@ class SessionIndex:
         # stat taken before it if the log grew meanwhile; a mismatch next time
         # only means the tail is read again.
         return _Entry(size=base + len(data), mtime_ns=st.st_mtime_ns, offset=offset,
-                      tail=tail.hex(), summary=summary)
+                      tail=tail.hex(), summary=summary, ino=st.st_ino,
+                      ctime_ns=st.st_ctime_ns)
 
     def prune(self, prefix: str, present: set[str]) -> None:
         """Forget the logs under ``prefix`` that are no longer there.

@@ -62,6 +62,9 @@ log = logging.getLogger("quickcode.server")
 
 CLIENT_QUEUE_MAX = 4096
 
+# Queued on a conversation's inbox in place of a message: run /compact there.
+_COMPACT: Any = object()
+
 
 class SwitchRefused(Exception):
     """A composition switch that must not happen, carrying why.
@@ -95,12 +98,17 @@ class Client:
         self.overflowed = False
 
     def send(self, text: str) -> None:
+        if self.overflowed:
+            return  # it is about to replay from the log; a gap here is noise
         try:
             self.queue.put_nowait(text)
         except asyncio.QueueFull:
             self.overflowed = True
-            with contextlib.suppress(asyncio.QueueFull):
-                self.queue.put_nowait(None)  # sentinel: disconnect to resync
+            # The sentinel needs room, and a full queue has none. What is
+            # queued is about to be replayed from the log anyway.
+            while not self.queue.empty():
+                self.queue.get_nowait()
+            self.queue.put_nowait(None)  # sentinel: disconnect to resync
 
 
 class Conversation:
@@ -469,19 +477,28 @@ class Conversation:
     async def _worker(self) -> None:
         while True:
             text = await self._inbox.get()
+            if text is _COMPACT:
+                await self._manual_compact()
+                continue
             # Ahead of the message, so the trace reads in the order the model
             # sees it: instructions first, then what it was asked.
             if not self._prompt_shown:
                 self.emit_system_prompt()
             self.emit({"type": "user_message", "text": text})
-            self._emit_state()
             self._queue_bash_notices()
             failure: Exception | None = None
             try:
+                # Busy from here, not from inside ``run_turn``: this state
+                # event is what shows the Stop button, and the next one may be
+                # a whole round away.
+                self.agent.busy = True
+                self._emit_state()
                 await self.agent.run_turn(text)
             except Exception as e:  # never kill the worker
                 log.exception("turn failed")
                 failure = e
+            finally:
+                self.agent.busy = False
             # The pump is a task, so the turn's last events can still be queued
             # here. Handled now, before anything is said *about* the turn, or
             # the log records the error ahead of what led to it -- and text
@@ -550,7 +567,19 @@ class Conversation:
         if self.agent.busy:
             self.emit({"type": "error", "message": "cannot compact while the agent is busy"})
             return
-        asyncio.create_task(self._compact(manual=True))
+        # Through the worker, like a message: compaction rebuilds the history
+        # wholesale, so a turn must not start while the summary is still being
+        # written, and closing the conversation must stop it.
+        self._inbox.put_nowait(_COMPACT)
+
+    async def _manual_compact(self) -> None:
+        try:
+            await self._compact(manual=True)
+        except Exception as e:  # never kill the worker
+            log.exception("compaction failed")
+            self.emit({"type": "error", "message": f"compaction failed: {type(e).__name__}: {e}"})
+        finally:
+            self._emit_state()
 
     # ---- reviews (permission + plan) ----
     async def permission_cb(self, req: PermissionRequest) -> PermissionOutcome:
