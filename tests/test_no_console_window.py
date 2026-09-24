@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -173,9 +174,9 @@ def test_every_helper_passes_the_flag(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(subproc.subprocess, "Popen", fake_sync)
     monkeypatch.setattr(subproc.asyncio, "create_subprocess_exec", fake_async)
 
-    subproc.run(["x"])
-    subproc.spawn(["x"], cwd=str(tmp_path))
-    asyncio.run(subproc.spawn_async(["x"], cwd=str(tmp_path)))
+    subproc.run([sys.executable])
+    subproc.spawn([sys.executable], cwd=str(tmp_path))
+    asyncio.run(subproc.spawn_async([sys.executable], cwd=str(tmp_path)))
 
     assert seen == [flag, flag, flag]
 
@@ -192,7 +193,7 @@ def test_the_helper_keeps_a_caller_s_own_flags() -> None:
     original = subprocess.Popen
     subprocess.Popen = fake  # type: ignore[assignment]
     try:
-        subproc.spawn(["x"], creationflags=subprocess.DETACHED_PROCESS)
+        subproc.spawn([sys.executable], creationflags=subprocess.DETACHED_PROCESS)
     finally:
         subprocess.Popen = original  # type: ignore[assignment]
 

@@ -73,6 +73,14 @@ listed as they stand in 2.7.0.
   `diff.external` or a `textconv` filter. (Fixed on `main` after 2.7.0: every
   git call switches those off, and the content filters the repository's own
   config defines; see `docs/COMPLIANCE.md` §7.4(d) for what remains.)
+- On Windows, a program committed to a repository can run in place of the
+  system one: `git`, `rg`, `bash`, `powershell` and `taskkill` are started by
+  bare name, and Windows looks for a bare name in the current directory — the
+  repository, when QuickCode was started in one — before `PATH`. `git` runs as
+  a project opens and `rg` on the auto-allowed `grep`, so this reaches past the
+  trust prompt. (Fixed on `main` after 2.7.0: every spawn resolves a bare name
+  to a `.exe` or `.com` on `PATH` itself, skipping the current directory, the
+  project and relative entries; see `docs/COMPLIANCE.md` §7.4(e).)
 - The protected-path check returns before deny rules, so a `deny` against a
   protected path is downgraded to a prompt; `cd` out of the project root is not
   followed by later path checks; and "always allow" on a compound command

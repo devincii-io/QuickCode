@@ -33,7 +33,7 @@ async def spawn(
     command: str, args: list[str], env: dict[str, str], cwd: Path | None,
 ) -> asyncio.subprocess.Process:
     return await subproc.spawn_async(
-        [launch.resolve_program(command, env), *args],
+        [launch.resolve_program(command, env, cwd=cwd), *args],
         cwd=str(cwd) if cwd is not None else None,
         env=env,
         stdin=subproc.PIPE,

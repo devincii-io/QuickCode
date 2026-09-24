@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -134,17 +133,14 @@ class CommandTool(Tool[BaseModel]):
             return ToolResult(content="Error: the command resolved to nothing.",
                               is_error=True)
 
-        refusal = _batch_refusal(argv[0])
-        if refusal:
-            return ToolResult(content=refusal, is_error=True)
-
         workdir = _workdir(plugin, values, root)
         env = _child_env(plugin)
-        program = launch.resolve_program(argv[0], env)
-        if launch.is_batch(program):
+        program = launch.resolve_program(argv[0], env, cwd=workdir)
+        refusal = _batch_refusal(argv[0], program)
+        if not refusal and launch.is_batch(program):
             refusal = _check_batch(plugin, values, program)
-            if refusal:
-                return ToolResult(content=refusal, is_error=True)
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
         meta = {"argv": list(argv), "cwd": str(workdir), "tool": self.name,
                 "authored": True, "path": plugin.path}
         if not workdir.is_dir():
@@ -374,11 +370,8 @@ def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path
 # the process
 # --------------------------------------------------------------------------
 
-_BATCH_SUFFIXES = (".bat", ".cmd")
-
-
-def _batch_refusal(program: str) -> str:
-    """"" unless ``program`` is a Windows batch file, which is refused.
+def _batch_refusal(name: str, program: str) -> str:
+    """"" unless ``name`` resolved to a Windows batch file, which is refused.
 
     Windows cannot execute a batch file; CreateProcess hands it to cmd.exe,
     which re-parses the whole command line with its own quoting rules -- so a
@@ -387,13 +380,10 @@ def _batch_refusal(program: str) -> str:
     CVE-2024-24576 and its siblings). ``npm``, ``npx`` and ``yarn`` are batch
     shims on Windows, so this is also the answer to "why won't npm run".
     """
-    if not subproc.IS_WINDOWS:
-        return ""
-    resolved = shutil.which(program) or program
-    if not resolved.lower().endswith(_BATCH_SUFFIXES):
+    if not subproc.IS_WINDOWS or not launch.is_batch(program):
         return ""
     return (
-        f"Error: {program!r} is {resolved}, a batch file. Windows runs batch files "
+        f"Error: {name!r} is {program}, a batch file. Windows runs batch files "
         "through cmd.exe, which re-parses every argument, so a parameter value "
         "could run commands of its own -- exactly what a command tool's argv "
         "exists to rule out. Point argv at the real program instead (for npm, "

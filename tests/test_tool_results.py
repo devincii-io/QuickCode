@@ -65,7 +65,7 @@ def fake_rg(monkeypatch, stdout: str, code: int = 0) -> list[list[str]]:
         proc.stdout = stdout.encode("utf-8")
         return proc
 
-    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "rg")
+    monkeypatch.setattr(grep_module.subproc, "find_program", lambda _name, **_kw: "rg")
     monkeypatch.setattr(grep_module.subproc, "run", run)
     return calls
 
@@ -154,7 +154,7 @@ async def test_the_declared_count_and_the_truncation_marker_agree(tmp_path, monk
     if backend == "ripgrep":
         fake_rg(monkeypatch, rg_json(*[("e.py", line, "hit") for line in (1, 2, 3)]))
     else:
-        monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(grep_module.subproc, "find_program", lambda _name, **_kw: None)
     body = await grep(tmp_path, pattern="hit", output_mode="content", head_limit=1)
 
     assert body.splitlines()[1].startswith("matches[1]{")
@@ -283,7 +283,7 @@ async def test_the_fallback_walks_in_the_same_path_order(tmp_path, monkeypatch, 
     for name in ("z.py", "sub/b.py", "a.py", "sub.py", "m/n/o.py", "b.py"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text("hit\n", encoding="utf-8")
-    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(grep_module.subproc, "find_program", lambda _name, **_kw: None)
 
     body = await grep(tmp_path, pattern="hit", output_mode=mode)
 
@@ -295,7 +295,7 @@ async def test_the_fallback_walks_in_the_same_path_order(tmp_path, monkeypatch, 
     assert rel == ["a.py", "b.py", "m/n/o.py", "sub/b.py", "sub.py", "z.py"]
 
 
-@pytest.mark.skipif(not grep_module.shutil.which("rg"), reason="needs ripgrep installed")
+@pytest.mark.skipif(not grep_module.subproc.find_program("rg"), reason="needs ripgrep installed")
 async def test_counting_in_one_named_file_still_names_it(tree):
     """``rg -c`` leaves the path off when it was given a single file, so the
     count came back as a row whose *path* was the number."""
@@ -305,7 +305,7 @@ async def test_counting_in_one_named_file_still_names_it(tree):
 
 
 async def test_the_fallback_names_the_file_it_counted_in_too(tree, monkeypatch):
-    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(grep_module.subproc, "find_program", lambda _name, **_kw: None)
     body = await grep(tree, pattern="run", path=str(tree / "b.py"), output_mode="count")
 
     assert body.splitlines()[1] == str(tree / "b.py").replace(BACKSLASH, "/") + ":2"

@@ -16,9 +16,10 @@ point behind ``quickcode doctor`` (and ``python -m quickcode.doctor``).
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from dataclasses import dataclass
+
+from quickcode import subproc
 
 Level = str  # "ok" | "warn" | "fail"
 
@@ -46,7 +47,7 @@ def check_python() -> Check:
 
 def check_ripgrep() -> Check:
     """ripgrep (rg) is optional: QuickCode has a pure-Python fallback."""
-    path = shutil.which("rg")
+    path = subproc.find_program("rg")
     if path:
         return Check("ripgrep (rg)", True, "ok", f"found at {path}")
     return Check(
@@ -60,7 +61,7 @@ def check_ripgrep() -> Check:
 
 def check_git() -> Check:
     """git is optional but recommended for repo-aware features."""
-    path = shutil.which("git")
+    path = subproc.find_program("git")
     if path:
         return Check("git", True, "ok", f"found at {path}")
     return Check(
@@ -124,7 +125,7 @@ def check_terminal_shell() -> Check:
 
     argv = interactive_shell_argv()
     shell = argv[0]
-    if os.path.isabs(shell) and os.access(shell, os.X_OK) or shutil.which(shell):
+    if os.path.isabs(shell) and os.access(shell, os.X_OK) or subproc.find_program(shell):
         return Check("Terminal shell", True, "ok", " ".join(argv))
     return Check(
         "Terminal shell", False, "warn",

@@ -68,7 +68,7 @@ quickcode/
   permission_cli.py       # `qc why` / `quickcode permissions explain`: the permission dry run as text
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
-  subproc.py              # every child process starts here: no console window, no API keys in its env, killable tree
+  subproc.py              # every child process starts here: program resolved on PATH (never the cwd), no console window, no API keys in its env, killable tree
   gitcmd.py               # git without the repository's own code: no hooks, fsmonitor, textconv, filters, signing
   fsutil.py               # atomic_write_text/bytes: temp file beside the target, renamed over it
   textio.py               # the one decoder for files a person edits: BOM names UTF-8/16/32, else strict UTF-8
@@ -114,7 +114,7 @@ quickcode/
       argv.py reserved.py templates.py
   security/
     trust.py              # the project trust gate
-    launch.py             # resolving and launching command/MCP executables safely (PATHEXT, .cmd/.bat)
+    launch.py             # command/MCP executables: subproc's PATH lookup with .cmd/.bat shims allowed, cmd.exe-unsafe values refused
   server/
     app.py                # create_app: loopback guard, security headers, route registration
     http.py               # bounded JSON bodies, id checks, `scoped` (one handler, both path shapes)
@@ -408,7 +408,7 @@ runs depends on the platform:
 - **POSIX:** inside a real pseudo-terminal (`pty/session.py`), so programs see a tty and take their tty code paths.
 - **Windows:** on plain pipes by default. Under a tty a command that reads stdin (`git commit` without `-m`, `ssh`, a pager) waits for a person who is not there; under a pipe it gets EOF and exits. `QUICKCODE_BASH_PTY=1` opts back into ConPTY.
 - Any PTY failure (backend missing, spawn error) falls back to the plain subprocess path, which is the same code either way.
-- Either way the command is started through `quickcode/subproc.py`, like every child process: its environment is QuickCode's minus the app's API keys (and, in a frozen build, minus PyInstaller's loader path), its stdin on the pipe path is the null device, and it leads a process group of its own so Stop and timeouts kill everything it started (`subproc.kill_tree`).
+- Either way the command is started through `quickcode/subproc.py`, like every child process: a bare program name (`powershell`) is resolved to a `.exe` on PATH first, never one in the current directory or the project, which Windows would otherwise search before PATH; its environment is QuickCode's minus the app's API keys (and, in a frozen build, minus PyInstaller's loader path), its stdin on the pipe path is the null device, and it leads a process group of its own so Stop and timeouts kill everything it started (`subproc.kill_tree`).
 
 Patterns carried over from QuickTerm:
 
@@ -503,4 +503,4 @@ open so the shell can bootstrap.
 ## Windows notes
 
 - `bash` targets Git Bash when present, else PowerShell; the active shell is named in the `<environment>` block of the system prompt so the model writes matching syntax.
-- `glob` and `grep` report paths with forward slashes. `rg` is found on PATH; `quickcode doctor` reports whether it is there (it is optional — the pure-Python search is the fallback).
+- `glob` and `grep` report paths with forward slashes. `rg` is found on PATH, and never in the current directory or the project (`subproc.find_program`); `quickcode doctor` reports whether it is there (it is optional — the pure-Python search is the fallback).

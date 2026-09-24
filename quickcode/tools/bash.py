@@ -364,23 +364,20 @@ async def _run_pipes(
 def _build_argv(command: str, ctx: ToolCtx) -> list[str]:
     is_windows = ctx.platform.lower().startswith("win")
     if is_windows:
-        bash_path = _find_git_bash()
+        bash_path = _find_git_bash(ctx.cwd)
         if bash_path:
             return [bash_path, "-lc", command]
         return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
     return ["/bin/bash", "-lc", command]
 
 
-def _find_git_bash() -> str | None:
-    import shutil
-
+def _find_git_bash(project: str | Path | None = None) -> str | None:
+    """Git Bash where its installer puts it, else a ``bash.exe`` on ``PATH`` --
+    never one in the current directory or ``project`` (``subproc.find_program``)."""
     for candidate in _GIT_BASH_CANDIDATES:
         if Path(candidate).exists():
             return candidate
-    found = shutil.which("bash")
-    if found:
-        return found
-    return None
+    return subproc.find_program("bash", cwd=project)
 
 
 def _cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:

@@ -36,7 +36,6 @@ import asyncio
 import base64
 import json
 import re
-import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -150,7 +149,7 @@ def _inside(root: Path, project: Path) -> bool:
 
 def _search(input: GrepInput, root: Path, rx: re.Pattern[str],  # noqa: A002
             include: re.Pattern[str] | None, hidden: bool) -> str:
-    rg = shutil.which("rg")
+    rg = subproc.find_program("rg", cwd=root if root.is_dir() else root.parent)
     if rg:
         try:
             return _run_ripgrep(rg, input, root, hidden=hidden)

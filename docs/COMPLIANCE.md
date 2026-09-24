@@ -1336,6 +1336,31 @@ project-tree data, outside the trust gate.
 > filter is switched off, LFS included. The panel does not show changes inside a
 > submodule, only a submodule moved to another commit.
 
+**(e) A program the repository holds runs in place of the system one
+(Windows). Found and FIXED after 2.7.0 (unreleased).** QuickCode started `git`,
+`rg`, `bash`, `powershell` and `taskkill` by bare name, through `CreateProcess`
+or `shutil.which` — and on Windows both look in the current directory before
+`PATH`. QuickCode's current directory is wherever it was started: the
+repository, for `qc` run in a terminal there or for `-p`. A `git.exe` committed
+to the repository therefore ran as soon as the project opened, and an `rg.exe`
+the first time the model used the auto-allowed `grep` — code execution from
+project-tree data, before the trust prompt, which (d)'s fix does not reach
+because it is about what git runs, not which git.
+
+> **Fixed.** Every spawn goes through `quickcode/subproc.py`, which now resolves
+> a bare program name to an absolute path before the process starts
+> (`subproc.resolve_program`) and fails with a clear "not found on PATH" error
+> when it cannot: only a `.exe` or `.com` (never a `.bat`/`.cmd`, which runs
+> under `cmd.exe`), and never from a relative `PATH` entry or one that is the
+> current directory or the project. The ConPTY spawns resolve first as well,
+> since `pywinpty` looks names up with `shutil.which`. On POSIX the lookup is
+> unchanged except that relative and empty `PATH` entries, which a shell reads
+> as the current directory, are skipped. Authored command tools and MCP servers
+> keep `security/launch.py`, the same lookup with `.cmd` shims allowed. Pinned
+> by `tests/test_program_lookup.py`, which simulates Windows' search with a
+> planted `git.exe`, `rg.exe` and `git.bat` and checks, at the source level,
+> that no spawn and no `shutil.which` goes around the resolver.
+
 **The self-grant chain the audit described is broken.** Taken together, (a) and
 (b) formed a complete one: a repository committed `allow: ["bash(**)"]`, the
 agent ran an unprompted shell command, that command wrote
