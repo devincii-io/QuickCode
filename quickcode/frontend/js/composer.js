@@ -3,6 +3,7 @@
 // and the slash-command menu. Parity with the old Textual TUI composer.
 
 import { api, currentProject } from "./api.js";
+import { HISTORY_MAX, parseHistory, serializeHistory } from "./input_history.js";
 import { openHelp, openModeMenu, openModelMenu } from "./modals.js";
 import { store, subscribe } from "./store.js";
 import { toast, toastError } from "./toast.js";
@@ -12,12 +13,6 @@ import { actions } from "./ws.js";
 const $ = (id) => document.getElementById(id);
 
 const HISTORY_KEY = "qc-history";
-const HISTORY_MAX = 100;
-// v1 was a bare string[]. v2 is {v, items} — same strings, but a shape that can
-// grow. The bump matters because v1's reader hard-filtered to strings and would
-// have silently eaten anything else; v2 reads v1 and rewrites it, and a v1
-// reader handed v2 sees "no history" rather than a crash.
-const HISTORY_VERSION = 2;
 const PATH_LIMIT = 40;
 
 const MODE_DESCS = [
@@ -333,18 +328,12 @@ function mountProfilePill() {
 function historyKey() { return `${HISTORY_KEY}:${currentProject() || "default"}`; }
 
 function loadHistory() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(historyKey()) || "null");
-    // A v1 list is still perfectly good data: it is read as-is and rewritten in
-    // the new shape by the next send, rather than thrown away.
-    const items = Array.isArray(raw) ? raw : (raw?.v >= 2 ? raw.items : []);
-    return (Array.isArray(items) ? items : []).filter((x) => typeof x === "string" && x);
-  } catch { return []; }
+  try { return parseHistory(localStorage.getItem(historyKey())); } catch { return []; }
 }
 
 function saveHistory(h) {
   try {
-    localStorage.setItem(historyKey(), JSON.stringify({ v: HISTORY_VERSION, items: h }));
+    localStorage.setItem(historyKey(), serializeHistory(h));
   } catch { /* quota / private mode */ }
 }
 
