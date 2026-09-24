@@ -205,6 +205,7 @@ def _build_agent(args: argparse.Namespace):
         profile=profile,
         env=env,
         mode_getter=lambda: permissions.mode,
+        rules_getter=lambda: permissions.rules,
         cwd=cwd,
         depth=0,
         # Subagent activity belongs in the log for the same reason it does in

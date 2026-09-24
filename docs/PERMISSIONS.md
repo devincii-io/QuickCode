@@ -113,7 +113,7 @@ today.
   to ordinary rule evaluation, so a `deny` rule covering the file still denies
   it. A shell `cat` of an artifact still prompts — `bash` declares itself
   mutating and the bash pipeline's own scan is unchanged.
-- **Subagent capping:** a child agent's mode is `min(parent mode, its spawn-time cap)` — a yolo orchestrator does not imply yolo workers. Detail in docs/AGENTS.md.
+- **Subagent capping:** a child agent's mode is `min(parent mode, its definition's cap)`, with the parent's mode read live — a yolo orchestrator does not imply yolo workers, and a parent cycled down to plan caps children already running. Children inherit the spawner's `deny` and `ask` rules at every depth (not `allow`). Detail in docs/AGENTS.md.
 
 ## Rules
 

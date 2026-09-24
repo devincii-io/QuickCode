@@ -53,7 +53,7 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 
 ### Permission capping
 
-`effective_mode = min(parent_mode, definition_cap)` — a yolo parent does not produce yolo children unless the child's definition explicitly allows it. Background children's permission prompts surface in the **parent's conversation, attributed by name** ("`search1` wants to run `npm install`"), with the child's pane row glowing orange while blocked. Denying affects that call only, not the child's life.
+`effective_mode = min(parent_mode, definition_cap)` — a yolo parent does not produce yolo children unless the child's definition explicitly allows it. The parent's mode is read live, on every check the child makes, so cycling the parent down to plan also caps children already running. A child inherits its spawner's `deny` and `ask` rules (never `allow`, the half that widens), so a restriction the user wrote holds at every depth. Background children's permission prompts surface in the **parent's conversation, attributed by name** ("`search1` wants to run `npm install`"), with the child's pane row glowing orange while blocked. Denying affects that call only, not the child's life.
 
 ### Agent definitions (`.quickcode/agents/*.md`, user-level `~/.quickcode/agents/`)
 

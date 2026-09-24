@@ -26,11 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from quickcode.config import Environment, Profile
-from quickcode.core.agent import (
-    AgentInstance,
-    PermissionOutcome,
-    PermissionRequest,
-)
+from quickcode.core.agent import AgentInstance
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.kernel import preset as preset_module
@@ -44,6 +40,7 @@ from quickcode.kernel.resolve import resolve_composition
 from quickcode.prompts.subagent import render_subagent_prompt
 from quickcode.providers.base import Provider
 from quickcode.subagents.artifacts import maybe_offload
+from quickcode.subagents.capping import ChildPermissions, deny_prompt
 from quickcode.subagents.definitions import AgentDef, load_defs
 from quickcode.subagents.jobs import CANCELLED, DONE, ERROR, JobRecord
 from quickcode.tools.base import ReadRegistry, ToolCtx
@@ -102,8 +99,9 @@ class SubagentDeps:
     """Everything the ``agent`` tool needs to build a child, carried in
     ``ToolCtx.extra['subagent']``.
 
-    ``mode_getter`` is read live at spawn time so runtime mode changes (the user
-    cycling Shift+Tab) correctly cap later delegations.
+    ``mode_getter`` and ``rules_getter`` are read live, by every check a child
+    makes, not only at spawn: the user cycling Shift+Tab caps children that
+    are already running as well as later delegations (see ``capping.py``).
     """
 
     provider: Provider
@@ -112,6 +110,9 @@ class SubagentDeps:
     mode_getter: Callable[[], Mode]
     cwd: Path
     depth: int = 0
+    # The spawner's rules. Its ``deny`` and ``ask`` lists bind every child;
+    # None means there are none to inherit (a bare embedder).
+    rules_getter: Callable[[], Rules | None] | None = None
     # Shared across the whole conversation's agent tree.
     counter: itertools.count = field(default_factory=lambda: itertools.count(1))
     spawned: list[str] = field(default_factory=list)
@@ -184,14 +185,14 @@ class SubagentDeps:
     # depth counts against the same budget the session opened with.
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
 
-    def child(self, depth: int, effective_mode: Mode,
+    def child(self, depth: int, permissions: PermissionEngine,
               *, tool_pool: list | None = None,
               parent: Resolved | None = None) -> SubagentDeps:
         """A deps object for the next level down, sharing the counter/roster.
 
-        A child's own spawns are capped by the child's fixed effective mode and
-        narrowed against ``parent`` -- the composition this child was itself
-        given. Passing the session's own composition down instead would make
+        A child's own spawns are capped by the child's live mode and rules --
+        read off its ``permissions``, never copied -- and narrowed against
+        ``parent``, the composition this child was itself given. Passing the session's own composition down instead would make
         delegation an escalation: a read-only agent could spawn one whose
         definition says ``tools: null`` and have it inherit write, edit and
         bash.
@@ -200,7 +201,8 @@ class SubagentDeps:
             provider=self.provider,
             profile=self.profile,
             env=self.env,
-            mode_getter=lambda: effective_mode,
+            mode_getter=lambda: permissions.mode,
+            rules_getter=lambda: permissions.rules,
             cwd=self.cwd,
             depth=depth,
             counter=self.counter,
@@ -258,16 +260,6 @@ class SubagentDeps:
             if job.task is not None and not job.task.done():
                 job.task.cancel()
         return len(live)
-
-
-async def _deny_cb(_req: PermissionRequest) -> PermissionOutcome:
-    return PermissionOutcome(
-        allow=False,
-        deny_message=(
-            "A subagent cannot prompt the user for permission. This action needs "
-            "a mode that allows it without asking, or the parent must do it."
-        ),
-    )
 
 
 ROLES = ("worker", "orchestrator")
@@ -358,7 +350,12 @@ def _prepare_child(
     deps.spawned.append(agent_id)
     deps.budgets[agent_id] = resolved.max_turns
     deps.turns[agent_id] = 0
-    effective_mode = cap_mode(deps.mode_getter(), resolved.ceiling)
+    permissions = ChildPermissions(
+        deps.cwd,
+        parent_mode=deps.mode_getter,
+        ceiling=resolved.ceiling,
+        parent_rules=deps.rules_getter,
+    )
 
     # The child's bounded registry is built from the resolved tool list, so the
     # answer the introspection endpoint gives and the tools the model is handed
@@ -372,7 +369,7 @@ def _prepare_child(
     # Built after the registry, because what this child may delegate is bounded
     # by what this child itself got -- never by what the session has.
     child_deps = (
-        deps.child(child_depth, effective_mode,
+        deps.child(child_depth, permissions,
                    tool_pool=list(registry.tools.values()), parent=resolved)
         if include_agent else None
     )
@@ -396,9 +393,9 @@ def _prepare_child(
         registry=registry,
         history=History(system_prompt),
         ctx=child_ctx,
-        permissions=PermissionEngine(effective_mode, Rules(), deps.cwd),
+        permissions=permissions,
         model=model,
-        permission_cb=_deny_cb,
+        permission_cb=deny_prompt,
         limits=deps.limits,
     )
     # Registered immediately so the agent is resumable via send_message even if

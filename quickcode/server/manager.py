@@ -1170,6 +1170,7 @@ class ConversationManager:
             profile=profile,
             env=self.env,
             mode_getter=lambda: permissions.mode,
+            rules_getter=lambda: permissions.rules,
             cwd=self.cwd,
             depth=0,
             on_pane=conv.on_subagent,
