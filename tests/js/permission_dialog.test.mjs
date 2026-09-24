@@ -27,6 +27,29 @@ test("a line keeps its text exactly, markup included", () => {
   assert.deepEqual(line, { kind: "add", text: "+<img src=x onerror=alert(1)>" });
 });
 
+test("git's own header lines are file lines, for every file in the diff", () => {
+  // What the Files panel gets from `git diff` (server/gitinfo.py).
+  const git = [
+    "diff --git a/x.md b/x.md",
+    "index 1234567..89abcde 100644",
+    "--- a/x.md",
+    "+++ b/x.md",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+    "diff --git a/y.md b/y.md",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/y.md",
+    "@@ -0,0 +1 @@",
+    "+hello",
+  ].join("\n");
+  assert.deepEqual(unifiedLines(git).map((l) => l.kind), [
+    "file", "file", "file", "file", "hunk", "del", "add",
+    "file", "file", "file", "file", "hunk", "add",
+  ]);
+});
+
 test("an edit's two strings become removed then added lines", () => {
   assert.deepEqual(replacementLines("a\nb", "c"), [
     { kind: "del", text: "- a" }, { kind: "del", text: "- b" }, { kind: "add", text: "+ c" },

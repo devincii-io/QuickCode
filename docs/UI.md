@@ -189,7 +189,8 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 - **Permission prompt** (`js/reviews.js`) — shows the tool and the call's own
   preview (for `bash`, the command itself); a hook's reason when a hook raised
   it; for `edit` and `write` the diff the call would make (drawn by `js/diff.js`,
-  which the transcript's edit cards use too); the exact rules **Always allow**
+  which also draws the transcript's edit cards, the rewind dialog and the Files
+  panel); the exact rules **Always allow**
   would save and the parts that would still ask (`js/permission_offer.js`); and
   *Why am I being asked?*, the engine's own explanation inline
   (`js/help/explain.js`). Then **Allow once**, **Always allow** (greyed out when
