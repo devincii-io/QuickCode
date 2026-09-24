@@ -21,6 +21,7 @@ import { copyText } from "../copy.js";
 import { perFrame } from "../frame.js";
 import { store, subscribe } from "../store.js";
 import { toastError, toastOk } from "../toast.js";
+import { node } from "../ui/dom.js";
 import { confirmModal } from "../ui/modal.js";
 import { esc, fmtTime } from "../util.js";
 import { renderAnsiBlock } from "./emulator.js";
@@ -34,13 +35,6 @@ const TAIL_BYTES = 64 * 1024;
 // buffer (jobs_state.js caps that) and the ring (server) only.
 const DOM_LINES = 1500;
 const COLS = 200;
-
-function node(tag, className, text) {
-  const n = document.createElement(tag);
-  if (className) n.className = className;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
 
 export function initJobs(container, { onCount } = {}) {
   let jobs = new Map();

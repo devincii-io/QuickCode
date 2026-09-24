@@ -21,6 +21,7 @@
 
 import { renderJson } from "../json_view.js";
 import { flash } from "../settings/ui.js";
+import { h } from "../ui/dom.js";
 import { fmtMs } from "../util.js";
 import { problemsCardHtml, wireProblems } from "./problems.js";
 import {
@@ -30,23 +31,6 @@ import {
 
 // A sentence for the page the next render shows, after a save navigates.
 let pendingFlash = null;
-
-function h(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props || {})) {
-    if (value == null || value === false) continue;
-    if (key === "class") node.className = value;
-    else if (key === "text") node.textContent = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else if (value === true) node.setAttribute(key, "");
-    else node.setAttribute(key, String(value));
-  }
-  for (const child of children.flat()) {
-    if (child == null || child === false || child === "") continue;
-    node.append(child instanceof Node ? child : String(child));
-  }
-  return node;
-}
 
 const detail = (err) => String(err?.message || err).replace(/^\d+:\s*/, "");
 

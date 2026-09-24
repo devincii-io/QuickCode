@@ -12,6 +12,7 @@ import { diffNode, unifiedLines } from "./diff.js";
 import { explainErrorHtml, explainHtml } from "./help/explain.js";
 import { offerSummary, SETTINGS_FILE } from "./permission_offer.js";
 import { store, subscribe } from "./store.js";
+import { node } from "./ui/dom.js";
 import { closeModal, modal, modalRoot, onModalClose } from "./ui/modal.js";
 import { esc } from "./util.js";
 import { actions } from "./ws.js";
@@ -131,13 +132,6 @@ function armed(m) {
 // Built from nodes and text rather than markup: every string here — the
 // command, the diff, the rules, a hook's reason — came from the model, a file
 // or a hook script, not from us.
-function node(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = text;
-  return n;
-}
-
 function permissionBody(ev) {
   const lead = node("div", "perm-lead", "The agent wants to run ");
   lead.append(node("span", "perm-tool", ev.tool));
