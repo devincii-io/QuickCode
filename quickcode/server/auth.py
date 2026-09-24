@@ -9,6 +9,8 @@ to the server in a URL, never in logs) and stored in a user-private file.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -20,6 +22,7 @@ TOKEN_FILE = "runtime.token"
 SUBPROTOCOL_PREFIX = "qcauth."  # WebSocket clients can't set headers; they pass
 HEADER = "x-quickcode-token"    # the token as this subprotocol instead.
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
+_CHALLENGE_RE = re.compile(r"[0-9a-f]{32,128}\Z")
 
 
 def token_path():
@@ -29,6 +32,33 @@ def token_path():
 def _valid_token(value: str) -> bool:
     """Tokens must also be valid WebSocket subprotocol characters."""
     return _TOKEN_RE.fullmatch(value) is not None
+
+
+def matches(offered: str | None, token: str) -> bool:
+    """Whether ``offered`` is the token, compared in constant time."""
+    if not offered or not token:
+        return False
+    return hmac.compare_digest(
+        offered.encode("utf-8", "surrogateescape"), token.encode("utf-8")
+    )
+
+
+def valid_challenge(value: str) -> bool:
+    return _CHALLENGE_RE.fullmatch(value or "") is not None
+
+
+def instance_proof(token: str, port: int, challenge: str) -> str:
+    """What only a holder of ``token`` can answer to ``challenge`` on ``port``.
+
+    A second launch hands its project to whatever answers on the default port,
+    and that request has to carry the token. Anything can bind a free loopback
+    port, so the launcher first asks for this and only sends the token to an
+    instance that could compute it. The port is in the message so a squatter
+    cannot relay the challenge to a real instance on another port and pass its
+    answer back.
+    """
+    message = f"quickcode-instance:{port}:{challenge}".encode("ascii")
+    return hmac.new(token.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 def get_or_create_token() -> str:
