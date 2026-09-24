@@ -193,6 +193,21 @@ export const api = {
   // The same array `GET /kernel` carries, alone, for polling after a write.
   kernelProblems: () => req("GET", P("/kernel/problems")),
 
+  // ---- command hooks (docs/HOOKS.md) ----
+  // The list carries each hook's status (active / disabled / refused) and the
+  // project's trust. Every write answers with the whole list again, plus the
+  // `hook` it wrote. A project write never grants trust: in an untrusted
+  // project the saved hook comes back `refused`.
+  hooks: () => req("GET", P("/hooks")),
+  // {event, matcher, command, timeout?, scope, file?}
+  addHook: (body) => req("POST", P("/hooks"), body),
+  updateHook: (id, body) => req("PUT", P(`/hooks/${encodeURIComponent(id)}`), body),
+  deleteHook: (id, file = "") =>
+    req("DELETE", P(`/hooks/${encodeURIComponent(id)}?file=${encodeURIComponent(file)}`)),
+  // Runs the saved hook once with a sample payload; no session is touched.
+  // 409 = a project hook in an untrusted project, which does not run.
+  testHook: (id, body) => req("POST", P(`/hooks/${encodeURIComponent(id)}/test`), body),
+
   // ---- project trust (the MCP gate) ----
   // A project's own mcpServers are inert until the project is trusted once,
   // because starting one runs its command on this machine. GET reports what was

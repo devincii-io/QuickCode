@@ -17,6 +17,7 @@ import { esc } from "../util.js";
 import { renderAgent, renderAgentsIndex } from "./agents.js";
 import { renderCompositions } from "./compositions.js";
 import { renderDetail } from "./detail.js";
+import { renderHooks } from "./hooks.js";
 import { renderInstall } from "./install.js";
 import { renderMachineRoom } from "./machineroom.js";
 import { renderParts } from "./parts.js";
@@ -177,6 +178,9 @@ export async function render() {
     // `a` is a profile id, `new` for a blank one; `?from=` prefills from another
     // and `?scope=` says which file the editor writes to.
     else if (head === "profiles") await renderProfiles(page, ctx, a || "", route.query);
+    // `a` is a hook id, `new` for a blank form; `?file=` names the settings
+    // file an id sits in, since one command may be declared in two.
+    else if (head === "hooks") await renderHooks(page, ctx, a || "", route.query);
     else if (head === "parts" && b) {
       const part = PARTS.find((p) => p.slug === a);
       const plugin = ctx.kernel.plugins.find((p) => p.id === b);

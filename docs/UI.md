@@ -40,7 +40,7 @@ change reaches every open pane without a reload.
 |---|---|---|
 | Home | — | Recent projects (`~/.quickcode/projects.json`), open a folder, remove or purge a project. |
 | Workspace | — | The shell above: sidebar, toolbar (*New agent*, *Reopen closed pane*), pane grid. |
-| Configuration | `#/config/…` | Application settings (provider, appearance, models, web search, updates), then agents, compositions, permission profiles, parts, your authored plugins, and the machine room. Built from the live plugin kernel (`js/config/`). |
+| Configuration | `#/config/…` | Application settings (provider, appearance, models, web search, updates), then agents, compositions, permission profiles, hooks, parts, your authored plugins, and the machine room. Built from the live plugin kernel (`js/config/`). **Hooks** (`#/config/hooks`, `js/config/hooks.js`) adds, edits, deletes and test-runs command hooks — docs/HOOKS.md §The Hooks page. |
 | Help | `#/help/…` | How the parts fit together, the modes, permissions, shortcuts and a first-session walkthrough (`js/help/`). |
 
 ## Inside an agent pane

@@ -17,7 +17,9 @@ one plan mode uses — and live in `quickcode/hooks/`.
 
 ## Configuring
 
-Hooks go under `hooks` in a settings file:
+Hooks go under `hooks` in a settings file — by hand, or from the **Hooks** page
+in Configuration (`#/config/hooks`, see [The Hooks page](#the-hooks-page)),
+which writes the same files:
 
 ```json
 {
@@ -67,8 +69,9 @@ A malformed entry is skipped on its own and reported under Settings →
 Problems with the JSON path of the entry; the rest of the block still runs.
 
 The configuration is read when a session's first turn starts and held for the
-rest of the session. Editing the `hooks` block reaches new sessions; editing a
-script a hook runs takes effect on its next run.
+rest of the session. Editing the `hooks` block — in the file or on the Hooks
+page — reaches new sessions; editing a script a hook runs takes effect on its
+next run.
 
 ## Events
 
@@ -268,8 +271,83 @@ a different command, and editing a command gives it a new id. A project hook
 that is not running because the project is untrusted has no card, only the
 problem entry, because a switch would suggest it could run.
 
-Hooks are edited in the settings files; Settings shows them and switches them
-off, it does not edit them.
+The switch is the card's; adding, changing and removing a hook is the Hooks
+page's. Changing a hook's event, matcher or command gives it a new id, so a
+switch set on the old one does not follow it.
+
+## The Hooks page
+
+Configuration ▸ **Hooks** (`#/config/hooks`, `js/config/hooks.js`) lists every
+hook the settings files declare, grouped by event, with the file it is in and
+what happens to it:
+
+| Status | Meaning |
+|---|---|
+| active | runs in new sessions |
+| switched off | declared, and disabled by its Settings card |
+| refused | a project hook in an untrusted project: saved, never run |
+
+**Adding, changing and removing** edits the `hooks` block of the file the hook
+lives in — `~/.quickcode/settings.json` for yours; the project's
+`.quickcode/settings.json` (shared with whoever clones it) or
+`.quickcode/settings.local.json` (this machine only) for the project's
+(`quickcode/hooks/store.py`). The file is read, the one block is changed, and
+the whole file is written beside the old one and renamed over it, so every
+other key survives and a crash leaves the old file or the new one. A file that
+does not parse as JSON is left alone and the save is refused: writing over it
+would replace everything in it.
+
+The form checks what the loader would otherwise drop or misread: the event
+must be one of the five, the command must be non-empty (and contain no NUL),
+the timeout must be more than 0 and at most 600 seconds, and a matcher must be
+tool names and globs separated by `|` — no empty alternative, no unbalanced
+`[`, nothing that reads like a regular expression (`.*`, `^`, `$`, `(`…), and
+none at all on an event that is not about a tool. Saving a hook that the same
+scope already declares is refused, because it would run once either way. When
+one command is written twice in a file, changing or removing it changes or
+removes every copy, so the old command cannot keep running from the other.
+
+**Trust.** A write to a project file keeps the project's trust and grants
+none, as every other settings write the app makes does (`trust.keep_trust`):
+
+- in a trusted project, a hook you add or change here keeps the project
+  trusted — you wrote it — and runs in new sessions;
+- in a project that is not trusted, the hook is saved and listed as refused,
+  and it runs only once you trust the project;
+- an edit made *outside* the app since the grant (a pull that added a hook)
+  has already untrusted the project, and saving here does not re-grant it over
+  that edit.
+
+**Test run.** *Test* runs one saved hook once, now, with a sample payload for
+its event (`quickcode/hooks/trial.py`). It uses the runner a session uses —
+the same shell, environment, project directory and the hook's own timeout —
+and reads the answer with the same protocol, then shows the exit code, stdout
+and stderr (each capped at 16,000 characters), how long it took, the payload
+it was sent, and what that answer would do in a session ("the call would be
+refused", "a failing hook fails open, so the call would go ahead"). For
+`PreToolUse` and `PostToolUse` you choose the tool name and its arguments; for
+`UserPromptSubmit`, the message. If a session would not have run the hook for
+that sample — its matcher does not select that tool, or you asked for another
+event — the result says so.
+
+It never touches a session: no conversation is opened, no `hook_run` record is
+written, no model is called. The payload's `session_id` is `test-run` and its
+`transcript_path` is empty, so a hook can tell. The command itself does run —
+a `Stop` hook that sends a notification sends one.
+
+A project hook in an untrusted project is not test-run: a test run is a run,
+and the refusal is the one the loop makes.
+
+The routes behind the page (`quickcode/server/hooks_api.py`), each also under
+`/api/projects/{pid}/…`:
+
+| Route | Does |
+|---|---|
+| `GET /api/hooks` | every declared hook with its status, the project's trust, the hook problems |
+| `POST /api/hooks` | add: `{event, matcher, command, timeout, scope, file}` |
+| `PUT /api/hooks/{id}` | change the hook with that id: the same body, `file` naming its file |
+| `DELETE /api/hooks/{id}?file=` | remove it |
+| `POST /api/hooks/{id}/test` | test-run it: `{event?, tool_name?, tool_input?, prompt?, file?}` |
 
 ## Examples
 
