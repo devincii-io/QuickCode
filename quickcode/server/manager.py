@@ -37,6 +37,7 @@ from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.core.profiles import PermissionProfile
 from quickcode.core.profiles import effective as effective_posture
 from quickcode.core.tasks import TaskBoard
+from quickcode.hooks import session_hooks
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import (
     MODE_PRIVILEGE,
@@ -1132,6 +1133,11 @@ class ConversationManager:
         if resuming:
             history.messages = store.load_messages()
 
+        # The user's command hooks ride alongside plan mode. Their settings are
+        # read at the first turn rather than here, so trusting the project
+        # before typing is enough for its hooks to apply (docs/HOOKS.md).
+        hooks = session_hooks(self.cwd, session_id=store.conv_id,
+                              transcript_path=str(store.path), resumed=resuming)
         agent = AgentInstance(
             name="main",
             provider=self.provider,
@@ -1142,6 +1148,7 @@ class ConversationManager:
             model=model,
             permission_cb=None,  # wired below
             context_length=info.context_length if info else None,
+            hooks=hooks,
             limits=limits,
         )
 
@@ -1191,6 +1198,7 @@ class ConversationManager:
             defs=defs,
             preset=preset,
             limits=limits,
+            hooks=hooks,
         )
         if not resuming:
             # Held, not written: opening a project opens a conversation, so

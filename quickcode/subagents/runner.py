@@ -33,6 +33,7 @@ from quickcode.core.agent import (
 )
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.hooks import child_hooks
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import (
     MODE_PRIVILEGE,
@@ -183,6 +184,10 @@ class SubagentDeps:
     # The session's frozen runtime numbers, shared down the whole tree so every
     # depth counts against the same budget the session opened with.
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
+    # The session's loop hooks. A child gets the user's command hooks for its
+    # own tool calls (``hooks.child_hooks``); a guard that stopped at the
+    # orchestrator would be one delegation away from not being a guard.
+    hooks: list | None = None
 
     def child(self, depth: int, effective_mode: Mode,
               *, tool_pool: list | None = None,
@@ -220,6 +225,7 @@ class SubagentDeps:
             budgets=self.budgets,
             kinds=self.kinds,
             limits=self.limits,
+            hooks=self.hooks,
         )
 
     def session_pool(self) -> list:
@@ -399,6 +405,7 @@ def _prepare_child(
         permissions=PermissionEngine(effective_mode, Rules(), deps.cwd),
         model=model,
         permission_cb=_deny_cb,
+        hooks=child_hooks(deps.hooks),
         limits=deps.limits,
     )
     # Registered immediately so the agent is resumable via send_message even if

@@ -200,6 +200,12 @@ def _build_agent(args: argparse.Namespace):
 
     recorder = TranscriptRecorder(store)
 
+    # The same command hooks a UI session runs, on the same trust terms.
+    from quickcode.hooks import session_hooks
+
+    hooks = session_hooks(cwd, session_id=store.conv_id,
+                          transcript_path=str(store.path), resumed=bool(conv_id))
+
     ctx.extra["subagent"] = SubagentDeps(
         provider=provider,
         profile=profile,
@@ -216,6 +222,7 @@ def _build_agent(args: argparse.Namespace):
         on_done=recorder.on_subagent_done,
         tool_pool=list(registry.tools.values()),
         limits=limits,
+        hooks=hooks,
     )
 
     # Model precedence: explicit --model, then the last model picked via F2
@@ -247,6 +254,7 @@ def _build_agent(args: argparse.Namespace):
         model=model,
         permission_cb=_headless_permission_cb,
         context_length=None,
+        hooks=hooks,
         limits=limits,
     )
     if not conv_id:

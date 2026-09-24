@@ -92,8 +92,14 @@ def _project_entries(cwd: Path, trusted: bool | None) -> dict[str, dict[str, Any
     out: dict[str, dict[str, Any]] = {}
     refused: list[str] = []
     for plugin_id, entry in entries.items():
+        if entry.get("enabled") is False and not trust.project_may_disable(plugin_id):
+            # Switching off one of the user's own hooks is the one ``enabled``
+            # value that widens; see ``trust.GATED_DISABLE_PREFIXES``.
+            refused.append(f"{plugin_id}.enabled")
+            entry = {k: v for k, v in entry.items() if k != "enabled"}
         if plugin_id not in trust.GATED_PLUGIN_IDS:
-            out[plugin_id] = entry
+            if entry:
+                out[plugin_id] = entry
             continue
         settings = entry.get("settings")
         settings = settings if isinstance(settings, dict) else {}
