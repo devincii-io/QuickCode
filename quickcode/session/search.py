@@ -19,7 +19,6 @@ cuts off is the oldest history, and the answer says which limit stopped it.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -27,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from quickcode.session.records import parse
 from quickcode.session.store import SessionStore, safe_conv_id
 
 MAX_QUERY = 200
@@ -139,14 +139,6 @@ def _lines(f: BinaryIO) -> Iterator[tuple[bytes, int]]:
         yield line, len(line)
 
 
-def _record(line: bytes) -> dict[str, Any] | None:
-    try:
-        value = json.loads(line.decode("utf-8", errors="replace"))
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
 def _fields(rec: dict[str, Any]) -> Iterator[tuple[str, str, Any, dict[str, Any]]]:
     """``(where, text, seq, extra)`` for each searchable field of a record."""
     kind = rec.get("kind")
@@ -206,14 +198,14 @@ def _scan(path: Path, terms: list[str], budget: _Budget, keep: int) -> _Found:
                 low = line.lower()
                 if not all(needle in low for needle in needles):
                     continue
-            rec = _record(line)
-            if rec is None:
-                continue
-            for where, text, seq, extra in _fields(rec):
-                if all(t in text.lower() for t in terms):
-                    found = events if rec.get("kind") == "event" else messages
-                    found.add({"where": where, "seq": seq, "snippet": snippet(text, terms[0]),
-                               **extra}, keep)
+            # The session reader's own parser: a BOM, NUL padding or a torn
+            # line costs that line and nothing more.
+            for rec in parse(line, at_start=n == 0).records:
+                found = events if rec.get("kind") == "event" else messages
+                for where, text, seq, extra in _fields(rec):
+                    if all(t in text.lower() for t in terms):
+                        found.add({"where": where, "seq": seq,
+                                   "snippet": snippet(text, terms[0]), **extra}, keep)
     return events if transcript else messages
 
 

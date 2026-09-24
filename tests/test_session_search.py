@@ -185,6 +185,16 @@ def test_damaged_lines_and_non_ascii_terms_are_handled(tmp_path):
     assert search_sessions(tmp_path, "torn needle")["results"] == []
 
 
+def test_a_log_an_editor_saved_with_a_bom_is_searched_from_its_first_line(tmp_path):
+    logs = tmp_path / ".quickcode" / "sessions"
+    logs.mkdir(parents=True)
+    (logs / "bom.jsonl").write_bytes(
+        b'\xef\xbb\xbf{"kind": "event", "seq": 1, "ev": {"type": "user_message", "text": "first needle"}}\r\n')
+
+    [result] = search_sessions(tmp_path, "needle")["results"]
+    assert result["hits"][0]["seq"] == 1
+
+
 def test_a_quote_or_backslash_in_a_term_is_matched_in_the_decoded_text(tmp_path):
     session(tmp_path, "escaped", said=['run C:\\tools\\build.cmd --flag "x"'])
 
