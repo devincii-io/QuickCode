@@ -166,6 +166,32 @@ async def test_model_override_wins_over_role():
     assert seen["model"] == "x/custom-model"
 
 
+async def test_a_concurrent_fan_out_cannot_overshoot_the_agent_limit():
+    """The loop runs every ``agent`` call of a round concurrently. The count
+    check and the slot it guards are taken with no await between them, so a
+    fan-out wider than the limit gets exactly the limit and refusals for the
+    rest -- never a child that slipped in between check and spawn."""
+    import asyncio
+
+    from quickcode.kernel.composition import RuntimeLimits
+
+    class Slow(ScriptedProvider):
+        async def stream_chat(self, req):
+            await asyncio.sleep(0.01)
+            async for ev in super().stream_chat(req):
+                yield ev
+
+    deps = _deps(Slow("ok"))
+    deps.limits = RuntimeLimits(max_agents=3)
+    outcomes = await asyncio.gather(
+        *(spawn_subagent(deps, agent_type="explore", prompt="p") for _ in range(6)),
+        return_exceptions=True,
+    )
+    refused = [o for o in outcomes if isinstance(o, ValueError)]
+    assert len(deps.spawned) == 3 and len(refused) == 3
+    assert all("subagent limit reached" in str(o) for o in refused)
+
+
 async def test_depth_limit_withholds_agent_tool():
     # A child spawned at the max depth must not receive the agent tool.
     provider = ScriptedProvider("leaf")
