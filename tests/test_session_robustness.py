@@ -16,6 +16,7 @@ from pathlib import Path
 from quickcode.providers.base import ChatMessage
 from quickcode.server.manager import Conversation
 from quickcode.session.recorder import TranscriptRecorder
+from quickcode.session.records import parse
 from quickcode.session.store import SessionStore
 from tests.test_server import FakeProvider, make_client, make_manager, ws_connect
 
@@ -124,6 +125,18 @@ def test_an_empty_log_reads_as_an_empty_session(tmp_path):
     assert store.title() == "(empty)"
     assert store.is_empty()
     assert SessionStore.empty_sessions(tmp_path) == ["conv"]
+
+
+def test_a_torn_tail_is_left_unconsumed_for_the_next_read():
+    # The listing index reads on from ``end``; a record still being written
+    # must be read again once it is complete, not skipped for good.
+    whole = _line(GOOD[0])
+    parsed = parse(whole + b'{"kind": "ev')
+    assert parsed.end == len(whole) and parsed.damaged == [2]
+    assert parse(whole + b"\x00\x00").end == len(whole) + 2
+    unterminated = whole + json.dumps(GOOD[1]).encode()
+    assert parse(unterminated).end == len(unterminated)
+    assert len(parse(unterminated).records) == 2
 
 
 # ---- writing after damage ----
