@@ -90,8 +90,10 @@ installer layout).
 - **Child processes** (`quickcode/subproc.py`) — every process QuickCode
   starts goes through `spawn`/`spawn_async`/`run`: no console window,
   `child_env()` (QuickCode's API keys removed), its own process group, and
-  `kill_tree`. `tests/test_no_console_window.py` fails on a spawn anywhere
-  else. Git goes through `quickcode/gitcmd.py`, which also switches off the
+  `kill_tree`. A bare program name is resolved from absolute `PATH` entries
+  only (`find_program`) -- never the current or project directory, which
+  Windows would otherwise search first. `tests/test_no_console_window.py`
+  fails on a spawn anywhere else. Git goes through `quickcode/gitcmd.py`, which also switches off the
   repository's hooks, fsmonitor, textconv and filter drivers.
 - **Settings files** (`quickcode/kernel/settings_file.py`, `jsonfile.py`,
   `textio.py`) — one BOM-aware reader for every settings/config JSON and

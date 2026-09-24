@@ -105,6 +105,12 @@ tests, ~2 minutes).
 - The updater downloads only a newer stable release, only over https, only the
   exact installer name, and never leaves a predictable partial file behind.
 - `web_fetch` keeps its byte cap while inflating a compressed body.
+- **A repository could ship its own `git.exe`.** On Windows, `CreateProcess`
+  and `shutil.which` both search the current directory before `PATH`, so a
+  `git.exe`, `rg.exe`, `bash.exe`, `powershell.exe` or `taskkill.exe` committed
+  to a project ran in place of the real one, before the project was trusted.
+  Every spawn now resolves a bare program name from absolute `PATH` entries
+  only, skipping the current directory and the child's working directory.
 
 ### Fixed
 
