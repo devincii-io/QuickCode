@@ -1,6 +1,6 @@
 /* Side-panel modules (js/panels/*.js). Every selector is namespaced under
    .panel-agents / .panel-tasks so nothing here can leak into the shell, and
-   every colour comes from the theme variables defined in app.css. */
+   every colour comes from the theme variables defined in tokens.css. */
 
 /* ============================ Agents panel ============================ */
 

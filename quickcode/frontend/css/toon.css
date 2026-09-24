@@ -3,7 +3,7 @@
  * Only structure is coloured. Values stay in the body colour on purpose: a
  * grep result whose text is dimmed reads as metadata, and it is the answer.
  *
- * Every colour here is a theme variable from app.css, with no hardcoded hex
+ * Every colour here is a theme variable from tokens.css, with no hardcoded hex
  * fallback. A literal colour survives a user swapping the palette and then
  * sits there in the wrong hue, which is worse than inheriting.
  *

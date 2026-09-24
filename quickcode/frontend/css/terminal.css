@@ -2,7 +2,7 @@
    and the read-only feed of the agent's commands.
 
    Everything is namespaced under #term-dock / .qt-* so nothing here can leak
-   into the shell, and every colour is a theme variable from app.css — except
+   into the shell, and every colour is a theme variable from tokens.css — except
    the sixteen ANSI slots, which a terminal needs and no theme defines. Those
    are declared here as their own variables so a theme can still override them
    without this file knowing about themes. */

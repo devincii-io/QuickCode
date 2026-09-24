@@ -1,0 +1,103 @@
+/* Design tokens. Theme colors arrive as CSS variables from /api/bootstrap
+   (config theme) and js/util.js applyTheme(); the defaults below match the
+   "warm" preset so the shell looks right before bootstrap lands. Loaded
+   first: every other sheet reads these. */
+
+:root {
+  --bg: #15140f;
+  --surface: #1b1a15;
+  --panel: #24221b;
+  --boost: #2b2820;
+  --fg: #e9e3d5;
+  --primary: #c8973f;
+  --secondary: #8fae74;
+  --accent: #e08a4b;
+  --success: #8fb56a;
+  --warning: #d9a441;
+  --error: #d76c53;
+
+  --fg-dim: color-mix(in srgb, var(--fg) 55%, transparent);
+  --fg-faint: color-mix(in srgb, var(--fg) 32%, transparent);
+  --line: color-mix(in srgb, var(--fg) 10%, transparent);
+  --line-strong: color-mix(in srgb, var(--fg) 18%, transparent);
+
+  --chip-system: #a884e0;
+  --chip-user: #6da8e8;
+  --chip-context: #56b8a8;
+  --chip-assistant: var(--secondary);
+  --chip-tool: var(--primary);
+  --chip-review: #e07a9a;
+  --chip-agent: #58bdd4;
+  --chip-error: var(--error);
+  --chip-meta: color-mix(in srgb, var(--fg) 40%, transparent);
+
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+  --sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --radius: 10px;
+
+  /* Elevation and the dialog scrim. Both were literal rgba(0,0,0,…) in five
+     files; a half-opaque black smudge is right under a near-black page and
+     wrong over a white one, so they are tokens now. Dark mixes from --bg,
+     which is already the darkest thing in the palette; the light block mixes
+     from --fg, because a shadow is ink either way and --bg is paper there. */
+  --shadow-1: 0 12px 34px color-mix(in srgb, var(--bg) 62%, transparent);
+  --shadow-2: 0 18px 60px color-mix(in srgb, var(--bg) 66%, transparent);
+  --scrim: color-mix(in srgb, var(--bg) 62%, transparent);
+}
+
+/* ---------- the light side of the same palette ----------
+ *
+ * /api/bootstrap sends eleven colours and nothing else, so everything derived
+ * above — the four --fg/--line alphas and the eight --chip-* roles — was fixed
+ * against a near-black background and stayed there when someone picked the
+ * light preset. On white it measured: --line 1.21:1, --fg-dim 3.65:1, and
+ * every chip between 2.18:1 and 2.98:1. Borders vanished and the cyan subagent
+ * colour was the worst of them.
+ *
+ * A percentage of ink on paper is not the mirror of a percentage of paper on
+ * ink, so the numbers cannot simply be reused — each one below is re-aimed and
+ * measured against --surface (the lightest thing anything sits on, therefore
+ * the worst case) with --panel and --boost checked behind it. The targets are
+ * WCAG's: 4.5:1 for text, 3:1 for a boundary that means something.
+ *
+ * applyTheme() in js/util.js stamps data-theme from the *luminance* of the
+ * background it was handed, not from a preset name — all eleven colours are
+ * hand-editable, so a light palette the user built themselves and called
+ * anything at all still lands here. No attribute means the dark values above,
+ * which is what the shipped default wants.
+ *
+ * Whoever changes a number here: run the contrast check before and after. The
+ * floors are the point, not the exact percentages.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --fg-dim:   color-mix(in srgb, var(--fg) 66%, transparent);  /* 5.13:1 — body */
+  --fg-faint: color-mix(in srgb, var(--fg) 52%, transparent);  /* 3.33:1 — meta */
+  --line:     color-mix(in srgb, var(--fg) 42%, transparent);  /* 2.53:1 — hairline */
+  --line-strong: color-mix(in srgb, var(--fg) 55%, transparent); /* 3.65:1 — edge */
+
+  /* Same five hues, darkened against black until each clears 4.5:1 on --panel
+     (the darkest surface a chip is drawn on) — 61-72% of the dark value. They
+     encode a role, so what had to survive the darkening is the hue: mixing
+     towards black moves lightness only, and the five stay as far apart in hue
+     as they were. Their luminances are deliberately near-identical, which is
+     also true of the dark set. */
+  --chip-system:  #795fa1;   /* violet — 4.54:1 on panel */
+  --chip-user:    #476d97;   /* blue   — 4.62:1 */
+  --chip-context: #37766c;   /* teal   — 4.54:1 */
+  --chip-review:  #9d556c;   /* rose   — 4.56:1 */
+  --chip-agent:   #367381;   /* cyan   — 4.59:1 */
+  --chip-meta: color-mix(in srgb, var(--fg) 55%, transparent);  /* 3.65:1 */
+
+  /* Far softer than the dark set: on paper a card is lifted by a hint, and the
+     60px/50%-black drop the dark theme wants reads as a bruise. Two layers so
+     the near shadow gives the edge and the far one gives the lift. */
+  --shadow-1:
+    0 2px 5px color-mix(in srgb, var(--fg) 9%, transparent),
+    0 8px 22px color-mix(in srgb, var(--fg) 11%, transparent);
+  --shadow-2:
+    0 3px 9px color-mix(in srgb, var(--fg) 10%, transparent),
+    0 14px 44px color-mix(in srgb, var(--fg) 15%, transparent);
+  --scrim: color-mix(in srgb, var(--fg) 38%, transparent);
+}

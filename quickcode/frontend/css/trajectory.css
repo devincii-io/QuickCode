@@ -2,7 +2,7 @@
  *
  * Everything here is namespaced under .traj- / .tj- and owns the trajectory
  * pane only. Loaded after app.css so it may override the older rules it
- * replaces; design tokens (--bg, --fg, --chip-*) come from app.css:5-36.
+ * replaces; design tokens (--bg, --fg, --chip-*) come from tokens.css.
  *
  * The lanes deliberately use their own .tj- names rather than the retired
  * .traj-timeline / .tl-block / .trow ones, so the older sizing rules in

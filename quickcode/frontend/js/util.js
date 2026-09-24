@@ -60,7 +60,7 @@ export function oneLine(s, max = 200) {
   return String(s ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-// Paint a theme (the eleven config colors) onto the CSS variables app.css
+// Paint a theme (the eleven config colors) onto the CSS variables tokens.css
 // defines. Shared by boot and by the Settings appearance picker, which applies
 // a preset live before persisting it.
 const THEME_VARS = {
@@ -93,7 +93,7 @@ export function applyTheme(theme) {
   // The eleven colours are only half a theme: --fg-dim, the two --line weights
   // and the eight --chip-* roles are *derived*, and a percentage of light ink
   // on a dark page does not survive being asked to be dark ink on a light one.
-  // css/app.css carries a second set of them under [data-theme="light"]; this
+  // css/tokens.css carries a second set of them under [data-theme="light"]; this
   // is the switch. It reads the background's luminance rather than the preset's
   // name because every colour is hand-editable — a user's own light palette is
   // not called "light" and still has to land on the light values. Sitting on

@@ -2,7 +2,7 @@
  *
  * Namespaced under .set- / .pv- / .f-. Loaded after app.css so it may
  * override the older settings rules it replaces; design tokens (--bg, --fg,
- * --line, --radius) come from app.css.
+ * --line, --radius) come from tokens.css.
  * Nothing here hardcodes a colour: the theme is swapped at runtime, so every
  * surface, accent and state colour is a token or a color-mix of one.
  */
