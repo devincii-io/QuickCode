@@ -43,6 +43,27 @@
   --shadow-1: 0 12px 34px color-mix(in srgb, var(--bg) 62%, transparent);
   --shadow-2: 0 18px 60px color-mix(in srgb, var(--bg) 66%, transparent);
   --scrim: color-mix(in srgb, var(--bg) 62%, transparent);
+
+  /* The page's overlays, lowest first. A new one takes its place in this table
+     rather than a number of its own; stacking inside a component (a hover
+     card, a results list) stays local to it.
+       modal   the backdrop and dialog of js/ui/modal.js
+       menu    dropdowns and the command palette (js/ui/menu.js); a dialog that
+               opens closes them, so none is ever left under one
+       sheet   a layer over Settings (js/settings/ui.js)
+       banner  the connection banner (js/connbanner.js), over dialogs too: an
+               answer given in one cannot reach a server that has gone
+       toast   js/toast.js
+       ctx     the right-click menu (js/copy.js), opened over anything
+     Native <dialog>s (the shell's Settings and Help, its confirmations) are
+     in the browser's top layer, above all of these. The terminal drawer is
+     part of the page, not an overlay. */
+  --z-modal: 40;
+  --z-menu: 50;
+  --z-sheet: 60;
+  --z-banner: 80;
+  --z-toast: 90;
+  --z-ctx: 200;
 }
 
 /* ---------- the light side of the same palette ----------
