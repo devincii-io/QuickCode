@@ -257,6 +257,11 @@ def test_a_hook_can_demand_a_prompt_the_engine_would_have_skipped(tmp_path):
     turn(agent)
 
     assert len(asked.requests) == 1, "auto-edit allows writes; the hook's ask was ignored"
+    # The prompt says the hook raised it, and why; the rules already allow the
+    # call, so "Always allow" has nothing to save.
+    [req] = asked.requests
+    assert req.hook_reason == "double-check writes"
+    assert req.rules == [] and req.kept == []
     assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "hello"
     [run] = runs(agent)
     assert run.outcome == "ask"

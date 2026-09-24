@@ -95,9 +95,9 @@ not a code change; and **session logs** (§4.2) — now git-ignored, still
 unredacted, unrotated and unbounded, and still re-sent to the provider whenever
 a session is resumed.
 
-Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) followed. W3–W6
-have since been fixed (each is marked below with the test that pins it); W7 and
-§7.4(c) and (d) are open, and the last two are still routes by which a
+Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) followed. W3–W7
+have since been fixed (each is marked below with the test that pins it);
+§7.4(c) and (d) are open, and are still routes by which a
 repository's own files reach past the trust gate. Individually none is a bypass
 of the reach B1–B3 had; collectively they mean the engine has had one round of
 review and not yet a second.
@@ -899,7 +899,7 @@ default**.
 
 **Then the holes.** All of the following were reproduced by executing the
 permission module against throwaway fixtures. **W1 and W2 have since been fixed
-(`ee1461e`), and W3 to W6 in the later permission hardening; W7 is open.** Each finding keeps its original text, with the
+(`ee1461e`), W3 to W6 in the later permission hardening, and W7 with the permission-prompt rework.** Each finding keeps its original text, with the
 fix and the re-verification stated after it.
 
 **W1 — critical, FIXED: environment-variable prefixes defeat the read-only
@@ -1051,11 +1051,23 @@ still `ask`.
 > protected-path prompt, then `ask` and `allow`. Pinned by
 > `tests/test_permission_order.py`.
 
-**W7 — medium, OPEN: "always allow" persists a broader rule than was
+**W7 — medium, FIXED: "always allow" persists a broader rule than was
 approved.**
 Approving `git status && rm -rf x` persists `bash(git *)`; because `*` spans
 spaces, that rule subsequently allow-matches `git push --force` outright. The
 documentation promises "one rule per subcommand"; that is not implemented.
+
+> **Fixed.** `PermissionEngine.suggest_rules` reads the rules off the engine's
+> own trace of the call: one exact rule per subcommand (and per command another
+> command runs) that asked only because nothing allowed it, spelled as the
+> allow rules match it. Approving `git status && rm -rf x` now writes
+> `bash(git status)` and `bash(rm -rf x)`; approving `FOO=1 make` writes
+> `bash(FOO=1 make)`, which no longer covers `FOO=1 rm -rf build`. No rule is
+> written for a part that would ask again anyway (a protected path, an ask
+> rule, a substitution, a literal `*`), nor for any line that trips a circuit
+> breaker, and the dialog lists the exact rules before the button is pressed.
+> Pinned by `tests/test_always_allow_rules.py` and
+> `tests/test_permission_prompt.py`.
 
 **Documentation drift — partly corrected.** Several statements in
 `docs/PERMISSIONS.md` were not supported by the code, which matters because a
@@ -1080,7 +1092,8 @@ target); "read-only git forms" are still listed as auto-allowing when
 `~/.quickcode/config.json` is still named in the precedence chain but
 contributes **no** rules, so user-scope deny rules do nothing; a bare tool name
 as a `deny` does not remove the tool from the model's tool list; the promised
-"one rule per subcommand" for "always allow" is still not implemented (W7);
+"one rule per subcommand" for "always allow" was not implemented (W7, since
+fixed);
 PowerShell alias canonicalisation does not exist, so on the PowerShell fallback
 the engine still applies POSIX splitting and a POSIX allowlist; and the
 documented `$()`/backtick variant of the catastrophic-command breaker was
@@ -1431,7 +1444,7 @@ was found at and carries its status.
     against the original root (§7.2, W5).
 15. **[FIXED]** The protected-path check outranks `deny`, downgrading an
     absolute rule to a click-through prompt (§7.2, W6).
-16. **[OPEN]** "Always allow" persists a rule broader than what was approved
+16. **[FIXED]** "Always allow" persists a rule broader than what was approved
     (§7.2, W7).
 17. **[OPEN]** No retention, rotation or size limit on session logs; "archive"
     hides rather than deletes (§4.2).

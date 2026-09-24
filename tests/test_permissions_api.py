@@ -159,11 +159,12 @@ def test_a_compound_command_is_broken_down_per_subcommand(project):
     assert subs[0]["steps"][-1]["rule"] == "bash(npm *)"
     assert payload["decided_by"]["command"] == "rm -rf build"
     assert payload["summary"].startswith("'rm -rf build'")
-    # "Always allow" writes one rule for the whole line, and says it would not
-    # cover the half that asked -- found by asking the engine with it added.
-    assert payload["suggestion"]["rule"] == "bash(npm *)"
-    assert payload["suggestion"]["next_time"] == "ask"
-    assert "rm -rf build" in payload["suggestion"]["text"]
+    # "Always allow" writes an exact rule for the half that asked, and none
+    # for the half a rule already allows -- and says the call would then run.
+    assert payload["suggestion"]["rules"] == ["bash(rm -rf build)"]
+    assert payload["suggestion"]["rule"] == "bash(rm -rf build)"
+    assert payload["suggestion"]["next_time"] == "allow"
+    assert "bash(rm -rf build)" in payload["suggestion"]["text"]
 
 
 def test_a_command_run_by_another_is_named_as_what_decided(project):
@@ -188,10 +189,13 @@ def test_always_allow_on_a_protected_path_is_said_not_to_help(project):
         }).json()
 
     assert payload["decision"] == "ask"
-    assert payload["suggestion"]["rule"] == "read(.env)"
+    # No rule is offered for a path that asks whatever is saved.
+    assert payload["suggestion"]["rules"] == []
+    assert payload["suggestion"]["kept"] == [{"part": ".env", "reason": "protected_path"}]
     assert payload["suggestion"]["file"] == ".quickcode/settings.local.json"
     assert payload["suggestion"]["persists"] is True
     assert payload["suggestion"]["next_time"] == "ask"
+    assert payload["suggestion"]["text"].startswith("Always allow would save nothing")
 
 
 def test_only_a_prompt_offers_an_always_allow(project):

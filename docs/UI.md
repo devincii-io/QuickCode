@@ -124,10 +124,15 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 ## Dialogs the agent waits on
 
 - **Permission prompt** (`js/reviews.js`) — shows the tool and the call's own
-  preview (for `bash`, the command itself), then **Allow once**, **Always
-  allow** (shows the exact rule and the file it goes to) and **Deny** (a
-  second click confirms, with an optional message returned to the model).
-  Details in docs/PERMISSIONS.md §The prompt.
+  preview (for `bash`, the command itself); a hook's reason when a hook raised
+  it; for `edit` and `write` the diff the call would make (drawn by `js/diff.js`,
+  which the transcript's edit cards use too); the exact rules **Always allow**
+  would save and the parts that would still ask (`js/permission_offer.js`); and
+  *Why am I being asked?*, the engine's own explanation inline
+  (`js/help/explain.js`). Then **Allow once**, **Always allow** (greyed out when
+  there is nothing to save) and **Deny** (a second click confirms, with an
+  optional message returned to the model). The buttons ignore clicks for
+  400 ms after a prompt appears. Details in docs/PERMISSIONS.md §The prompt.
 - **Plan review** — the plan as markdown, with **Approve · auto-edit**,
   **Approve · ask mode** and **Keep planning** (feedback returns to the
   model).

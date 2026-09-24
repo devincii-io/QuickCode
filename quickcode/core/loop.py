@@ -466,6 +466,35 @@ async def _execute_tools(
             record(c, "[interrupted]" if interrupted else "[no result]", True)
 
 
+def _permission_request(
+    agent: AgentInstance, call: AssembledToolCall, tool, inp, raw: dict, target: str,
+    hook_reason: str,
+):
+    """Everything the prompt shows: the call, the diff it would make, the exact
+    rules "Always allow" would save, and the hook that asked, if one did."""
+    from quickcode.core.agent import GatedCall, PermissionRequest
+
+    gated = GatedCall(tool, raw, agent.permissions, agent.ctx.extra.get("bash_cwd"))
+    offer = agent.permissions.suggest_rules(tool, raw, cwd=gated.cwd)
+    try:
+        diff = tool.render_diff(inp, agent.ctx)
+    except Exception:  # a preview never stands between the user and the prompt
+        diff = ""
+    return PermissionRequest(
+        tool=call.name,
+        arg=target,
+        rule_suggestion=", ".join(offer.rules),
+        preview=tool.render_call(inp),
+        agent_name=agent.name,
+        call_id=call.id,
+        rules=list(offer.rules),
+        kept=[{"part": part, "reason": reason} for part, reason in offer.kept],
+        diff=diff,
+        hook_reason=hook_reason,
+        gated=gated,
+    )
+
+
 async def _run_tool(
     agent: AgentInstance, call: AssembledToolCall, *, truncated: bool = False
 ) -> tuple[str, bool, dict]:
@@ -510,22 +539,14 @@ async def _run_tool(
     # A hook may tighten that answer and never loosen it (hooks.tighten).
     decision, hook_reason = await tighten(agent, call, tool, raw, decision)
     if decision == Decision.ask:
-        from quickcode.core.agent import PermissionRequest
-
-        req = PermissionRequest(
-            tool=call.name,
-            arg=arg_target,
-            rule_suggestion=agent.permissions.suggest_rule(call.name, arg_target),
-            preview=tool.render_call(inp),
-            agent_name=agent.name,
-            call_id=call.id,
-        )
+        req = _permission_request(agent, call, tool, inp, raw, arg_target, hook_reason)
         outcome = await agent.permission_cb(req)
         if not outcome.allow:
             reason = outcome.deny_message or "User denied this action."
             return (f"Permission denied by user: {reason}", True, {})
         if outcome.persist:
-            agent.permissions.rules.persist_allow(agent.ctx.cwd, req.rule_suggestion)
+            for rule in req.rules:
+                agent.permissions.rules.persist_allow(agent.ctx.cwd, rule)
     elif decision == Decision.deny:
         return (hook_reason or "Blocked by permission rules or current mode.", True, {})
 

@@ -19,7 +19,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
-from quickcode.tools.fs import textfile
+from quickcode.tools.fs import diffpreview, textfile
 
 MAX_DIFF_LINES = 60
 # How many of an ambiguous old_string's line numbers the error lists.
@@ -51,6 +51,19 @@ class EditTool(Tool[EditInput]):
 
     def render_call(self, input: EditInput) -> str:  # noqa: A002
         return f"⏺ Edit {input.file_path}"
+
+    def render_diff(self, input: EditInput, ctx: ToolCtx) -> str:  # noqa: A002
+        path = diffpreview.target(input.file_path, ctx)
+        text = diffpreview.seen_text(path, ctx)
+        if text is not None and input.old_string:
+            old, new, count = _locate(text, input.old_string, input.new_string)
+            if count == 1 or (count and input.replace_all):
+                new_text = text.replace(old, new) if input.replace_all else text.replace(old, new, 1)
+                return diffpreview.unified(text, new_text, str(path), str(path))
+        # Not read yet, or old_string is not (uniquely) there: the call will be
+        # refused, and its own two strings are what there is to show.
+        return diffpreview.unified(input.old_string, input.new_string,
+                                   f"{path} (old_string)", f"{path} (new_string)")
 
     async def run(self, input: EditInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
         path = Path(input.file_path)

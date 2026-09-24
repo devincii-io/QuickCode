@@ -278,12 +278,22 @@ def test_a_rule_whose_pattern_spans_a_pipeline_can_never_fire():
     assert engine(deny=["bash(curl *)"]).evaluate("bash", piped) != Decision.deny
 
 
-def test_always_allow_offers_the_rule_the_docs_print():
-    """'approving `npm test && git push` writes `bash(npm *)`, which covers the
-    first subcommand and leaves `git push` prompting next time.'"""
-    assert engine().suggest_rule("bash", "npm test && git push") == "bash(npm *)"
-    assert engine(allow=["bash(npm *)"]).evaluate("bash", "npm test") == Decision.allow
-    assert engine(allow=["bash(npm *)"]).evaluate("bash", "git push") == Decision.ask
+def test_always_allow_offers_the_rules_the_docs_print(tmp_path):
+    """'approving `npm test && git push` writes `bash(npm test)` and
+    `bash(git push)` [...] approving `FOO=1 make` writes `bash(FOO=1 make)`,
+    which does not cover `FOO=1 rm -rf build`.'"""
+    from quickcode.tools.registry import default_registry
+
+    bash = default_registry().get("bash")
+    offer = engine(root=tmp_path).suggest_rules(bash, {"command": "npm test && git push"})
+    assert offer.rules == ("bash(npm test)", "bash(git push)")
+    saved = engine(root=tmp_path, allow=list(offer.rules))
+    assert saved.evaluate("bash", "npm test && git push") == Decision.allow
+    assert saved.evaluate("bash", "npm publish") == Decision.ask
+    offer = engine(root=tmp_path).suggest_rules(bash, {"command": "FOO=1 make"})
+    assert offer.rules == ("bash(FOO=1 make)",)
+    saved = engine(root=tmp_path, allow=list(offer.rules))
+    assert saved.evaluate("bash", "FOO=1 rm -rf build") == Decision.ask
 
 
 # ------------------------------------------------------------ where rules live

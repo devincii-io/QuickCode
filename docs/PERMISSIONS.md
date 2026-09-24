@@ -135,8 +135,9 @@ today.
   conversation per command. Deny rules still deny in yolo, and the
   circuit breakers still prompt. The prompt
   is the ordinary three-button one; there is no "allow self-config edits for
-  this session" option — an always-allow on a `.quickcode/` path writes an
-  ordinary persisted rule like any other.
+  this session" option, and **Always allow** writes no rule for a protected
+  path — the prompt would come back whatever was saved, so it is greyed out
+  and says so (§Bash evaluation pipeline).
 - **One exception, read-only:** a tool declaring `mutates=False` may *read*
   under `<project>/.quickcode/artifacts/` without the protected-path prompt.
   That directory is where a subagent's oversized report is offloaded
@@ -429,7 +430,8 @@ there.
   `set`, `--global`…) is treated as a write to a protected path, because
   `.git/config` is where every later git command takes its pager, editor and
   hooks path from. Reads (`--get`, `--list`, `git config k`) are unaffected.
-- "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**. The dry run below says, for any call, whether its suggested rule would stop the next prompt.
+- **"Always allow" saves exactly what was approved** (`PermissionEngine.suggest_rules`). The rules are read off the engine's own evaluation of the call — its trace, not a second parse — and there is one per part that asked only because nothing allowed it: each subcommand, and each command another command runs, spelled exactly as the allow rules are matched against it. Approving `npm test && git push` writes `bash(npm test)` and `bash(git push)`; approving `FOO=1 make` writes `bash(FOO=1 make)`, which does not cover `FOO=1 rm -rf build`; approving `sudo rm x` writes `bash(sudo rm x)` and `bash(rm x)`, because the engine judges the wrapper line and the command it runs separately. A part already allowed (`ls`, a part an existing rule covers) gets no rule. A part that would ask again **whatever** is saved gets none either, and the dialog lists it with the reason: a protected path, an ask rule, a line with a substitution or redirection (allow rules never see those, so `npm test 2>&1` can only be allowed once), a program pointed at unseen code (`git -c …`), a command word only the shell can finish, or a `*` — a rule has no way to spell a literal `*`, so `bash(rm *.pyc)` would also allow `rm -rf src x.pyc`. A line that trips a **circuit breaker** saves nothing at all. When nothing can be saved, the **Always allow** button is greyed out. A path or URL target is saved as spelled (`edit(src/a.py)`), with the same `*` exception, and a protected path is saved not at all.
+  It used to save `bash(<first word> *)` for the whole line, and `*` spans spaces, so approving `FOO=1 make` allowed `FOO=1 rm -rf build` and approving `git status && rm -rf x` allowed every `git` command (docs/COMPLIANCE.md, W7). Pinned by `tests/test_always_allow_rules.py`.
 - Windows: PowerShell runs through the same pipeline, but **alias canonicalization is not implemented**. `gci`, `dir` and `Get-ChildItem` are three unrelated strings to the engine — none of them is in `READONLY_BUILTINS` either, so on PowerShell the read-only auto-allow effectively never fires and a rule has to name the exact spelling the model used. `bash` prefers Git Bash where it exists (docs/ARCHITECTURE §Windows notes), which is why this has not bitten harder.
 
 ## The prompt (UI in docs/UI.md)
@@ -443,11 +445,41 @@ that can put words in front of the model. The description is still shown, beside
 the command rather than instead of it; a multi-line command is capped and marked
 with an ellipsis so a heredoc cannot hide its second line.
 
-Three buttons, in `js/reviews.js`:
+Below the preview, in this order (`js/reviews.js`, built from DOM nodes and
+text, never markup — every string in it came from the model, a file or a hook):
+
+- **A hook's reason**, when a `PreToolUse` hook is what raised the prompt (the
+  rules would have allowed the call). `tighten` in `core/hooks.py` returns it,
+  and the loop carries it on the request (`PermissionRequest.hook_reason`).
+- **The diff**, for `edit` and `write` — `Tool.render_diff`, a unified diff
+  built with `difflib` where the request is made (`tools/fs/diffpreview.py`),
+  capped at 200 lines and 400 characters a line with a marker. A new file shows
+  its head. It is built only from text the session already holds: the file's
+  current content is used when the session has read it (the tools refuse any
+  other existing file, so that is also when the diff is what will happen);
+  otherwise only the call's own `old_string`/`new_string` or `content` is shown,
+  so a prompt for a file nobody read is never the way its content reaches the
+  session log.
+- **What "Always allow" saves**: the exact rule or rules and the file, and the
+  parts that will ask again whatever is saved, each with its reason
+  (§Bash evaluation pipeline).
+- **Why am I being asked?** — opens the engine's own explanation inline
+  (§Why was I prompted?), asked about this very call.
+
+Three buttons:
 
 1. **Allow once**
-2. **Always allow** — the modal shows the exact rule text, and the file it goes to, before it is written to `settings.local.json`
+2. **Always allow** — writes the rules listed above to `settings.local.json`; greyed out when there are none
 3. **Deny** — the first click reveals a free-text box and the button becomes *Confirm deny*; the text is returned to the model as the tool result (`is_error`), so denial is steering, not a dead end
+
+Answering puts the next queued prompt on screen in the same place, so a
+dialog ignores clicks on its buttons for 400 ms after it appears: the second
+click of a double-click cannot approve a request nobody has read.
+
+The request on the wire (`permission_request`, also logged) carries
+`rule_suggestion` (the rules on one line, as it always has), `rules`, `kept`
+(`{part, reason}`), `diff` and `hook_reason`; `permission_resolved` carries
+`saved`, the rules that were written.
 
 There are no `y / a / n` keyboard shortcuts on this modal — the buttons are the only way to answer it. Earlier text here promised them; they are **not implemented**.
 
@@ -480,6 +512,12 @@ no hook is executed. Three ways in, one answer:
   which exist only once the app has connected to them, are not known to it.
 - **`POST /api/permissions/explain`** (and `/api/projects/{pid}/…`),
   `server/permissions_api.py`.
+- **"Why am I being asked?"** in the permission prompt, which sends
+  `{"conv": …, "review": <req_id>}`: the pending call itself, asked of the
+  gate that raised it — the engine of the agent that asked (a subagent's is
+  capped and holds none of the session's allow rules) and where its shell
+  stood (`permission_posture.for_review`). Nothing else may be combined with
+  `review`, and a prompt that is no longer waiting is a 404.
 
 **It is the engine, not a model of it.** The answer comes from
 `PermissionEngine.evaluate_tool` — the call the agent loop makes before every
@@ -509,11 +547,12 @@ Request body — the call, in whichever shape is handy, plus options:
 
 The answer: `decision`; `summary`, one sentence for the step that decided;
 `decided_by`, that step; `steps`, the whole trace; `suggestion` (only for
-`ask`) — the rule "Always allow" would write, the file, whether it persists
+`ask`) — `rules`, what "Always allow" would write (`rule` is the same on one
+line), `kept`, the parts no rule covers and why, the file, whether it persists
 past this session (it does once the project is trusted), and `next_time`, the
-engine's answer *with that rule added*: `ask` means the rule would not stop the
-next prompt (a protected path, a circuit breaker, an ask rule, or another
-subcommand the rule does not cover), and the text says which; `hints`, the
+engine's answer *with those rules added*: `ask` means they would not stop the
+next prompt (a protected path, a circuit breaker, an ask rule), and the text
+says which; `hints`, the
 allow rules an untrusted project's own files state and the loader ignored,
 when trusting it would change the answer; `notes`, for a tool the composition
 never gives the agent, a mutating tool plan mode withholds, and PreToolUse
@@ -537,10 +576,6 @@ profile, what-if or session answer it came from.
 | `unresolvable_command` | a command word only the shell can finish, with a `bash` deny rule in place |
 | `inner_command`, `nesting_limit` | a command another command runs, judged as its own line (its own `steps`); nested too deep |
 | `circuit_breaker`, `most_restrictive` | the line-wide checks and the final fold |
-
-A "Why?" link from the permission prompt itself, which would ask the same
-question with the pending call and the conversation filled in, is **not
-implemented** yet.
 
 ## Plan mode
 
@@ -570,7 +605,8 @@ or a deny, and an ask into a deny; it can never turn either back into an allow,
 so a hook that says "allow" skips no prompt, no protected path and no circuit
 breaker (`docs/HOOKS.md#hooks-and-permissions`). A call the engine denies is
 not shown to the hooks, and in `dontask` a hook's ask becomes a refusal like
-the engine's own.
+the engine's own. A prompt a hook raised says so, with the
+hook's reason, and offers nothing to "Always allow" (§The prompt).
 
 ## Headless mode
 

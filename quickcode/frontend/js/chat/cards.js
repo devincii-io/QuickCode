@@ -2,6 +2,7 @@
 // that gated it. Everything here builds or patches a single card; where a card
 // sits in the transcript, and how an event finds it, is chat.js's business.
 
+import { diffNode, replacementLines } from "../diff.js";
 import { renderAnsiBlock } from "../terminal/emulator.js";
 import { argSummary } from "../tool_args.js";
 import { highlightToon, toon } from "../toon.js";
@@ -18,11 +19,10 @@ function diffBody(name, argsRaw) {
   let a;
   try { a = JSON.parse(argsRaw || "{}"); } catch { return null; }
   if (!a.old_string && !a.new_string) return null;
-  const del = String(a.old_string || "").split("\n")
-    .map((l) => `<span class="diff-del">- ${esc(l)}</span>`).join("\n");
-  const add = String(a.new_string || "").split("\n")
-    .map((l) => `<span class="diff-add">+ ${esc(l)}</span>`).join("\n");
-  return `<div class="lbl">${esc(a.file_path || "")}</div><pre>${del}\n${add}</pre>`;
+  const box = el(`<div class="io-diff"><div class="lbl"></div></div>`);
+  box.firstChild.textContent = a.file_path || "";
+  box.append(diffNode(replacementLines(a.old_string, a.new_string)));
+  return box;
 }
 
 // Tools that act on a path: the summary becomes a copyable file reference.
@@ -58,12 +58,12 @@ export function toolCardNode(ev, { wireTrace }) {
     <div class="tool-body"></div></div>`);
   const body = card.querySelector(".tool-body");
   const diff = diffBody(ev.name, ev.arguments);
-  const input = diff ? `<div class="io-diff">${diff}</div>` : toonBlock(ev.arguments);
   body.innerHTML =
     `<details class="io io-in"><summary><span class="io-tag">IN</span>
-       <span class="io-hint">arguments</span></summary>${input}</details>` +
+       <span class="io-hint">arguments</span></summary>${diff ? "" : toonBlock(ev.arguments)}</details>` +
     `<div class="result-slot"></div>` +
     (ev.seq != null ? `<div class="io-trace">${traceLink(ev.seq)}</div>` : "");
+  if (diff) body.querySelector(".io-in").append(diff);
   const head = card.querySelector(".tool-head");
   clickable(head, (e) => {
     // The head toggles the card, but it now contains a link. Without this the
@@ -174,7 +174,12 @@ export function markPerm(card, state, reqEv, resEv) {
 function permDetailHtml(reqEv, resEv) {
   const verdict = !resEv ? "waiting for your decision"
     : resEv.allow
-      ? (resEv.persist ? "allowed, and remembered as a rule" : "allowed, this once")
+      ? (!resEv.persist ? "allowed, this once"
+        // `saved` is what was written; a decision logged before it existed
+        // says only that "Always allow" was pressed.
+        : Array.isArray(resEv.saved) && !resEv.saved.length
+          ? "allowed, this once — there was no rule to save"
+          : "allowed, and remembered as a rule")
       : "denied";
   const rows = [`<div class="lbl">decision</div><div class="perm-line">${esc(verdict)}</div>`];
   // The preview is the tool's own rendering of the call and the argument is
@@ -182,9 +187,15 @@ function permDetailHtml(reqEv, resEv) {
   // twice for every path tool. The preview wins when there is one.
   const asked = reqEv?.preview || reqEv?.arg || resEv?.arg || "";
   if (asked) rows.push(`<div class="lbl">what it asked to do</div><pre>${esc(asked)}</pre>`);
-  if (reqEv?.rule_suggestion) {
-    rows.push(`<div class="lbl">rule offered</div>
-      <div class="perm-line perm-code">${esc(reqEv.rule_suggestion)}</div>`);
+  const offered = Array.isArray(reqEv?.rules) ? reqEv.rules
+    : reqEv?.rule_suggestion ? [reqEv.rule_suggestion] : [];
+  if (offered.length) {
+    rows.push(`<div class="lbl">${offered.length === 1 ? "rule" : "rules"} offered</div>
+      ${offered.map((r) => `<div class="perm-line perm-code">${esc(r)}</div>`).join("")}`);
+  }
+  if (reqEv?.hook_reason) {
+    rows.push(`<div class="lbl">asked by a hook</div>
+      <div class="perm-line">${esc(reqEv.hook_reason)}</div>`);
   }
   if (reqEv?.agent && reqEv.agent !== "main") {
     rows.push(`<div class="lbl">agent</div><div class="perm-line">${esc(reqEv.agent)}</div>`);

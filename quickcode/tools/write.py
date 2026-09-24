@@ -18,7 +18,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
-from quickcode.tools.fs import textfile
+from quickcode.tools.fs import diffpreview, textfile
 
 
 class WriteInput(BaseModel):
@@ -42,6 +42,17 @@ class WriteTool(Tool[WriteInput]):
 
     def render_call(self, input: WriteInput) -> str:  # noqa: A002
         return f"⏺ Write {input.file_path}"
+
+    def render_diff(self, input: WriteInput, ctx: ToolCtx) -> str:  # noqa: A002
+        path = diffpreview.target(input.file_path, ctx)
+        text = diffpreview.seen_text(path, ctx)
+        if text is not None:
+            return diffpreview.unified(text, input.content, str(path), str(path))
+        # A new file's head -- or, for a file the session never read (which the
+        # write refuses), the content alone rather than a file nobody saw.
+        exists = diffpreview.exists(path)
+        before = f"{path} (not read in this session)" if exists else "/dev/null"
+        return diffpreview.unified("", input.content, before, str(path))
 
     async def run(self, input: WriteInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
         path = Path(input.file_path)

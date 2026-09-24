@@ -2,12 +2,16 @@
 
 Run through uv with --no-sync, then open the printed URL. Ctrl+C stops it.
 
-    workspace_smoke_server.py [port] [--jobs]
+    workspace_smoke_server.py [port] [--jobs] [--ask]
 
 ``--jobs`` makes the preview agent answer a message by starting a background
 job (``bash`` with ``run_in_background``) that prints a coloured tick five times
 a second until it is killed -- the Jobs tab's subject, for
 ``scripts/smoke_jobs.js``. The permission prompt for it is the real one.
+
+``--ask`` makes the preview agent act instead of only talking: every turn it
+reads README.md, edits it, then runs a shell command, so the permission prompt
+(its diff, the rules "Always allow" would save, "Why?") can be reviewed.
 """
 
 from __future__ import annotations
@@ -48,6 +52,15 @@ def main() -> None:
         from quickcode.server.projects import ProjectHub, ProjectRegistry
         from quickcode.update import AUTO_CHECK_KEY, PLUGIN_ID
 
+        ask = "--ask" in sys.argv[1:]
+        # One tool call per round of a turn, in order; then the usual reply.
+        acts = [
+            ("read", {"file_path": "README.md"}),
+            ("edit", {"file_path": "README.md", "old_string": "UI review project.",
+                      "new_string": "UI review project, with a permission preview."}),
+            ("bash", {"command": "FOO=1 npm test && cat .env"}),
+        ]
+
         class PreviewProvider:
             calls = 0
 
@@ -69,6 +82,14 @@ def main() -> None:
                     )
                     yield TurnDone("tool_calls")
                     return
+                if ask:
+                    last_user = max(i for i, m in enumerate(req.messages) if m.role == "user")
+                    done = sum(m.role == "tool" for m in req.messages[last_user:])
+                    if done < len(acts):
+                        name, args = acts[done]
+                        yield ToolCallEnd(f"preview-{last_user}-{done}", name, json.dumps(args))
+                        yield TurnDone("tool_calls")
+                        return
                 for text in ["I am reviewing this project. ", "The workspace and agent panes ",
                              "keep separate conversations, drafts, and settings."]:
                     await asyncio.sleep(.5)
