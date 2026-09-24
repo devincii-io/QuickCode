@@ -340,6 +340,7 @@ def test_nothing_the_model_can_call_knows_the_terminal_exists() -> None:
     driven = [
         root / "server" / "manager.py",
         root / "server" / "conversation.py",
+        root / "server" / "reviews.py",
         root / "session" / "assemble.py",
     ]
     offenders = []

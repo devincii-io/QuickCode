@@ -25,9 +25,9 @@ from quickcode.server.conversation import (
     CLIENT_QUEUE_MAX,
     Client,
     Conversation,
-    PendingReview,
     SwitchRefused,
 )
+from quickcode.server.reviews import PendingReview
 from quickcode.session import assemble
 
 __all__ = [

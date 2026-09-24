@@ -103,6 +103,7 @@ quickcode/
     app.py                # FastAPI routes + WebSocket attach
     manager.py            # ConversationManager: opens and tracks one project's conversations
     conversation.py       # Conversation: one live agent, its windows, its turn worker
+    reviews.py            # ReviewDesk: permission / plan requests awaiting a client decision
     projects.py           # ProjectHub, project registry
     serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
     agents_api.py authoring_api.py gitinfo.py paths.py terminal.py auth.py

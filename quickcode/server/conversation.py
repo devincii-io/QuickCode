@@ -6,9 +6,8 @@ WebSocket attachments, and the append-only trace log. Every bus event is
 broadcast live; assembled events (whole messages, tool calls, results,
 decisions) are also persisted so replay reconstructs the identical transcript.
 
-Permission and plan review round-trip over the WebSocket: the agent awaits an
-``asyncio.Future`` that a ``permission_decision`` / ``plan_decision`` client
-message resolves.
+Permission and plan review round-trip over the WebSocket; the requests in
+flight are kept by the conversation's ``ReviewDesk`` (``server/reviews.py``).
 
 ``ConversationManager`` (``server/manager.py``) opens these; this module is
 what one of them does once it is open.
@@ -17,11 +16,8 @@ what one of them does once it is open.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
-import uuid
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from quickcode.core.agent import (
@@ -40,6 +36,7 @@ from quickcode.kernel.composition import MODE_PRIVILEGE, Resolved, narrower_mode
 from quickcode.kernel.orchestrator import resolve_orchestrator
 from quickcode.kernel.resolve import runtime_limits
 from quickcode.providers.base import ProviderError
+from quickcode.server.reviews import PendingReview, ReviewDesk
 from quickcode.session import assemble
 from quickcode.session.recorder import TranscriptRecorder
 from quickcode.session.store import SessionStore
@@ -66,16 +63,6 @@ class SwitchRefused(Exception):
     not applied on the next idle. A switch that lands invisibly three seconds
     later is worse than one that does not happen.
     """
-
-
-@dataclass
-class PendingReview:
-    """A permission or plan request awaiting a client decision."""
-
-    req_id: str
-    kind: str  # "permission" | "plan"
-    payload: dict[str, Any]
-    future: asyncio.Future = field(repr=False, default=None)  # type: ignore[assignment]
 
 
 class Client:
@@ -146,7 +133,7 @@ class Conversation:
         # shown. See ``emit_system_prompt``.
         self._prompt_shown = False
         self.clients: set[Client] = set()
-        self.pending: dict[str, PendingReview] = {}
+        self.reviews = ReviewDesk(emit=self.emit, on_plan_resolved=self._emit_state)
         self.input_queue: list[str] = []
         self._inbox: asyncio.Queue[str] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
@@ -171,6 +158,11 @@ class Conversation:
             # replaced ``agent.ledger`` by the time we get here.
             ledger=agent.ledger,
         )
+
+    @property
+    def pending(self) -> dict[str, PendingReview]:
+        """Reviews waiting on a client decision, by request id."""
+        return self.reviews.pending
 
     def emit_system_prompt(self) -> None:
         """Show the model's instructions, once per rendering of them.
@@ -369,10 +361,7 @@ class Conversation:
                 "subagent_output_tokens": a.ledger.subagent_output_tokens,
                 "subagent_cost_usd": a.ledger.subagent_cost_usd,
             },
-            "pending": [
-                {"req_id": p.req_id, "kind": p.kind, **p.payload}
-                for p in self.pending.values()
-            ],
+            "pending": self.reviews.listing(),
             "tasks": [t.to_dict() for t in self.board.list()],
             # The posture, on the same event and for the same reason as the
             # composition: the composer draws a pill from it.
@@ -414,32 +403,8 @@ class Conversation:
         self._emit_state()
 
     def cancel_pending_reviews(self) -> int:
-        """Answer every review still waiting on the user. Returns how many.
-
-        The cancel flag is read by the loop, and a turn parked on a permission
-        modal is not in the loop -- it is awaiting a ``Future`` that only a
-        client decision resolves. Nothing was going to resolve it once the user
-        pressed Stop, so the turn never ended: ``busy`` stayed true, the Stop
-        button stayed on screen and the composer stayed disabled with nothing
-        actually running. Denying is the honest answer -- the user just said no
-        to the whole turn -- and it also emits the ``permission_resolved`` /
-        ``plan_resolved`` half of the pair, which is what closes the modal.
-        """
-        answered = 0
-        for p in list(self.pending.values()):
-            if p.future is None or p.future.done():
-                continue
-            if p.kind == "permission":
-                p.future.set_result(PermissionOutcome(
-                    allow=False,
-                    deny_message="Interrupted by the user before this was answered.",
-                ))
-            else:
-                p.future.set_result(PlanOutcome(
-                    approved=False, feedback="Interrupted by the user."
-                ))
-            answered += 1
-        return answered
+        """Deny every review still waiting on the user; see ``ReviewDesk.deny_all``."""
+        return self.reviews.deny_all()
 
     def interrupt(self) -> None:
         cleared = len(self.input_queue)
@@ -571,78 +536,20 @@ class Conversation:
         finally:
             self._emit_state()
 
-    # ---- reviews (permission + plan) ----
+    # ---- reviews (permission + plan), kept by the desk ----
     async def permission_cb(self, req: PermissionRequest) -> PermissionOutcome:
-        req_id = uuid.uuid4().hex[:10]
-        payload = {
-            "tool": req.tool,
-            "arg": req.arg,
-            "rule_suggestion": req.rule_suggestion,
-            "preview": req.preview,
-            "agent": req.agent_name,
-            "call_id": req.call_id,
-        }
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self.pending[req_id] = PendingReview(req_id, "permission", payload, fut)
-        self.emit({"type": "permission_request", "req_id": req_id, **payload})
-        try:
-            outcome: PermissionOutcome = await fut
-        finally:
-            self.pending.pop(req_id, None)
-        self.emit(
-            {
-                "type": "permission_resolved",
-                "req_id": req_id,
-                "allow": outcome.allow,
-                "persist": outcome.persist,
-                "tool": req.tool,
-                "arg": req.arg,
-                "call_id": req.call_id,
-            }
-        )
-        return outcome
+        return await self.reviews.permission(req)
 
     async def plan_cb(self, plan_md: str) -> PlanOutcome:
-        req_id = uuid.uuid4().hex[:10]
-        payload = {"plan": plan_md}
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self.pending[req_id] = PendingReview(req_id, "plan", payload, fut)
-        self.emit({"type": "plan_request", "req_id": req_id, **payload})
-        try:
-            outcome: PlanOutcome = await fut
-        finally:
-            self.pending.pop(req_id, None)
-        self.emit(
-            {
-                "type": "plan_resolved",
-                "req_id": req_id,
-                "approved": outcome.approved,
-                "mode_after": outcome.mode_after.value if outcome.mode_after else None,
-                "feedback": outcome.feedback,
-            }
-        )
-        self._emit_state()
-        return outcome
+        return await self.reviews.plan(plan_md)
 
     def resolve_permission(self, req_id: str, *, allow: bool, persist: bool, deny_message: str) -> bool:
-        p = self.pending.get(req_id)
-        if p is None or p.kind != "permission" or p.future.done():
-            return False
-        p.future.set_result(
-            PermissionOutcome(allow=allow, persist=persist, deny_message=deny_message)
-        )
-        return True
+        return self.reviews.resolve_permission(
+            req_id, allow=allow, persist=persist, deny_message=deny_message)
 
     def resolve_plan(self, req_id: str, *, approved: bool, mode_after: str | None, feedback: str) -> bool:
-        p = self.pending.get(req_id)
-        if p is None or p.kind != "plan" or p.future.done():
-            return False
-        mode = None
-        if mode_after:
-            with contextlib.suppress(ValueError):
-                mode = Mode(mode_after)
-        p.future.set_result(PlanOutcome(approved=approved, mode_after=mode, feedback=feedback))
-        return True
+        return self.reviews.resolve_plan(
+            req_id, approved=approved, mode_after=mode_after, feedback=feedback)
 
     # ---- settings ----
 
