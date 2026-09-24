@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from quickcode import subproc
+from quickcode import gitcmd, subproc
 from quickcode.server.manager import ConversationManager
 
 log = logging.getLogger("quickcode.server.gitinfo")
@@ -29,20 +29,11 @@ GIT_TIMEOUT = 5.0
 DIFF_CAP = 200_000
 
 
-# Options every panel call carries. The panel runs the moment a project opens,
-# before anyone has trusted it, so nothing the repository's own config names
-# may run: no fsmonitor hook here, and ``_DIFF_SAFE`` keeps external diff and
-# textconv drivers out of every diff. ``--literal-pathspecs`` because a path
-# that ``_safe_rel`` proved is inside the project would otherwise still be
-# read as pathspec magic -- ``:(top)``/``:/`` name the repository root, which
-# for a project nested in a larger repository is above it. And no optional
-# locks, so a status refresh never leaves the user's own ``git commit``
-# failing on a held ``index.lock``.
-_GIT_BASE = (
-    "--literal-pathspecs", "--no-optional-locks",
-    "-c", "core.quotepath=off", "-c", "core.fsmonitor=false",
-)
-_DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
+# The panel runs the moment a project opens, before anyone has trusted it, so
+# nothing the repository's own config names may run. The options that say so
+# are shared with the subagent worktree code (``quickcode/gitcmd.py``).
+_GIT_BASE = gitcmd.BASE
+_DIFF_SAFE = gitcmd.DIFF_SAFE
 
 
 def _run(cwd: Path, *args: str) -> tuple[bool, str]:
