@@ -197,6 +197,31 @@ def test_closing_the_socket_kills_the_shell(tmp_path, fake_shell):
         assert wait_until(lambda: registry.count(proj) == 0)
 
 
+class _Closable:
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_projects_that_differ_only_in_case_keep_their_own_terminals(tmp_path):
+    """The registry case-folded every path, while project ids fold only on
+    Windows: on Linux, forgetting ~/proj closed the shells open in ~/Proj."""
+    upper, lower = tmp_path / "Proj", tmp_path / "proj"
+    upper.mkdir()
+    try:
+        lower.mkdir()
+    except FileExistsError:
+        pytest.skip("case-insensitive file system: these are one directory")
+    assert project_id(upper) != project_id(lower)
+    mine, theirs = _Closable(), _Closable()
+    registry.add(lower, mine)
+    registry.add(upper, theirs)
+    assert registry.close_for(lower) == 1
+    assert mine.closed and not theirs.closed
+    assert registry.count(upper) == 1
+
+
 def test_closing_a_project_kills_the_terminals_open_on_it(tmp_path, fake_shell):
     default = tmp_path / "default"
     other = tmp_path / "other"
