@@ -232,3 +232,33 @@ def test_customise_without_a_name_numbers_its_copies(tmp_path):
         first = client.post("/api/kernel/compositions/standard/derive", json={}).json()
         second = client.post("/api/kernel/compositions/standard/derive", json={}).json()
     assert (first["id"], second["id"]) == ("standard-copy", "standard-copy-2")
+
+
+# --------------------------------------------------------------------------
+# a write keeps what the trust gate is only ignoring
+# --------------------------------------------------------------------------
+
+def test_editing_a_composition_in_an_untrusted_project_keeps_its_gated_fields(tmp_path):
+    """The gate decides what a session *obeys*, not what the file *says*.
+
+    An untrusted project's ``default_mode: auto-edit`` is ignored when a session
+    opens -- correctly -- but the workbench wrote the preset back from that
+    gated reading, so saving a tool edit erased the line from the file, and
+    trusting the project afterwards found it gone.
+    """
+    write_settings(tmp_path, {
+        "active_preset": "mine",
+        "presets": {"mine": {"title": "Mine", "default_mode": "auto-edit",
+                             "orchestrator": {"tools": ["read", "write"]}}},
+    })
+    with make_client(make_manager(tmp_path)) as client:
+        res = client.put("/api/kernel/agents/%40orchestrator/composition",
+                         json={"composition": {"tools": ["read"]}})
+        copy = client.post("/api/kernel/compositions/mine/derive", json={"name": "Mine too"})
+    assert res.status_code == 200, res.text
+    assert copy.status_code == 200, copy.text
+
+    on_disk = json.loads((tmp_path / ".quickcode" / "settings.json").read_text("utf-8"))
+    assert on_disk["presets"]["mine"]["default_mode"] == "auto-edit"
+    assert on_disk["presets"]["mine"]["orchestrator"]["tools"] == ["read"]
+    assert on_disk["presets"]["mine-too"]["default_mode"] == "auto-edit"

@@ -830,7 +830,10 @@ def _composition_write(
     if not isinstance(body, dict) or not isinstance(body.get("composition"), dict):
         raise HTTPException(400, "body must be {'composition': {...}}")
     cwd = Path(manager.cwd)
-    preset = preset_module.resolve(cwd, str(body.get("preset") or ""))
+    # Read as the file states it, not as the trust gate lets a session obey it:
+    # this is written back, and a gated field left out of the write would be
+    # erased from the file rather than merely ignored.
+    preset = preset_module.resolve(cwd, str(body.get("preset") or ""), trusted=True)
     if preset.builtin:
         raise HTTPException(
             409,
@@ -873,7 +876,9 @@ def _derive(manager: ConversationManager, preset_id: str, body: Any) -> dict[str
     right.
     """
     cwd = Path(manager.cwd)
-    presets = preset_module.load_presets(cwd)
+    # As written, for the same reason as ``_composition_write``: the copy goes
+    # into the project file, where the gate applies to it on every read anyway.
+    presets = preset_module.load_presets(cwd, trusted=True)
     source = presets.get(preset_id)
     if source is None:
         raise HTTPException(404, f"no composition {preset_id!r}")
