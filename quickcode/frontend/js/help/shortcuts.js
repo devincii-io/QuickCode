@@ -5,10 +5,10 @@
 // read the same array, because a shortcut list that exists twice is a shortcut
 // list that is wrong in one of the two places.
 //
-// The slash commands mirror `COMMANDS` in js/composer/slash.js, which is what
-// actually runs when you type one.
+// The slash commands are read from `COMMANDS` in js/composer/slash.js, which is
+// what actually runs when you type one.
 
-import { MODE_IDS } from "../modes.js";
+import { COMMANDS } from "../composer/slash.js";
 
 export const KEYS = [
   ["Alt + N", "Open a new agent pane in this workspace"],
@@ -28,16 +28,12 @@ export const KEYS = [
     + "in this project's directory, yours to type in"],
 ];
 
-export const SLASH = [
-  ["/compact", "", "Compress the conversation into a summary"],
-  ["/clear", "", "Start a new conversation"],
-  ["/mode", `<${MODE_IDS.join("|")}>`, "Switch the permission mode"],
-  ["/model", "", "Pick the model for this session"],
-  ["/composition", "", "Switch this session's composition (at a turn boundary)"],
-  ["/profile", "", "Switch this session's permission profile (takes effect now)"],
-  ["/init", "", "Have the agent survey this project and write QUICKCODE.md"],
-  ["/help", "", "The quick reference"],
-];
+/** `[command, argument, description]` per slash command. A function rather than
+ *  a constant: slash.js reaches this module through help/quickref.js, so while
+ *  the modules load, its table may not exist yet. */
+export function slashRows() {
+  return COMMANDS.map(({ name, arg, desc }) => [name, arg || "", desc]);
+}
 
 export const PANEL_NOTE =
   "The right-hand panel holds Trajectory, Agents, Tasks, Files and Usage. Drag "

@@ -345,11 +345,13 @@ async function boot() {
     }
     if (kind === "event" && ["permission_request", "plan_request"].includes(ev.type)) {
       if (!store.replaying || store.state?.pending?.some((p) => p.req_id === ev.req_id)) pendingReviews.add(ev.req_id);
-      reportPane();
+      if (!store.replaying) reportPane();
     }
     if (kind === "event" && ["permission_resolved", "plan_resolved"].includes(ev.type)) {
-      pendingReviews.delete(ev.req_id); reportPane();
+      pendingReviews.delete(ev.req_id);
+      if (!store.replaying) reportPane();
     }
+    // A replay reports once, at replay_done, not once per review it passes.
     if (["state", "connection", "review", "replay_done"].includes(kind)) reportPane();
     // A switch changes what every configuration page would say about this
     // session, and the view caches the kernel for the life of a visit.

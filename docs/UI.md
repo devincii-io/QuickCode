@@ -137,8 +137,9 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 
 ## Keyboard
 
-The authoritative list is `KEYS` and `SLASH` in `js/help/shortcuts.js`, which
-both the `?` quick reference and Help ▸ Keyboard read.
+The authoritative lists are `KEYS` in `js/help/shortcuts.js` and `COMMANDS` in
+`js/composer/slash.js` (which `slashRows()` in shortcuts.js reads), and both the
+`?` quick reference and Help ▸ Keyboard show them.
 
 | Key | Action |
 |---|---|

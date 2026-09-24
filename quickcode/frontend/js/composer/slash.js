@@ -102,7 +102,7 @@ async function runInit() {
 // Each entry: { label, arg, desc, complete, exec }. `exec` missing means the
 // entry only completes text (e.g. "/mode " opens the mode sub-entries).
 
-const COMMANDS = [
+export const COMMANDS = [
   {
     name: "/compact", desc: "Compress the conversation into a summary",
     exec: () => actions.compact(),

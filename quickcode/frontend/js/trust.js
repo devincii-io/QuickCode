@@ -21,9 +21,14 @@
 // carries that server's raw JSON block.
 
 import { api } from "./api.js";
-import { refreshIfOpen } from "./config/view.js";
 import { store } from "./store.js";
 import { el, esc } from "./util.js";
+
+// Loaded on demand: home.js brings this module into the workspace shell, which
+// never shows the configuration view and should not load the config/* tree.
+function refreshConfigIfOpen() {
+  import("./config/view.js").then((view) => view.refreshIfOpen());
+}
 
 /** Arm-then-act on the same button: the first click only changes the label and
  *  disarms itself after a moment, the second one is the decision. The idiom
@@ -428,7 +433,7 @@ function card() {
       current = { ...current, status: next, granted: next.connected || [] };
       collapsed = false;
       render();
-      refreshIfOpen();   // the tool list just changed underneath it
+      refreshConfigIfOpen();   // the tool list just changed underneath it
     } catch (err) {
       if (err.message.startsWith("409")) {
         // The files changed after this card was drawn: show what is there now
@@ -520,7 +525,7 @@ function trustedCard() {
       current = { ...current, status: next, granted: null, revoked: true };
       collapsed = false;
       render();
-      refreshIfOpen();   // revoking removes tools just as granting adds them
+      refreshConfigIfOpen();   // revoking removes tools just as granting adds them
     } catch (err) {
       revoke.disabled = false;
       disarm(revoke, "Revoke trust");

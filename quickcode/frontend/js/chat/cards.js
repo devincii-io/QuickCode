@@ -3,26 +3,13 @@
 // sits in the transcript, and how an event finds it, is chat.js's business.
 
 import { renderAnsiBlock } from "../terminal/emulator.js";
+import { argSummary } from "../tool_args.js";
 import { highlightToon, toon } from "../toon.js";
 import { configTarget } from "../trajectory.js";
-import { clickable, el, esc, oneLine } from "../util.js";
+import { clickable, el, esc } from "../util.js";
 
 export function traceLink(seq) {
   return `<span class="trace-link" data-seq="${Number(seq)}" title="Open in trajectory">⌕ trace</span>`;
-}
-
-// tool-specific one-line argument summaries
-export function argSummary(name, argsRaw) {
-  let a = {};
-  try { a = JSON.parse(argsRaw || "{}"); } catch { return oneLine(argsRaw, 120); }
-  if (name === "bash") return oneLine(a.command, 140);
-  if (name === "read" || name === "write" || name === "edit")
-    return oneLine(a.file_path || a.path, 120);
-  if (name === "grep") return oneLine(`${a.pattern}  ${a.path || ""}`, 120);
-  if (name === "glob") return oneLine(a.pattern, 120);
-  if (name === "agent") return oneLine(a.definition || a.prompt, 120);
-  const keys = Object.entries(a).map(([k, v]) => `${k}: ${oneLine(String(v), 40)}`);
-  return oneLine(keys.join(", "), 140);
 }
 
 function diffBody(name, argsRaw) {

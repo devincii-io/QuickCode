@@ -5,11 +5,14 @@ import { el } from "../util.js";
 
 const GAP = 8;
 
-export function menuAt(anchor, contentHtml, { searchable = false, below = false } = {}) {
+/** `head` and `foot` are HTML placed above and below the scrolling list, and
+ *  measured with it; `className` names the menu for its own styles. */
+export function menuAt(anchor, contentHtml,
+  { searchable = false, below = false, className = "", head = "", foot = "" } = {}) {
   document.querySelectorAll(".menu").forEach((m) => m.remove());
-  const m = el(`<div class="menu">
+  const m = el(`<div class="menu ${className}">
     ${searchable ? '<input class="menu-search" placeholder="Search…">' : ""}
-    <div class="menu-list">${contentHtml}</div></div>`);
+    ${head}<div class="menu-list">${contentHtml}</div>${foot}</div>`);
   document.body.appendChild(m);
 
   // Pinned to the trigger by the edge that faces it, never by a height measured

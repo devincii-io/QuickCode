@@ -39,10 +39,19 @@ test("the outer workspace window never loads the pane's socket", () => {
   assert.ok(!shell.has("reviews.js"), "workspaces.js reaches the review queue");
 });
 
+test("the outer workspace window never loads the configuration view", () => {
+  // home.js reaches trust.js, which refreshes an open configuration page after a
+  // trust decision; that refresh imports config/view.js on demand, since the
+  // shell itself never shows the view and would otherwise load the whole tree.
+  const shell = closure("workspaces.js");
+  const config = [...shell].filter((m) => m.startsWith("config/"));
+  assert.deepEqual(config, [], `workspaces.js reaches ${config.join(", ")}`);
+});
+
 test("an agent pane still loads everything it wires", () => {
   const pane = closure("main.js");
   for (const m of ["ws.js", "reviews.js", "menus.js", "composer/slash.js", "statusbar.js",
-    "connbanner.js", "sessionbar.js", "ui/modal.js", "ui/menu.js"]) {
+    "connbanner.js", "sessionbar.js", "ui/modal.js", "ui/menu.js", "config/view.js"]) {
     assert.ok(pane.has(m), `main.js no longer reaches ${m}`);
   }
 });
