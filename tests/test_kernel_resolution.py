@@ -9,6 +9,7 @@ and a workbench view of "this session's" subagent that was really the live one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from quickcode.core.events import TextDelta, TurnDone
 from quickcode.core.permissions import Mode
 from quickcode.kernel import build_registry
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import ORCHESTRATOR_ID, Resolved
+from quickcode.kernel.composition import DELEGATION_TOOLS, ORCHESTRATOR_ID, Resolved
 from quickcode.kernel.resolve import resolve_composition
 from quickcode.providers.base import ChatMessage, ModelInfo
 from quickcode.server.app import create_app
@@ -28,6 +29,7 @@ from quickcode.server.manager import ConversationManager
 from quickcode.server.projects import ProjectHub
 from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import AgentDef, builtin_defs
+from quickcode.subagents.runner import spawn_subagent
 from quickcode.tools.registry import default_registry
 
 
@@ -179,3 +181,49 @@ async def test_a_session_with_a_corrupt_snapshot_still_resumes(tmp_path):
 
     reopened = make_manager(tmp_path).open(conv.conv_id)
     assert "read" in reopened.resolved.tools
+
+
+# --------------------------------------------------------------------------
+# `?conv=` for a subagent reads the session's snapshot
+# --------------------------------------------------------------------------
+
+NARROW = {
+    "active_preset": "narrow",
+    "presets": {"narrow": {"title": "Narrow",
+                           "agents": {"explore": {"tools": ["read"]}}}},
+}
+
+
+def test_a_subagent_under_conv_is_what_that_session_would_spawn(tmp_path):
+    """The session snapshotted its preset and definitions at open; a spawn in it
+    resolves against those. The workbench view of that session has to say the
+    same thing, and say that it is the session's answer, not today's."""
+    write_settings(tmp_path, NARROW)
+    manager = make_manager(tmp_path)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        conv = manager.get(conv_id)
+
+        # The file moves on after the session opened.
+        write_settings(tmp_path, {**NARROW, "presets": {"narrow": {
+            "title": "Narrow", "agents": {"explore": {"tools": ["read", "grep"]}}}}})
+
+        frozen = client.get(
+            f"/api/kernel/agents/explore/resolved?conv={conv_id}").json()
+        live = client.get("/api/kernel/agents/explore/resolved").json()
+
+        deps = conv.agent.ctx.extra["subagent"]
+        agent_id, _report, _status = asyncio.run(
+            spawn_subagent(deps, agent_type="explore", prompt="look")
+        )
+        child = deps.roster[agent_id]
+
+    own = set(DELEGATION_TOOLS)
+    assert set(frozen["resolved"]["tools"]) - own == {"read"}
+    assert [t["name"] for t in frozen["tools"]] == list(child.registry.tools)
+    assert frozen["prompt"]["text"] == child.history.system_prompt
+    assert frozen["frozen"] is True
+    assert frozen["drift"]["changed"] is True
+
+    assert set(live["resolved"]["tools"]) - own == {"read", "grep"}
+    assert live["frozen"] is False

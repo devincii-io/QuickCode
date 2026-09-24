@@ -29,7 +29,7 @@ import and one call.
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -453,6 +453,66 @@ def _identity(agent_id: str, defn: AgentDef | None, preset: Any) -> dict[str, An
     }
 
 
+@dataclass(frozen=True)
+class _Inputs:
+    """Everything one resolution reads that a session also snapshots."""
+
+    preset: Any
+    defs: dict[str, AgentDef]
+    pool: list[Any]
+    max_depth: int
+    # The orchestrator's composition to resolve a subagent under. None means
+    # "resolve it from ``preset``", which is what a live view does; a session
+    # hands its frozen one.
+    orchestrator: Resolved | None = None
+
+
+def _session_inputs(conv: Any) -> _Inputs | None:
+    """What a spawn in this running session resolves against.
+
+    The session snapshotted its preset, its definitions and its pool at open,
+    and froze its orchestrator. Resolving a subagent "for this session" off the
+    files instead would describe an agent the session cannot spawn.
+    """
+    deps = conv.agent.ctx.extra.get("subagent")
+    if deps is None:
+        return None
+    return _Inputs(
+        preset=deps.preset if deps.preset is not None else preset_module.resolve(
+            Path(conv.manager.cwd), conv.preset_id),
+        defs=deps.definitions(),
+        pool=deps.session_pool(),
+        max_depth=deps.limits.max_depth,
+        orchestrator=conv.resolved,
+    )
+
+
+def _resolve_under(
+    manager: ConversationManager, agent_id: str, parent_id: str, inputs: _Inputs,
+) -> tuple[Resolved, Resolved | None, int]:
+    """``agent_id`` resolved the way the runner resolves it: under a parent, at
+    the spawner's depth. Depth 0 is where the pool carve-out lives, which is
+    what makes "the orchestrator may not edit files, but its children may"
+    expressible at all."""
+    cwd = Path(manager.cwd)
+
+    def resolve(target: str, parent: Resolved | None, depth: int) -> Resolved:
+        return resolve_composition(
+            target, pool=inputs.pool, preset=inputs.preset, defs=inputs.defs,
+            cwd=cwd, parent=parent, depth=depth, max_depth=inputs.max_depth,
+            resolve_model=manager.resolve_role,
+        )
+
+    if agent_id == ORCHESTRATOR_ID:
+        return resolve(agent_id, None, 0), None, 0
+    parent = inputs.orchestrator or resolve(ORCHESTRATOR_ID, None, 0)
+    depth = 0
+    if parent_id and parent_id != ORCHESTRATOR_ID:
+        parent = resolve(parent_id, parent, 0)
+        depth = 1
+    return resolve(agent_id, parent, depth), parent, depth
+
+
 def _resolve_view(
     manager: ConversationManager,
     agent_id: str,
@@ -462,47 +522,32 @@ def _resolve_view(
     parent_id: str = "",
     conv_id: str = "",
     frozen: Resolved | None = None,
+    session: _Inputs | None = None,
 ) -> dict[str, Any]:
     """One agent's whole answer: values, provenance, prompt bytes, schemas.
 
-    ``frozen`` short-circuits resolution with a session's recorded snapshot; the
-    live resolution still runs alongside it so drift can be reported rather than
-    guessed at.
+    ``frozen`` short-circuits resolution with a session's recorded snapshot, and
+    ``session`` resolves a subagent against a session's snapshotted inputs; the
+    live resolution still runs alongside either, so drift can be reported rather
+    than guessed at.
     """
     cwd = Path(manager.cwd)
-    pool = session_pool(cwd, list(manager.registry_factory().tools.values()))
     limits = runtime_limits(cwd)
+    live_inputs = _Inputs(
+        preset=preset, defs=defs,
+        pool=session_pool(cwd, list(manager.registry_factory().tools.values())),
+        max_depth=limits.max_depth,
+    )
     is_orchestrator = agent_id == ORCHESTRATOR_ID
-    defn = defs.get(agent_id)
+    inputs = session or live_inputs
+    defn = inputs.defs.get(agent_id)
     if not is_orchestrator and defn is None:
         raise HTTPException(404, f"no agent {agent_id!r} in this project")
 
-    # A subagent is resolved the way the runner resolves it: under a parent, at
-    # the spawner's depth. Depth 0 is where the pool carve-out lives, which is
-    # what makes "the orchestrator may not edit files, but its children may"
-    # expressible at all.
-    parent: Resolved | None = None
-    depth = 0
-    if not is_orchestrator:
-        parent_id = parent_id or ORCHESTRATOR_ID
-        parent = resolve_composition(
-            ORCHESTRATOR_ID, pool=pool, preset=preset, defs=defs, cwd=cwd,
-            parent=None, depth=0, max_depth=limits.max_depth,
-            resolve_model=manager.resolve_role,
-        )
-        if parent_id != ORCHESTRATOR_ID:
-            parent = resolve_composition(
-                parent_id, pool=pool, preset=preset, defs=defs, cwd=cwd,
-                parent=parent, depth=0, max_depth=limits.max_depth,
-                resolve_model=manager.resolve_role,
-            )
-            depth = 1
-
-    live = resolve_composition(
-        agent_id, pool=pool, preset=preset, defs=defs, cwd=cwd,
-        parent=parent, depth=depth, max_depth=limits.max_depth,
-        resolve_model=manager.resolve_role,
-    )
+    live, parent, depth = _resolve_under(manager, agent_id, parent_id, live_inputs)
+    if session is not None and frozen is None:
+        frozen, parent, depth = _resolve_under(manager, agent_id, parent_id, session)
+    pool = inputs.pool
     resolved = frozen or live
 
     conv = manager.get(conv_id) if conv_id else None
@@ -530,7 +575,7 @@ def _resolve_view(
         and row["name"] not in resolved.tools
     ]
 
-    spawnable = sorted(k for k in defs if k != ORCHESTRATOR_ID)
+    spawnable = sorted(k for k in inputs.defs if k != ORCHESTRATOR_ID)
     spawns = [
         {"id": name, "granted_by": _prov_json(_last_prov(resolved, f"spawns.{name}"))}
         for name in resolved.spawns
@@ -548,12 +593,12 @@ def _resolve_view(
         len(str(entry["schema"]).encode("utf-8")) for entry in schemas
     )
     payload: dict[str, Any] = {
-        **_identity(agent_id, defn, preset),
+        **_identity(agent_id, defn, inputs.preset),
         "frozen": frozen is not None,
         "live": frozen is None,
         "resolved_against": {
-            "preset": getattr(preset, "id", ""),
-            "preset_title": getattr(preset, "title", ""),
+            "preset": getattr(inputs.preset, "id", ""),
+            "preset_title": getattr(inputs.preset, "title", ""),
             "parent": parent.id if parent is not None else "",
             "depth": depth,
             "conv": conv_id,
@@ -719,18 +764,20 @@ def _resolved_payload(
 ) -> dict[str, Any]:
     cwd = Path(manager.cwd)
     frozen: Resolved | None = None
+    session: _Inputs | None = None
     conv = manager.get(conv_id) if conv_id else None
     if conv_id and conv is None:
         raise HTTPException(404, f"no live conversation {conv_id!r}")
     if conv is not None:
         preset_id = preset_id or conv.preset_id
+        session = _session_inputs(conv)
         if agent_id == ORCHESTRATOR_ID:
             frozen = conv.resolved
     preset = preset_module.resolve(cwd, preset_id)
     defs = load_defs(cwd)
     return _resolve_view(
         manager, agent_id, preset=preset, defs=defs, parent_id=parent_id,
-        conv_id=conv_id, frozen=frozen,
+        conv_id=conv_id, frozen=frozen, session=session,
     )
 
 
