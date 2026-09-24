@@ -433,17 +433,31 @@ class Conversation:
                 self.emit_system_prompt()
             self.emit({"type": "user_message", "text": text})
             self._emit_state()
+            failed: Exception | None = None
             try:
                 await self.agent.run_turn(text)
             except Exception as e:  # never kill the worker
                 log.exception("turn failed")
-                self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+                failed = e
             # Everything after the turn is bookkeeping, and none of it is
             # allowed to be the reason a client never hears that the turn
             # ended: ``busy`` is cleared by a state event, so the state event
             # is emitted in a ``finally``. Without it, one raised summarization
             # left the Stop button on screen forever with nothing running.
             try:
+                # The turn's last bus events reach the log through the pump
+                # *task*, which has not run yet; read them here, or the idle
+                # state below overtakes the message and note that close the
+                # turn. A turn that raised mid-stream never flushed its text,
+                # and the next turn's message would begin with it.
+                self.rec.drain()
+                self.rec.flush_assistant(
+                    finish="interrupted" if self.agent.cancelled else "error"
+                )
+                if failed is not None:
+                    self.emit({
+                        "type": "error", "message": f"{type(failed).__name__}: {failed}",
+                    })
                 self.rec.persist_new_messages(self.agent)
                 self._note_jobs_in_flight()
                 # ``runtime.compaction.enabled`` gates the automatic path only:
