@@ -266,3 +266,74 @@ def test_a_childs_usage_never_becomes_the_parents_last_request():
     assert (ledger.last_input_tokens, ledger.last_output_tokens) == (3, 4)
     assert ledger.input_tokens == 13
     assert ledger.cached_tokens == 2
+
+
+async def test_every_request_in_the_tree_is_counted_exactly_once(tmp_path):
+    """A blocking child that spawns a grandchild, a background job, and a
+    resume of the first child: five subagent requests, each counted once,
+    live and on replay alike -- and every spawn closed by one agent_done."""
+    import json
+
+    from quickcode.core.events import ToolCallEnd
+    from tests.test_background_agents import _settle
+
+    def call(cid, name, **args):
+        return [ToolCallEnd(id=cid, name=name, arguments=json.dumps(args)),
+                TurnDone("tool_calls")]
+
+    class TreeProvider(FakeProvider):
+        """The main agent and the subagents each follow their own script."""
+
+        def __init__(self, main, child):
+            super().__init__(main)
+            self.child = list(child)
+
+        async def stream_chat(self, req):
+            system = next((m.content for m in req.messages if m.role == "system"), "")
+            if "QuickCode subagent" not in (system or ""):
+                async for ev in super().stream_chat(req):
+                    yield ev
+                yield Usage(input_tokens=1, output_tokens=1)
+                return
+            for ev in self.child.pop(0):
+                yield ev
+            yield Usage(input_tokens=100, output_tokens=10)
+
+    provider = TreeProvider(
+        [
+            call("m1", "agent", description="d", prompt="p", agent_type="explore"),
+            call("m2", "agent", description="d", prompt="p", agent_type="explore",
+                 background=True),
+            call("m3", "agent_result", agent_id="explore-3", wait_s=5),
+            call("m4", "send_message", agent_id="explore-1", message="again"),
+            [TextDelta("done"), TurnDone("stop")],
+        ],
+        [
+            call("x1", "agent", description="d", prompt="p", agent_type="explore"),
+            [TextDelta("grandchild"), TurnDone("stop")],
+            [TextDelta("explore-1"), TurnDone("stop")],
+            [TextDelta("background"), TurnDone("stop")],
+            [TextDelta("resumed"), TurnDone("stop")],
+        ],
+    )
+    manager = make_manager(tmp_path, provider)
+    conv = manager.open()
+    try:
+        conv.submit("go")
+        await _settle(conv)
+        live = conv.agent.ledger
+        assert (live.subagent_input_tokens, live.input_tokens) == (500, 505)
+        events = conv.store.load_events()
+    finally:
+        await manager.close()
+
+    replayed = Ledger.from_events(events)
+    assert (replayed.subagent_input_tokens, replayed.input_tokens) == (500, 505)
+    brackets = [(e["type"], e["agent_id"]) for e in events
+                if e.get("type") in ("agent_spawned", "agent_done")]
+    assert brackets == [
+        ("agent_spawned", "explore-1"), ("agent_spawned", "explore-2"),
+        ("agent_done", "explore-2"), ("agent_done", "explore-1"),
+        ("agent_spawned", "explore-3"), ("agent_done", "explore-3"),
+        ("agent_done", "explore-1"),
+    ]

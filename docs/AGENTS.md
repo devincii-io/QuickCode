@@ -34,7 +34,7 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 
 - **Fresh context.** The child gets: its definition's system prompt, an environment block (cwd, platform, shell, date, git branch), the delegation `prompt`, and project instructions (except `explore`, which skips them for speed). It does **not** get the parent's history (`prompts/subagent.py::render_subagent_prompt`).
 - **Result = final message only.** Intermediate tool calls stay in the child's pane/transcript, never in the parent's context. The result includes the child's `agent_id`.
-- **Follow-ups without respawning:** `send_message(agent_id, message)` resumes a completed subagent with its context intact. (Teammates, §2, would use the same tool.)
+- **Follow-ups without respawning:** `send_message(to=agent_id | name, message)` resumes a completed subagent with its context intact — same tool teammates use (§2). An agent may message (and `agent_status` / `agent_result` may show it) only what it, or an agent it spawned, started: a read-only child must not be able to hand instructions to a sibling that holds write access.
 - **Report sanitization (security):** a subagent may have read untrusted content. Before its report enters the parent's context, `sanitize_report` (`subagents/runner.py`) defuses anything impersonating harness syntax (`<system-reminder>` and the delegation tags become `‹…›`) and prefixes a `[quickcode: sanitized subagent report]` marker. Never skip this.
 - **Interrupted-child semantics:** a child killed mid-run returns its partial output tagged `[did not finish]` rather than vanishing.
 - **Every ending is an event.** However a child stops — finished, raised, cancelled by the user's interrupt — it emits one `agent_done` (`{agent_id, definition, status, seconds}`) into the session log, the closing bracket of the `agent_spawned` that opened it and always after the last `agent_event` that child produced. `status` is `done | error | cancelled`. Blocking delegations emit it too: the report reaches the *spawner* as a tool result, but the roster and anything replaying the log would otherwise have to infer the ending from the child's last `assistant_message` — and a child emits one of those per round, not per turn, so a busy agent looked finished several times before it was. A spawn refused before it starts (unknown type, exhausted budget, refused composition) emits neither event: no row is opened, so none needs closing. A resumed agent (`send_message`) emits a second one, correctly — it went terminal twice.
@@ -57,7 +57,7 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 
 ### Permission capping
 
-`effective_mode = min(parent_mode, definition_cap)` — a yolo parent does not produce yolo children unless the child's definition explicitly allows it.
+`effective_mode = min(parent_mode, definition_cap)` — a yolo parent does not produce yolo children unless the child's definition explicitly allows it. The parent's mode is read live, on every check the child makes, so cycling the parent down to plan also caps children already running. A child inherits its spawner's `deny` and `ask` rules (never `allow`, the half that widens), so a restriction the user wrote holds at every depth.
 
 **A subagent never prompts.** Its permission callback denies anything its mode
 would ask about, and the model reads why: *"A subagent cannot prompt the user
@@ -65,10 +65,6 @@ for permission. This action needs a mode that allows it without asking, or the
 parent must do it."* Denying affects that call only, not the child's life. So a
 child that must write needs a cap (and a parent mode) that allows the write
 outright — `general` is capped at `auto-edit`, `explore` at `ask`.
-
-**Known gap:** the child's engine is built with no rules (`Rules()`), so the
-project's `allow`/`ask`/`deny` lists do not reach it (docs/PERMISSIONS.md
-§Modes).
 
 ### Agent definitions (`.quickcode/agents/*.md`, user-level `~/.quickcode/agents/`, or `kind: agent` in `plugins/`)
 

@@ -98,13 +98,11 @@ Designed in docs/AGENTS.md §2; none of it is built.
 Not started. Roughly in order of value.
 
 1. Teammate mode (M5), once task claiming and worktree isolation are designed together.
-2. Subagents that inherit the parent's permission rules — today a child's engine is built with
-   empty rules (SECURITY.md lists this as a known gap).
-3. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
-4. "Always allow" that writes one rule per subcommand instead of one for the first token
+2. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
+3. "Always allow" that writes one rule per subcommand instead of one for the first token
    (docs/PERMISSIONS.md §Bash evaluation pipeline).
-5. A `deny` rule on a bare tool name that withholds the tool from the request instead of
+4. A `deny` rule on a bare tool name that withholds the tool from the request instead of
    refusing the call (docs/PERMISSIONS.md §Rules).
-6. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
+5. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
    (docs/PERMISSIONS.md §Plan mode).
-7. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).
+6. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).

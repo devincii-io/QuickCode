@@ -991,7 +991,7 @@ reordering — `rm -fr /`, `rm -r -f /` — does not match either. The documente
 > `rm -r -f /` and `rm -rf ~` return `ask` (the last because the literal-`~`
 > pattern does match, which is the one the docs promise).
 
-**W4 — high, OPEN: subagents run with an empty rule set.**
+**W4 — high, FIXED after 2.7.0 (unreleased): subagents ran with an empty rule set.** Children now inherit the spawner's `deny` and `ask` rules at every depth, read live (`subagents/capping.py`).
 `quickcode/subagents/runner.py` constructs `PermissionEngine(effective_mode,
 Rules(), deps.cwd)`. Every `deny` and `ask` rule from project settings is
 **dropped for child agents**, so the documented "a deny rule from any scope
@@ -1286,7 +1286,7 @@ The three dimensions `SECURITY.md` names — tools, permission mode, model — a
 
 Two gaps, both **open**:
 
-- **The child is constructed with an empty rule set** (`Rules()`), so the
+- **Fixed after 2.7.0 (unreleased); was:** the child was constructed with an empty rule set (`Rules()`), so the
   parent's `deny` and `ask` rules do not propagate. Under an `auto-edit` or
   `yolo` effective mode a child can therefore perform an operation the parent
   was explicitly denied. Not a widening in `SECURITY.md`'s literal wording, but

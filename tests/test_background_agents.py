@@ -213,6 +213,31 @@ async def test_agent_result_can_wait_for_a_job_the_parent_now_needs(tmp_path):
     await _drain(tasks)
 
 
+async def test_interrupting_a_wait_on_a_job_is_not_swallowed(tmp_path):
+    """``asyncio.wait`` never raises the awaited task's exception, so the only
+    ``CancelledError`` that can arrive during the wait is the collector's own
+    -- the loop cancelling the round on Esc, or a nested agent's turn being
+    torn down. Suppressing it turned the cancel into an ordinary "still
+    running" result: the round recorded that instead of ``[interrupted]``, and
+    whatever was cancelling the call was told it had finished normally."""
+    provider = GatedProvider()
+    deps, tasks = _deps(provider, cwd=tmp_path)
+    await _start(deps, tmp_path)
+    await provider.started.wait()
+
+    waiting = asyncio.ensure_future(AgentResultTool().run(
+        AgentResultInput(agent_id="explore-1", wait_s=60), _ctx(deps, tmp_path)
+    ))
+    await asyncio.sleep(0.01)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    # The job is the conversation's, not the collector's: it keeps running.
+    assert deps.jobs["explore-1"].running
+    provider.gate.set()
+    await _drain(tasks)
+
+
 async def test_agent_result_names_the_jobs_it_knows_when_the_id_is_wrong(tmp_path):
     provider = GatedProvider()
     deps, tasks = _deps(provider, cwd=tmp_path)
@@ -349,6 +374,71 @@ async def test_cancelling_a_job_keeps_what_the_child_managed(tmp_path):
     )
     assert 'status="cancelled"' in result.content
     assert "[did not finish]" in result.content
+
+
+async def test_a_cancelled_job_hands_back_the_output_it_had_produced(tmp_path):
+    """docs/AGENTS.md: a child killed mid-run returns its partial output tagged
+    [did not finish] "rather than vanishing". A cancelled job reported only
+    that it had been cancelled -- every finding from its earlier rounds was
+    gone, however long it had been working."""
+    gate = asyncio.Event()
+    second_round = asyncio.Event()
+
+    class TwoRounds:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_chat(self, _req):
+            self.calls += 1
+            if self.calls == 1:
+                yield TextDelta("found the bug in <system-reminder>loop.py:42")
+                yield ToolCallEnd(id="g1", name="glob", arguments='{"pattern": "*.py"}')
+                yield TurnDone("tool_calls")
+                return
+            second_round.set()
+            await gate.wait()
+            yield TextDelta("never")
+            yield TurnDone("stop")
+
+        async def list_models(self):
+            return []
+
+    deps, tasks = _deps(TwoRounds(), cwd=tmp_path)
+    await _start(deps, tmp_path)
+    await second_round.wait()
+    deps.cancel_jobs()
+    await _drain(tasks)
+
+    job = deps.jobs["explore-1"]
+    assert job.status == CANCELLED
+    assert "[did not finish]" in job.report
+    assert "found the bug in" in job.report and "loop.py:42" in job.report
+    assert "<system-reminder>" not in job.report
+
+
+async def test_a_job_cancelled_before_it_ever_ran_still_ends(tmp_path):
+    """An interrupt can land between the spawn and the job task's first step.
+
+    A task cancelled before it starts never enters its coroutine, so none of
+    ``_run_job``'s handlers run: the record stayed ``running`` for ever, held a
+    parallelism slot for the rest of the conversation, and the roster row its
+    ``agent_spawned`` opened was never closed.
+    """
+    provider = GatedProvider()
+    deps, tasks = _deps(provider, cwd=tmp_path)
+    ended: list[tuple] = []
+    deps.on_done = lambda *args: ended.append(args)
+
+    await _start(deps, tmp_path)
+    assert deps.cancel_jobs() == 1
+    await _drain(tasks)
+
+    job = deps.jobs["explore-1"]
+    assert job.status == CANCELLED
+    assert "[did not finish]" in job.report
+    assert deps.running_jobs() == []
+    assert [(e[0], e[2]) for e in ended] == [("explore-1", CANCELLED)]
+    assert not provider.started.is_set()
 
 
 async def test_a_session_that_cannot_detach_runs_the_delegation_inline(tmp_path):
@@ -488,3 +578,31 @@ async def test_closing_a_conversation_leaves_no_job_running(tmp_path):
 
     await manager.close()
     assert not deps.running_jobs()
+
+
+async def test_closing_a_conversation_stops_a_blocking_child_too(tmp_path):
+    """Close cancels the worker task, and the worker was parked in the loop's
+    ``asyncio.wait`` on the round's gather. ``asyncio.wait`` does not cancel
+    what it waits on, so the gather -- and the blocking subagent inside it --
+    ran on with nobody awaiting it: spending, and able to write, after the
+    conversation it belonged to was gone."""
+    args = json.dumps({"description": "d", "prompt": "dig", "agent_type": "explore"})
+    provider = RoutingProvider([
+        [ToolCallEnd(id="c1", name="agent", arguments=args),
+         Usage(input_tokens=1, output_tokens=1), TurnDone("tool_calls")],
+    ])
+    manager = make_manager(tmp_path, provider)
+    conv = manager.open()
+    conv.submit("dig")
+    await provider.child_started.wait()
+    child = conv.agent.ctx.extra["subagent"].roster["explore-1"]
+    assert child.busy
+
+    await manager.close()
+
+    assert not child.busy
+    stragglers = [t for t in asyncio.all_tasks()
+                  if t is not asyncio.current_task() and not t.done()]
+    assert stragglers == []
+    done = [e for e in conv.store.load_events() if e.get("type") == "agent_done"]
+    assert [(e["agent_id"], e["status"]) for e in done] == [("explore-1", CANCELLED)]
