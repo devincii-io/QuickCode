@@ -163,7 +163,7 @@ def create_app(
 
     @app.get("/api/health")
     def health(challenge: str = "") -> dict:
-        from quickcode.cli import __version__
+        from quickcode import __version__
 
         out: dict[str, Any] = {"app": "quickcode", "version": __version__}
         # Unauthenticated like the rest of this route, and safe to be: the
@@ -176,7 +176,7 @@ def create_app(
     # ---- per-project payload builders (shared by both route shapes) ----
 
     def _bootstrap(manager: ConversationManager) -> dict:
-        from quickcode.cli import __version__
+        from quickcode import __version__
         from quickcode.config import THEME_PRESETS
 
         cfg = manager.config

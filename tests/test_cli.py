@@ -52,3 +52,23 @@ def test_two_non_directory_positionals_are_rejected():
     with pytest.raises(SystemExit) as exc:
         resolve(["hello", "world"])
     assert exc.value.code == 2
+
+
+def test_the_cli_and_the_server_report_the_packages_one_version(tmp_path, monkeypatch, capsys):
+    """``quickcode.__version__`` is the only source: the CLI used to resolve its
+    own copy at import, with a different fallback for a source checkout."""
+    import importlib.metadata
+
+    from quickcode.cli import main
+    from tests.test_server import FakeProvider, make_client, make_manager
+
+    def not_installed(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", not_installed)
+
+    main(["--version"])
+    assert capsys.readouterr().out.strip() == "quickcode 0.0.0-dev"
+    with make_client(make_manager(tmp_path, FakeProvider([]))) as client:
+        assert client.get("/api/health").json()["version"] == "0.0.0-dev"
+        assert client.get("/api/bootstrap").json()["version"] == "0.0.0-dev"
