@@ -202,10 +202,9 @@ const NOTE_SESSION =
   "chat to use these tools.";
 
 const NOTE_REVOKE =
-  "Revoking stops QuickCode from starting these again — on the next open, and " +
-  "for anything that would start one after that. A server process that is " +
-  "already running keeps running until this project is closed; a command tool " +
-  "stops being offered to the agent in new chats.";
+  "Revoking takes effect now: this project's MCP servers are stopped and are " +
+  "not started again, and its command tools refuse to run — in the chat that " +
+  "is open as well as in new ones.";
 
 function serverWord(n) { return n === 1 ? "server" : "servers"; }
 function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }

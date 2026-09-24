@@ -116,7 +116,8 @@ class CommandTool(Tool[BaseModel]):
         values = input.model_dump()
         root = Path(ctx.cwd).resolve()
 
-        refusal = _check_paths(plugin, values, root) or _check_options(plugin, values)
+        refusal = (_check_trust(plugin, root) or _check_paths(plugin, values, root)
+                   or _check_options(plugin, values))
         if refusal:
             return ToolResult(content=refusal, is_error=True)
 
@@ -287,6 +288,27 @@ def _check_paths(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> 
                     f"project root {root}. Command tools are confined to the "
                     "project.")
     return ""
+
+
+def _check_trust(plugin: AuthoredPlugin, root: Path) -> str:
+    """"" unless this is a project's tool and the project is no longer trusted.
+
+    Discovery already dropped untrusted tools, but a conversation holds the
+    tools it was opened with. Asking again here is what makes a revocation --
+    or an edit to the project's gated config -- stop the program now rather
+    than at the next conversation.
+    """
+    if plugin.scope != "project":
+        return ""
+    project = Path(plugin.path).parents[2] if plugin.path else root
+    from quickcode.security import trust
+
+    if trust.resolve_trust(project):
+        return ""
+    return (f"Error: {plugin.name} is a command tool from this project, and the "
+            "project is not trusted any more (trust was revoked, or its "
+            "configuration changed since it was approved). It will not run until "
+            "the project is trusted again.")
 
 
 def _check_options(plugin: AuthoredPlugin, values: dict[str, Any]) -> str:

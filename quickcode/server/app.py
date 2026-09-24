@@ -972,9 +972,9 @@ def create_app(
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
 
-    def _revoke_trust(pid: str) -> dict:
+    async def _revoke_trust(pid: str) -> dict:
         try:
-            return _with_tool_detail(pid, hub.revoke_trust(pid))
+            return _with_tool_detail(pid, await hub.revoke_trust(pid))
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
 
@@ -987,8 +987,8 @@ def create_app(
         return await _grant_trust(hub.default_id)
 
     @app.delete("/api/trust")
-    def revoke_trust() -> dict:
-        return _revoke_trust(hub.default_id)
+    async def revoke_trust() -> dict:
+        return await _revoke_trust(hub.default_id)
 
     @app.get("/api/projects/{pid}/trust")
     def project_trust_status(pid: str) -> dict:
@@ -999,8 +999,8 @@ def create_app(
         return await _grant_trust(pid)
 
     @app.delete("/api/projects/{pid}/trust")
-    def project_revoke_trust(pid: str) -> dict:
-        return _revoke_trust(pid)
+    async def project_revoke_trust(pid: str) -> dict:
+        return await _revoke_trust(pid)
 
     # ---- project-scoped routes ----
 

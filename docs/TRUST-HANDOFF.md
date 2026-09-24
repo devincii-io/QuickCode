@@ -61,7 +61,8 @@ includes the connected servers.
 
 ### `DELETE .../trust` response
 
-Same shape as `GET`, plus `"revoked": true|false` (whether a grant existed).
+Same shape as `GET`, plus `"revoked": true|false` (whether a grant existed)
+and `"stopped": [...]` — the project's MCP servers the revocation stopped.
 
 ## What the UI must build
 
@@ -82,9 +83,9 @@ Same shape as `GET`, plus `"revoked": true|false` (whether a grant existed).
    restarted — tell the user that if a session is live.
 
 4. **Revoke action** (Settings → project, or the same card). `DELETE .../trust`.
-   Note in the copy: revocation stops *future* starts; MCP servers already
-   running in an open session keep running until the project/session is torn
-   down.
+   Note in the copy: revocation takes effect now. The project's MCP servers
+   are stopped and leave new chats' tool lists; a chat already open keeps the
+   tool names, but calls to them fail, and its command tools refuse to run.
 
 5. **Re-prompt on change.** If `reason` indicates the config changed since it
    was trusted (`trusted:false` while a prior grant existed), the banner should
@@ -100,6 +101,7 @@ Same shape as `GET`, plus `"revoked": true|false` (whether a grant existed).
 - **User-scope `~/.quickcode/settings.json` servers are never gated.** They are
   the user's own files; there is no attacker to defend against, and prompting
   for them trains the reflex that makes the project prompt worthless.
-- **Revoke governs future connects.** A running MCP process is owned by the
-  ProjectHub and is not killed mid-session by revocation; it ends on
-  project/session teardown.
+- **Revoke takes effect immediately.** "Revoke" is pressed by someone who has
+  just decided they do not want this project's code running, so the ProjectHub
+  stops the project's MCP processes (never the user's own), and a command tool
+  checks trust on every call rather than only when a session opens.
