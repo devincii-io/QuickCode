@@ -363,7 +363,16 @@ as an allow rule is the supported way to get there.
   that deny is all there is), and an allow on `find` or `xargs` does not
   approve the program they run — `bash(find **)` plus `bash(rm **)` does.
   The wrappers themselves are still not stripped for the allow side, so they
-  prompt unless the full string matches a rule.
+  prompt unless the full string matches a rule. The same goes for commands the
+  first split does not cut out: a subshell `(rm …)`, a `case` arm, a `coproc`,
+  and a function body (`f() { rm …; }`, `function f { rm …; }`).
+- **Deny and ask rules see the words as the shell reads them**, too:
+  `bash(rm -rf build)` holds for `rm -rf 'build'` and `r''m -rf build`. A
+  command word only the shell can finish — `$CMD`, `rm${IFS}-rf`,
+  `$(echo rm)`, `/bin/r?` — may be any command, the denied ones included, so
+  when a `bash` deny rule exists it asks (denies in `dontask`) even in yolo.
+  Deny rules on commands are still name-based: a copy or link of the binary
+  under another name is a different command to them.
 - **Builtins that run or write something are not read-only.** `rg --pre` and
   `rg --hostname-bin` run a program, `tree -o` / `tree -R` and `file -C` write
   files; each forfeits the auto-allow (and is denied in plan mode).

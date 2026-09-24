@@ -21,6 +21,7 @@ from pathlib import Path
 
 from quickcode.security import breakers, commands, shellwords, sweep
 from quickcode.security.protected import (
+    UNRESOLVABLE,
     Boundary,
     glob_may_name_protected,
     is_protected_name,
@@ -491,17 +492,27 @@ class PermissionEngine:
         # which is how the built-in "Survey" posture stopped holding. Rules that
         # *restrict* (deny, ask) are matched against this form too.
         by_name = " ".join([first, *tokens[idx + 1 :]]) if idx < len(tokens) else stripped
+        # And every word as the shell reads it, so a rule on `rm -rf build`
+        # holds for `rm -rf 'build'` too.
+        read = lexed[0] if lexed else []
+        while read and (read[0] in WRAPPERS or _ENV_ASSIGNMENT.fullmatch(read[0])):
+            read = read[1:]
+        as_read = " ".join([first, *read[1:]]) if read else by_name
+        restrictive = (sub, stripped, by_name, as_read)
 
         # 1. Deny rules first (against the substitution-free subcommand), for
         #    the same reason as in ``evaluate``: a protected path must not turn
         #    a deny into a prompt.
         for r in self.rules.deny:
-            if (
-                _rule_matches(r, "bash", sub)
-                or _rule_matches(r, "bash", stripped)
-                or _rule_matches(r, "bash", by_name)
-            ):
+            if any(_rule_matches(r, "bash", form) for form in restrictive):
                 return Decision.deny
+        # A command word only the shell can finish -- `$CMD`, `rm${IFS}-rf`,
+        # `$(echo rm)`, `/bin/r?` -- may be any command, the denied ones
+        # included. Where a bash deny rule exists it cannot be ruled out.
+        if (UNRESOLVABLE.search(spelled) or shellwords.has_glob(spelled)) and any(
+            _rule_matches(r, "bash", "") or r.startswith("bash(") for r in self.rules.deny
+        ):
+            return Decision.deny if self.mode is Mode.dontask else Decision.ask
 
         # Builtin read-only commands auto-allow -- only when there is no
         # substitution smuggling and no rewritten environment.
@@ -560,7 +571,7 @@ class PermissionEngine:
             return Decision.allow
 
         for r in self.rules.ask:
-            if _rule_matches(r, "bash", sub) or _rule_matches(r, "bash", by_name):
+            if any(_rule_matches(r, "bash", form) for form in restrictive):
                 return Decision.ask
         # Allow rules never prefix-match a compound/substitution line, and the
         # env-stripped form is not offered to them either: approving

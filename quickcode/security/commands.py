@@ -39,6 +39,9 @@ from quickcode.security.shellwords import segments, substitutions
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "fish"})
 _SHELL_OPTS_WITH_ARG = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
 _KEYWORDS = frozenset({"if", "then", "elif", "else", "do", "while", "until", "!", "{"})
+# Keywords followed by a name before the command they run: `coproc NAME cmd`,
+# `function NAME { cmd; }`. What follows a `{`, if there is one, is the body.
+_NAMING_KEYWORDS = frozenset({"coproc", "function"})
 
 
 @dataclass(frozen=True)
@@ -236,10 +239,22 @@ def _cmd(args: list[str]) -> list[str]:
 
 
 def inner_lines(line: str) -> list[str]:
-    """Every command line ``line`` runs besides its own simple commands."""
+    """Every command line ``line`` runs besides its own simple commands.
+
+    Where the line has parentheses or backticks, every simple command the
+    quote-aware lexer finds is one too: the engine's first split does not cut
+    at `(` or `)`, so `(rm -rf x)` and `case y in y) rm -rf x;; esac` would
+    otherwise reach the rules only as one string that starts with something
+    else.
+    """
     out = substitutions(line)
-    for words in segments(line):
+    lexed = segments(line)
+    for words in lexed:
         out += analyze(words).inner
+    if any(c in line for c in "()`"):
+        # Re-lexing a joined segment gives the same text back, which ends the
+        # recursion one level down instead of at the nesting limit.
+        out += [joined for words in lexed if (joined := shlex.join(words)) != line.strip()]
     return [s for s in out if s.strip()]
 
 
@@ -254,6 +269,14 @@ def analyze(words: list[str], *, base: Path | None = None) -> Analysis:
     result = Analysis()
     if name in _KEYWORDS:
         result.inner = [shlex.join(args)] if args else []
+    elif name in _NAMING_KEYWORDS:
+        # `coproc cmd` names nothing; `coproc NAME { ... }` and
+        # `function NAME { ... }` do, and the body follows the brace.
+        if "{" in args:
+            body = args[args.index("{") + 1:]
+        else:
+            body = args if name == "coproc" else args[1:]
+        result.inner = [shlex.join(body)] if body else []
     elif name in _SHELLS:
         result.inner = _shell_string(args)
     elif name == "eval":

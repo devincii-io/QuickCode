@@ -37,6 +37,8 @@ WRAPPED_RM = [
     "bash -c 'rm -rf build'", "sh -lc \"rm -rf build\"", "bash -o pipefail -c 'rm -rf build'",
     "echo $(rm -rf build)", 'echo "$(rm -rf build)"', "echo `rm -rf build`",
     "cat <(rm -rf build)", "if true; then rm -rf build; fi", "{ rm -rf build; }",
+    "(rm -rf build)", "case x in x) rm -rf build;; esac", "coproc rm -rf build",
+    "function f { rm -rf build; }; f", "f() { rm -rf build; }; f",
     "watch -n 1 rm -rf build", "busybox rm -rf build", "stdbuf -oL rm -rf build",
     "cmd /c rm -rf build", "powershell -NoProfile -Command rm -rf build",
     f"powershell -EncodedCommand {_encoded('rm -rf build')}",
@@ -66,6 +68,29 @@ def test_a_deny_rule_sees_the_command_a_wrapper_runs(command, tmp_path):
 def test_an_allow_rule_does_not_cover_the_command_it_runs(allowed, command, tmp_path):
     e = engine(root=tmp_path, allow=[allowed])
     assert e.evaluate("bash", command) == Decision.ask
+
+
+@pytest.mark.parametrize("command", ["rm -rf 'build'", 'rm -rf "build"', "rm -rf buil''d"])
+def test_an_exact_deny_rule_holds_however_the_arguments_are_quoted(command, tmp_path):
+    e = engine(Mode.yolo, root=tmp_path, deny=["bash(rm -rf build)"])
+    assert e.evaluate("bash", command) == Decision.deny
+
+
+@pytest.mark.parametrize("command", [
+    "rm${IFS}-rf${IFS}build", "a=rm; $a -rf build", "$(echo rm) -rf build",
+    "/bin/r? -rf build", "`echo rm` -rf build",
+])
+def test_a_command_word_only_the_shell_can_finish_asks_where_a_deny_rule_exists(
+    command, tmp_path,
+):
+    """`$a` may be `rm`; with a deny rule on `rm`, that cannot be ruled out."""
+    e = engine(Mode.yolo, root=tmp_path, deny=["bash(rm **)"])
+    assert e.evaluate("bash", command) == Decision.ask
+    assert engine(Mode.dontask, root=tmp_path, deny=["bash(rm **)"]).evaluate(
+        "bash", command
+    ) == Decision.deny
+    # With no bash deny rule there is nothing to rule out, and yolo is yolo.
+    assert engine(Mode.yolo, root=tmp_path).evaluate("bash", command) == Decision.allow
 
 
 def test_allowing_both_commands_allows_the_pair(tmp_path):
