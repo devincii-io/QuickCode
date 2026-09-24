@@ -221,6 +221,26 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
     )
 
 
+async def _first_of(running: asyncio.Future, interrupted: asyncio.Task) -> set:
+    """``asyncio.wait`` for whichever finishes first, owning both on the way out.
+
+    ``asyncio.wait`` never cancels what it waits on. When the task running this
+    loop is itself cancelled -- the conversation closing, or a parent cancelling
+    the round a subagent runs in -- the tools in ``running``, and any subagent
+    among them, ran on with nobody left to await them.
+    """
+    try:
+        done, _ = await asyncio.wait(
+            {running, interrupted}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        running.cancel()
+        interrupted.cancel()
+        await asyncio.gather(running, interrupted, return_exceptions=True)
+        raise
+    return done
+
+
 async def _execute_tools(
     agent: AgentInstance, calls: list[AssembledToolCall]
 ) -> list[tuple[AssembledToolCall, str, bool]]:
@@ -266,9 +286,7 @@ async def _execute_tools(
         if readonly and not agent.cancelled:
             running = asyncio.gather(*(run_one(c) for c in readonly))
             interrupted = asyncio.create_task(agent._cancel.wait())
-            done, _ = await asyncio.wait(
-                {running, interrupted}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done = await _first_of(running, interrupted)
             if interrupted in done and agent.cancelled:
                 running.cancel()
                 await asyncio.gather(running, return_exceptions=True)
@@ -298,9 +316,7 @@ async def _execute_tools(
             # tool kills its child on the way out.
             running = asyncio.ensure_future(run_one(c))
             interrupted = asyncio.create_task(agent._cancel.wait())
-            done, _ = await asyncio.wait(
-                {running, interrupted}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done = await _first_of(running, interrupted)
             if interrupted in done and agent.cancelled:
                 running.cancel()
                 await asyncio.gather(running, return_exceptions=True)

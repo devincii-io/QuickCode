@@ -538,3 +538,31 @@ async def test_closing_a_conversation_leaves_no_job_running(tmp_path):
 
     await manager.close()
     assert not deps.running_jobs()
+
+
+async def test_closing_a_conversation_stops_a_blocking_child_too(tmp_path):
+    """Close cancels the worker task, and the worker was parked in the loop's
+    ``asyncio.wait`` on the round's gather. ``asyncio.wait`` does not cancel
+    what it waits on, so the gather -- and the blocking subagent inside it --
+    ran on with nobody awaiting it: spending, and able to write, after the
+    conversation it belonged to was gone."""
+    args = json.dumps({"description": "d", "prompt": "dig", "agent_type": "explore"})
+    provider = RoutingProvider([
+        [ToolCallEnd(id="c1", name="agent", arguments=args),
+         Usage(input_tokens=1, output_tokens=1), TurnDone("tool_calls")],
+    ])
+    manager = make_manager(tmp_path, provider)
+    conv = manager.open()
+    conv.submit("dig")
+    await provider.child_started.wait()
+    child = conv.agent.ctx.extra["subagent"].roster["explore-1"]
+    assert child.busy
+
+    await manager.close()
+
+    assert not child.busy
+    stragglers = [t for t in asyncio.all_tasks()
+                  if t is not asyncio.current_task() and not t.done()]
+    assert stragglers == []
+    done = [e for e in conv.store.load_events() if e.get("type") == "agent_done"]
+    assert [(e["agent_id"], e["status"]) for e in done] == [("explore-1", CANCELLED)]
