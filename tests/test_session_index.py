@@ -168,7 +168,7 @@ def test_an_unwritable_index_still_lists(tmp_path, monkeypatch):
     def refuse(*a, **k):
         raise PermissionError("read-only project")
 
-    monkeypatch.setattr(index_module.tempfile, "mkstemp", refuse)
+    monkeypatch.setattr(index_module, "atomic_write_text", refuse)
     assert _rows(tmp_path) == {"a": ("one", "m", 1)}
 
 

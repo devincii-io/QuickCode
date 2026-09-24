@@ -17,14 +17,13 @@ recomputed from scratch otherwise.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from quickcode.fsutil import atomic_write_text
 from quickcode.session.records import parse
 from quickcode.session.summary import Summary
 
@@ -173,14 +172,8 @@ class SessionIndex:
             "sessions": {k: e.to_json() for k, e in sorted(self._entries.items())},
         }
         try:
-            fd, tmp = tempfile.mkstemp(prefix=".index-", suffix=".tmp", dir=self.sessions_dir)
+            atomic_write_text(self.path, json.dumps(body, ensure_ascii=False,
+                                                    separators=(",", ":")))
         except OSError:
             return
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(body, f, ensure_ascii=False, separators=(",", ":"))
-            os.replace(tmp, self.path)
-            self._dirty = False
-        except OSError:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
+        self._dirty = False
