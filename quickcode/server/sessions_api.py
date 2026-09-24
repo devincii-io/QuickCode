@@ -153,7 +153,7 @@ async def rename_session(
     archiving are refused. Those two move or unlink the log out from under
     its own writer; this appends one ``meta`` record to it, which is what
     every other write to a session log already is — the model change at
-    manager.py's ``append_meta(model=…)`` does it mid-conversation too. So
+    ``Conversation.set_model``'s ``append_meta(model=…)`` does it mid-conversation too. So
     the answer is 200 and the new name is in effect immediately, for the
     list and for the session that is open.
 

@@ -108,6 +108,7 @@ async def set_preset(manager: ConversationManager, request: Request) -> dict:
     preset_id = body.get("preset") if isinstance(body, dict) else None
     if not isinstance(preset_id, str) or not preset_id.strip():
         raise HTTPException(400, "body must be {'preset': <id>}")
+    preset_id = preset_id.strip()
     found = preset_module.load_presets(manager.cwd)
     if preset_id not in found:
         raise HTTPException(404, f"no preset {preset_id!r}")

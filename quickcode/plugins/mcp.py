@@ -410,15 +410,15 @@ async def _spawn_all(servers: list[MCPServer]) -> tuple[list[MCPServer], list[To
     return started, tools
 
 
-async def connect_servers(cwd, *, store=None) -> tuple[list[MCPServer], list[Tool]]:
-    """Spawn configured MCP servers, honouring the project trust gate.
+def configured_servers(cwd, *, store=None) -> tuple[list[MCPServer], list[str]]:
+    """The servers the trust gate lets this project start, not yet started,
+    and the names of the project-scope servers it held back.
 
     User-scope servers always start. Project-scope servers start **only if the
     project is trusted** (:mod:`quickcode.security.trust`); until then they are
-    inert and are reported — never spawned — so that opening an untrusted
+    inert and are reported -- never spawned -- so that opening an untrusted
     repository can never be code execution. A trusted project's server shadows
-    a user server of the same name, as it does in the display view. A failing
-    server logs and is skipped.
+    a user server of the same name, as it does in the display view.
 
     ``store`` is injectable so tests can point the gate at a temp trust file.
     """
@@ -428,16 +428,24 @@ async def connect_servers(cwd, *, store=None) -> tuple[list[MCPServer], list[Too
 
     project = project_server_configs(cwd)
     trusted = bool(project) and store.is_trusted(cwd)
-    if project and not trusted:
-        log.warning(
-            "project %s is not trusted; %d MCP server(s) left inert: %s",
-            cwd, len(project), ", ".join(sorted(project)),
-        )
+    held = [] if trusted else sorted(project)
     pending = [_server(name, spec, "user", cwd, None)
                for name, spec in user_server_configs().items()
                if not (trusted and name in project)]
     if trusted:
         pending += _project_servers(cwd, project, store)
+    return pending, held
+
+
+async def connect_servers(cwd, *, store=None) -> tuple[list[MCPServer], list[Tool]]:
+    """Spawn the servers :func:`configured_servers` lets this project start.
+    A failing server logs and is skipped."""
+    pending, held = configured_servers(cwd, store=store)
+    if held:
+        log.warning(
+            "project %s is not trusted; %d MCP server(s) left inert: %s",
+            cwd, len(held), ", ".join(held),
+        )
     return await _spawn_all(pending)
 
 

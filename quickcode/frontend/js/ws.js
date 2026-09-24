@@ -31,7 +31,7 @@ let generation = 0;
 let retryTimer = null;
 
 // Close codes the server uses to say "no", as opposed to "not right now".
-// `_attach` (server/app.py) accepts the socket and *then* closes 4404 when the
+// `_attach` (server/ws.py) accepts the socket and *then* closes 4404 when the
 // conversation does not exist, so a naive retry loop reconnects twice a second
 // forever against an answer that will never change. These stop the loop and
 // hand the user something to do instead.
@@ -46,7 +46,7 @@ const health = {
   lastFrame: 0,     // performance.now() of the last frame of any kind
 };
 
-// The server sends a `heartbeat` frame every 15 s of quiet (server/app.py
+// The server sends a `heartbeat` frame every 15 s of quiet (server/ws.py
 // HEARTBEAT_S). Missing several in a row means the socket is a zombie: after a
 // sleep/wake it can sit in OPEN with nothing behind it, where `send` succeeds
 // into the void and no frame ever arrives to prove otherwise. Closing it turns

@@ -33,14 +33,11 @@ from quickcode.core.profiles import PermissionProfile
 from quickcode.core.tasks import TaskBoard
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import MODE_PRIVILEGE, Resolved, narrower_mode
-from quickcode.kernel.orchestrator import resolve_orchestrator
-from quickcode.kernel.resolve import runtime_limits
 from quickcode.providers.base import ProviderError
 from quickcode.server.reviews import PendingReview, ReviewDesk
 from quickcode.session import assemble
 from quickcode.session.recorder import TranscriptRecorder
 from quickcode.session.store import SessionStore
-from quickcode.subagents.definitions import load_defs
 from quickcode.subagents.runner import close_worktrees
 
 if TYPE_CHECKING:
@@ -752,13 +749,10 @@ class Conversation:
         if preset.id == self.preset_id:
             raise SwitchRefused(f"this session already runs “{preset.title}”")
 
+        # Resolved and applied by the steps ``open()`` builds a session with.
         pool = manager.session_pool()
-        defs = load_defs(manager.cwd)
-        resolved = resolve_orchestrator(
-            pool=pool, preset=preset, defs=defs, cwd=manager.cwd,
-            resolve_model=manager.resolve_role,
-        )
-        limits = runtime_limits(settings=resolved.settings)
+        composed = assemble.compose(manager.cwd, manager.config.profile, pool, preset)
+        resolved = composed.resolved
         if resolved.errors():
             raise SwitchRefused(resolved.refusal())
 
@@ -766,36 +760,9 @@ class Conversation:
         previous_id = self.preset_id
         self.resolved = resolved
         self.preset_id = preset.id
-
-        # The tool list the model is about to be told about, built the same way
-        # ``open()`` builds it, from one computation.
-        registry = assemble.session_registry(pool, resolved)
-        self.agent.registry = registry
-        self.agent.permissions.specs = registry.permission_specs()
-        self.agent.limits = limits
-
-        # The ceiling is part of the composition, so a switch can lower it under
-        # a session already above it. Clamp rather than leave a mode the new
-        # composition forbids.
-        if MODE_PRIVILEGE[self.agent.mode] > MODE_PRIVILEGE[resolved.ceiling]:
-            self.agent.set_mode(resolved.ceiling)
-            self.emit({"type": "mode_changed", "mode": resolved.ceiling.value})
-
-        self.agent.history.set_system_prompt(assemble.system_prompt(
-            manager.env, resolved, model=self.agent.model,
-            provider=manager.provider_name, plan=(self.agent.mode == Mode.plan),
-        ))
-
-        # Everything a later spawn resolves against moves with the session: the
-        # pool, the parent composition, the definitions snapshot and the preset.
-        deps = self.agent.ctx.extra.get("subagent")
-        if deps is not None:
-            deps.pool = pool
-            deps.tool_pool = pool
-            deps.parent = resolved
-            deps.defs = defs
-            deps.preset = preset
-            deps.limits = limits
+        if assemble.rebuild_session(self.agent, composed, pool=pool, env=manager.env,
+                                    provider_name=manager.provider_name):
+            self.emit({"type": "mode_changed", "mode": self.agent.mode.value})
 
         self.store.append_meta(
             preset=preset.id, composition=resolved.to_json(),

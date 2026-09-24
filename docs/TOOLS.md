@@ -57,7 +57,7 @@ without the server sniffing for a `task_` name prefix.
 - Encoding is detected, not assumed: a BOM (UTF-8/16/32) wins, then strict UTF-8, then cp1252, then Latin-1. A non-UTF-8 file ends with `<file encoding="…"/>`. A NUL byte in the first 8 KB without a BOM means binary, and binary files are refused rather than dumped.
 - Files over 10 MB are streamed: the window is read line by line and the total is not counted.
 - Records `{path, mtime, sha256}` in the session's read-registry — the `edit`/`write` staleness check depends on it.
-- Re-reading a file supersedes the old copy in history (read-dedup, see ARCHITECTURE).
+- A re-read is returned in full, and the earlier copy stays in history as it was: rewriting it would break the prompt cache from that message on (ARCHITECTURE, efficiency checklist).
 
 ## write
 

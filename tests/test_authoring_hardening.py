@@ -12,7 +12,13 @@ import json
 
 import pytest
 
-from quickcode.kernel.authoring import discovery, schema
+from quickcode.kernel.authoring import discovery
+from quickcode.kernel.problems import (
+    BAD_PATTERN,
+    BAD_SLUG,
+    DUPLICATE_KEY,
+    ID_RESERVED,
+)
 from tests.test_authoring import ECHO, echo_tool, run_tool, write
 
 
@@ -36,7 +42,7 @@ def test_a_parameter_named_after_the_input_model_is_refused_by_the_validator(pro
         [*ECHO, f"{{{name}}}"], [{"name": name, "type": "string", "default": "x"}]))
     found = discovery.discover(project)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.BAD_SLUG)
+    problem = next(p for p in found.problems if p.code == BAD_SLUG)
     assert name in problem.message
     assert problem.fix
 
@@ -50,7 +56,7 @@ def test_a_pattern_the_input_model_cannot_enforce_is_reported_not_dropped(projec
         [*ECHO, "{x}"], [{"name": "x", "type": "string", "pattern": pattern}]))
     found = discovery.discover(project)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.BAD_PATTERN)
+    problem = next(p for p in found.problems if p.code == BAD_PATTERN)
     assert "pattern" in problem.message
 
 
@@ -91,7 +97,7 @@ def test_a_key_set_twice_is_refused_naming_both_lines(project, key, text):
     write(project, "twice", text + _ARGV_BODY)
     found = discovery.discover(project)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.DUPLICATE_KEY)
+    problem = next(p for p in found.problems if p.code == DUPLICATE_KEY)
     assert problem.severity == "error"
     assert f"'{key}'" in problem.message
     assert problem.fix
@@ -140,7 +146,7 @@ def test_web_fetch_cannot_be_authored_over_the_builtin(project):
     write(project, "web_fetch", echo_tool(ECHO, []).replace("name: echo-args", "name: web_fetch"))
     found = discovery.discover(project)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.ID_RESERVED)
+    problem = next(p for p in found.problems if p.code == ID_RESERVED)
     assert "built-in tool" in problem.message
 
 

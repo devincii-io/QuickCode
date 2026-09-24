@@ -77,7 +77,7 @@ class Provenance:
 
 @dataclass(frozen=True)
 class Problem:
-    # Stable and machine-readable; see the vocabulary below.
+    # Stable and machine-readable: one of the constants below.
     code: str
     severity: Severity
     message: str
@@ -118,9 +118,14 @@ class Problem:
         )
 
 
-# Resolution-half vocabulary. The authoring half (bad_kind, bad_slug, ...) is
-# declared beside its validator in ``kernel/authoring/schema.py``; the type is
-# shared.
+# -- the vocabulary ----------------------------------------------------------
+#
+# Every ``Problem.code`` QuickCode writes, declared once, here. A code is part
+# of the API (the UI and scripts match on it), so a second definition in the
+# module that raises it is a second place for it to drift from;
+# tests/test_problem_codes.py holds every ``Problem(code=...)`` to a name below.
+
+# Resolution: what an agent actually gets (kernel/resolve.py).
 MODEL_NOT_SELECTABLE = "model_not_selectable"
 MODEL_OUTSIDE_SET = "model_outside_set"
 MODELS_DISJOINT = "models_disjoint"
@@ -129,14 +134,51 @@ SPAWN_WITHHELD_BY_PARENT = "spawn_withheld_by_parent"
 UNKNOWN_AGENT = "unknown_agent"
 PATTERN_MATCHED_NOTHING = "pattern_matched_nothing"
 TOOL_NOT_INSTALLED = "tool_not_installed"
-UNKNOWN_SECTION = "unknown_section"
 CEILING_CAPPED = "ceiling_capped"
+# Also raised by the authoring validator, for an agent file naming another.
 UNKNOWN_AGENT_REF = "unknown_agent_ref"
-BAD_COMPOSITION = "bad_composition"
+
+# Settings layers (kernel/state.py).
 LOCAL_SETTINGS_IGNORED = "local_settings_ignored"
 PROJECT_SETTINGS_IGNORED = "project_settings_ignored"
-ID_RESERVED = "id_reserved"
+
+# The registry (kernel/bootstrap.py, kernel/registry.py).
 BUILTIN_SHADOWED = "builtin_shadowed"
+ID_DUPLICATE = "id_duplicate"
+
+# Authored plugins (kernel/authoring/): the validator, discovery and the store.
+MISSING_KEY = "missing_key"
+BAD_KIND = "bad_kind"
+BAD_SLUG = "bad_slug"
+ID_RESERVED = "id_reserved"
+MISSING_BLOCK = "missing_block"
+BAD_JSON = "bad_json"
+UNKNOWN_PARAM_TYPE = "unknown_param_type"
+UNKNOWN_PLACEHOLDER = "unknown_placeholder"
+LIST_PLACEHOLDER_NOT_ALONE = "list_placeholder_not_alone"
+BOOL_PLACEHOLDER_NOT_ALONE = "bool_placeholder_not_alone"
+BAD_ENUM_CHOICE = "bad_enum_choice"
+TIMEOUT_OUT_OF_RANGE = "timeout_out_of_range"
+PATH_ESCAPES_PROJECT = "path_escapes_project"
+ORDER_CONFLICT = "order_conflict"
+SHELL_NOT_SUPPORTED = "shell_not_supported"
+UNKNOWN_PERMISSION_TARGET = "unknown_permission_target"
+READ_ONLY_UNVERIFIED = "read_only_unverified"
+NEEDS_TRUST = "needs_trust"
+NOT_DUPLICABLE = "not_duplicable"
+SUBAGENT_SECTION_UNSUPPORTED = "subagent_section_unsupported"
+BAD_PATTERN = "bad_pattern"
+DUPLICATE_KEY = "duplicate_key"
+AUTHORED_PROJECT_CONTENT = "authored_project_content"
+
+# Command hooks (hooks/config.py).
+HOOK_INVALID = "hook_invalid"
+HOOK_REFUSED = "hook_refused"
+HOOK_MATCHER_IGNORED = "hook_matcher_ignored"
+
+# Permission profiles (core/profiles.py).
+PROFILE_INVALID = "profile_invalid"
+PROFILE_REFUSED = "profile_refused"
 
 
 def worst(problems: list[Problem]) -> Severity:

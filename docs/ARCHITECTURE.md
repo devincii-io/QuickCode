@@ -82,7 +82,7 @@ quickcode/
     loop.py               # the agentic loop (single turn driver)
     hooks.py              # LoopHook: tool visibility, interception, tighten-only gating
     events.py             # AgentEvent dataclasses (internal protocol)
-    history.py            # messages, read-dedup, cache breakpoints
+    history.py            # messages, cache breakpoints, the request's call/result pairing
     compact.py            # threshold + summarization turn
     context_guard.py      # compaction between rounds; shrink and retry once when refused for length
     context_size.py       # request estimates (ledger + chars/4), cutting tool results to fit
@@ -107,7 +107,7 @@ quickcode/
     orchestrator.py       # resolve_orchestrator: the session's own agent, depth 0
     patterns.py           # a tools:/spawns:/models: entry: literal name or glob
     preset.py             # presets: the composition a session's agents run
-    problems.py           # provenance and problem records
+    problems.py           # provenance, problem records, and every problem code
     authoring/            # .quickcode/plugins/*.md → plugins
       format.py schema.py model.py discovery.py store.py
       argv.py reserved.py templates.py
@@ -139,7 +139,7 @@ quickcode/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
     wire.py               # AgentEvent → wire JSON, LOGGED_TYPES, register_event
-    assemble.py           # build_session: the one way a session is put together, app and -p
+    assemble.py           # build_session / rebuild_session: how a session is put together, opened or switched
   subagents/
     definitions.py runner.py jobs.py artifacts.py
     worktree.py           # git-worktree isolation: a checkout per writer, its work as a branch
@@ -163,6 +163,8 @@ quickcode/
   plugins/
     loader.py             # quickcode.tools / quickcode.providers entry points
     mcp.py                # MCP client + tool adapter
+    mcp_process.py mcp_wire.py  # the server as a process; names and results on the wire
+    mcp_turn.py           # a `-p` run's MCP servers: the app's gate, a bounded start, stopped on exit
   prompts/
     sections.py           # the system prompt, one section per block
     system.py compact.py subagent.py
@@ -195,7 +197,10 @@ session records the composition it started with and keeps it on resume: the
 conversation was already told what tools it had. Switching one mid-session is
 an explicit act (`/composition`), refused while a turn is running, re-renders
 the system prompt, and is logged as `composition_changed` so the trajectory
-shows that the conversation had two different agents in it.
+shows that the conversation had two different agents in it. A switch runs the
+composition steps a session is opened with (`session/assemble.py::compose`,
+then `rebuild_session` on the live agent), so the session it leaves is the one
+a new session on that composition would have been.
 
 ## Async model
 
@@ -456,9 +461,15 @@ pool, parent or definitions.
 
 What still differs is what drives the session, not what it is:
 
-- **Tools in the pool.** The app adds entry-point plugin tools and the
-  project's MCP servers (`server/projects.py`); `-p` starts neither, so its pool
-  is the built-ins plus authored command tools.
+- **MCP servers' lifetime.** Both build the pool with
+  `tools/registry.py::install_registry` — the built-ins, the entry-point plugin
+  tools, the MCP tools — and pick the servers with the same trust gate
+  (`plugins/mcp.py::configured_servers`). The app starts them when a project
+  opens; `-p` starts them for its one turn (`plugins/mcp_turn.py`), side by
+  side, and waits at most 30 s: a server not up by then, or one that failed, is
+  stopped and named on stderr, and the run goes on without its tools, as it
+  does for project servers an untrusted project declares. They are stopped when
+  the run ends, Ctrl+C included. `--no-mcp` skips them.
 - **Prompts and plan review.** The app answers them over the WebSocket; `-p`
   refuses every permission prompt (`docs/PERMISSIONS.md#headless-mode`) and
   records a plan without review. The prompt gains `<headless_mode>`.
@@ -472,7 +483,7 @@ What still differs is what drives the session, not what it is:
 1. **Cache-stable prefix:** request order `tools → system → history`, byte-identical across turns. No timestamps/randomness in the system prompt; dynamic state travels as `<system-reminder>` blocks in user messages.
 2. **Parallel tool calls** honored (gather) and encouraged in the prompt.
 3. **Cheap models for fan-out:** both built-in subagent types (`explore`, `general`) default to the profile's `worker` model role; the orchestrator stays on its own model.
-4. **Diff-based edits**; output caps + pagination hints on every tool; read-dedup (superseded file reads stubbed out of the request).
+4. **Diff-based edits**; output caps + pagination hints on every tool. **No read-dedup**: a file read twice is sent twice. Stubbing the superseded copy out of the request would change a message the cached prefix already covers, so the next request pays a cache write over everything from that message on (1.25× input at Anthropic's prices) where it would have paid a cache read (0.1×). Against the 0.1× per request the removed copy costs, that pays off only after a dozen or more further requests, and it is paid again at every re-read. The history is rewritten only where the cache is lost anyway: a compaction, a new system prompt, the context guard's cuts when a request would not fit.
 5. **Compaction at ~80%** of the model's context window; manual `/compact`. Both drivers check it after every turn — the web worker and `TranscriptRecorder.record_turn`, which is what a headless `-p` run goes through — off the one declared setting (`runtime.compaction`), and the loop checks it before every request inside a turn (§Context guard above), where a refusal for length is also answered by cutting tool results and one retry.
 6. **UI never blocks the loop, loop never blocks the UI** — bounded queues both directions.
 

@@ -47,7 +47,13 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.core.permissions import Mode, Rules
-from quickcode.kernel.problems import Layer, Problem, Provenance
+from quickcode.kernel.problems import (
+    PROFILE_INVALID,
+    PROFILE_REFUSED,
+    Layer,
+    Problem,
+    Provenance,
+)
 from quickcode.kernel.settings_file import read_settings, write_project_settings, write_settings
 from quickcode.kernel.state import project_settings_path, user_settings_path
 from quickcode.security.trust import project_may_state
@@ -56,11 +62,6 @@ log = logging.getLogger("quickcode.core.profiles")
 
 PROFILES_KEY = "profiles"
 ACTIVE_KEY = "active_profile"
-
-# Problem codes, in the vocabulary ``kernel/problems.py`` defines. Declared
-# here rather than there because a code belongs with the thing that raises it.
-PROFILE_INVALID = "profile_invalid"
-PROFILE_REFUSED = "profile_refused"
 
 # The rule grammar ``permissions._rule_matches`` actually implements: a bare
 # tool name, or ``tool(pattern)``. Restated here rather than imported because

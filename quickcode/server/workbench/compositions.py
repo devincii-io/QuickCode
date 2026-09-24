@@ -121,10 +121,11 @@ def switch_conversation(manager: ConversationManager, conv_id: str, body: Any) -
     preset_id = (body or {}).get("preset") if isinstance(body, dict) else None
     if not isinstance(preset_id, str) or not preset_id.strip():
         raise HTTPException(400, "body must be {'preset': <id>}")
+    preset_id = preset_id.strip()
     if preset_id not in preset_module.load_presets(Path(manager.cwd)):
         raise HTTPException(404, f"no composition {preset_id!r}")
     try:
-        return conv.switch_composition(preset_id.strip())
+        return conv.switch_composition(preset_id)
     except SwitchRefused as exc:
         # 409, not 400: the request is valid and would be valid again in a
         # moment. Refusing with the reason is the whole contract -- a switch

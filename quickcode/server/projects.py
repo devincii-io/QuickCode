@@ -38,7 +38,7 @@ from quickcode.session.store import (
     purge_project_data,
 )
 from quickcode.tools.base import Tool
-from quickcode.tools.registry import ToolRegistry, default_registry
+from quickcode.tools.registry import ToolRegistry, install_registry
 
 log = logging.getLogger("quickcode.server")
 
@@ -341,10 +341,7 @@ class ProjectHub:
         self._project_extra[pid] = extra
 
         def registry_factory() -> ToolRegistry:
-            reg = default_registry()
-            for t in extra:
-                reg.tools[t.name] = t
-            return reg
+            return install_registry(extra)
 
         manager = ConversationManager(
             cwd=path,

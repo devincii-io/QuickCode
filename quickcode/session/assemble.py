@@ -11,6 +11,10 @@ subagents no pool, parent or definitions to be resolved against.
 Every step both need is here once. What differs is what each caller wraps the
 result in: the server a ``Conversation`` that fans events out to its windows,
 the CLI a bare recorder around one turn.
+
+Switching a live session onto another composition re-runs the composition
+steps -- ``compose``, then ``rebuild_session`` on the agent it already has --
+so a switched session is put together the way an opened one is.
 """
 
 from __future__ import annotations
@@ -100,6 +104,83 @@ def frozen_composition(store: SessionStore, resuming: bool) -> Resolved | None:
     return Resolved.from_json(store.meta().get("composition"))
 
 
+@dataclass(frozen=True)
+class Composed:
+    """One composition, resolved for a session's own agent.
+
+    What opening a session and switching one both compute, in the same order
+    from the same inputs: the preset, the agent definitions (snapshotted:
+    editing one reaches new sessions), the orchestrator's resolved composition
+    and the runtime limits read off it.
+    """
+
+    preset: Any
+    defs: dict[str, AgentDef]
+    resolved: Resolved
+    limits: RuntimeLimits
+
+
+def compose(cwd: Path, profile: Profile, pool: list[Any], preset: Any, *,
+            frozen: Resolved | None = None) -> Composed:
+    """Resolve ``preset`` for the session's own agent against ``pool``.
+
+    ``frozen`` is a resumed session's recorded composition, used as it is: a
+    resume does not re-resolve (see ``frozen_composition``).
+    """
+    defs = load_defs(cwd)
+    resolved = frozen or resolve_orchestrator(
+        pool=pool, preset=preset, defs=defs, cwd=cwd,
+        resolve_model=lambda spec: resolve_role(profile, spec),
+    )
+    # A resumed session runs on the limits recorded in its own composition, so
+    # editing max_rounds or the compaction threshold reaches the next session
+    # rather than one already in flight.
+    return Composed(preset=preset, defs=defs, resolved=resolved,
+                    limits=runtime_limits(settings=resolved.settings))
+
+
+def bind_composition(deps: SubagentDeps, pool: list[Any], composed: Composed) -> None:
+    """Everything a later spawn resolves against: the pool, the parent
+    composition, the definitions snapshot, the preset and the limits."""
+    deps.pool = pool
+    deps.tool_pool = pool
+    deps.parent = composed.resolved
+    deps.defs = composed.defs
+    deps.preset = composed.preset
+    deps.limits = composed.limits
+
+
+def rebuild_session(agent: AgentInstance, composed: Composed, *, pool: list[Any],
+                    env: Environment, provider_name: str) -> bool:
+    """Move a live session's agent onto ``composed``, as ``build_session``
+    would have built it: the tool registry and the specs the permission engine
+    gates by, the limits, the mode capped by the new ceiling, the prompt
+    rendered from the new section bodies, and the subagent deps.
+
+    The caller refuses a composition with errors first and records the switch
+    after. Returns whether the mode had to come down to the new ceiling.
+    """
+    registry = session_registry(pool, composed.resolved)
+    agent.registry = registry
+    agent.permissions.specs = registry.permission_specs()
+    agent.limits = composed.limits
+    # The ceiling is part of the composition, so a switch can lower it under a
+    # session already above it. Clamp rather than leave a mode the new
+    # composition forbids.
+    capped = narrower_mode(agent.mode, composed.resolved.ceiling)
+    clamped = capped != agent.mode
+    if clamped:
+        agent.set_mode(capped)
+    agent.history.set_system_prompt(system_prompt(
+        env, composed.resolved, model=agent.model, provider=provider_name,
+        plan=(agent.mode == Mode.plan),
+    ))
+    deps = agent.ctx.extra.get("subagent")
+    if deps is not None:
+        bind_composition(deps, pool, composed)
+    return clamped
+
+
 @dataclass
 class Session:
     """Everything one opened session is made of, before anyone drives it."""
@@ -110,15 +191,11 @@ class Session:
     store: SessionStore
     resuming: bool
     board: TaskBoard
-    preset: Any
     # The session pool: everything this install has, minus the plugins that are
     # switched off. Distinct from any one agent's grant -- restricting the
     # orchestrator's tools does not restrict the session.
     pool: list[Any]
-    # Snapshotted once: editing an agent definition reaches new sessions.
-    defs: dict[str, AgentDef]
-    resolved: Resolved
-    limits: RuntimeLimits
+    composed: Composed
     posture: profiles.PermissionProfile | None
     hooks: list
     agent: AgentInstance
@@ -129,6 +206,22 @@ class Session:
     @property
     def conv_id(self) -> str:
         return self.store.conv_id
+
+    @property
+    def preset(self) -> Any:
+        return self.composed.preset
+
+    @property
+    def defs(self) -> dict[str, AgentDef]:
+        return self.composed.defs
+
+    @property
+    def resolved(self) -> Resolved:
+        return self.composed.resolved
+
+    @property
+    def limits(self) -> RuntimeLimits:
+        return self.composed.limits
 
     def wire(
         self,
@@ -163,24 +256,19 @@ class Session:
             on_done=on_done,
             adopt_task=adopt_task,
             owner=self.agent,
-            # The depth-0 carve-out. Children at depth 0 are intersected
-            # against the session POOL, not the orchestrator's GRANT: the
-            # orchestrator's restriction says what it does with its own hands,
-            # not what the session may do. Passing the filtered registry here
-            # is what made "delegate everything" hand every subagent an empty
-            # toolset. Deeper levels keep intersecting against the parent's
-            # grant, which is what ``deps.child()`` passes down.
-            pool=self.pool,
-            tool_pool=self.pool,
-            parent=self.resolved,
-            defs=self.defs,
-            preset=self.preset,
-            limits=self.limits,
             bash_jobs=bash_jobs,
             hooks=self.hooks,
             # Each child runs a context guard on its own model's window.
             context_window=context_window,
         )
+        # The depth-0 carve-out. Children at depth 0 are intersected against
+        # the session POOL, not the orchestrator's GRANT: the orchestrator's
+        # restriction says what it does with its own hands, not what the
+        # session may do. Passing the filtered registry here is what made
+        # "delegate everything" hand every subagent an empty toolset. Deeper
+        # levels keep intersecting against the parent's grant, which is what
+        # ``deps.child()`` passes down.
+        bind_composition(deps, self.pool, self.composed)
         ctx.extra["subagent"] = deps
         return deps
 
@@ -241,15 +329,9 @@ def build_session(
     # the one it started with: the conversation was already told which tools
     # it has, and changing them underneath it is a lie.
     preset = preset_module.resolve(cwd, store.meta().get("preset", "") if resuming else "")
-    defs = load_defs(cwd)
-    # Resolved off disk now; a resumed session runs on the limits recorded in
-    # its own composition, so editing max_rounds or the compaction threshold
-    # reaches the next session rather than one already in flight.
-    resolved = frozen_composition(store, resuming) or resolve_orchestrator(
-        pool=pool, preset=preset, defs=defs, cwd=cwd,
-        resolve_model=lambda spec: resolve_role(profile, spec),
-    )
-    limits = runtime_limits(settings=resolved.settings)
+    composed = compose(cwd, profile, pool, preset,
+                       frozen=frozen_composition(store, resuming))
+    resolved = composed.resolved
 
     start, rules, posture, unarmed_yolo = _starting_posture(
         cwd, config, preset, resolved, explicit=mode, yolo_armed=yolo_armed,
@@ -287,7 +369,7 @@ def build_session(
         permission_cb=permission_cb,
         context_length=info.context_length if info else None,
         hooks=hooks,
-        limits=limits,
+        limits=composed.limits,
     )
     # The user's generation settings, applied as each session opens so a
     # change reaches the next one without a restart. The response budget in
@@ -301,9 +383,8 @@ def build_session(
 
     return Session(
         cwd=cwd, env=env, profile=profile, store=store, resuming=resuming,
-        board=board, preset=preset, pool=pool, defs=defs, resolved=resolved,
-        limits=limits, posture=posture, hooks=hooks, agent=agent,
-        unarmed_yolo=unarmed_yolo,
+        board=board, pool=pool, composed=composed, posture=posture, hooks=hooks,
+        agent=agent, unarmed_yolo=unarmed_yolo,
     )
 
 

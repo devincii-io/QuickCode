@@ -64,8 +64,8 @@ def _install(monkeypatch, provider, built=None):
     if built is not None:
         real = cli._build_agent
 
-        def spy(args):
-            out = real(args)
+        def spy(args, **kw):
+            out = real(args, **kw)
             built["agent"], built["store"] = out[0], out[3]
             # Handed to the provider before the turn starts, so a script can
             # reach back and interrupt the agent mid-stream.

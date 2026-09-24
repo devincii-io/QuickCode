@@ -28,7 +28,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from quickcode.kernel import state as state_store
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import (
+    HOOK_INVALID,
+    HOOK_MATCHER_IGNORED,
+    HOOK_REFUSED,
+    Problem,
+    Provenance,
+)
 from quickcode.kernel.settings_file import read_settings
 from quickcode.security import trust
 
@@ -39,10 +45,6 @@ DEFAULT_TIMEOUT_S = 30.0
 MAX_TIMEOUT_S = 600.0
 
 ID_PREFIX = "hook.cmd."
-
-HOOK_INVALID = "hook_invalid"
-HOOK_REFUSED = "hook_refused"
-HOOK_MATCHER_IGNORED = "hook_matcher_ignored"
 
 Scope = Literal["user", "project"]
 

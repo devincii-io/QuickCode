@@ -93,7 +93,8 @@ editable, but always **viewable** — locked never means hidden).
 - **MCP servers** — Claude-compatible `"mcpServers"` config in
   `.quickcode/settings.json` (project) or `~/.quickcode/settings.json` (user);
   stdio transport, tools appear as `mcp__<server>__<tool>` behind the same
-  permission gate.
+  permission gate. A headless `-p` run starts the same servers for its one
+  turn and stops them on exit (`--no-mcp` to skip them).
 
 **Opening a project does not run it.** A project's own committed files can name
 programs to execute — `mcpServers`, and `kind: tool` plugins — so both stay

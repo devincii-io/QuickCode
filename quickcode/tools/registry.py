@@ -119,6 +119,17 @@ def default_registry(*, include_agent: bool = True) -> ToolRegistry:
     return ToolRegistry(core_tools(include_plan=True, include_agent=include_agent))
 
 
+def install_registry(extra: Iterable[Tool]) -> ToolRegistry:
+    """The tools this install has: the built-ins, then entry-point plugin and
+    MCP tools added by name. What the app builds a project's sessions from and
+    what ``-p`` builds its one session from, so the two pools cannot differ in
+    how they are made -- only in what was started."""
+    registry = default_registry()
+    for tool in extra:
+        registry.tools[tool.name] = tool
+    return registry
+
+
 def build_registry(
     tool_names: list[str] | None,
     *,

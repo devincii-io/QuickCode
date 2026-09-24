@@ -37,33 +37,32 @@ from quickcode.kernel.authoring.model import (
     Param,
 )
 from quickcode.kernel.authoring.reserved import reserved_reason
-from quickcode.kernel.problems import Problem, Provenance
-
-# -- the authoring half of the error vocabulary ----------------------------
-MISSING_KEY = "missing_key"
-BAD_KIND = "bad_kind"
-BAD_SLUG = "bad_slug"
-ID_RESERVED = "id_reserved"
-ID_DUPLICATE = "id_duplicate"
-MISSING_BLOCK = "missing_block"
-BAD_JSON = "bad_json"
-UNKNOWN_PARAM_TYPE = "unknown_param_type"
-UNKNOWN_PLACEHOLDER = "unknown_placeholder"
-LIST_PLACEHOLDER_NOT_ALONE = "list_placeholder_not_alone"
-BOOL_PLACEHOLDER_NOT_ALONE = "bool_placeholder_not_alone"
-BAD_ENUM_CHOICE = "bad_enum_choice"
-TIMEOUT_OUT_OF_RANGE = "timeout_out_of_range"
-PATH_ESCAPES_PROJECT = "path_escapes_project"
-UNKNOWN_AGENT_REF = "unknown_agent_ref"
-ORDER_CONFLICT = "order_conflict"
-SHELL_NOT_SUPPORTED = "shell_not_supported"
-UNKNOWN_PERMISSION_TARGET = "unknown_permission_target"
-READ_ONLY_UNVERIFIED = "read_only_unverified"
-NEEDS_TRUST = "needs_trust"
-NOT_DUPLICABLE = "not_duplicable"
-SUBAGENT_SECTION_UNSUPPORTED = "subagent_section_unsupported"
-BAD_PATTERN = "bad_pattern"
-DUPLICATE_KEY = "duplicate_key"
+from quickcode.kernel.problems import (
+    BAD_ENUM_CHOICE,
+    BAD_JSON,
+    BAD_KIND,
+    BAD_PATTERN,
+    BAD_SLUG,
+    BOOL_PLACEHOLDER_NOT_ALONE,
+    DUPLICATE_KEY,
+    ID_DUPLICATE,
+    ID_RESERVED,
+    LIST_PLACEHOLDER_NOT_ALONE,
+    MISSING_BLOCK,
+    MISSING_KEY,
+    ORDER_CONFLICT,
+    PATH_ESCAPES_PROJECT,
+    READ_ONLY_UNVERIFIED,
+    SHELL_NOT_SUPPORTED,
+    SUBAGENT_SECTION_UNSUPPORTED,
+    TIMEOUT_OUT_OF_RANGE,
+    UNKNOWN_AGENT_REF,
+    UNKNOWN_PARAM_TYPE,
+    UNKNOWN_PERMISSION_TARGET,
+    UNKNOWN_PLACEHOLDER,
+    Problem,
+    Provenance,
+)
 
 KINDS = ("tool", "agent", "prompt")
 # Named so the refusal can say what happened to them rather than "bad kind".
