@@ -51,6 +51,7 @@ from typing import Any
 
 from quickcode import frontmatter
 from quickcode.config import CONFIG_DIR
+from quickcode.fsutil import atomic_write_text
 
 log = logging.getLogger("quickcode.security.trust")
 
@@ -428,9 +429,7 @@ class TrustStore:
     def _save(self, data: dict[str, Any]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            atomic_write_text(self.path, json.dumps(data, indent=2))
         except OSError as e:
             log.warning("could not save trust store: %s", e)
 

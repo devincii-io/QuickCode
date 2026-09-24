@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.context import toon
+from quickcode.fsutil import atomic_write_text
 from quickcode.workspace import ensure_project_dir_for
 
 log = logging.getLogger("quickcode.core.tasks")
@@ -233,11 +234,7 @@ class TaskBoard:
             "counter": self._counter,
             "tasks": [t.to_dict() for t in self.list(include_deleted=True)],
         }
-        # Written beside and swapped in, so a process that dies mid-write
-        # leaves the previous board rather than half of this one.
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
+        atomic_write_text(self.path, json.dumps(data, indent=2))
 
     @classmethod
     def load(cls, path: Path) -> TaskBoard:

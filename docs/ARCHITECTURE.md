@@ -67,6 +67,7 @@ quickcode/
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every subprocess goes through here (no console window on Windows)
+  fsutil.py               # atomic_write_text/bytes: temp file beside the target, renamed over it
   workspace.py            # the project's .quickcode/ directory and its .gitignore
   frontmatter.py          # the one frontmatter parser: plugin loader and trust gate read files the same way
   ui/window.py            # pywebview window, browser fallback

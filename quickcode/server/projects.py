@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.config import CONFIG_DIR, Config, Environment
+from quickcode.fsutil import atomic_write_text
 from quickcode.providers.base import ModelInfo, Provider
 from quickcode.pty import registry as terminal_registry
 from quickcode.server.manager import ConversationManager
@@ -152,9 +153,7 @@ class ProjectRegistry:
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            atomic_write_text(self.path, json.dumps(payload, indent=2))
         except OSError as e:
             log.warning("could not save project registry: %s", e)
 

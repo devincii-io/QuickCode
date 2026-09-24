@@ -60,6 +60,7 @@ from typing import Any
 import httpx
 
 from quickcode.config import CONFIG_DIR
+from quickcode.fsutil import atomic_write_text
 
 log = logging.getLogger("quickcode.update")
 
@@ -500,9 +501,7 @@ def _write_cache(data: dict[str, Any], path: Path | None = None) -> None:
     p = path or CACHE_PATH
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(p)
+        atomic_write_text(p, json.dumps(data, indent=2))
     except OSError as exc:  # a cache that cannot be written costs one request
         log.debug("could not write the update cache: %s", exc)
 
