@@ -43,6 +43,13 @@ const TARGETS = [
 
 let observer = null;
 
+// A view that keeps part of itself out of the document (the transcript, see
+// chat/window.js) says what "everything here" is.
+const copySources = new WeakMap();
+
+/** `fn()` returns the node whose text "Copy everything here" copies for `node`. */
+export function setCopySource(node, fn) { copySources.set(node, fn); }
+
 export async function copyText(text, what = "Copied") {
   const value = String(text ?? "");
   if (!value.trim()) return false;
@@ -158,7 +165,7 @@ function menuItems(target, selection) {
   if (!input && transcript) {
     items.push({
       label: "Copy everything here",
-      run: () => copyText(sourceText(transcript), "Copied"),
+      run: () => copyText(sourceText(copySources.get(transcript)?.() ?? transcript), "Copied"),
     });
   }
   return items;

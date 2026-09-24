@@ -6,11 +6,14 @@ import { midTurn, store, subscribe } from "./store.js";
 import { argSummary, markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
 import { CardRegistry, MAIN } from "./chat/registry.js";
 import { Follower } from "./chat/scroll.js";
+import { REVEAL_PX, TranscriptWindow } from "./chat/window.js";
+import { setCopySource } from "./copy.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;
 let welcome = null;             // the empty-conversation greeting, until the first event
 let follower = null;            // keeps the newest line in view while the reader is there
+let win = null;                 // which blocks are in the document (chat/window.js)
 let streamNode = null;          // live assistant bubble
 let streamMd = null;            // its incremental renderer (markdown.js)
 let streamTail = [];            // its nodes the next update replaces
@@ -32,14 +35,25 @@ let openPerms = new Map();
 export function initChat({ openTrace }) {
   transcript = document.getElementById("transcript");
   onOpenTrace = openTrace;
-  follower = new Follower(transcript);
-  transcript.addEventListener("scroll", () => follower.onScroll(), { passive: true });
+  win = new TranscriptWindow(transcript);
+  follower = new Follower(transcript, { beforeSnap: () => win.trim() });
+  transcript.addEventListener("scroll", () => {
+    follower.onScroll();
+    if (!follower.pinned && transcript.scrollTop < REVEAL_PX) win.revealOlder();
+  }, { passive: true });
+  // "Copy everything here" means the whole conversation, not the stretch of it
+  // that happens to be in the document.
+  setCopySource(transcript, snapshot);
   subscribe(onStoreChange);
   clear();
 }
 
 function onStoreChange(kind, ev) {
   if (kind === "reset") { clear(); return; }
+  // A replayed log is built off-document and attached in one go at its end;
+  // a socket that died mid-replay ends it too (ws.js drops `replaying`).
+  if (kind === "replay_start") { win.defer(); return; }
+  if (win.deferred && !store.replaying) win.settle();
   if (kind === "status") {
     if (!TERMINAL_STATUS.has(ev.state)) return;
     sweepUnresolved();
@@ -55,6 +69,7 @@ function onStoreChange(kind, ev) {
     return;
   }
   if (kind === "replay_done") {
+    win.settle();
     // A log replays without the live status events, so an interrupted turn
     // would spin its cut-off tool calls again on every reconnect. `busy` is
     // the state event the server sends before the replay, and it is what says
@@ -139,6 +154,7 @@ function clear() {
   follower.reset();
   transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
   welcome = transcript.firstElementChild;
+  win.reset();
   streamNode = null;
   step = null;
   openPerms = new Map();
@@ -150,6 +166,21 @@ function dropWelcome() {
   if (!welcome) return;
   welcome.remove();
   welcome = null;
+}
+
+// The whole transcript for a copy, held-back blocks included, or the live node
+// when nothing is held back.
+function snapshot() {
+  if (!win.first) return transcript;
+  const box = document.createElement("div");
+  if (taskStrip) box.appendChild(taskStrip.cloneNode(true));
+  for (const block of win.all()) box.appendChild(block.cloneNode(true));
+  return box;
+}
+
+function dropStream() {
+  win.remove(streamNode);
+  streamNode = null;
 }
 
 // Queued for the next frame (chat/scroll.js), so a burst of events costs one
@@ -196,7 +227,7 @@ function ensureStreamNode() {
     streamMd = markdownStream();
     streamTail = [];
     reasoningText = null;
-    transcript.appendChild(streamNode);
+    win.append(streamNode);
   }
   return streamNode;
 }
@@ -211,7 +242,7 @@ function renderStream() {
   if (!store.streamText && !store.streamReasoning && !store.pendingCalls.size) {
     // Emptied without the message that normally replaces it: a replayed
     // message superseded what streamed (store.js). What is on screen is stale.
-    if (streamNode) { streamNode.remove(); streamNode = null; }
+    if (streamNode) dropStream();
     return;
   }
   const node = ensureStreamNode();
@@ -288,15 +319,14 @@ function renderEvent(ev) {
 // on the page and streamed the whole reply a second time underneath it.
 function closeStream() {
   if (streamNode && !streamNode.querySelector(".reasoning, .bubble > :not(.copy-btn)")) {
-    streamNode.remove();
-    streamNode = null;
+    dropStream();
   }
 }
 
 function addNode(node) {
   closeStream();
   step = null;   // anything that is not a tool call ends the step
-  transcript.appendChild(node);
+  win.append(node);
 }
 
 // ---- steps ----
@@ -327,7 +357,7 @@ function ensureStep() {
     block: cards.nextBlock(),
   };
   closeStream();
-  transcript.appendChild(node);
+  win.append(node);
   return step;
 }
 
@@ -343,7 +373,7 @@ function addUser(ev) {
 }
 
 function addAssistant(ev) {
-  if (streamNode) { streamNode.remove(); streamNode = null; }
+  if (streamNode) dropStream();
   step = null;
   const node = el(`<div class="msg msg-assistant">
       <div class="reasoning-slot"></div>
@@ -354,7 +384,7 @@ function addAssistant(ev) {
       `<details class="reasoning"><summary>thinking</summary>${esc(ev.reasoning)}</details>`;
   }
   wireTraceLinks(node);
-  transcript.appendChild(node);
+  win.append(node);
 }
 
 // A card, registered under the agent whose stream it belongs to.
@@ -448,7 +478,7 @@ function addAgentCard(ev) {
   clickable(head, () => {
     head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
   });
-  transcript.appendChild(card);
+  win.append(card);
   cards.agents.set(ev.agent_id, {
     card, head,
     dot: head.querySelector(".tool-dot"),
