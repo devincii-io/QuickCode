@@ -45,6 +45,9 @@ called `write`. An undeclared tool defaults to *mutating, prompt for it*.
 
 MCP tools declare `mutates=not read_only`, honouring the server's
 `annotations.readOnlyHint` and defaulting to prompting when it says nothing.
+MCP tools and authored command tools also declare `executes=True`: they run a
+program rather than edit a file, so `auto-edit` prompts for them the way it
+prompts for a shell command.
 
 ## Modes
 

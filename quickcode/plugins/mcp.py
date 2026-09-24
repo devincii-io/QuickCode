@@ -174,7 +174,7 @@ class MCPToolAdapter(Tool[_PassthroughInput]):
         # An MCP server's arguments are its own; there is no field we can point
         # a path or command rule at, so gating is by tool name alone -- and a
         # tool that has not declared itself read-only is prompted for.
-        self.permission = PermissionSpec(mutates=not self.is_read_only)
+        self.permission = PermissionSpec(mutates=not self.is_read_only, executes=True)
         self.source = "config"
 
     def schema(self) -> ToolSchema:

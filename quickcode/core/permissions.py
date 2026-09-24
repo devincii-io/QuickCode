@@ -83,6 +83,10 @@ class PermissionSpec:
     path_target: bool = False
     # The target is a shell command line and gets decomposed per subcommand.
     shell: bool = False
+    # Runs a program rather than editing a file (an authored command tool, an
+    # MCP tool). ``auto-edit`` allows edits and nothing else, so these prompt
+    # there the way a shell command does.
+    executes: bool = False
 
 
 # What an unknown tool gets: treated as mutating, so a plugin that forgets to
@@ -371,12 +375,12 @@ class PermissionEngine:
         # 5. Mode default.
         if is_read:
             return Decision.allow
-        return self._mode_default_for_write()
+        return self._mode_default_for_write(executes=spec.executes)
 
-    def _mode_default_for_write(self) -> Decision:
+    def _mode_default_for_write(self, *, executes: bool = False) -> Decision:
         if self.mode == Mode.yolo:
             return Decision.allow
-        if self.mode == Mode.auto_edit:
+        if self.mode == Mode.auto_edit and not executes:
             return Decision.allow  # edits auto; bash handled separately
         if self.mode == Mode.dontask:
             return Decision.deny

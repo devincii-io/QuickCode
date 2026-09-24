@@ -14,8 +14,8 @@ structurally impossible rather than filtered. That is defence against the
 *model*, which fills the parameters and is the one component in this path
 nobody can audit. Shell mode is refused at validation, not half-implemented.
 
-**Permission.** A command tool declares ``PermissionSpec(mutates=True)``,
-always. ``read_only: true`` in the frontmatter is recorded and surfaced, and
+**Permission.** A command tool declares ``PermissionSpec(mutates=True,
+executes=True)``, always -- so ``auto-edit``, which allows edits, still asks. ``read_only: true`` in the frontmatter is recorded and surfaced, and
 grants nothing: QuickCode cannot check what a program does, and an authored
 file that could opt itself out of the permission prompt would be a hole exactly
 as large as an unaudited MCP server with a nicer card. The way to stop being
@@ -87,6 +87,7 @@ class CommandTool(Tool[BaseModel]):
             target_field=target or None,
             path_target=bool(param is not None and param.type == "path"),
             shell=False,
+            executes=True,
         )
 
     # -- transcript -------------------------------------------------------
