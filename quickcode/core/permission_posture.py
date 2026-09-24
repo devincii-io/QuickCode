@@ -101,8 +101,8 @@ def for_new_session(
     from quickcode.kernel.orchestrator import resolve_orchestrator
     from quickcode.kernel.resolve import default_mode as resolved_default_mode
     from quickcode.kernel.resolve import session_pool
+    from quickcode.session.assemble import session_registry
     from quickcode.subagents.definitions import load_defs
-    from quickcode.tools.registry import ToolRegistry
 
     pool = session_pool(cwd, list(tools))
     preset = preset_module.resolve(cwd)
@@ -127,7 +127,7 @@ def for_new_session(
     if mode == Mode.yolo and not allow_yolo:
         mode = Mode.ask
     mode = narrower_mode(mode, resolved.ceiling)
-    registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
+    registry = session_registry(pool, resolved)
     engine = PermissionEngine(mode=mode, rules=rules, root=cwd,
                               yolo_accepted=allow_yolo, specs=registry.permission_specs())
     return Posture(

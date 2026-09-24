@@ -16,8 +16,9 @@ from quickcode.kernel.manifest.tools import tool_group
 from quickcode.kernel.patterns import is_glob
 from quickcode.kernel.resolve import expand_tool_pattern
 from quickcode.server.workbench.provenance import last_prov, prov_json
+from quickcode.session.assemble import session_registry
 from quickcode.subagents.definitions import AgentDef
-from quickcode.tools.registry import ToolRegistry, build_registry
+from quickcode.tools.registry import build_registry
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -169,12 +170,12 @@ def schemas_for(
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """The exact tool objects and schemas this agent would be handed.
 
-    Built the way the runtime builds them -- ``ToolRegistry`` over the resolved
-    names at depth 0, ``build_registry`` for a child -- so the byte count in the
-    header is the byte count the model pays for.
+    Built by what the runtime builds them with -- ``session_registry`` at
+    depth 0, ``build_registry`` for a child -- so the byte count in the header
+    is the byte count the model pays for.
     """
     if resolved.role == "orchestrator":
-        registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
+        registry = session_registry(pool, resolved)
     else:
         registry = build_registry(
             list(resolved.tools),
