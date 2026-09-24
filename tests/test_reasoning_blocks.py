@@ -16,8 +16,8 @@ from quickcode.core.history import History
 from quickcode.core.loop import run_turn
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.providers.base import ChatMessage, ChatRequest
-from quickcode.server.serialization import event_to_json
 from quickcode.session.store import message_from_dict, message_to_dict
+from quickcode.session.wire import event_to_json
 
 BLOCK = {"type": "thinking", "thinking": "plan", "signature": "sig"}
 

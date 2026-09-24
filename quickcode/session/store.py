@@ -5,7 +5,7 @@ Lines are one of:
   - ``{"kind": "message", ...}`` — a serialized ``ChatMessage`` (model context)
   - ``{"kind": "meta", ...}``    — free-form session metadata (title/model)
   - ``{"kind": "event", ...}``   — a UI/trace event (the append-only event log
-    the web transcript replays; see server/serialization.py for shapes)
+    the web transcript replays; see session/wire.py for shapes)
 
 The event log is the source of truth for what the user *saw*; the message log
 is the source of truth for what the model *sees* on resume.

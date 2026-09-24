@@ -1,1 +1,1 @@
-"""Local web server: FastAPI app, conversation manager, event serialization."""
+"""Local web server: FastAPI app, conversation manager, project hub."""
