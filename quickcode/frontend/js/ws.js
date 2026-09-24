@@ -116,7 +116,7 @@ function teardown() {
   }
   // `resetConversation` does not clear this flag, and a socket that dies
   // between replay_start and replay_done would otherwise leave it true for as
-  // long as the server stays away — with modals.js suppressing every
+  // long as the server stays away — with reviews.js suppressing every
   // permission request and trajectory.js dropping every event it is handed.
   store.replaying = false;
 }
