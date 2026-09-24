@@ -227,6 +227,27 @@ async def test_a_ripgrep_that_cannot_speak_json_falls_back_instead_of_lying(
     assert body.splitlines()[1] == "matches[3]{path,line,text}:"
 
 
+async def test_one_unreadable_file_does_not_throw_away_ripgreps_results(tree, monkeypatch):
+    """ripgrep exits 2 when any file could not be read, matches or not. That
+    used to discard its answer and run the whole search again in Python."""
+    calls = fake_rg(monkeypatch, "/p/a.py\n", code=2)
+    monkeypatch.setattr(grep_module, "_run_fallback",
+                        lambda *a, **k: pytest.fail("fell back to the Python walk"))
+
+    body = await grep(tree, pattern="run")
+
+    assert len(calls) == 1
+    assert body.splitlines()[1:] == ["/p/a.py"]
+
+
+async def test_a_ripgrep_error_with_no_output_still_falls_back(tree, monkeypatch):
+    fake_rg(monkeypatch, "", code=2)
+
+    body = await grep(tree, pattern="run")
+
+    assert body.splitlines()[0] == '<files count="2"/>'
+
+
 # ---- grep: the order is the path order, whoever searched ----
 
 

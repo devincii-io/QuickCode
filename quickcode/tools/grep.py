@@ -202,7 +202,11 @@ def _run_ripgrep(rg: str, input: GrepInput, root: Path, *, hidden: bool = True) 
     where = root if root.is_dir() else root.parent
     proc = subproc.run(args, capture_output=True, timeout=RG_TIMEOUT_S, text=False,
                        cwd=str(where))
-    if proc.returncode not in (0, 1):
+    # 2 is also what ripgrep exits with when it found matches but could not
+    # read some file (a locked file on Windows, a root-owned one elsewhere).
+    # Those results are good; only an error with no output at all -- a bad
+    # pattern -- sends the search to the Python walk.
+    if proc.returncode not in (0, 1) and not proc.stdout.strip():
         raise RuntimeError(proc.stderr.decode("utf-8", errors="replace"))
 
     lines = proc.stdout.decode("utf-8", errors="replace").splitlines()
