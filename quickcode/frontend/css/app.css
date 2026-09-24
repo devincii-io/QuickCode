@@ -72,7 +72,10 @@ textarea, input { font: inherit; color: inherit; }
 
 /* markdown */
 .bubble p { margin: 0 0 8px; }
-.bubble p:last-child { margin-bottom: 0; }
+/* copy.js appends its button to the bubble, so the closing paragraph is no
+   longer :last-child; it is the one the button follows. */
+.bubble p:last-child,
+.bubble > p:has(+ .copy-btn:last-child) { margin-bottom: 0; }
 .bubble h1, .bubble h2, .bubble h3 { margin: 12px 0 6px; line-height: 1.25; }
 .bubble h1 { font-size: 18px; } .bubble h2 { font-size: 16px; } .bubble h3 { font-size: 14.5px; }
 .bubble ul, .bubble ol { margin: 0 0 8px 22px; }
