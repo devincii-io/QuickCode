@@ -193,11 +193,14 @@ def _plan(store: CheckpointStore, index: Index, turn: int,
                     f"changed between turn {ta} and turn {tb} by something the "
                     "checkpoints did not record; rewinding discards that change too",
                 ))
-        plan.dest = paths.target(root, first.path)
-        if plan.dest is None:
+        if paths.in_git_dir(first.path):
+            plan.blocked = ("it is inside the repository's .git directory, which a rewind "
+                            "never writes; restore it with git")
+        elif (dest := paths.target(root, first.path)) is None:
             plan.blocked = "the path now leads outside the project or through a link"
         else:
-            plan.current = take(plan.dest, store.max_file_bytes)
+            plan.dest = dest
+            plan.current = take(dest, store.max_file_bytes)
             if plan.current is None:
                 plan.blocked = "something other than a regular file is at this path now"
         if plan.current is not None:

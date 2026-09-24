@@ -223,6 +223,38 @@ def test_credentials_in_a_failed_tool_result_url_are_redacted(tmp_path):
     assert "q=1" in text  # only the credential goes, not the rest of the URL
 
 
+@pytest.mark.parametrize("text", [
+    "a." * 50_000,
+    "x-" * 50_000 + "://",
+    "https://" + "u:" * 50_000,
+], ids=["dotted", "dashed", "colons"])
+def test_scrubbing_error_text_takes_linear_time(text):
+    """Failed tool output is the attacker's to shape -- a page, a file, an MCP
+    server's error -- and it is scrubbed as it is logged. The URL pattern
+    started a scan at every word boundary of a dotted run, which made 100 KB of
+    ``a.a.a.`` take tens of seconds."""
+    import time
+
+    from quickcode.session.redact import scrub_error_text
+
+    started = time.monotonic()
+    scrub_error_text(text)
+    assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize(("text", "scrubbed"), [
+    ("see x.https://u:hunter2hunter2@h/", "see x.https://u:[redacted]@h/"),
+    ("git+ssh://me:hunter2hunter2@h", "git+ssh://me:[redacted]@h"),
+    ("(https://u:hunter2hunter2@h)", "(https://u:[redacted]@h)"),
+    ("_https://u:hunter2hunter2@h", "_https://u:[redacted]@h"),
+    ("no credentials in https://example.com/a:b", "no credentials in https://example.com/a:b"),
+])
+def test_a_password_in_a_url_is_scrubbed_wherever_the_url_starts(text, scrubbed):
+    from quickcode.session.redact import scrub_error_text
+
+    assert scrub_error_text(text) == scrubbed
+
+
 def test_ordinary_transcript_text_is_left_alone(tmp_path, monkeypatch):
     # Pattern scrubbing is for error text. A file the model read that happens
     # to contain a bearer header in example code is the user's own content, and

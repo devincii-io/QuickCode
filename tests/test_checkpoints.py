@@ -26,7 +26,8 @@ from quickcode.checkpoints import paths, rewind
 from quickcode.checkpoints.events import FileCheckpointed
 from quickcode.checkpoints.hook import CheckpointHook, file_targets
 from quickcode.checkpoints.recorder import Checkpointer
-from quickcode.checkpoints.store import CheckpointStore
+from quickcode.checkpoints.snapshot import digest
+from quickcode.checkpoints.store import CheckpointStore, FileEntry
 from quickcode.core.agent import AgentInstance, PermissionOutcome
 from quickcode.core.events import (
     AssembledToolCall,
@@ -540,6 +541,39 @@ def test_a_subagents_scratch_worktree_is_not_the_project(tmp_path):
     (tmp_path / "a.txt").write_text("project's\n", encoding="utf-8")
     cp = Checkpointer(tmp_path, CONV)
     assert [c.rel for c in cp.capture([tree / "a.txt", tmp_path / "a.txt"])] == ["a.txt"]
+
+
+@pytest.mark.parametrize("rel", [".git/hooks/pre-commit", ".git/config", "sub/.git/config",
+                                 ".GIT/hooks/post-checkout", "GIT~1/config"])
+def test_a_rewind_never_writes_into_a_repository_s_git_directory(tmp_path, rel):
+    """The index is a file in the project, so a cloned repository can ship one --
+    with a blob and a session to hang it on. Everything else it could make a
+    rewind write, it could have committed; a hook or a ``core.fsmonitor`` in
+    ``.git`` it could not, and git runs those on the user's next command."""
+    payload = b"#!/bin/sh\necho owned\n"
+    store = CheckpointStore(tmp_path, CONV)
+    with store.transaction() as index:
+        store._put_blob(digest(payload), payload)
+        index.open_turn(1).files.append(FileEntry(path=rel, before=digest(payload), after=None))
+
+    preview = rewind.preview(store, 1)
+    [row] = preview["files"]
+    assert row["blocked"] and "git" in row["blocked"]
+    result = rewind.apply(store, 1, force=True)
+    assert result.record is None and result.skipped[0]["path"] == rel
+    assert not (tmp_path / rel).exists()
+
+
+def test_a_file_that_only_looks_like_git_metadata_is_still_rewound(tmp_path):
+    before = b"keep me\n"
+    store = CheckpointStore(tmp_path, CONV)
+    with store.transaction() as index:
+        store._put_blob(digest(before), before)
+        index.open_turn(1).files.append(
+            FileEntry(path="docs/.gitignore", before=digest(before), after=None))
+
+    rewind.apply(store, 1)
+    assert (tmp_path / "docs" / ".gitignore").read_bytes() == before
 
 
 def _symlink(link: Path, to: Path) -> None:

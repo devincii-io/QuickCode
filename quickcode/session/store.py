@@ -57,7 +57,30 @@ TASKS_DIRNAME = Path(PROJECT_DIRNAME) / "tasks"
 ARTIFACTS_DIRNAME = Path(PROJECT_DIRNAME) / "artifacts"
 CHECKPOINTS_DIRNAME = Path(PROJECT_DIRNAME) / "checkpoints"
 
-_REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTALL)
+_REMINDER_OPEN, _REMINDER_CLOSE = "<system-reminder>", "</system-reminder>"
+
+
+def strip_reminders(text: str) -> str:
+    """``text`` without its ``<system-reminder>`` blocks and the newlines just
+    before each -- what ``\\n*<system-reminder>.*?</system-reminder>`` removes,
+    in linear time. The log is a file in the project and a cloned repository
+    can ship one, and that regex is quadratic in unclosed openings and in
+    newline runs.
+    """
+    out: list[str] = []
+    pos = 0
+    while (start := text.find(_REMINDER_OPEN, pos)) >= 0:
+        end = text.find(_REMINDER_CLOSE, start + len(_REMINDER_OPEN))
+        if end < 0:
+            break
+        cut = start
+        while cut > pos and text[cut - 1] == "\n":
+            cut -= 1
+        out.append(text[pos:cut])
+        pos = end + len(_REMINDER_CLOSE)
+    out.append(text[pos:])
+    return "".join(out)
+
 
 # The longest name a rename may give a session. Titles derived from the first
 # user message are cut at 60; a chosen one may be a sentence, because it is the
@@ -138,7 +161,7 @@ def _events_from_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
         if msg.role == "user" and msg.content:
             # The stored message carries the reminders that were spliced into
             # the turn; the transcript only ever showed what the user typed.
-            text = _REMINDER_RE.sub("", msg.content).strip()
+            text = strip_reminders(msg.content).strip()
             out.append({"type": "user_message", "text": text or msg.content})
         elif msg.role == "assistant":
             if msg.content:
