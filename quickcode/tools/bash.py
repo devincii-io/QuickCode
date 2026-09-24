@@ -268,8 +268,10 @@ def _handle_cd(raw_target: str, cwd: Path, ctx: ToolCtx) -> ToolResult:
 # PTY still makes programs emit colors / take their tty code paths.
 _ANSI_RE = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC ... BEL/ST
-    r"|\x1b[@-Z\\-_]"  # 2-char escapes (excluding CSI '[')
+    r"|\x1b[PX^_][^\x1b]*\x1b\\"  # DCS/SOS/PM/APC ... ST, payload and all
     r"|\x1b\[[0-?]*[ -/]*[@-~]"  # CSI sequences
+    r"|\x1b[ -/]+[0-~]"  # ESC, intermediates, final: `tput sgr0` ends in ESC ( B
+    r"|\x1b[0-Z\\-~]"  # every other 2-char escape: ESC 7, ESC =, ESC c, ...
 )
 
 
