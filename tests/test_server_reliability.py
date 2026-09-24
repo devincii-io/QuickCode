@@ -132,6 +132,28 @@ async def test_closing_a_conversation_stops_a_compaction_still_in_flight(tmp_pat
     assert "compaction" not in kinds
 
 
+# ---- frames the protocol does not use ----
+
+
+def test_a_binary_or_malformed_frame_is_dropped_and_the_socket_keeps_working(tmp_path):
+    """The protocol is JSON text frames. Anything else is dropped, the way a
+    frame that is not JSON already was, instead of ending the socket with a
+    server-side traceback."""
+    provider = FakeProvider([[TextDelta("still here"), TurnDone("stop")]])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_bytes(b"\x00\xffnot text")
+            ws.send_bytes(b'{"type": "user_message", "text": "ignored as bytes"}')
+            ws.send_text("[1, 2, 3]")
+            ws.send_text("{not json")
+            ws.send_json({"type": "user_message", "text": "hello"})
+            assert recv_until(ws, "assistant_message")["text"] == "still here"
+        assert len(provider.requests) == 1
+
+
 # ---- deleting a selection ----
 
 

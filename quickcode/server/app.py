@@ -1488,7 +1488,12 @@ async def _pump_out(ws: WebSocket, client: Client) -> None:
 
 async def _pump_in(ws: WebSocket, conv: Conversation) -> None:
     while True:
-        raw = await ws.receive_text()
+        message = await ws.receive()
+        if message["type"] == "websocket.disconnect":
+            raise WebSocketDisconnect(message.get("code", 1000), message.get("reason"))
+        raw = message.get("text")
+        if raw is None:
+            continue  # a binary frame: the protocol is JSON text, so drop it
         try:
             msg = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
