@@ -26,13 +26,6 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
-from quickcode.kernel import preset as preset_module
-from quickcode.kernel.spec import (
-    LockedSetting,
-    NeedsConfirmation,
-    UnknownPlugin,
-    UnknownSetting,
-)
 from quickcode.server import auth
 from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
@@ -47,6 +40,7 @@ from quickcode.server.http import (
     valid_conv_id,
     valid_profile_id,
 )
+from quickcode.server.kernel_api import register_kernel_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectHub
@@ -146,98 +140,6 @@ def create_app(
         if token and auth.valid_challenge(challenge):
             out["proof"] = auth.instance_proof(token, port, challenge)
         return out
-
-    # ---- plugin kernel helpers ----
-
-    def _registry_for(manager: ConversationManager):
-        """A plugin registry describing what this project actually runs.
-
-        Built per request rather than cached: it reads the settings files, and
-        a Settings page that showed a stale answer would be worse than a few
-        milliseconds of file IO.
-        """
-        from quickcode.kernel import build_registry
-
-        return build_registry(
-            manager.cwd,
-            tools=list(manager.registry_factory().tools.values()),
-            env=manager.env,
-            active_provider=manager.config.profile.provider,
-            active_endpoint=manager.config.profile.base_url,
-            model_count=manager.catalog_size(),
-        )
-
-    def _kernel_payload(manager: ConversationManager) -> dict:
-        registry = _registry_for(manager)
-        payload = registry.to_json()
-        payload["mcp_servers"] = list(manager.mcp_servers)
-        payload["preset"] = preset_module.resolve(manager.cwd).to_dict()
-        return payload
-
-    def _plugin_detail(manager: ConversationManager, plugin_id: str) -> dict:
-        registry = _registry_for(manager)
-        try:
-            return registry.plugin_json(plugin_id, include_view=True)
-        except UnknownPlugin as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    async def _update_plugin(
-        manager: ConversationManager, plugin_id: str, request: Request
-    ) -> dict:
-        body = await read_json(request)
-        if not isinstance(body, dict):
-            raise HTTPException(400, "request body must be a JSON object")
-        registry = _registry_for(manager)
-        confirmed = bool(body.get("confirmed"))
-        try:
-            if "enabled" in body:
-                registry.set_enabled(plugin_id, bool(body["enabled"]))
-            settings = body.get("settings")
-            if isinstance(settings, dict):
-                for key, value in settings.items():
-                    registry.set_setting(plugin_id, key, value, confirmed=confirmed)
-            # Inside the try as well: an unknown id reaches here when the body
-            # carried nothing to write, and it deserves the same 404 as one
-            # that did rather than an unhandled 500.
-            return registry.plugin_json(plugin_id, include_view=True)
-        except UnknownPlugin as exc:
-            raise HTTPException(404, str(exc)) from exc
-        except UnknownSetting as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except LockedSetting as exc:
-            raise HTTPException(403, str(exc)) from exc
-        except NeedsConfirmation as exc:
-            # 409, not 400: the request is valid, it just needs the user to say
-            # yes to something the UI must spell out first.
-            raise HTTPException(409, exc.reason or str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    def _presets_payload(manager: ConversationManager) -> dict:
-        presets = preset_module.load_presets(manager.cwd)
-        active = preset_module.active_preset_id(manager.cwd)
-        live = {
-            conv_id: conv.preset_id
-            for conv_id, conv in manager.conversations.items()
-        }
-        return {
-            "active": active,
-            "presets": [p.to_dict() for p in presets.values()],
-            "live_sessions": live,
-        }
-
-    async def _set_active_preset(manager: ConversationManager, request: Request) -> dict:
-        body = await read_json(request)
-        preset_id = body.get("preset") if isinstance(body, dict) else None
-        if not isinstance(preset_id, str) or not preset_id.strip():
-            raise HTTPException(400, "body must be {'preset': <id>}")
-        presets = preset_module.load_presets(manager.cwd)
-        if preset_id not in presets:
-            raise HTTPException(404, f"no preset {preset_id!r}")
-        preset_module.set_active(manager.cwd, preset_id)
-        # Running sessions keep the preset they began with; this applies to the
-        # next one that starts.
-        return {"active": preset_id, "applies_to": "new sessions"}
 
     # ---- permission profiles -------------------------------------------
     #
@@ -431,47 +333,7 @@ def create_app(
     register_session_routes(app, hub, DEFAULT)
     register_project_routes(app, hub)
     register_session_routes(app, hub, PROJECT)
-    # ---- plugin kernel: what this install consists of, and what may change ----
-
-    @app.get("/api/projects/{pid}/kernel")
-    def project_kernel(pid: str) -> dict:
-        return _kernel_payload(_project(pid))
-
-    @app.get("/api/kernel")
-    def kernel() -> dict:
-        return _kernel_payload(hub.default)
-
-    @app.get("/api/projects/{pid}/kernel/plugins/{plugin_id}")
-    def project_plugin_detail(pid: str, plugin_id: str) -> dict:
-        return _plugin_detail(_project(pid), plugin_id)
-
-    @app.get("/api/kernel/plugins/{plugin_id}")
-    def plugin_detail(plugin_id: str) -> dict:
-        return _plugin_detail(hub.default, plugin_id)
-
-    @app.put("/api/projects/{pid}/kernel/plugins/{plugin_id}")
-    async def project_plugin_update(pid: str, plugin_id: str, request: Request) -> dict:
-        return await _update_plugin(_project(pid), plugin_id, request)
-
-    @app.put("/api/kernel/plugins/{plugin_id}")
-    async def plugin_update(plugin_id: str, request: Request) -> dict:
-        return await _update_plugin(hub.default, plugin_id, request)
-
-    @app.get("/api/projects/{pid}/presets")
-    def project_presets(pid: str) -> dict:
-        return _presets_payload(_project(pid))
-
-    @app.get("/api/presets")
-    def presets() -> dict:
-        return _presets_payload(hub.default)
-
-    @app.put("/api/projects/{pid}/presets/active")
-    async def project_set_preset(pid: str, request: Request) -> dict:
-        return await _set_active_preset(_project(pid), request)
-
-    @app.put("/api/presets/active")
-    async def set_preset(request: Request) -> dict:
-        return await _set_active_preset(hub.default, request)
+    register_kernel_routes(app, hub)
 
     # Registered before the ``{profile_id}`` route so the literal ``active``
     # segment can never be read as a profile id.
