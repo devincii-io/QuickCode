@@ -106,9 +106,10 @@ New package `quickcode/kernel/`:
 Each phase ends with something that runs. No tests until a phase works.
 
 **Status:** 0–7 ✅ (kernel, tools, prompt, hooks, agents, presets, protocol)
-· 8 and 10 in progress (settings/plugin UI, trajectory rewrite)
-· 11 ✅ (chat steps + measured status bar) · 12 ✅ (multi-agent columns,
-windowed transcripts) · 9 pending (shared inspector, needs 10)
+· 8 in progress (settings/plugin UI)
+· 9 ✅ (shared inspector, `js/inspector.js`) · 10 ✅ (trajectory rewrite,
+`js/trajectory/*`) · 11 ✅ (chat steps + measured status bar) · 12 ✅
+(multi-agent columns, windowed transcripts)
 · 13 ✅ (release tooling, version 2.0.0, not yet tagged).
 
 ### Phase 0 — make the current build honest *(in flight)*
@@ -181,6 +182,12 @@ The Summary/Payload/Result/Timing inspector (`trajectory.js:254-294`) becomes
 a shared component, reachable from a chat message, a tool card, an agent call,
 and the system prompt — not just the trajectory table.
 
+*Landed as* `js/inspector.js` (`createInspector(root, {context})`, DOM-built,
+JSON highlighted by `js/json_view.js`, large payloads behind "show all").
+The trajectory mounts it; chat messages, tool cards and agent calls reach it
+through `inspect.js` by `seq`, and each system prompt gets a transcript line
+(`promptNote`) that opens it.
+
 ### Phase 10 — trajectory rewrite
 `trajectory.js` today is index-ordered 14px divs with `title` tooltips
 (`trajectory.js:200-210`). Replace with:
@@ -191,6 +198,17 @@ and the system prompt — not just the trajectory table.
 - the event table below, aligned and selection-synced to the lanes;
 - windowed rendering so a 10k-event session stays smooth;
 - follow-live keeps working (`setFollowing`, `trajectory.js:159`).
+
+*Landed as* `js/trajectory.js` (state and wiring) over `js/trajectory/`:
+`roles` (role, lane, preview, config link), `timeaxis` (clock axis, collapsed
+gaps, viewport, ticks), `model` (spans, per-lane tracks for parallel calls and
+agents), `windowing` (row window, bar culling/merging, hit-testing) and the
+pooled painters `lanes`, `table`, `hovercard`. Pure parts are covered by
+`tests/js/trajectory.test.mjs`. `scripts/bench_trajectory.js` replays a
+synthetic 10k-event session in Chromium: replay paints in ~160 ms and zoom,
+pan, scroll and live append hold ~60 fps (p95 frame 17–20 ms, was 30–84 ms).
+With the chat renderer left in, the same session is dominated by chat.js
+(33 s replay, ~80 ms per live append) — Phase 12's transcript work, not this.
 
 ### Phase 11 — chat rendering
 Group consecutive tool calls into titled steps, collapsible IN/OUT with
