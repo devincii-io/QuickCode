@@ -142,8 +142,9 @@ lands in the spawner's working tree (`subagents/worktree.py`).
   `quickcode/gitcmd.py`, the same hardening the git panel uses: no hooks
   (`core.hooksPath` pointed at the null device, which covers `post-checkout`,
   `pre-commit` and `reference-transaction`), no fsmonitor, no external diff or
-  textconv driver, no signing program. Content filters (Git LFS) still run;
-  disabling them would check an LFS repository out as pointer files.
+  textconv driver, no signing program, and no content filter the repository's
+  own config defines. Filters from your own or the system config (Git LFS)
+  still run; disabling them would check an LFS repository out as pointer files.
 
 ### Permission capping
 

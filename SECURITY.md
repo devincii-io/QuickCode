@@ -70,7 +70,9 @@ listed as they stand in 2.7.0.
   re-prompting.
 - `git` is invoked inside a project before the trust prompt, so a repository
   delivered with its `.git` directory intact can reach `core.fsmonitor`,
-  `diff.external` or a `textconv` filter.
+  `diff.external` or a `textconv` filter. (Fixed on `main` after 2.7.0: every
+  git call switches those off, and the content filters the repository's own
+  config defines; see `docs/COMPLIANCE.md` §7.4(d) for what remains.)
 - The protected-path check returns before deny rules, so a `deny` against a
   protected path is downgraded to a prompt; `cd` out of the project root is not
   followed by later path checks; and "always allow" on a compound command

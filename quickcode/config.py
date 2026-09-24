@@ -13,7 +13,7 @@ import platform
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from quickcode import jsonfile, subproc
+from quickcode import gitcmd, jsonfile
 from quickcode.search import SearchSettings
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -283,13 +283,8 @@ class Environment:
         is_git = (root / ".git").exists()
         branch = ""
         if is_git:
-            try:
-                branch = subproc.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=root, capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
-            except Exception:
-                branch = ""
+            found = gitcmd.run(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=5)
+            branch = found.stdout.strip() if found.ok else ""
         instr, instr_file = _load_project_instructions(root)
         return cls(
             cwd=str(root),
