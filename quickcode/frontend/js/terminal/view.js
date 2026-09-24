@@ -53,8 +53,13 @@ export class TerminalView {
     this.schedule();
   }
 
-  clear() {
+  /** Empty the screen. `keepModes` for the Clear button: the shell behind it
+   *  is the same one, and it will not repeat that it asked for bracketed
+   *  paste or application cursor keys just because the pixels went away. */
+  clear({ keepModes = false } = {}) {
+    const { bracketedPaste, appCursor } = this.emu;
     this.emu.reset();
+    if (keepModes) Object.assign(this.emu, { bracketedPaste, appCursor });
     this.scrollEl.innerHTML = "";
     this.rendered = 0;
     this.syncRows();

@@ -17,7 +17,7 @@
 // per-repo habit.
 
 import { initAgentFeed } from "./agentfeed.js";
-import { keyToBytes } from "./keys.js";
+import { inputChunks, keyToBytes, pasteBytes, stagedCommand } from "./keys.js";
 import { TerminalSocket } from "./socket.js";
 import { TerminalView } from "./view.js";
 
@@ -150,14 +150,22 @@ function focusShell() {
   requestAnimationFrame(() => screenHost.focus({ preventScroll: true }));
 }
 
-/** Put a command at the prompt. Never with a newline — see agentfeed.js. */
+/** Put a command at the prompt. Never anything that runs it — see keys.js. */
 function stageCommand(command) {
-  const text = String(command || "").replace(/[\r\n]+/g, " ").trim();
+  const text = stagedCommand(command);
   if (!text) return;
   openTerminalTab("shell");
   if (!socket.live) return;
-  socket.input(text);
+  sendText(pasteBytes(text, view.emu.bracketedPaste));
   focusShell();
+}
+
+// Under the server's per-frame limit (MAX_INPUT_CHARS), which otherwise cut a
+// large paste short without a word.
+const INPUT_CHUNK = 32 * 1024;
+
+function sendText(text) {
+  for (const chunk of inputChunks(text, INPUT_CHUNK)) socket.input(chunk);
 }
 
 // ---- wiring ----
@@ -183,7 +191,7 @@ export function initTerminal() {
   });
   $("btn-term-close").addEventListener("click", () => toggleTerminal(false));
   $("btn-term-clear").addEventListener("click", () => {
-    view.clear();
+    view.clear({ keepModes: true });
     // A cleared screen the shell does not know about would leave its prompt
     // half-way down; ^L is how a terminal asks for a redraw.
     if (socket.live) socket.input("\x0c");
@@ -209,7 +217,7 @@ function initKeyboard() {
   screenHost.addEventListener("keydown", (e) => {
     // The panel's own shortcut wins over anything it would otherwise send.
     if (e.key === "`" && (e.ctrlKey || e.metaKey)) return;
-    const bytes = keyToBytes(e);
+    const bytes = keyToBytes(e, { appCursor: view.emu.appCursor });
     if (bytes === null) return;               // browser keeps it (copy, paste)
     e.preventDefault();
     e.stopPropagation();
@@ -219,7 +227,7 @@ function initKeyboard() {
   screenHost.addEventListener("paste", (e) => {
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData("text");
-    if (text && socket.live) socket.input(text.replace(/\r\n/g, "\r").replace(/\n/g, "\r"));
+    if (text && socket.live) sendText(pasteBytes(text, view.emu.bracketedPaste));
   });
   // Ctrl+` from anywhere: the one shortcut a terminal panel is expected to have.
   document.addEventListener("keydown", (e) => {
