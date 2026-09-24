@@ -41,6 +41,7 @@ from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.headers import security_headers
+from quickcode.server.hooks_api import register_hooks_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectBusyError, ProjectHub, list_dirs
@@ -1448,6 +1449,7 @@ def create_app(
     # lines. Declared after the kernel routes so the literal ``authored``
     # segment cannot be read as a plugin id.
     register_authoring_routes(app, lambda: hub.default, _project)
+    register_hooks_routes(app, lambda: hub.default, _project)
     # The agent workbench: inventory, resolved composition with provenance,
     # preview from an unsaved draft, and the session-scoped switch. Takes the
     # hub rather than the two lambdas because the session routes reach a
