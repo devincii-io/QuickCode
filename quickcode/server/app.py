@@ -44,7 +44,7 @@ from quickcode.server.paths import register_path_routes
 from quickcode.server.profiles_api import register_profile_routes
 from quickcode.server.projects import ProjectHub
 from quickcode.server.projects_api import register_project_routes
-from quickcode.server.prompt_api import prompt_payload
+from quickcode.server.prompt_api import register_prompt_routes
 from quickcode.server.sessions_api import register_session_routes, revive
 from quickcode.server.terminal import register_terminal_routes
 from quickcode.server.update_api import register_update_routes
@@ -146,16 +146,7 @@ def create_app(
     register_kernel_routes(app, hub)
     register_profile_routes(app, hub)
 
-    # ``?conv=`` answers with the bytes that session is being sent; without it,
-    # the prompt the next session starts from. See ``server/prompt_api.py``.
-    @app.get("/api/projects/{pid}/prompt")
-    def project_prompt(pid: str, conv: str = "") -> dict:
-        return prompt_payload(_project(pid), conv)
-
-    @app.get("/api/prompt")
-    def prompt(conv: str = "") -> dict:
-        return prompt_payload(hub.default, conv)
-
+    register_prompt_routes(app, hub)
     register_config_routes(app, hub)
     register_update_routes(app, hub)
 

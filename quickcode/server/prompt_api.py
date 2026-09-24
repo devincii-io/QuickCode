@@ -24,13 +24,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 
 from quickcode.core.permissions import Mode
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import ORCHESTRATOR_ID
 from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.prompts.system import render_with_sections
+from quickcode.server.http import DEFAULT, PROJECT, scoped
 from quickcode.subagents.definitions import load_defs
 
 
@@ -132,3 +133,11 @@ def prompt_payload(manager: Any, conv_id: str = "") -> dict[str, Any]:
     if conv is None:
         raise HTTPException(404, f"no live conversation {conv_id!r}")
     return _frozen(manager, conv)
+
+
+def prompt(manager: Any, conv: str = "") -> dict:
+    return prompt_payload(manager, conv)
+
+
+def register_prompt_routes(app: FastAPI, hub: Any) -> None:
+    scoped(app, hub, "GET", "/prompt", prompt, shapes=(PROJECT, DEFAULT))
