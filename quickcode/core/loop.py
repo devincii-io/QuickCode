@@ -30,6 +30,7 @@ from quickcode.core.events import (
     TurnDone,
     Usage,
 )
+from quickcode.core.hooks import refused_turn, tighten, turn_finished, with_feedback
 from quickcode.core.permissions import Decision
 from quickcode.kernel.composition import RuntimeLimits
 from quickcode.prompts.system import system_reminder
@@ -47,6 +48,11 @@ MAX_ROUNDS = RuntimeLimits().max_rounds
 
 
 async def run_turn(agent: AgentInstance, user_input: str) -> str:
+    # Refused before it is pushed: the model never sees a message a hook
+    # turned away, and the hook has already said why (docs/HOOKS.md).
+    if await refused_turn(agent, user_input) is not None:
+        agent.bus.emit(AgentStatus("interrupted" if agent.cancelled else "idle"))
+        return ""
     reminders: list[str] = []
     if agent.take_post_compaction():
         from quickcode.prompts.compact import POST_COMPACTION_REMINDER
@@ -89,6 +95,7 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
         if msg.text:
             last_text = msg.text
         if not msg.tool_calls:
+            await turn_finished(agent, last_text)
             agent.bus.emit(AgentStatus("idle"))
             return last_text
 
@@ -98,6 +105,7 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
         if agent.cancelled:
             agent.bus.emit(AgentStatus("interrupted"))
             return last_text
+    await turn_finished(agent, last_text)
     return last_text
 
 
@@ -362,6 +370,8 @@ async def _run_tool(
     # Permission gate. The tool declares which argument is the target and how
     # it wants to be gated; the engine no longer recognises tools by name.
     decision, arg_target = agent.permissions.evaluate_tool(tool, raw)
+    # A hook may tighten that answer and never loosen it (``hooks.tighten``).
+    decision, hook_reason = await tighten(agent, call, tool, raw, decision)
     if decision == Decision.ask:
         from quickcode.core.agent import PermissionRequest
 
@@ -380,7 +390,7 @@ async def _run_tool(
         if outcome.persist:
             agent.permissions.rules.persist_allow(agent.ctx.cwd, req.rule_suggestion)
     elif decision == Decision.deny:
-        return ("Blocked by permission rules or current mode.", True, {})
+        return (hook_reason or "Blocked by permission rules or current mode.", True, {})
 
     try:
         result = await tool.run(inp, agent.ctx)
@@ -398,4 +408,5 @@ async def _run_tool(
 
     for hook in agent.hooks:
         hook.after_tool(agent, tool, content, result.is_error)
+    content = await with_feedback(agent, call, tool, raw, content, result.is_error)
     return (content, result.is_error, result.ui_meta)

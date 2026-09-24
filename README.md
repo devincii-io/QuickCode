@@ -189,6 +189,7 @@ archive of completed plans.
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, repository layout, async agent loop, provider abstraction, the bash tool and PTYs, the event log |
 | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Permission modes (plan → yolo), rules engine, protected paths, the trust gate, plan mode |
+| [docs/HOOKS.md](docs/HOOKS.md) | Command hooks: scripts run before/after tool calls, on each message, at turn end and session start; trust gating |
 | [docs/TOOLS.md](docs/TOOLS.md) | Tool surface: descriptions, schemas, limits, safety rules |
 | [docs/PROMPTS.md](docs/PROMPTS.md) | System prompt (XML-sectioned), dynamic reminders, compaction prompt |
 | [docs/UI.md](docs/UI.md) | The web UI: workspaces and agent panes, trajectory, event protocol, dialogs, keyboard |

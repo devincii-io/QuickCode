@@ -130,3 +130,12 @@ LOGGED_TYPES = {
 
 def loggable(ev: dict[str, Any]) -> bool:
     return ev.get("type") in LOGGED_TYPES
+
+
+def plugin_logged(ev: object) -> bool:
+    """Whether a plugin registered this event's class with ``logged=True``.
+
+    A subagent's stream is logged by an explicit list of core types; this is
+    how a plugin's own record joins that list without the recorder naming it.
+    """
+    return type(ev) in _EXTRA and getattr(type(ev), "wire_type", "") in LOGGED_TYPES

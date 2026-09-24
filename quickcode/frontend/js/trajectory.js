@@ -137,6 +137,9 @@ function previewOf(ev) {
     case "profile_changed": return profilePreview(inner);
     case "agent_spawned": return `spawned ${ev.agent_id} (${ev.definition})`;
     case "system_note": return inner.text;
+    case "hook_run":
+      return `${inner.event} hook${inner.tool ? ` on ${inner.tool}` : ""} → ${inner.outcome}${
+        inner.reason ? ` · ${oneLine(inner.reason, 120)}` : ""}`;
     case "usage": return `tokens in ${fmtTokens(inner.input_tokens)} / out ${fmtTokens(inner.output_tokens)}`;
     case "error": return inner.message;
     default: return oneLine(JSON.stringify(inner), 160);

@@ -186,6 +186,10 @@ function renderEvent(ev) {
     case "agent_spawned": return addAgentCard(ev);
     case "agent_event": return addAgentEvent(ev);
     case "agent_done": return closeAgentCard(ev);
+    // A hook run says something only when the user should hear it (a refused
+    // message, a hook that failed); the rest is trajectory detail.
+    case "hook_run":
+      return ev.notice ? addNode(el(`<div class="sys-note">⚑ ${esc(ev.notice)}</div>`)) : undefined;
     // system_prompt / context_injection are trajectory-only by design.
   }
 }

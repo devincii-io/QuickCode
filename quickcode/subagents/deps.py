@@ -129,6 +129,10 @@ class SubagentDeps:
     # down the tree like ``jobs``: one cap, and one table the conversation
     # closes, whichever agent started the command.
     bash_jobs: Any = None
+    # The session's loop hooks. A child gets the user's command hooks for its
+    # own tool calls (``hooks.child_hooks``); a guard that stopped at the
+    # orchestrator would be one delegation away from not being a guard.
+    hooks: list | None = None
 
     def child(self, depth: int, permissions: PermissionEngine,
               *, self_id: str, tool_pool: list | None = None,
@@ -170,6 +174,7 @@ class SubagentDeps:
             self_id=self_id,
             limits=self.limits,
             bash_jobs=self.bash_jobs,
+            hooks=self.hooks,
         )
 
     def owns(self, agent_id: str) -> bool:

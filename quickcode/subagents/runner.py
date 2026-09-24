@@ -23,6 +23,7 @@ from typing import Any
 
 from quickcode.core.agent import AgentInstance
 from quickcode.core.history import History
+from quickcode.hooks import child_hooks
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import (
     MODE_PRIVILEGE,
@@ -213,6 +214,7 @@ def _prepare_child(
         permissions=permissions,
         model=model,
         permission_cb=deny_prompt,
+        hooks=child_hooks(deps.hooks),
         limits=deps.limits,
     )
     # Registered immediately so the agent is resumable via send_message even if

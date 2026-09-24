@@ -316,17 +316,19 @@ While an agent waits on a prompt, its pane header and its entry in the workspace
 
 In-process loop hooks exist (`core/hooks.py`). A `LoopHook` may narrow the
 tools offered for a request (`visible_tools`), answer a tool call itself
-(`intercept`), or observe a finished result (`after_tool`). Hooks run in list
-order and the first to intercept wins. Plan mode is implemented as one, which
-is the proof the seam is real rather than decorative.
+(`intercept`), tighten the engine's decision for a call (`check_tool`), or
+observe a finished result (`after_tool`). Hooks run in list order and the first
+to intercept wins. Plan mode is implemented as one, which is the proof the seam
+is real rather than decorative.
 
-Still **not implemented**: the out-of-process `pre_tool_use` script hook — a
-user-configured executable receiving `{tool_name, tool_input, mode, cwd}` on
-stdin and answering `{"decision": "allow"|"deny"|"ask"|"defer", "reason": …}`,
-subordinate to deny/ask rules (a hook must never be able to override a deny),
-with exit code 2 as a hard block whose stderr is shown to the model. The
-in-process seam above is where it would attach. User-configurable hooks are
-in progress (docs/ROADMAP.md); this section describes what ships in 2.7.0.
+User-configured command hooks are built on the same seam — see
+[docs/HOOKS.md](HOOKS.md). What matters here: a `PreToolUse` hook runs *after*
+this engine and can only tighten its answer. It can turn an allow into an ask
+or a deny, and an ask into a deny; it can never turn either back into an allow,
+so a hook that says "allow" skips no prompt, no protected path and no circuit
+breaker (`docs/HOOKS.md#hooks-and-permissions`). A call the engine denies is
+not shown to the hooks, and in `dontask` a hook's ask becomes a refusal like
+the engine's own.
 
 ## Headless mode
 

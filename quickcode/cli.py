@@ -208,6 +208,11 @@ def _build_agent(args: argparse.Namespace):
 
     bash_jobs = BashJobs(on_event=recorder.emit)
     ctx.extra["bash_jobs"] = bash_jobs
+    # The same command hooks a UI session runs, on the same trust terms.
+    from quickcode.hooks import session_hooks
+
+    hooks = session_hooks(cwd, session_id=store.conv_id,
+                          transcript_path=str(store.path), resumed=bool(conv_id))
 
     ctx.extra["subagent"] = SubagentDeps(
         provider=provider,
@@ -227,6 +232,7 @@ def _build_agent(args: argparse.Namespace):
         tool_pool=list(registry.tools.values()),
         limits=limits,
         bash_jobs=bash_jobs,
+        hooks=hooks,
     )
 
     # Model precedence: explicit --model, then the last model picked via F2
@@ -258,6 +264,7 @@ def _build_agent(args: argparse.Namespace):
         model=model,
         permission_cb=_headless_permission_cb,
         context_length=None,
+        hooks=hooks,
         limits=limits,
     )
     if not conv_id:

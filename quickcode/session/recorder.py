@@ -32,7 +32,7 @@ from quickcode.core.events import (
     Usage,
 )
 from quickcode.providers.base import ProviderError
-from quickcode.server.serialization import event_to_json, loggable
+from quickcode.server.serialization import event_to_json, loggable, plugin_logged
 
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance, EventBus, Ledger
@@ -262,7 +262,7 @@ class TranscriptRecorder:
             # A child's usage is logged like its calls and results: a subagent
             # owns its own ``Ledger``, so its tokens reach this session only
             # here, and a fan-out that is not written down replays as free.
-            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent, Usage))
+            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent, Usage)) or plugin_logged(ev)
             if isinstance(ev, TurnDone) and acc_text:
                 self.emit(
                     {

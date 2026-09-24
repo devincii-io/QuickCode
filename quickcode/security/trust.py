@@ -24,9 +24,10 @@ Design constraints (all enforced here):
 * Trust can be **revoked**.
 
 The gate covers two kinds of project-scope config. **Executable config** names a
-program to run: ``mcpServers`` blocks and ``kind: tool`` plugin files. **Policy
-config** widens what the agent may do without being asked: a ``permissions``
-allowlist, a ``default_mode``. Neither spawns anything by itself, but a
+program to run: ``mcpServers`` blocks, ``kind: tool`` plugin files and ``hooks``
+blocks. **Policy config** widens what the agent may do without being asked: a
+``permissions`` allowlist, a ``default_mode``, switching off one of the user's
+own hooks. Neither spawns anything by itself, but a
 committed ``default_mode: "yolo"`` hands a cloned repository the same thing a
 committed MCP server does, one step later, so both gate under the one grant.
 
@@ -83,6 +84,16 @@ GATED_RULE_KINDS = ("allow",)
 GATED_PLUGIN_IDS = ("runtime.permissions",)
 GATED_PRESET_FIELDS = ("default_mode",)
 
+# Plugins a project may not switch *off* on its own. Everywhere else ``enabled:
+# false`` narrows, which is why the loaders let it through; a user's command
+# hook is the exception, because the hook may be the user's own guard (a
+# PreToolUse that refuses a command), and a cloned repository that could turn
+# it off would be widening by subtraction. The prefix is the id scheme of
+# ``quickcode.hooks.config.HookCommand.id``.
+GATED_DISABLE_PREFIXES = ("hook.cmd.user.",)
+
+HOOKS_KEY = "hooks"
+
 # The starting modes an untrusted project may still ask for. Listed as what is
 # permitted rather than what is refused so that a mode added later is refused
 # until somebody decides otherwise, which is the direction to be wrong in.
@@ -92,6 +103,11 @@ GATED_PRESET_FIELDS = ("default_mode",)
 # careful. Everything above ``ask`` -- ``auto-edit``, ``dontask``, ``yolo`` --
 # is the boundary moving outward, and that is the grant this gate exists for.
 GRANTABLE_MODES = frozenset({"plan", "ask"})
+
+
+def project_may_disable(plugin_id: str) -> bool:
+    """Whether an untrusted project may switch this plugin off by itself."""
+    return not plugin_id.startswith(GATED_DISABLE_PREFIXES)
 
 
 def project_may_state(key: str, value: Any) -> bool:
@@ -124,13 +140,16 @@ def _norm(path: str | os.PathLike[str]) -> str:
     return norm
 
 
-def _project_settings(cwd: str | os.PathLike[str]) -> list[dict[str, Any]]:
-    """Both project settings files, parsed, unreadable ones skipped.
+def _project_settings_by_file(
+    cwd: str | os.PathLike[str],
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Both project settings files, parsed, with the relative path each came
+    from; unreadable ones skipped.
 
     One reader for both of them, so nothing that gates on their contents can
     end up looking at a different pair of files than the hash does.
     """
-    out: list[dict[str, Any]] = []
+    out: list[tuple[Path, dict[str, Any]]] = []
     root = Path(cwd)
     for rel in PROJECT_SETTINGS_FILES:
         try:
@@ -138,8 +157,28 @@ def _project_settings(cwd: str | os.PathLike[str]) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(data, dict):
-            out.append(data)
+            out.append((rel, data))
     return out
+
+
+def _project_settings(cwd: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    return [data for _rel, data in _project_settings_by_file(cwd)]
+
+
+def project_hooks(cwd: str | os.PathLike[str]) -> dict[str, Any]:
+    """Each project settings file's ``hooks`` block, keyed by that file.
+
+    Raw, whatever shape it has: parsing belongs to ``quickcode.hooks.config``,
+    and the hash must move when *anything* in the block does -- a malformed
+    entry today can be a well-formed command after the next edit. Keyed by the
+    POSIX spelling of the relative path so one project hashes the same on every
+    OS, and so the loader can say which file an entry came from.
+    """
+    return {
+        rel.as_posix(): data[HOOKS_KEY]
+        for rel, data in _project_settings_by_file(cwd)
+        if data.get(HOOKS_KEY) not in (None, {}, [])
+    }
 
 
 def project_mcp_servers(cwd: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
@@ -157,6 +196,19 @@ def project_mcp_servers(cwd: str | os.PathLike[str]) -> dict[str, dict[str, Any]
                 if isinstance(spec, dict) and isinstance(spec.get("command"), str):
                     merged[str(name)] = spec
     return merged
+
+
+def project_hook_rows(cwd: str | os.PathLike[str]) -> list[dict[str, str]]:
+    """The project's hook commands as rows a reviewer can read.
+
+    Parsed by the hooks package, imported here rather than at the top for the
+    reason ``_declared_kind`` gives: security sits below everything that
+    imports it. A block that does not parse still counts toward the hash; it
+    simply has no row to show.
+    """
+    from quickcode.hooks.config import review_rows
+
+    return review_rows(project_hooks(cwd))
 
 
 def _declared_kind(text: str) -> str | None:
@@ -244,6 +296,10 @@ def project_policy_config(cwd: str | os.PathLike[str]) -> dict[str, Any]:
                     for key, value in settings.items():
                         if not project_may_state(key, value):
                             out[f"plugins.{plugin_id}.{key}"] = value
+            for plugin_id, entry in plugins.items():
+                if (isinstance(entry, dict) and entry.get("enabled") is False
+                        and not project_may_disable(str(plugin_id))):
+                    out[f"plugins.{plugin_id}.enabled"] = False
         presets = data.get("presets")
         if isinstance(presets, dict):
             for name, body in presets.items():
@@ -287,6 +343,11 @@ def config_hash(cwd: str | os.PathLike[str]) -> str:
     policy = project_policy_config(cwd)
     if policy:
         payload["policy"] = policy
+    # The same rule for the same reason: a project with no hooks keeps the hash
+    # it had before hooks existed, and one that gains a hook re-prompts.
+    hooks = project_hooks(cwd)
+    if hooks:
+        payload["hooks"] = hooks
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -311,10 +372,17 @@ class TrustStatus:
     # Nothing here runs a program; it is the half that widens what may run
     # without asking, and it gates under the same grant.
     policy_keys: list[str] = field(default_factory=list)
+    # Command hooks the project declares, one row per command: event, matcher,
+    # command and the file it is in -- what the reviewer is consenting to run.
+    hooks: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def has_tools(self) -> bool:
         return bool(self.tool_files)
+
+    @property
+    def has_hooks(self) -> bool:
+        return bool(self.hooks)
 
     @property
     def has_policy(self) -> bool:
@@ -329,6 +397,8 @@ class TrustStatus:
             "tools": list(self.tool_files),
             "has_policy": self.has_policy,
             "policy": list(self.policy_keys),
+            "has_hooks": self.has_hooks,
+            "hooks": [dict(row) for row in self.hooks],
             "hash": self.config_hash,
             "inert": self.inert,
             "reason": self.reason,
@@ -385,9 +455,10 @@ class TrustStore:
         names = sorted(servers)
         tool_files = sorted(project_command_tools(cwd))
         policy_keys = sorted(project_policy_config(cwd))
+        hook_rows = project_hook_rows(cwd)
         trusted = self.is_trusted(cwd)
         has_servers = bool(servers)
-        has_gated = has_servers or bool(tool_files) or bool(policy_keys)
+        has_gated = has_servers or bool(tool_files) or bool(policy_keys) or bool(hook_rows)
         inert = has_gated and not trusted
         # One noun for whatever this project actually declares, so the sentence
         # is true for a project with only tools, or only settings, as well as
@@ -395,11 +466,12 @@ class TrustStore:
         what = " and ".join(part for part, present in (
             ("MCP servers", has_servers),
             ("command tools", bool(tool_files)),
+            ("hooks", bool(hook_rows)),
             ("permission settings", bool(policy_keys)),
         ) if present)
         if not has_gated:
-            reason = ("no project-scope MCP servers, command tools or permission "
-                      "settings declared")
+            reason = ("no project-scope MCP servers, command tools, hooks or "
+                      "permission settings declared")
         elif trusted:
             reason = "project trusted for this configuration"
         elif self.recorded_hash(cwd) is not None:
@@ -416,6 +488,7 @@ class TrustStore:
             reason=reason,
             tool_files=tool_files,
             policy_keys=policy_keys,
+            hooks=hook_rows,
         )
 
     # ---- mutations ----

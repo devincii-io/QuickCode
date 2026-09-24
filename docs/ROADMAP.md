@@ -12,8 +12,9 @@ Being built now; not in any release. Each is ticked here when it merges.
 - [x] Background bash jobs: `bash(run_in_background)` with `bash_output` and
       `bash_kill`, a per-conversation cap, bounded output and process-tree
       cleanup on close (docs/TOOLS.md §bash).
-- [ ] User-configurable hooks. Today only in-process `LoopHook`s exist
-      (`core/hooks.py`, docs/PERMISSIONS.md §Hooks).
+- [x] User-configurable command hooks — PreToolUse, PostToolUse,
+      UserPromptSubmit, Stop, SessionStart — on the `LoopHook` seam, trust-gated
+      for project hooks (docs/HOOKS.md).
 - [x] A native Anthropic provider with prompt caching: `provider: "anthropic"`,
       plain `httpx`, explicit system and conversation-tail cache breakpoints,
       cache reads and writes in the ledger (docs/ARCHITECTURE.md §Provider layer).

@@ -35,6 +35,12 @@ def _discover_authored(cwd: Path | None):
     return discovery.discover(cwd)
 
 
+def _load_hooks(cwd: Path | None):
+    from quickcode.hooks.config import load_hooks
+
+    return load_hooks(cwd)
+
+
 def build_registry(
     cwd: Path | None = None,
     *,
@@ -120,6 +126,14 @@ def build_registry(
     registry.register_all(manifest.agent_specs(agent_defs or {}))
     registry.register_all(manifest.provider_specs(providers or {}, active=active_provider))
     registry.register_all(manifest.mcp_specs(mcp_configs or {}))
+    # Command hooks, as the loop will run them: trust-gated and minus the ones
+    # switched off. What the gate refused is a problem on the page, not a card.
+    hook_config = _safe("command hooks", lambda: _load_hooks(cwd), None)
+    if hook_config is not None:
+        from quickcode.hooks.specs import hook_specs
+
+        registry.register_all(_safe("hook specs", lambda: hook_specs(hook_config), []))
+        registry.add_problems(list(hook_config.problems))
     # Authored specs land *after* the internal ones, so a reserved-id collision
     # loses. Discovery already refuses those with ``id_reserved``; this is the
     # structural backstop, not the message.
