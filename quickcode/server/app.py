@@ -393,7 +393,7 @@ def create_app(
         presets = preset_module.load_presets(manager.cwd)
         active = preset_module.active_preset_id(manager.cwd)
         live = {
-            conv_id: conv.store.meta().get("preset", "")
+            conv_id: conv.preset_id
             for conv_id, conv in manager.conversations.items()
         }
         return {

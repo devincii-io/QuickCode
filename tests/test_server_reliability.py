@@ -207,3 +207,33 @@ def test_a_bulk_delete_closes_an_idle_open_conversation_the_way_a_single_delete_
         assert body["skipped"] == []
         assert conv_id not in manager.conversations
         assert not SessionStore(tmp_path, conv_id).path.exists()
+
+
+# ---- hot paths ----
+
+
+def test_the_presets_page_names_each_live_sessions_composition_without_reading_its_log(
+    tmp_path, monkeypatch,
+):
+    """The running composition is state the conversation already holds;
+    re-deriving it by parsing every live session's whole log made opening
+    Settings cost the size of every open transcript."""
+    provider = FakeProvider([[TextDelta("hi"), TurnDone("stop")]])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_json({"type": "user_message", "text": "hello"})
+            recv_until(ws, "assistant_message")
+        running = manager.get(conv_id).preset_id
+        assert running
+
+        parsed: list[str] = []
+        real = SessionStore._iter_records
+        monkeypatch.setattr(
+            SessionStore, "_iter_records", lambda self: parsed.append(self.conv_id) or real(self)
+        )
+        body = client.get("/api/presets").json()
+        assert body["live_sessions"] == {conv_id: running}
+        assert parsed == []
