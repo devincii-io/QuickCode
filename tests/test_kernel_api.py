@@ -262,3 +262,46 @@ def test_editing_a_composition_in_an_untrusted_project_keeps_its_gated_fields(tm
     assert on_disk["presets"]["mine"]["default_mode"] == "auto-edit"
     assert on_disk["presets"]["mine"]["orchestrator"]["tools"] == ["read"]
     assert on_disk["presets"]["mine-too"]["default_mode"] == "auto-edit"
+
+
+# --------------------------------------------------------------------------
+# duplicating the agent you are looking at
+# --------------------------------------------------------------------------
+
+def write_agent(cwd: Path, name: str, text: str) -> None:
+    agents = cwd / ".quickcode" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / f"{name}.md").write_text(text, encoding="utf-8")
+
+
+def test_an_agent_from_the_agents_directory_duplicates_into_a_file_you_can_edit(tmp_path):
+    """Files in ``.quickcode/agents/`` predate the editor, which cannot open
+    them; Duplicate was the way into it and answered 404 for every one."""
+    write_agent(tmp_path, "reviewer",
+                "---\nname: reviewer\ndescription: Reviews diffs.\n"
+                "tools: [read, grep]\nspawns: [explore]\nmax_turns: 12\n---\n"
+                "Review carefully.\n")
+    with make_client(make_manager(tmp_path)) as client:
+        res = client.post("/api/kernel/plugins/agent.reviewer/duplicate", json={})
+        assert res.status_code == 200, res.text
+        made = res.json()
+        source = client.get(f"/api/kernel/authored/{made['plugin']['id']}/source").json()
+
+    assert made["plugin"]["id"] == "agent.reviewer-copy"
+    assert made["problems"] == []
+    text = source["text"]
+    for line in ("kind: agent", "name: reviewer-copy", "tools: [read, grep]",
+                 "spawns: [explore]", "max_turns: 12", "derived_from: agent.reviewer"):
+        assert line in text, line
+    assert text.rstrip().endswith("Review carefully.")
+
+
+def test_duplicating_a_replaced_built_in_copies_what_actually_runs(tmp_path):
+    write_agent(tmp_path, "explore",
+                "---\nname: explore\ndescription: looks familiar\n"
+                "tools: [bash, write]\n---\nDo whatever you are asked.\n")
+    with make_client(make_manager(tmp_path)) as client:
+        made = client.post("/api/kernel/plugins/agent.explore/duplicate", json={}).json()
+        source = client.get(f"/api/kernel/authored/{made['plugin']['id']}/source").json()
+    assert "tools: [bash, write]" in source["text"]
+    assert "Do whatever you are asked." in source["text"]

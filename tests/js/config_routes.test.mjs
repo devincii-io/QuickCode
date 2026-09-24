@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalHref, recourseHref } from "../../quickcode/frontend/js/config/kinds.js";
+import {
+  canonicalHref, editableFile, recourseHref,
+} from "../../quickcode/frontend/js/config/kinds.js";
 import { compositionId } from "../../quickcode/frontend/js/config/create/composition.js";
 
 const plugins = [
@@ -40,4 +42,11 @@ test("a composition name previews the id the server stores it under", () => {
   assert.equal(compositionId("  --Deep  Review!!  "), "deep-review");
   assert.equal(compositionId("2nd pass"), "c-2nd-pass");
   assert.equal(compositionId("???"), "");
+});
+
+test("only a plugins/ file is offered to the editor", () => {
+  assert.equal(editableFile("/home/me/repo/.quickcode/plugins/reviewer.md"), true);
+  assert.equal(editableFile("C:\\Users\\me\\.quickcode\\plugins\\house-style.md"), true);
+  assert.equal(editableFile("/home/me/repo/.quickcode/agents/reviewer.md"), false);
+  assert.equal(editableFile(""), false);
 });

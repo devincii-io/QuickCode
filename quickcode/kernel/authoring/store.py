@@ -347,7 +347,7 @@ def duplicate(
         return _write_copy(directory, slug, text, scope)
 
     if kind == "agent":
-        return _duplicate_agent(directory, original, plugin_id, name, scope)
+        return _duplicate_agent(directory, original, plugin_id, name, scope, cwd)
     if kind == "prompt":
         return _duplicate_section(directory, plugin_id, name, scope, bodies or {})
 
@@ -367,15 +367,24 @@ def _kind_of(plugin_id: str) -> str:
 
 def _duplicate_agent(
     directory: Path, original: str, plugin_id: str, name: str, scope: str,
+    cwd: Path | str | None = None,
 ) -> tuple[Path, AuthoredPlugin | None, list[Problem]]:
-    from quickcode.subagents.definitions import builtin_defs
+    from quickcode.subagents.definitions import builtin_defs, load_defs
 
-    defn = builtin_defs().get(original)
+    # The definition this project actually runs under that name, which is not
+    # always the shipped one: an ``agents/*.md`` file replaces it at spawn, and
+    # "duplicate what you are looking at" has to copy that file.
+    defs = load_defs(Path(cwd)) if cwd is not None else builtin_defs()
+    defn = defs.get(original)
     if defn is None:
         raise AuthoringError(f"no agent {original!r} to duplicate",
                              fix="Check the id.", status=404)
     slug = allocate_name(directory, _slugify(name) or original, kind="agent",
                          copy=not name)
+    source_text = _read(Path(defn.path)) if getattr(defn, "path", "") else ""
+    if source_text:
+        return _write_copy(directory, slug, _as_agent_plugin(
+            source_text, slug, f"{original.capitalize()} (copy)", plugin_id), scope)
     tools = defn.tools
     lines = [
         "---",
@@ -455,6 +464,19 @@ def _write_copy(
 
 
 _IDENTITY_KEYS = ("name", "title", "derived_from")
+
+
+def _as_agent_plugin(text: str, slug: str, title: str, derived_from: str) -> str:
+    """An ``agents/*.md`` file as a ``kind: agent`` plugin: the same bytes, with
+    the kind stated and the identity retargeted. Its frontmatter is already the
+    agent vocabulary -- both loaders read it through ``agent_def_from_meta``."""
+    lines = _rewrite_identity(text, slug, title, derived_from).splitlines()
+    close = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), -1)
+    if close > 0 and not any(
+        lines[i].split(":", 1)[0].strip() == "kind" for i in range(1, close)
+    ):
+        lines.insert(1, "kind: agent")
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 def _rewrite_identity(text: str, slug: str, title: str, derived_from: str) -> str:

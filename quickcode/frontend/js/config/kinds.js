@@ -83,6 +83,13 @@ const RECOURSE = {
 
 const AUTHOR_SLUG = { tool: "tool", agent: "agent", prompt_section: "prompt" };
 
+/** Whether the editor can open the file behind a plugin: `plugins/*.md`, at
+ *  either scope. An agent in the older `agents/` directory is loaded but not
+ *  editable here — Duplicate turns it into a plugin file that is. */
+export function editableFile(path) {
+  return /[\\/]plugins[\\/][^\\/]+\.md$/i.test(String(path || ""));
+}
+
 /** Where a recourse button goes, or "" when pressing it is not a navigation.
  *
  *  `target` means different things per action (kernel/spec.py): a plugin id
