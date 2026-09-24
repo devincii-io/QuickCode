@@ -113,6 +113,9 @@ async def run_command(
         if proc is not None and proc.poll() is None:
             _kill_tree(proc.pid)
         raise
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError is Popen refusing the argv itself -- a NUL in the command,
+        # which a settings file can spell as \u0000. Still a hook that could
+        # not start, so it fails open like one.
         return Completed(None, ms=elapsed(), spawn_error=str(exc))
     return Completed(code, _text(out), _text(err), elapsed(), timed_out)
