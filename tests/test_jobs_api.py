@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -20,7 +21,7 @@ import pytest
 from quickcode.server.app import create_app
 from quickcode.server.conversation import Client
 from quickcode.server.projects import project_id
-from quickcode.tools.bash_jobs import EXITED, KILLED, RUNNING, BashJobs
+from quickcode.tools.bash_jobs import EXITED, KILLED, OUTPUT_NOTE_S, RUNNING, BashJobs
 from tests.conftest import await_until
 from tests.test_bash_background import gate_file, read, start
 from tests.test_server import FakeProvider, make_manager
@@ -301,20 +302,23 @@ async def test_new_output_reaches_a_watching_window_throttled_and_unlogged(serve
     s = served
     window = Client()
     s.conv.clients.add(window)
+    began = time.monotonic()
     try:
-        await start(s.ctx, "for i in $(seq 1 30); do echo $i; sleep 0.03; done")
+        await start(s.ctx, "for i in $(seq 1 40); do echo $i; sleep 0.025; done")
         job = table(s).get("bash_1")
         assert await await_until(lambda: not job.running)
-        await asyncio.sleep(0.4)  # the trailing note
+        await asyncio.sleep(OUTPUT_NOTE_S + 0.2)  # the trailing note
     finally:
         s.conv.clients.discard(window)
+    elapsed = time.monotonic() - began
 
     events = []
     while not window.queue.empty():
         events.append(json.loads(window.queue.get_nowait()))
     notes = [e for e in events if e["type"] == "bash_job_output"]
-    # ~0.9 s of output at one note per quarter second: a handful, not thirty.
-    assert 1 <= len(notes) <= 8
+    # Forty writes, and at most one note per OUTPUT_NOTE_S however long a
+    # loaded machine made them take.
+    assert 1 <= len(notes) <= elapsed / OUTPUT_NOTE_S + 1
     assert all(e["job_id"] == "bash_1" and "seq" not in e for e in notes)
     assert notes[-1]["bytes"] == job.written()
     assert not logged(s, "bash_job_output")
