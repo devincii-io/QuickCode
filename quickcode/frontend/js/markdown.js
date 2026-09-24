@@ -4,13 +4,20 @@
 
 import { esc } from "./util.js";
 
+// Code spans are cut out before the other rules run and put back last: `**`
+// or a link inside backticks is literal text, and markup must never land inside
+// an href. NUL marks the slots, so a NUL in the text itself is dropped first
+// rather than allowed to forge one.
 function inline(s) {
+  const spans = [];
   return s
-    .replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`)
+    .replace(/\0/g, "")
+    .replace(/`([^`]+)`/g, (_, c) => `\0${spans.push(c) - 1}\0`)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
-      (_, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`);
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, (m, t, u) => (/[\0<]/.test(u) ? m
+      : `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`))
+    .replace(/\0(\d+)\0/g, (_, i) => `<code>${spans[i]}</code>`);
 }
 
 export function renderMarkdown(src) {

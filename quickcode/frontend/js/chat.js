@@ -237,7 +237,7 @@ function bumpStepCount(step) {
 }
 
 function traceLink(seq) {
-  return `<span class="trace-link" data-seq="${seq}" title="Open in trajectory">⌕ trace</span>`;
+  return `<span class="trace-link" data-seq="${Number(seq)}" title="Open in trajectory">⌕ trace</span>`;
 }
 
 function addUser(ev) {
