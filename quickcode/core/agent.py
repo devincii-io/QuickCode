@@ -159,6 +159,12 @@ class Ledger:
             kind = ev.get("type")
             if kind == "usage":
                 ledger.add(_usage_from_json(ev))
+            elif kind == "compacted":
+                # As ``run_compaction`` does live: the last request measured a
+                # transcript that no longer exists, and a resumed session
+                # showed its meter pinned at the threshold that compacted it.
+                ledger.last_input_tokens = 0
+                ledger.last_output_tokens = 0
             elif kind == "agent_event":
                 inner = ev.get("ev") or {}
                 if inner.get("type") == "usage":

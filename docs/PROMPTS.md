@@ -279,6 +279,13 @@ Rebuilt history after compaction:
 [last 2–4 turns verbatim, cut at a user-message boundary]
 ```
 
+The cut never lands in front of a tool result, so no call loses its answer.
+When the whole transcript is "the last few turns" — one request worked for
+many rounds — the tail is its last `keep_turns` rounds instead, and the tail
+is capped at a quarter of the context window (`core/compact.TAIL_SHARE`), so a
+compaction cannot rebuild a history already over the threshold that
+triggered it. The summarization request's own usage is logged and counted.
+
 ## 5. Headless / print mode (`-p`)
 
 Same system prompt plus one appended section:

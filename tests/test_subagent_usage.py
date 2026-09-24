@@ -211,7 +211,47 @@ async def test_a_headless_turn_over_the_threshold_compacts_like_the_web_path_doe
     # summary seed would be appended to the log again on the next turn.
     assert rec.persisted == len(agent.history.messages)
     # And the turn's own messages reached disk before the rebuild replaced them.
-    assert any("go" in m.content for m in store.load_messages())
+    # Read from the raw records: ``load_messages`` starts at the compaction,
+    # which (rightly) no longer keeps a one-turn transcript verbatim.
+    records = store._iter_records()
+    at = next(i for i, r in enumerate(records) if r.get("kind") == "compaction")
+    assert any(
+        r.get("kind") == "message" and "go" in r["message"]["content"] for r in records[:at]
+    )
+
+
+async def test_a_headless_compaction_logs_what_the_summary_cost(tmp_path):
+    summary = [TextDelta("SUMMARY"), Usage(input_tokens=95, output_tokens=7), TurnDone("stop")]
+    provider = FakeProvider([_script(90), summary])
+    agent = _agent(provider, context_length=100, limits=RuntimeLimits(keep_turns=1))
+    store = SessionStore(tmp_path)
+
+    await TranscriptRecorder(store).record_turn(agent, "go")
+
+    # The pump is gone by the time a headless run compacts; the summary's
+    # usage still has to reach the log, or a resume counts it as free.
+    replayed = Ledger.from_events(store.load_events())
+    assert replayed.input_tokens == agent.ledger.input_tokens == 90 + 95
+
+
+async def test_a_compacted_live_session_replays_to_the_same_ledger(tmp_path):
+    from tests.test_background_agents import _settle
+
+    summary = [TextDelta("SUMMARY"), Usage(input_tokens=95, output_tokens=7), TurnDone("stop")]
+    manager = make_manager(tmp_path, FakeProvider([_script(90), summary]))
+    conv = manager.open()
+    try:
+        conv.agent.context_length = 100
+        conv.submit("go")
+        await _settle(conv)
+        assert any(e["type"] == "compacted" for e in conv.store.load_events())
+
+        live = conv.agent.ledger
+        replayed = Ledger.from_events(conv.store.load_events())
+        assert replayed.input_tokens == live.input_tokens == 90 + 95
+        assert replayed.last_input_tokens == live.last_input_tokens == 0
+    finally:
+        await manager.close()
 
 
 async def test_a_headless_turn_under_the_threshold_is_left_alone(tmp_path):

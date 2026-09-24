@@ -308,6 +308,10 @@ class TranscriptRecorder:
         except ProviderError as e:
             self.emit({"type": "error", "message": f"compaction failed: {e}"})
             return False
+        finally:
+            # The pump is already cancelled here; the summary request's usage
+            # is on the bus and reaches the log only through this.
+            self.drain()
         # History was rebuilt wholesale; without this the summary seed and the
         # kept tail would be appended a second time on the next persist.
         # The rebuilt history goes into the log as well, or the work is

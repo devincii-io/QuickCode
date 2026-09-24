@@ -3,14 +3,14 @@
 When the token ledger crosses ~80% of the model's context window (or on
 manual /compact), we run a one-off no-tools request that summarizes the
 conversation, then rebuild history as [summary seed] + the last few verbatim
-turns (cut at a user-message boundary). See docs/PROMPTS.md §4.
+turns (cut where no tool call loses its result). See docs/PROMPTS.md §4.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from quickcode.core.events import TextDelta
+from quickcode.core.events import TextDelta, TurnDone, Usage
 from quickcode.prompts.compact import COMPACTION_PROMPT
 from quickcode.providers.base import ChatMessage, ChatRequest, ProviderError
 
@@ -18,6 +18,15 @@ if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance
 
 COMPACT_RATIO = 0.8
+
+# The verbatim tail may fill at most this share of the context window. Two
+# long turns kept whole could otherwise rebuild a history already back over
+# the threshold that triggered the compaction, and it would run every turn.
+TAIL_SHARE = 0.25
+# Rough, and only used for that cap. A tail smaller than the floor is always
+# worth keeping whole, whatever the window says.
+_CHARS_PER_TOKEN = 4
+_MIN_TAIL_CHARS = 8_000
 
 
 def should_compact(agent: AgentInstance, ratio: float = COMPACT_RATIO) -> bool:
@@ -28,11 +37,26 @@ def should_compact(agent: AgentInstance, ratio: float = COMPACT_RATIO) -> bool:
     return pct >= ratio * 100.0
 
 
-def _select_tail(messages: list[ChatMessage], keep_turns: int) -> list[ChatMessage]:
-    """Keep the last ``keep_turns`` user-started turns, cut at a user boundary.
+def _size(m: ChatMessage) -> int:
+    return len(m.content or "") + sum(
+        len(str(tc.get("arguments", ""))) for tc in m.tool_calls
+    )
 
-    Cutting at a user message keeps the slice self-contained: no orphaned tool
-    results referencing an assistant turn that got summarized away.
+
+def _tail_budget(context_length: int | None) -> int | None:
+    if not context_length:
+        return None
+    return max(_MIN_TAIL_CHARS, int(context_length * TAIL_SHARE * _CHARS_PER_TOKEN))
+
+
+def _select_tail(
+    messages: list[ChatMessage], keep_turns: int, *, budget_chars: int | None = None
+) -> list[ChatMessage]:
+    """Keep the last ``keep_turns`` user-started turns, cut where it is safe.
+
+    A cut lands only in front of a user or an assistant message, never in
+    front of a tool result: that would orphan the result from the call that
+    asked for it, and a provider refuses the request.
     """
     # ``runtime.compaction.keep_turns`` declares a minimum of 0, and 0 has to
     # mean "nothing verbatim": ``user_idxs[-0]`` is ``user_idxs[0]``, so
@@ -40,15 +64,32 @@ def _select_tail(messages: list[ChatMessage], keep_turns: int) -> list[ChatMessa
     # transcript -- the opposite of what it says.
     if keep_turns <= 0:
         return []
-    user_idxs = [i for i, m in enumerate(messages) if m.role == "user"]
-    if len(user_idxs) <= keep_turns:
-        return list(messages)
-    cut = user_idxs[-keep_turns]
+    starts = [i for i, m in enumerate(messages) if m.role != "tool"]
+    user_idxs = [i for i in starts if messages[i].role == "user"]
+    if len(user_idxs) > keep_turns:
+        cut = user_idxs[-keep_turns]
+    else:
+        # The whole transcript is "the last few turns" -- typically one request
+        # worked for many rounds. Keeping it whole summarized nothing and grew
+        # the history by the summary, so keep its last few rounds instead.
+        later = [i for i in starts if i > 0]
+        cut = later[-min(keep_turns, len(later))] if later else len(messages)
+    if budget_chars is not None:
+        size = sum(_size(m) for m in messages[cut:])
+        for nxt in (i for i in starts if i > cut):
+            if size <= budget_chars:
+                break
+            size -= sum(_size(m) for m in messages[cut:nxt])
+            cut = nxt
     return messages[cut:]
 
 
 async def _summarize(agent: AgentInstance) -> str:
-    """Run the compaction request (no tools) and return the summary text."""
+    """Run the compaction request (no tools) and return the summary text.
+
+    Its usage is emitted like any round's: it is the largest request a
+    session makes, nearly a full window, and it was being counted nowhere.
+    """
     messages = agent.history.build_messages()  # [system, *history]
     messages = [*messages, ChatMessage(role="user", content=COMPACTION_PROMPT)]
     req = ChatRequest(
@@ -59,6 +100,13 @@ async def _summarize(agent: AgentInstance) -> str:
     async for ev in agent.provider.stream_chat(req):
         if isinstance(ev, TextDelta):
             parts.append(ev.text)
+        elif isinstance(ev, Usage):
+            agent.ledger.add(ev)
+            agent.bus.emit(ev)
+        elif isinstance(ev, TurnDone) and ev.error:
+            # What streamed before the error is a summary cut short, and
+            # accepting it would replace the history with half a handoff.
+            raise ProviderError(ev.error)
     return "".join(parts).strip()
 
 
@@ -72,7 +120,10 @@ async def run_compaction(agent: AgentInstance, *, keep_turns: int = 2) -> str:
     summary = await _summarize(agent)
     if not summary:
         raise ProviderError("compaction produced an empty summary")
-    tail = _select_tail(agent.history.messages, keep_turns)
+    tail = _select_tail(
+        agent.history.messages, keep_turns,
+        budget_chars=_tail_budget(getattr(agent, "context_length", None)),
+    )
     agent.history.replace_with_summary(summary, tail)
     agent.mark_compacted()
     # Drop the context footprint: history was just rebuilt, so the last

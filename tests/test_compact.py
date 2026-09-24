@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from quickcode.core.agent import AgentInstance, PermissionOutcome
+from quickcode.core.agent import AgentInstance, Ledger, PermissionOutcome
 from quickcode.core.compact import _select_tail, run_compaction, should_compact
 from quickcode.core.events import TextDelta, TurnDone, Usage
 from quickcode.core.history import History
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
-from quickcode.providers.base import ChatMessage, ChatRequest
+from quickcode.providers.base import ChatMessage, ChatRequest, ProviderError
 
 
 class StubProvider:
@@ -102,6 +102,98 @@ async def test_run_compaction_rebuilds_history_and_reminds():
     assert "summarized" in joined
     # and the flag is now consumed
     assert agent.take_post_compaction() is False
+
+
+def _long_task(rounds: int, *, result_chars: int = 50) -> list[ChatMessage]:
+    """One user request worked through ``rounds`` rounds of parallel calls."""
+    msgs = [ChatMessage(role="user", content="do the big thing")]
+    for i in range(rounds):
+        msgs.append(ChatMessage(role="assistant", content="", tool_calls=[
+            {"id": f"a{i}", "name": "read", "arguments": "{}"},
+            {"id": f"b{i}", "name": "grep", "arguments": "{}"},
+        ]))
+        msgs.append(ChatMessage(role="tool", content="x" * result_chars, tool_call_id=f"a{i}"))
+        msgs.append(ChatMessage(role="tool", content="y" * result_chars, tool_call_id=f"b{i}"))
+    msgs.append(ChatMessage(role="assistant", content="all done"))
+    return msgs
+
+
+def _assert_pairs_intact(tail: list[ChatMessage]) -> None:
+    assert not tail or tail[0].role != "tool", "the tail starts with an orphaned result"
+    called = {tc["id"] for m in tail if m.role == "assistant" for tc in m.tool_calls}
+    answered = {m.tool_call_id for m in tail if m.role == "tool"}
+    assert called == answered
+
+
+def test_one_long_turn_is_compacted_rather_than_kept_whole():
+    """The commonest long session is one request worked for many rounds. With
+    fewer user turns than ``keep_turns`` the whole of it was "the tail", so
+    compaction summarized nothing and added the summary on top."""
+    msgs = _long_task(20)
+    tail = _select_tail(msgs, keep_turns=2)
+    assert 0 < len(tail) < len(msgs) // 2
+    assert tail[-1].content == "all done"
+    _assert_pairs_intact(tail)
+
+
+def test_a_tail_too_big_for_the_window_is_cut_between_rounds():
+    msgs = [ChatMessage(role="user", content="earlier"), ChatMessage(role="assistant", content="ok")]
+    msgs += _long_task(40, result_chars=2_000)
+    tail = _select_tail(msgs, keep_turns=2, budget_chars=20_000)
+    assert sum(len(m.content) for m in tail) <= 20_000
+    assert tail[-1].content == "all done"
+    _assert_pairs_intact(tail)
+
+
+class _FailsMidway:
+    async def stream_chat(self, req):
+        yield TextDelta("half a summ")
+        yield Usage(input_tokens=90, output_tokens=3, cost_usd=0.2)
+        yield TurnDone("error", "upstream overloaded")
+
+    async def list_models(self):
+        return []
+
+
+async def test_a_summary_cut_off_by_an_error_leaves_history_alone():
+    agent = _agent(_FailsMidway())
+    agent.history.push_user("u0")
+    before = list(agent.history.messages)
+
+    with pytest.raises(ProviderError, match="overloaded"):
+        await run_compaction(agent, keep_turns=1)
+
+    assert agent.history.messages == before
+
+
+async def test_the_summarization_request_is_counted_as_spend():
+    """It is the biggest request a session makes -- nearly a full window."""
+    agent = _agent(StubProvider("SUMMARY"))
+    q = agent.bus.subscribe(maxsize=0)
+    for i in range(3):
+        agent.history.push_user(f"u{i}")
+
+    await run_compaction(agent, keep_turns=1)
+
+    assert agent.ledger.input_tokens == 10
+    assert agent.ledger.output_tokens == 5
+    seen = []
+    while not q.empty():
+        seen.append(q.get_nowait())
+    assert any(isinstance(ev, Usage) and ev.input_tokens == 10 for ev in seen)
+    # Spend, not context: the rebuilt history is not the request that built it.
+    assert agent.ledger.last_input_tokens == 0
+
+
+def test_a_replayed_ledger_does_not_measure_context_from_before_a_compaction():
+    events = [
+        {"type": "usage", "input_tokens": 90_000, "output_tokens": 500},
+        {"type": "compacted", "summary_chars": 1200, "manual": False},
+    ]
+    ledger = Ledger.from_events(events)
+    assert ledger.input_tokens == 90_000
+    assert ledger.last_input_tokens == 0
+    assert ledger.last_output_tokens == 0
 
 
 if __name__ == "__main__":
