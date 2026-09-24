@@ -204,7 +204,7 @@ Only these three sources exist today:
 
 | Trigger | Reminder content |
 |---|---|
-| Post-compaction first turn | `Earlier conversation was summarized above. Trust the summary; re-read files before editing them.` (`prompts/compact.POST_COMPACTION_REMINDER`) |
+| Post-compaction first turn — or, after a compaction *inside* a turn, straight away, as a reminder-only user message with the mode note beside it (docs/ARCHITECTURE.md §Context guard) | `Earlier conversation was summarized above. Trust the summary; re-read files before editing them.` (`prompts/compact.POST_COMPACTION_REMINDER`) |
 | Permission mode changed since the last turn | One line per mode, from `prompts/system._MODE_REMINDERS`. Sent **only when it is news** — restating the mode every turn was a fixed per-request cost for a sentence the model already had. |
 | Turn iteration guard reached (`runtime.agent_loop.max_rounds`, 50 by default) | `You are over the iteration budget. Wrap up: report state and next steps.` |
 
@@ -235,7 +235,9 @@ Tool descriptions are prompts too — the highest-leverage ones. House rules (fu
 
 ## 4. Compaction prompt
 
-Run as a one-off request (same model) when the token ledger crosses ~80% of the context window, or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history. It declares the conversation's tools but tells the model not to call them: tools lead the cached prefix, so a request with none would re-send nearly a full window uncached. A reply with no summary text is refused and history is left alone.
+Run as a one-off request (same model) when the token ledger crosses ~80% of the context window after a turn, when the context guard estimates that the next request *inside* a turn would cross it (docs/ARCHITECTURE.md §Context guard), or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history. It declares the conversation's tools but tells the model not to call them: tools lead the cached prefix, so a request with none would re-send nearly a full window uncached. A reply with no summary text is refused and history is left alone.
+
+The request is fitted to the window before it is sent, since the history it summarizes is nearly a window by definition and more than one when a turn overflowed: the oldest tool results in it lose their middle first, then all of them down to one cap, and only if that is not enough are the oldest rounds left out (never the seed of an earlier compaction). The history itself is not cut. A summary request refused for length anyway is fitted once more, with a wider margin, and resent.
 
 ```xml
 <task>
@@ -291,6 +293,10 @@ many rounds — the tail is its last `keep_turns` rounds instead, and the tail
 is capped at a quarter of the context window (`core/compact.TAIL_SHARE`), so a
 compaction cannot rebuild a history already over the threshold that
 triggered it. The summarization request's own usage is logged and counted.
+A compaction inside a turn is cut the same way, between two rounds; the
+post-compaction reminder then follows the tail as a user message of its own,
+because there is no next user message to carry it before the model's next
+request.
 
 ## 5. Headless / print mode (`-p`)
 

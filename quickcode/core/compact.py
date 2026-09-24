@@ -4,15 +4,26 @@ When the token ledger crosses ~80% of the model's context window (or on
 manual /compact), we run a one-off request that summarizes the
 conversation, then rebuild history as [summary seed] + the last few verbatim
 turns (cut where no tool call loses its result). See docs/PROMPTS.md §4.
+Inside a turn, the context guard (``core/context_guard.py``) calls the same
+``run_compaction`` between two rounds.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from quickcode.core.context_size import (
+    CHARS_PER_TOKEN,
+    learn_window,
+    message_chars,
+    request_estimate,
+    tokens,
+    trim_tool_results,
+)
 from quickcode.core.events import TextDelta, TurnDone, Usage
 from quickcode.prompts.compact import COMPACTION_PROMPT
 from quickcode.providers.base import ChatMessage, ChatRequest, ProviderError
+from quickcode.providers.overflow import is_context_overflow
 
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance
@@ -23,10 +34,14 @@ COMPACT_RATIO = 0.8
 # long turns kept whole could otherwise rebuild a history already back over
 # the threshold that triggered the compaction, and it would run every turn.
 TAIL_SHARE = 0.25
-# Rough, and only used for that cap. A tail smaller than the floor is always
-# worth keeping whole, whatever the window says.
-_CHARS_PER_TOKEN = 4
+# A tail smaller than the floor is always worth keeping whole, whatever the
+# window says.
 _MIN_TAIL_CHARS = 8_000
+# The summary request fills at most this share of what the window leaves after
+# the reply's budget: its size is partly a chars/4 guess. The second share is
+# for the one retry after the provider refused the first as too long anyway.
+SUMMARY_FILL = 0.9
+SUMMARY_RETRY_FILL = 0.6
 
 
 def should_compact(agent: AgentInstance, ratio: float = COMPACT_RATIO) -> bool:
@@ -37,16 +52,10 @@ def should_compact(agent: AgentInstance, ratio: float = COMPACT_RATIO) -> bool:
     return pct >= ratio * 100.0
 
 
-def _size(m: ChatMessage) -> int:
-    return len(m.content or "") + sum(
-        len(str(tc.get("arguments", ""))) for tc in m.tool_calls
-    )
-
-
 def _tail_budget(context_length: int | None) -> int | None:
     if not context_length:
         return None
-    return max(_MIN_TAIL_CHARS, int(context_length * TAIL_SHARE * _CHARS_PER_TOKEN))
+    return max(_MIN_TAIL_CHARS, int(context_length * TAIL_SHARE * CHARS_PER_TOKEN))
 
 
 def _select_tail(
@@ -75,11 +84,11 @@ def _select_tail(
         later = [i for i in starts if i > 0]
         cut = later[-min(keep_turns, len(later))] if later else len(messages)
     if budget_chars is not None:
-        size = sum(_size(m) for m in messages[cut:])
+        size = sum(message_chars(m) for m in messages[cut:])
         for nxt in (i for i in starts if i > cut):
             if size <= budget_chars:
                 break
-            size -= sum(_size(m) for m in messages[cut:nxt])
+            size -= sum(message_chars(m) for m in messages[cut:nxt])
             cut = nxt
     return messages[cut:]
 
@@ -93,9 +102,22 @@ async def _summarize(agent: AgentInstance) -> str:
     summarizes. Its usage is emitted like any round's for the same reason: it
     is the largest request a session makes, and it was being counted nowhere.
     """
+    try:
+        return await _summary_request(agent, SUMMARY_FILL)
+    except ProviderError as e:
+        # The fit rests partly on chars/4, which code-dense text beats. Refused
+        # for length, it is fitted again -- to the window the refusal names, if
+        # it names one -- with a wider margin, once.
+        if not is_context_overflow(str(e)):
+            raise
+        learn_window(agent, str(e))
+        return await _summary_request(agent, SUMMARY_RETRY_FILL)
+
+
+async def _summary_request(agent: AgentInstance, fill: float) -> str:
     from quickcode.core.loop import _tools_for
 
-    messages = agent.history.build_messages()  # [system, *history]
+    messages = _fit_for_summary(agent, agent.history.build_messages(), fill)
     messages = [*messages, ChatMessage(role="user", content=COMPACTION_PROMPT)]
     req = ChatRequest(
         model=agent.model, messages=messages, tools=_tools_for(agent),
@@ -113,6 +135,52 @@ async def _summarize(agent: AgentInstance) -> str:
             # accepting it would replace the history with half a handoff.
             raise ProviderError(ev.error)
     return "".join(parts).strip()
+
+
+def _fit_for_summary(
+    agent: AgentInstance, messages: list[ChatMessage], fill: float = SUMMARY_FILL
+) -> list[ChatMessage]:
+    """The request to summarize, cut down until it fits the window.
+
+    The history being summarized is, by definition, nearly a window already --
+    and when a turn's tool results overflowed it, more than one. A summary
+    request that is refused as too long left the conversation with no way
+    forward at all, ``/compact`` included. So: the oldest tool results lose
+    their middle first (the handoff needs them least), then the rest; if
+    what remains still does not fit, the oldest rounds are left out whole.
+    Only the request is cut -- the history it summarizes is left alone.
+    """
+    window = agent.context_length
+    if not window:
+        return messages
+    reserve = min(getattr(agent, "max_tokens", 0) or 0, window // 4)
+    budget = int((window - reserve) * fill)
+    over = request_estimate(agent)[0] + tokens(len(COMPACTION_PROMPT)) - budget
+    if over <= 0:
+        return messages
+    need = over * CHARS_PER_TOKEN
+    out = list(messages)
+    for oldest_first in (True, False):
+        need -= trim_tool_results(out, need, oldest_first=oldest_first)[1]
+        if need <= 0:
+            return out
+    # Left out from the front, a round at a time. A cut lands only where a
+    # round begins, so no result loses its call; the seed of an earlier
+    # compaction stays, since it is the only record of what came before it.
+    # Not when the history is not what is over: dropping it would lose the
+    # conversation and still not fit.
+    system, body = out[0], out[1:]
+    if need >= sum(message_chars(m) for m in body):
+        return out
+    first = 1 if body and body[0].content.startswith("<compaction-summary>") else 0
+    starts = [i for i, m in enumerate(body) if i > first and m.role != "tool"]
+    cut = first
+    for nxt in starts[:-1]:
+        if need <= 0:
+            break
+        need -= sum(message_chars(m) for m in body[cut:nxt])
+        cut = nxt
+    return [system, *body[:first], *body[cut:]]
 
 
 async def run_compaction(agent: AgentInstance, *, keep_turns: int = 2) -> str:

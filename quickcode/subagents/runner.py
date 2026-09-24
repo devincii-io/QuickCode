@@ -216,6 +216,7 @@ def _prepare_child(
         permission_cb=deny_prompt,
         hooks=child_hooks(deps.hooks),
         limits=deps.limits,
+        context_length=deps.window_for(model),
     )
     # Registered immediately so the agent is resumable via send_message even if
     # this first run errors out below.

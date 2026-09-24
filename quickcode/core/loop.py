@@ -8,6 +8,9 @@ Rules that matter (docs/ARCHITECTURE §The agent loop):
   - Failed tools still return a result with is_error so the model can recover.
   - Loop guard: ``runtime.agent_loop.max_rounds`` tool rounds (50 by default),
     then a wrap-up reminder.
+  - Context guard: every request is checked against the window first, and a
+    refusal for length is answered by shrinking and one retry
+    (``core/context_guard.py``).
 """
 
 from __future__ import annotations
@@ -15,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
+from quickcode.core.context_guard import before_request, recover_from_overflow
 from quickcode.core.events import (
     AgentStatus,
     AssembledToolCall,
@@ -37,6 +42,7 @@ from quickcode.core.permissions import Decision
 from quickcode.kernel.composition import RuntimeLimits
 from quickcode.prompts.system import system_reminder
 from quickcode.providers.base import ChatRequest, ProviderError
+from quickcode.providers.overflow import is_context_overflow
 from quickcode.tools.base import clean_text
 
 if TYPE_CHECKING:
@@ -69,6 +75,11 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
     # mid-turn must not move the budget under a turn already counting.
     max_rounds = max(1, int(getattr(agent, "limits", RuntimeLimits()).max_rounds))
     for round_no in range(max_rounds + 1):
+        # Between rounds, where a compaction cannot part a call from its result.
+        compacted = await _unless_cancelled(agent, before_request(agent))
+        if agent.cancelled:
+            agent.bus.emit(AgentStatus("interrupted"))
+            return last_text
         if round_no == max_rounds:
             wrap_up = system_reminder(
                 "You are over the iteration budget. Wrap up: report state and next steps."
@@ -76,7 +87,7 @@ async def run_turn(agent: AgentInstance, user_input: str) -> str:
             agent.bus.emit(ContextInjection(wrap_up))
             agent.history.push_user("", [wrap_up])
         agent.bus.emit(AgentStatus("sending"))
-        msg = await _stream_once(agent)
+        msg = await _stream_once(agent, compacted=bool(compacted))
         if msg is None:
             # An error surfaced itself (``AgentStatus("error")``); a cancel had
             # nothing to surface it with, so a client that saw the stream stop
@@ -133,6 +144,16 @@ def _tools_for(agent: AgentInstance):
     return [t.schema() for t in tools]
 
 
+async def _unless_cancelled(agent: AgentInstance, aw: Awaitable) -> Any:
+    """``aw``'s result, or None if the agent was interrupted first."""
+    out: list = []
+
+    async def run() -> None:
+        out.append(await aw)
+
+    return out[0] if await _until_cancelled(agent, run()) else None
+
+
 async def _until_cancelled(agent: AgentInstance, aw: Awaitable) -> bool:
     """Await ``aw`` unless the agent is interrupted first. True if it finished.
 
@@ -178,8 +199,14 @@ class _Round:
         self.usage = Usage()
         self.finish = "stop"
         self.error: str | None = None
+        # A refusal for length the caller asked to see before anyone else.
+        self.held: str | None = None
         # True once the provider's stream ran out on its own.
         self.complete = False
+
+    def silent(self) -> bool:
+        """Nothing of this round has been shown: a retry would repeat nothing."""
+        return not (self.text or self.reasoning or self.calls)
 
     def _call(self, cid: str, name: str = "") -> tuple[list[str], list[str]]:
         return self.calls.setdefault(cid, ([name], []))
@@ -239,7 +266,37 @@ class _Round:
             agent.bus.emit(ToolResultEvent(cid, name, reason, True, 0, {}))
 
 
-async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
+@dataclass
+class _TooLong:
+    """A request the provider refused for length, before anything of it showed.
+
+    Nothing about it has been surfaced yet -- no error on the bus, no state
+    flip -- so a retry that succeeds leaves no trace of a failure.
+    """
+
+    error: str
+
+
+async def _stream_once(agent: AgentInstance, *, compacted: bool = False) -> AssistantMessage | None:
+    """One request, retried once if the provider refused it for length."""
+    out = await _request(agent, hold_overflow=True)
+    if not isinstance(out, _TooLong):
+        return out
+    shrunk = await _unless_cancelled(
+        agent, recover_from_overflow(agent, out.error, compacted=compacted)
+    )
+    if shrunk:
+        agent.bus.emit(AgentStatus("sending"))
+        return await _request(agent, hold_overflow=False)
+    if not agent.cancelled:
+        agent.bus.emit(TurnDone("error", out.error))
+        agent.bus.emit(AgentStatus("error"))
+    return None
+
+
+async def _request(
+    agent: AgentInstance, *, hold_overflow: bool
+) -> AssistantMessage | _TooLong | None:
     req = ChatRequest(
         model=agent.model,
         messages=agent.history.build_messages(),
@@ -250,6 +307,9 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
     rnd = _Round()
     agent.bus.emit(AgentStatus("streaming"))
 
+    def too_long(error: str) -> bool:
+        return hold_overflow and rnd.silent() and is_context_overflow(error)
+
     async def consume() -> None:
         stream = agent.provider.stream_chat(req)
         try:
@@ -259,6 +319,10 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
                 if isinstance(ev, ReasoningBlock):
                     rnd.reasoning_blocks.append(ev.block)
                     continue
+                if isinstance(ev, TurnDone) and ev.error and too_long(ev.error):
+                    # Held back rather than emitted: the caller may yet recover.
+                    rnd.held = ev.error
+                    return
                 agent.bus.emit(ev)
                 rnd.take(ev)
                 if rnd.error is not None:
@@ -279,6 +343,9 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
         # for the next token or the read timeout.
         await _until_cancelled(agent, consume())
     except ProviderError as e:
+        if too_long(str(e)):
+            rnd.abandon(agent, "[round failed]")
+            return _TooLong(str(e))
         # Emit the error once (TurnDone carries the text); AgentStatus only
         # flips the state indicator so it is not rendered a second time.
         agent.bus.emit(TurnDone("error", str(e)))
@@ -291,6 +358,9 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
         # round's public leftovers are still ours to close.
         rnd.abandon(agent, "[round failed]")
         raise
+    if rnd.held is not None:
+        rnd.abandon(agent, "[round failed]")
+        return _TooLong(rnd.held)
     if rnd.error is not None:
         # The provider's TurnDone was already emitted. Flip state and stop
         # without duplicating the same error in the UI.

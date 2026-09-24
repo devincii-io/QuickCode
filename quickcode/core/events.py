@@ -121,6 +121,27 @@ class AgentStatus:
     detail: str = ""
 
 
+@dataclass
+class Compacted:
+    """The context guard summarized the history between two rounds of a turn.
+
+    ``messages`` is the rebuilt history as it stood at that moment, for the
+    recorder: a session log replaces everything before a compaction with the
+    messages it records, and by the time the recorder reads this event the
+    loop may already have appended the next round. It never reaches the wire.
+    """
+
+    summary_chars: int
+    messages: list = field(default_factory=list, repr=False)
+
+
+@dataclass
+class SystemNote:
+    """A harness remark for the transcript. The model is not sent it."""
+
+    text: str
+
+
 AgentEvent = (
     TextDelta
     | ReasoningDelta
@@ -133,6 +154,8 @@ AgentEvent = (
     | ToolResultEvent
     | ContextInjection
     | AgentStatus
+    | Compacted
+    | SystemNote
 )
 
 
