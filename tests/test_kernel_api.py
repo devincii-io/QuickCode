@@ -156,3 +156,46 @@ def test_an_unknown_conversation_is_a_404_not_the_live_prompt(tmp_path):
     with make_client(make_manager(tmp_path)) as client:
         res = client.get("/api/prompt?conv=nope")
     assert res.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# facts the cards used to go without
+# --------------------------------------------------------------------------
+
+def _plugin(payload: dict, plugin_id: str) -> dict:
+    return next(p for p in payload["plugins"] if p["id"] == plugin_id)
+
+
+def test_the_active_provider_says_where_it_talks_and_how_many_models(tmp_path):
+    manager = make_manager(tmp_path)
+    manager.config.profile.base_url = "https://user:s3cret@llm.example.com:8443/v1/?key=abc"
+    with make_client(manager) as client:
+        before = client.get("/api/kernel").json()
+        client.get("/api/models")        # loads the catalog
+        after = client.get("/api/kernel").json()
+
+    provider = f"provider.{manager.config.profile.provider}"
+    md = _plugin(before, provider)["metadata"]
+    # None, not 0: no catalog yet is not an empty catalog.
+    assert md["model_count"] is None
+    assert md["endpoint"] == "https://llm.example.com:8443/v1"
+    assert _plugin(after, provider)["metadata"]["model_count"] == 2
+    # The card is screenshot material; what identifies the endpoint stays and
+    # what would let someone use it does not.
+    assert "s3cret" not in json.dumps(after) and "key=abc" not in json.dumps(after)
+
+
+def test_a_tool_carries_the_signature_its_card_shows(tmp_path):
+    """One request for the Tools page instead of one per tool."""
+    with make_client(make_manager(tmp_path)) as client:
+        payload = client.get("/api/kernel").json()
+        detail = client.get("/api/kernel/plugins/tool.read").json()
+
+    signature = _plugin(payload, "tool.read")["metadata"]["signature"]
+    schema = json.loads(detail["view"]["content"])
+    assert signature.startswith("read(")
+    for name in schema["parameters"]["properties"]:
+        assert name in signature
+    for plugin in payload["plugins"]:
+        if plugin["kind"] == "tool":
+            assert plugin["metadata"]["signature"].startswith(plugin["title"] + "(")

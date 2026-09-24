@@ -14,7 +14,6 @@
 // composer, for the three install-level things people change mid-conversation.
 
 import { esc } from "../util.js";
-import { store } from "../store.js";
 import { renderAgent, renderAgentsIndex } from "./agents.js";
 import { renderCompositions } from "./compositions.js";
 import { renderDetail } from "./detail.js";
@@ -105,8 +104,6 @@ async function load(api) {
     facts: {
       schemas: {}, ranges, mcpTools,
       connected: kernel.mcp_servers || [],
-      endpoint: store.bootstrap?.base_url || "",
-      modelCount: null,
     },
     go,
     touched: () => {},        // a plugin changed; the cached kernel copy is live

@@ -324,6 +324,8 @@ def create_app(
             tools=list(manager.registry_factory().tools.values()),
             env=manager.env,
             active_provider=manager.config.profile.provider,
+            active_endpoint=manager.config.profile.base_url,
+            model_count=manager.catalog_size(),
         )
 
     def _kernel_payload(manager: ConversationManager) -> dict:

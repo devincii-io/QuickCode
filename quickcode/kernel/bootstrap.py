@@ -46,6 +46,8 @@ def build_registry(
     prompt_bodies: dict[str, str] | None = None,
     env: object | None = None,
     active_provider: str = "",
+    active_endpoint: str = "",
+    model_count: int | None = None,
 ) -> PluginRegistry:
     from quickcode.plugins import loader
     from quickcode.tools.registry import default_registry
@@ -118,7 +120,10 @@ def build_registry(
     registry.register_all(manifest.prompt_section_specs(prompt_bodies))
     registry.register_all(manifest.tool_specs(tools))
     registry.register_all(manifest.agent_specs(agent_defs or {}))
-    registry.register_all(manifest.provider_specs(providers or {}, active=active_provider))
+    registry.register_all(manifest.provider_specs(
+        providers or {}, active=active_provider, endpoint=active_endpoint,
+        model_count=model_count,
+    ))
     registry.register_all(manifest.mcp_specs(mcp_configs or {}))
     # Authored specs land *after* the internal ones, so a reserved-id collision
     # loses. Discovery already refuses those with ``id_reserved``; this is the

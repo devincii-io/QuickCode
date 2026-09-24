@@ -237,14 +237,17 @@ export async function renderParts(host, ctx, slug, query = {}) {
     openPluginView(ctx.api, ctx.kernel.plugins.find((p) => p.id === card.dataset.id));
   });
 
-  // Tools show their real signature, which means reading each declaration.
-  // Done after the first paint and cached on ctx, so it costs one pass per
-  // configuration session rather than one per visit.
+  // Tools show their real signature. The kernel payload carries it; reading a
+  // declaration is only the fallback, done after the first paint and cached on
+  // ctx, so even then it costs one pass per configuration session.
   if (part.slug === "tools") await fillSignatures(ctx, all, list);
 }
 
 async function fillSignatures(ctx, tools, list) {
-  const missing = tools.filter((t) => ctx.facts.schemas[t.id] === undefined);
+  // The kernel carries each tool's signature on its payload now; a request per
+  // tool is only the fallback for a plugin that arrived without one.
+  const missing = tools.filter(
+    (t) => ctx.facts.schemas[t.id] === undefined && !t.metadata?.signature);
   if (!missing.length) { repaintSignatures(ctx, list); return; }
   await Promise.all(missing.map(async (t) => {
     try {

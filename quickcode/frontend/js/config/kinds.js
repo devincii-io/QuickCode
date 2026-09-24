@@ -115,7 +115,7 @@ function flagsHtml(plugin) {
 }
 
 function toolBody(plugin, facts) {
-  const sig = facts.schemas?.[plugin.id];
+  const sig = facts.schemas?.[plugin.id] || plugin.metadata?.signature;
   return `<div class="k-body mono">${
     sig ? esc(sig) : `<span class="k-dim">${esc(plugin.title)}(…)</span>`}</div>
     <div class="k-facts">${flagsHtml(plugin)}
@@ -167,13 +167,16 @@ function mcpBody(plugin, facts) {
     </div>`;
 }
 
-function providerBody(plugin, facts) {
+// The endpoint arrives with its credentials already stripped, and the model
+// count stays absent until a catalog has been fetched — "0 models" would claim
+// an empty catalog that nobody has asked for yet.
+function providerBody(plugin) {
   const md = plugin.metadata || {};
   return `<div class="k-facts">
     ${md.active ? `<span class="k-fact">active</span>` : `<span class="k-fact k-dim">available</span>`}
-    ${facts.endpoint && md.active ? `<span class="k-fact mono">${esc(facts.endpoint)}</span>` : ""}
-    ${facts.modelCount != null && md.active
-      ? `<span class="k-fact">${num(facts.modelCount)} models</span>` : ""}
+    ${md.endpoint ? `<span class="k-fact mono">${esc(md.endpoint)}</span>` : ""}
+    ${md.model_count != null
+      ? `<span class="k-fact">${num(md.model_count)} models</span>` : ""}
   </div>`;
 }
 
@@ -197,7 +200,7 @@ export function bodyHtml(plugin, facts = {}) {
     case "prompt_section": return promptBody(plugin, facts);
     case "agent": return agentBody(plugin);
     case "mcp_server": return mcpBody(plugin, facts);
-    case "provider": return providerBody(plugin, facts);
+    case "provider": return providerBody(plugin);
     default: return valuesBody(plugin);
   }
 }

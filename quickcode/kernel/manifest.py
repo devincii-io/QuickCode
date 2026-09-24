@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from quickcode.core.permissions import DEFAULT_SPEC, Mode
+from quickcode.kernel.facts import display_endpoint, tool_signature
 from quickcode.kernel.spec import (
     Audience,
     Effect,
@@ -1054,6 +1055,7 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
         read_only = bool(getattr(tool, "is_read_only", False))
         prose = _tool_prose(tool)
 
+        signature = ""
         try:
             schema = tool.schema()
             payload = json.dumps(
@@ -1061,6 +1063,7 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
                  "parameters": schema.parameters},
                 indent=2,
             )
+            signature = tool_signature(schema.name, schema.parameters)
         except Exception as exc:
             payload = f"schema unavailable: {exc}"
 
@@ -1100,7 +1103,8 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
             path=getattr(tool, "path", "") or "",
             metadata={"tool_name": name,
                       "read_only": read_only,
-                      "character": _tool_character(tool)},
+                      "character": _tool_character(tool),
+                      "signature": signature},
             view=_view("json", payload, f"{name} schema",
                        getattr(tool, "path", "") or ""),
         ))
@@ -1320,6 +1324,7 @@ _READ_ONLY_CLAIM_HELP = (
 
 
 def _authored_tool_spec(plugin: Any, tool: Any) -> PluginSpec:
+    signature = ""
     try:
         schema = tool.schema()
         payload = json.dumps(
@@ -1327,6 +1332,7 @@ def _authored_tool_spec(plugin: Any, tool: Any) -> PluginSpec:
              "parameters": schema.parameters},
             indent=2,
         )
+        signature = tool_signature(schema.name, schema.parameters)
     except Exception as exc:
         payload = f"schema unavailable: {exc}"
 
@@ -1378,6 +1384,7 @@ def _authored_tool_spec(plugin: Any, tool: Any) -> PluginSpec:
             "timeout_ms": plugin.timeout_ms,
             "output": plugin.output,
             "params": [p.name for p in plugin.params],
+            "signature": signature,
         },
         view=_view("json", payload, f"{plugin.name} schema", plugin.path),
     )
@@ -1459,7 +1466,14 @@ def authored_specs(plugins: Any, tools: dict[str, Any] | None = None) -> list[Pl
     return out
 
 
-def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[PluginSpec]:
+def provider_specs(factories: dict[str, Any], *, active: str = "", endpoint: str = "",
+                   model_count: int | None = None) -> list[PluginSpec]:
+    """One plugin per provider factory.
+
+    ``endpoint`` and ``model_count`` describe the *active* one only -- the base
+    URL it talks to and how many models its loaded catalog lists (None until a
+    catalog has been fetched). An inactive provider has neither yet.
+    """
     out: list[PluginSpec] = []
     for name in sorted(factories):
         is_active = name == active
@@ -1482,7 +1496,9 @@ def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[Plugi
                 "exist and which key is used, for every project on this machine."
             ),
             docs_anchor="docs/ARCHITECTURE.md#provider-layer",
-            metadata={"provider": name, "active": is_active},
+            metadata={"provider": name, "active": is_active,
+                      "endpoint": display_endpoint(endpoint) if is_active else "",
+                      "model_count": model_count if is_active else None},
         ))
     return out
 
