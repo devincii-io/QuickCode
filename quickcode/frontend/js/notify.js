@@ -95,8 +95,9 @@ export function describe(entry) {
   return `${entry.count} unseen — ${LABEL[entry.kind]}`;
 }
 
-/** What a desktop notification says. Nothing from the conversation itself —
- *  an error message or a command can hold what a lock screen should not show. */
+/** What a desktop notification says: the agent's name and the kind of event.
+ *  Never a message, a command or an error text — those can hold what a lock
+ *  screen should not show. */
 export function noticeCopy(kind, who, detail = "") {
   const name = who || "An agent";
   if (kind === "review") {

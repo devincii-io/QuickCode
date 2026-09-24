@@ -47,9 +47,10 @@ Anything else becomes:
   only once *Desktop notifications* is switched on under Appearance (the
   sidebar's *Appearance*, or Settings ▸ Appearance). It is off by default, and
   the browser is asked for permission by that toggle and never otherwise.
-  Notifications are silent and say which agent and what kind of event, never
-  the conversation's text: an error message or a command is not for a lock
-  screen. Clicking one brings the window forward on that pane. Where the window
+  Notifications are silent and carry the agent's name (the session title the
+  sidebar shows) and the kind of event — for a permission prompt, the tool's
+  name — but never a message, a command or an error text, which are not for
+  a lock screen. Clicking one brings the window forward on that pane. Where the window
   has no Notification API — the native window's WebView may not — the toggle
   is disabled with a note, and the badges carry on alone.
 
@@ -180,8 +181,9 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 
 ## Command palette
 
-`Ctrl+K` (`⌘K` on macOS) opens a searchable list of everything you can do from
-where you are (`js/palette.js`). Type to filter — every word must match, the
+`Ctrl+K` (`⌘K` on macOS — and only that there, since `Ctrl+K` in a macOS
+text field deletes to the end of the line) opens a searchable list of
+everything you can do from where you are (`js/palette.js`). Type to filter — every word must match, the
 start of a title ranks first, then the start of a word in it, then a word in
 its description — `↑`/`↓` (or `PgUp`/`PgDn`) choose, `Enter` runs, `Esc` or
 `Ctrl+K` again closes. It is a `role="dialog"` holding a combobox and a
@@ -218,7 +220,7 @@ Help ▸ Keyboard read.
 
 | Key | Action |
 |---|---|
-| `Ctrl+K` / `⌘K` | Command palette |
+| `Ctrl+K` (`⌘K` on macOS) | Command palette |
 | `Alt+N` | New agent pane in this workspace |
 | `Alt+Z` | Maximise the focused pane, or restore the layout |
 | `Alt+B` | Show or hide the workspace sidebar |

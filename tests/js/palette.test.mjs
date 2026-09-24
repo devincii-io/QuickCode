@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupItems, rankItems, scoreItem } from "../../quickcode/frontend/js/palette.js";
+import { groupItems, isPaletteKey, rankItems, scoreItem } from "../../quickcode/frontend/js/palette.js";
 import { workspaceItems } from "../../quickcode/frontend/js/workspace_palette.js";
 import { SLASH_COMMANDS } from "../../quickcode/frontend/js/composer/commands.js";
 import { SLASH } from "../../quickcode/frontend/js/help/shortcuts.js";
@@ -40,6 +40,18 @@ test("a single run of letters in order is a weak match of its own", () => {
 test("ties keep the order the caller gave", () => {
   const items = [item("Open alpha"), item("Open beta"), item("Open gamma")];
   assert.deepEqual(titles(rankItems(items, "open")), ["Open alpha", "Open beta", "Open gamma"]);
+});
+
+test("the key is ⌘K on a Mac and Ctrl+K elsewhere, never both", () => {
+  const key = (mods) => ({ key: "k", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods });
+  assert.equal(isPaletteKey(key({ ctrlKey: true }), false), true);
+  assert.equal(isPaletteKey(key({ metaKey: true }), false), false);
+  assert.equal(isPaletteKey(key({ metaKey: true }), true), true);
+  // Ctrl+K on a Mac deletes to the end of the line in a text field.
+  assert.equal(isPaletteKey(key({ ctrlKey: true }), true), false);
+  assert.equal(isPaletteKey(key({ ctrlKey: true, key: "K" }), false), true);
+  assert.equal(isPaletteKey(key({ ctrlKey: true, shiftKey: true }), false), false);
+  assert.equal(isPaletteKey(key({ ctrlKey: true, key: "j" }), false), false);
 });
 
 test("groups come out in the order they first appear", () => {

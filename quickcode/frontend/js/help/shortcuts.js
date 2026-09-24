@@ -11,7 +11,7 @@
 import { SLASH_COMMANDS } from "../composer/commands.js";
 
 export const KEYS = [
-  ["Ctrl + K (⌘K)", "Open the command palette: slash commands, modes, the model, sessions, "
+  ["Ctrl + K (⌘K on a Mac)", "Open the command palette: slash commands, modes, the model, sessions, "
     + "panes and every Settings and Help page, searchable. In an agent pane it also "
     + "searches your past conversations"],
   ["Alt + N", "Open a new agent pane in this workspace"],

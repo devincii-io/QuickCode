@@ -253,11 +253,19 @@ export function openPalette({ items, load = null, search = null, searchGroup = "
   return m;
 }
 
-/** Ctrl+K / ⌘K in this document opens `open()`, or closes a palette already
- *  showing. Nothing happens under a modal dialog. */
+/** ⌘K on a Mac, Ctrl+K elsewhere. Only the one: on macOS Ctrl+K is the text
+ *  fields' own "delete to the end of the line". */
+export function isPaletteKey(e, mac) {
+  if (String(e.key).toLowerCase() !== "k" || e.altKey || e.shiftKey) return false;
+  return mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+}
+
+/** The palette key in this document opens `open()`, or closes a palette
+ *  already showing. Nothing happens under a modal dialog. */
 export function bindPaletteKey(open) {
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   document.addEventListener("keydown", (e) => {
-    if (e.key.toLowerCase() !== "k" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (!isPaletteKey(e, mac)) return;
     if (document.querySelector(".modal-backdrop, dialog[open]")) return;
     e.preventDefault();
     const showing = document.querySelector(".menu.palette");

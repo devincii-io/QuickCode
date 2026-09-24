@@ -25,12 +25,13 @@ export function renderWorkspaces(host) {
       Reopen closed pane restores the most recently closed pane. All projects also provides the full session history.
       Use Stop inside a pane to interrupt its agent before closing it if you want the work to stop.</p>
       ${sub("Appearance and settings")}
-      <p class="hp-p">Appearance in the sidebar controls text size, spacing, conversation width, metrics, and animation.
+      <p class="hp-p">Appearance in the sidebar controls text size, spacing, conversation width, metrics, animation,
+      and desktop notifications.
       Settings opens provider defaults, themes, agents, tools, and permissions. Each conversation also has its own model,
       permission mode, and composition controls beside the composer.</p>
       <p class="hp-p">Alt+N opens an agent. Alt+Z maximizes or restores. Alt+B toggles the sidebar.
       Alt+arrow keys focus another pane. These shortcuts also work while typing in an agent pane.
-      Ctrl+K (⌘K) opens the command palette for wherever you are: in a pane, its commands and past
+      Ctrl+K (⌘K on a Mac) opens the command palette for wherever you are: in a pane, its commands and past
       conversations; in the sidebar, every agent, workspace and page.</p>`,
   });
 }
