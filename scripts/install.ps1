@@ -31,8 +31,8 @@
     Install with pipx instead of creating a local .venv.
 
 .PARAMETER Dev
-    Install the "dev" extras (pytest, ruff, etc.) alongside QuickCode.
-    Only applies to the .venv path.
+    Install the "dev" dependency group (pytest, ruff, pyinstaller, etc.)
+    alongside QuickCode. Only applies to the .venv path.
 
 .PARAMETER SkipDependencyCheck
     Skip the Git/Python auto-install step (assumes both are already present).
@@ -179,17 +179,18 @@ else {
 
     Write-Step "Installing QuickCode into the virtual environment"
 
-    $extras = ""
+    $installSpec = $repoRoot + "[pty]"
+    $installArgs = @("-m", "pip", "install", "--editable", $installSpec)
     if ($Dev) {
-        $extras = "[dev,pty]"
+        # `dev` is a PEP 735 dependency group, not an extra: "[dev]" installs
+        # nothing and pip only warns. pip reads groups from 25.1 on, which the
+        # upgrade below provides.
+        $devGroup = (Join-Path $repoRoot "pyproject.toml") + ":dev"
+        $installArgs += @("--group", $devGroup)
     }
-    else {
-        $extras = "[pty]"
-    }
-    $installSpec = "$repoRoot$extras"
 
     & $venvPython -m pip install --upgrade pip
-    & $venvPython -m pip install --editable $installSpec
+    & $venvPython @installArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "pip install failed with exit code $LASTEXITCODE."
         exit 1
