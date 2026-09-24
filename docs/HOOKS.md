@@ -125,9 +125,11 @@ Per event, on top of the common fields:
 The payload is UTF-8. The hook runs in the project root with the environment
 QuickCode was started with, plus `QUICKCODE_PROJECT_DIR`, and with
 `PYTHONIOENCODING=utf-8` unless you set it yourself, so a Python hook on
-Windows reads the payload correctly. QuickCode's own model API key
-(`QUICKCODE_OPENROUTER_API_KEY`) is removed: no hook needs it, and a hook that
-logs its environment should not be how it leaks.
+Windows reads the payload correctly. QuickCode's own API keys — the model
+provider's (`QUICKCODE_OPENROUTER_API_KEY`, `QUICKCODE_ANTHROPIC_API_KEY`) and
+the web-search providers' — are removed, as they are from every process
+QuickCode starts (`quickcode/subproc.py`): no hook needs them, and a hook that
+logs its environment should not be how they leak.
 
 ## Output
 

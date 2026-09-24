@@ -136,6 +136,19 @@ async def test_the_exit_code_is_reported(tmp_path, jobs):
     assert jobs.get("bash_1").exit_code == 7
 
 
+async def test_a_finished_job_lets_go_of_its_pipe(tmp_path, jobs):
+    """Its output is in the ring by then. The pipe stayed open until the job
+    was garbage-collected: one descriptor per job, 32 kept per conversation."""
+    ctx = ctx_for(tmp_path, jobs)
+    await start(ctx, "echo done")
+    job = jobs.get("bash_1")
+
+    assert await asyncio.to_thread(job.finished.wait, 30)
+
+    assert job._proc.stdout.closed
+    assert "done" in await read(ctx, "bash_1")
+
+
 async def test_a_filter_keeps_matching_lines_and_can_end_the_wait(tmp_path, jobs):
     go, wait_for_go = gate_file(tmp_path)
     ctx = ctx_for(tmp_path, jobs)

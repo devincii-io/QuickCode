@@ -1,6 +1,6 @@
 """Ending everything a terminal started, not just the shell.
 
-``session._kill_tree`` is right for the agent's one-shot commands: ``bash -lc``
+``subproc.kill_tree`` is right for the agent's one-shot commands: ``bash -lc``
 has no job control, so everything the command starts stays in the shell's
 process group and one ``killpg`` ends it. An *interactive* shell is different.
 With job control on, every pipeline gets a process group of its own, so
@@ -104,12 +104,9 @@ def end_session(leader: int | None, *, leader_alive: bool = True) -> None:
     if leader is None:
         return
     if IS_WINDOWS:
-        # taskkill /T already walks the whole tree; there is no session to
-        # find. Imported late: the batch module owns that code path.
-        from quickcode.pty.session import _kill_tree
-
+        # taskkill /T already walks the whole tree; there is no session to find.
         if leader_alive:
-            _kill_tree(leader)
+            subproc.kill_tree(leader)
         return
 
     def members() -> set[int]:

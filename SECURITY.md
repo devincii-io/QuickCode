@@ -82,8 +82,9 @@ listed as they stand in 2.7.0.
 - Stored API keys are protected by Windows DPAPI (user-bound), which does not
   defend against anything already running as that user — including QuickCode's
   own shell tool. On Linux and macOS the stored key is only base64-encoded in a
-  `0600` file; the file permission is the whole control. The `bash` tool, the PTY and MCP subprocesses all inherit the
-  full environment.
+  `0600` file; the file permission is the whole control. (What the agent runs
+  no longer inherits a key set by environment variable; the store is readable
+  to it all the same.)
 - The released Windows installer is not code-signed.
 - The local server sets no `Content-Security-Policy`, and the loopback token is
   persistent per install and printed to stdout in the launch URL.

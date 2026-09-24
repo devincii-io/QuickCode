@@ -13,7 +13,7 @@ reader does forever). Threading an ``interactive=True`` flag through it would
 have produced one function with two disjoint halves.
 
 They also end differently. A one-shot ``bash -lc`` keeps everything in one
-process group, so ``_kill_tree`` is enough there; an interactive shell has job
+process group, so ``subproc.kill_tree`` is enough there; an interactive shell has job
 control, and ending it means ending its whole session (``pty.teardown``).
 
 **Why a PTY here at all**, when ``tools/bash.py`` deliberately stopped using
@@ -112,7 +112,7 @@ class InteractivePty:
             raise ValueError("argv must be a non-empty list")
         self.argv = [str(a) for a in argv]
         self.cwd = str(cwd) if cwd is not None else None
-        self.env = env
+        self.env = subproc.child_env() if env is None else env
         self.rows, self.cols = _clamp_size(*dimensions)
         self.pid: int | None = None
         self.output_done = threading.Event()   # the pty has nothing more to say
@@ -200,15 +200,13 @@ class InteractivePty:
             # terminal (bash's checkwinsize, a banner that centres itself)
             # sees the real geometry rather than 0x0.
             _set_winsize(master_fd, self.rows, self.cols)
-            proc = subproc.popen(
+            proc = subproc.spawn(  # its own session: see pty.teardown
                 self.argv,
                 cwd=self.cwd,
                 env=self.env,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                start_new_session=True,  # its own session: see pty.teardown
-                close_fds=True,
                 preexec_fn=_take_controlling_tty,
             )
         except Exception as exc:  # noqa: BLE001

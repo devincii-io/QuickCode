@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -79,7 +78,7 @@ def _use_pty(ctx: ToolCtx) -> bool:
     each turn from an error into a hang that only the timeout ends. Everything
     else the tty buys is spent before the model sees it: colour is stripped
     (``_clean_output``), and a progress bar arrives as carriage-return
-    spam. Process-tree kill works on both paths (``_kill_tree``).
+    spam. Process-tree kill works on both paths (``subproc.kill_tree``).
 
     Speed was the original reason and it turned out to be a smaller and more
     interesting one. ConPTY costs a flat ~3.0 s per command, measured on
@@ -204,7 +203,6 @@ class BashTool(Tool[BashInput]):
                 raise PtyNotWorthIt
             session = PtySession(argv, cwd=str(cwd))
             raw_out, returncode, timed_out = await asyncio.to_thread(session.run, timeout_s)
-            text = _clean_output(raw_out)
         except asyncio.CancelledError:
             # Stop, mid-command. Cancelling this coroutine does not reach the
             # child -- `run` is parked in a worker thread and `find /` would
@@ -214,25 +212,17 @@ class BashTool(Tool[BashInput]):
             if session is not None:
                 session.kill()
             raise
-        except Exception:  # noqa: BLE001 - any PTY failure -> subprocess fallback
-            # The fallback needs the same cancellation handling as the PTY
-            # path, and needs it more: this is what a plain `pip install
-            # quickcode` runs, without the `pty` extra. Stop was inert here --
-            # the UI told the user and the model the command had been
-            # interrupted while it ran happily to completion. `holder` is how
-            # this coroutine reaches the process the worker thread started.
-            holder: list = []
+        except Exception:  # noqa: BLE001 - any PTY failure -> plain pipes
+            # Stop has to reach this path too, and `communicate` kills the tree
+            # when it is cancelled: this is what Windows runs by default, and
+            # what a plain `pip install quickcode` runs without the `pty` extra.
             try:
-                return await asyncio.to_thread(
-                    _run_subprocess, argv, str(cwd), timeout_s, timeout_ms, ctx, holder
-                )
-            except asyncio.CancelledError:
-                proc = holder[0] if holder else None
-                if proc is not None and proc.poll() is None:
-                    _kill_tree(proc.pid, ctx)
-                raise
+                raw_out, returncode, timed_out = await _run_pipes(argv, str(cwd), timeout_s)
+            except OSError as exc:
+                return ToolResult(content=f"Error: failed to start command: {exc}",
+                                  is_error=True)
 
-        text = _cap(text)
+        text = _cap(_clean_output(raw_out))
 
         if timed_out:
             msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
@@ -358,58 +348,17 @@ def _collapse_redraws(line: str) -> str:
     return "".join(buf)
 
 
-def _run_subprocess(
-    argv: list[str], cwd: str, timeout_s: float, timeout_ms: int, ctx: ToolCtx,
-    holder: list | None = None,
-) -> ToolResult:
-    """Fallback path when the PTY backend is unavailable. Plain pipes.
+async def _run_pipes(
+    argv: list[str], cwd: str, timeout_s: float,
+) -> tuple[bytes, int | None, bool]:
+    """Plain pipes, stdin on the null device: ``(output, exit code, timed out)``.
 
-    ``holder`` is filled with the ``Popen`` as soon as it exists, so the caller
-    -- which is waiting on a worker thread and cannot see this frame -- can
-    kill the process tree if the turn is interrupted.
+    The same shape ``PtySession.run`` returns, so both paths share what
+    happens to the result.
     """
-    try:
-        proc = subproc.popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            # POSIX: a process group of its own (pgid == pid), so _kill_tree
-            # reaches `cmd &` and not just the shell. Ignored on Windows,
-            # where taskkill /T walks the tree instead.
-            start_new_session=True,
-        )
-    except OSError as exc:
-        return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
-    if holder is not None:
-        holder.append(proc)
-
-    try:
-        raw_out, _ = proc.communicate(timeout=timeout_s)
-        returncode = proc.returncode
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc.pid, ctx)
-        try:
-            raw_out, _ = proc.communicate(timeout=5)
-        except Exception:  # noqa: BLE001
-            raw_out = b""
-        text = _clean_output(raw_out)
-        text = _cap(text)
-        msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
-        return ToolResult(content=msg, is_error=True)
-
-    text = _clean_output(raw_out)
-    text = _cap(text)
-
-    if returncode != 0:
-        content = (
-            f"Command exited with code {returncode}.\n{text}"
-            if text
-            else f"Command exited with code {returncode}."
-        )
-        return ToolResult(content=content, is_error=True)
-
-    return ToolResult(content=text or "(no output)")
+    proc = await subproc.spawn_async(argv, cwd=cwd, stderr=subproc.STDOUT)
+    raw_out, _, timed_out = await subproc.communicate(proc, timeout=timeout_s)
+    return raw_out, proc.returncode, timed_out
 
 
 def _build_argv(command: str, ctx: ToolCtx) -> list[str]:
@@ -432,32 +381,6 @@ def _find_git_bash() -> str | None:
     if found:
         return found
     return None
-
-
-def _kill_tree(pid: int, ctx: ToolCtx) -> None:
-    if ctx.platform.lower().startswith("win"):
-        try:
-            subproc.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:
-            pass
-    else:
-        import os
-        import signal
-
-        # The whole group the command runs in (see _run_subprocess). By id
-        # rather than via getpgid(pid): while any member lives the group id
-        # cannot be reused, whereas `pid` may already name somebody else.
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except Exception:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except Exception:
-                pass
 
 
 def _cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:

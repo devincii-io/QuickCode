@@ -165,10 +165,10 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
+- One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes with stdin on the null device, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
 - There is no persistent shell. A bare `cd <dir>` is handled without spawning anything and moves a tracked working directory that later calls start in; `cd` inside a longer command line affects that command only.
 - Output is decoded (UTF-8, then the system code page), stripped of ANSI escapes, and capped at 30 000 chars to the model (head and tail kept, middle elided with a marker). Every command and its output is listed in the terminal drawer's *Agent* tab.
-- **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree.
+- **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree. The command's environment is QuickCode's without its API keys (`subproc.child_env`), so `echo $QUICKCODE_OPENROUTER_API_KEY` prints nothing — true of every process QuickCode starts.
 
 **Background jobs (`run_in_background: true`).** The command starts detached and the call returns at once with a job id (`bash_1`, `bash_2`, …); the model keeps its turn and the command keeps running past it. `bash_output` reads it and `bash_kill` stops it (below). What differs from a foreground call, and what does not:
 
@@ -205,7 +205,7 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- Kills the tree (`taskkill /T /F` on Windows, the job's own process group on POSIX — the same `_kill_tree` the PTY code uses). Killing a job that already finished says so and changes nothing.
+- Kills the tree (`taskkill /T /F` on Windows, the job's own process group on POSIX — the same `subproc.kill_tree` every spawn site uses). Killing a job that already finished says so and changes nothing.
 - `PermissionSpec(mutates=False, target_field="bash_id")`, not read-only: it never prompts, because the command was approved when it started and the id can only name a job in this conversation's own table, but it runs alone rather than alongside the reads in a round.
 - `bash_output` and `bash_kill` are granted wherever `bash` is (`kernel/composition.py::SHELL_JOB_TOOLS`), so a composition or agent definition that names only `bash` cannot start a job it has no way to read or stop. A binding that revokes one of them by name still wins.
 

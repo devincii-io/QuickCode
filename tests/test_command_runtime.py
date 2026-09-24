@@ -56,11 +56,17 @@ async def run(tool, project: Path, **values):
 
 
 class _FakeProc:
+    """A process that has already exited, having printed ``[]``."""
+
     pid = 4242
     returncode = 0
+    stdin = None
+    stderr = None
 
-    async def communicate(self, _input=None):
-        return b"[]\n", b""
+    def __init__(self) -> None:
+        self.stdout = asyncio.StreamReader()
+        self.stdout.feed_data(b"[]\n")
+        self.stdout.feed_eof()
 
     async def wait(self):
         return 0
@@ -77,7 +83,7 @@ async def test_a_command_tool_asks_for_no_console_window(project, monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(command_module.subproc, "NO_WINDOW", 0x0800_0000)
-    monkeypatch.setattr(command_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(command_module.subproc.asyncio, "create_subprocess_exec", fake_exec)
     tool = tool_for(project, ["python", "-c", "pass"])
 
     await run(tool, project)
@@ -99,7 +105,7 @@ async def test_a_batch_file_is_refused_on_windows(project, monkeypatch, resolved
 
     monkeypatch.setattr(command_module.subproc, "IS_WINDOWS", True)
     monkeypatch.setattr(command_module.shutil, "which", lambda name, path=None: resolved)
-    monkeypatch.setattr(command_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(command_module.subproc.asyncio, "create_subprocess_exec", fake_exec)
     tool = tool_for(project, ["npm", "run", "{script}"],
                     [{"name": "script", "type": "string", "required": True}])
 
@@ -116,7 +122,7 @@ async def test_the_same_program_on_posix_is_not_second_guessed(project, monkeypa
 
     monkeypatch.setattr(command_module.subproc, "IS_WINDOWS", False)
     monkeypatch.setattr(command_module.shutil, "which", lambda name, path=None: "/x/npm.cmd")
-    monkeypatch.setattr(command_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(command_module.subproc.asyncio, "create_subprocess_exec", fake_exec)
     tool = tool_for(project, ["npm", "test"])
 
     result = await run(tool, project)
