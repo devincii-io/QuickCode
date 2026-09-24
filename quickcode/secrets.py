@@ -11,7 +11,8 @@ POSIX equivalent without extra deps; the file-permission is the real control).
 
 The OpenRouter key was the first tenant and keeps its own four functions and
 its historical path, ``~/.quickcode/openrouter.key``. Everything else — the
-web-search provider keys — goes through the named API below, into
+web-search provider keys, and the key of a model provider with its own account
+(Anthropic) — goes through the named API below, into
 ``~/.quickcode/<name>.key`` beside it. One store, one encryption path, one
 place to look when revoking: a second secret mechanism is how a key ends up
 somewhere nobody remembers to clear.
@@ -155,3 +156,45 @@ def has_saved_key() -> bool:
 
 def clear_saved_key() -> None:
     _SECRET_PATH.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# Model-provider keys
+# --------------------------------------------------------------------------- #
+# A provider that bills a different account than OpenRouter needs its own key,
+# or switching providers would mean pasting keys back and forth. Keyed by the
+# provider plugin name; anything not listed shares the OpenRouter key above,
+# which is what every OpenAI-compatible endpoint has always used.
+PROVIDER_KEY_ENV: dict[str, str] = {
+    "anthropic": "QUICKCODE_ANTHROPIC_API_KEY",
+}
+
+
+def provider_key_env(provider: str) -> str:
+    return PROVIDER_KEY_ENV.get(provider, API_KEY_ENV)
+
+
+def load_provider_key(provider: str) -> str | None:
+    """The key the named model provider sends: env var first, then saved."""
+    if provider not in PROVIDER_KEY_ENV:
+        return load_api_key()
+    env = os.environ.get(PROVIDER_KEY_ENV[provider])
+    if env:
+        return env
+    return load_secret(provider)
+
+
+def save_provider_key(provider: str, key: str) -> None:
+    if provider in PROVIDER_KEY_ENV:
+        save_secret(provider, key)
+    else:
+        save_api_key(key)
+
+
+def has_saved_provider_key(provider: str) -> bool:
+    return has_secret(provider) if provider in PROVIDER_KEY_ENV else has_saved_key()
+
+
+def has_provider_key(provider: str) -> bool:
+    """Whether a key is available, without decrypting it."""
+    return bool(os.environ.get(provider_key_env(provider))) or has_saved_provider_key(provider)

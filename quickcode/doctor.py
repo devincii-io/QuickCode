@@ -85,22 +85,35 @@ def check_pty() -> Check:
     return Check("PTY backend", True, "ok", "winpty importable (ConPTY available)")
 
 
-def check_api_key() -> Check:
-    """API key: env var first, then a saved (DPAPI-encrypted) key."""
+def check_api_key(provider: str | None = None) -> Check:
+    """The active model provider's API key: env var first, then a saved
+    (DPAPI-encrypted) key."""
     import os
 
-    from quickcode.secrets import API_KEY_ENV, has_saved_key
+    from quickcode.secrets import has_saved_provider_key, provider_key_env
 
-    if os.environ.get(API_KEY_ENV):
-        return Check("API key", True, "ok", f"resolved from {API_KEY_ENV}")
-    if has_saved_key():
+    if provider is None:
+        provider = _active_provider()
+    env = provider_key_env(provider)
+    if os.environ.get(env):
+        return Check("API key", True, "ok", f"resolved from {env}")
+    if has_saved_provider_key(provider):
         return Check("API key", True, "ok", "resolved from saved (encrypted) key")
     return Check(
         "API key",
         False,
         "fail",
-        f"not set — set {API_KEY_ENV} or save a key in Settings",
+        f"not set — set {env} or save a key in Settings",
     )
+
+
+def _active_provider() -> str:
+    try:
+        from quickcode import config
+
+        return config.Config.load(config.CONFIG_PATH).profile.provider
+    except Exception:  # noqa: BLE001 - a broken config is check_config's problem
+        return "openai-compat"
 
 
 def _search_settings():

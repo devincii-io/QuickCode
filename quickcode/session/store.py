@@ -80,7 +80,7 @@ def safe_conv_id(conv_id: str) -> bool:
 
 def message_to_dict(msg: ChatMessage) -> dict[str, Any]:
     """Serialize a ``ChatMessage`` to a plain JSON-able dict."""
-    return {
+    out = {
         "role": msg.role,
         "content": msg.content,
         "tool_calls": msg.tool_calls,
@@ -88,6 +88,11 @@ def message_to_dict(msg: ChatMessage) -> dict[str, Any]:
         "name": msg.name,
         "cache_control": msg.cache_control,
     }
+    # Only when there are some: a resumed Anthropic session must replay its
+    # signed thinking, and every other message stays byte-identical to before.
+    if msg.reasoning_blocks:
+        out["reasoning_blocks"] = msg.reasoning_blocks
+    return out
 
 
 def message_from_dict(d: dict[str, Any]) -> ChatMessage:
@@ -99,6 +104,7 @@ def message_from_dict(d: dict[str, Any]) -> ChatMessage:
         tool_call_id=d.get("tool_call_id"),
         name=d.get("name"),
         cache_control=d.get("cache_control", False),
+        reasoning_blocks=[b for b in d.get("reasoning_blocks") or [] if isinstance(b, dict)],
     )
 
 

@@ -149,6 +149,7 @@ others.
 |---|---|
 | Default endpoint | `https://openrouter.ai/api/v1` (`quickcode/config.py`) |
 | Overridable | Yes — any OpenAI-compatible endpoint, including `http://localhost:…` for a self-hosted vLLM / LM Studio / Ollama-compatible server. An air-gapped deployment is possible. |
+| Native Anthropic | When the user selects the `anthropic` provider: `https://api.anthropic.com/v1/messages` and `/v1/models` (`quickcode/providers/anthropic/`), or the gateway host the profile names. A profile still pointing at openrouter.ai falls back to the first-party host, so that key is never sent to OpenRouter. |
 | Trigger | A user sends a chat message. The agent's own turn loop continues from there. |
 | Automatic? | No. Nothing calls the provider at startup. |
 
@@ -336,10 +337,10 @@ list, the tools return readable errors, and the app starts normally.
 
 | | |
 |---|---|
-| Location | `~/.quickcode/openrouter.key`; search keys in `~/.quickcode/search-<provider>.key` |
+| Location | `~/.quickcode/openrouter.key`; the native Anthropic provider's key in `~/.quickcode/anthropic.key`; search keys in `~/.quickcode/search-<provider>.key` |
 | Windows | `b"DPAPI:"` + a `CryptProtectData` blob, `CRYPTPROTECT_UI_FORBIDDEN`, no additional entropy |
 | macOS / Linux | `b"B64:"` + **base64 of the raw key** |
-| Alternative | `QUICKCODE_OPENROUTER_API_KEY` and `QUICKCODE_<VENDOR>_API_KEY` environment variables, checked **first** |
+| Alternative | `QUICKCODE_OPENROUTER_API_KEY`, `QUICKCODE_ANTHROPIC_API_KEY` and `QUICKCODE_<VENDOR>_API_KEY` environment variables, checked **first** |
 
 **What DPAPI actually protects against, honestly.** The DPAPI master key derives
 from the user's logon credential. So the file is useless to another *local user
@@ -387,7 +388,9 @@ reads and preserves one that is present. `config.json` is written with no
 
 **Leakage to the UI and logs:** clean. The web API returns only
 `"has_api_key": true|false` and the environment variable's *name*; no endpoint
-returns the key; it reaches only the OpenAI client constructor. `doctor` and
+returns the key; it reaches only the provider it belongs to (the OpenAI client
+constructor, or the `x-api-key` header of the native Anthropic adapter, whose
+error messages carry the API's own message and request id but no header). `doctor` and
 the CLI report presence only.
 
 ### 4.2 Session logs — the largest sensitive sink

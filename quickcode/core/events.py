@@ -26,6 +26,19 @@ class ReasoningDelta:
 
 
 @dataclass
+class ReasoningBlock:
+    """A finished reasoning block to hand back verbatim on the next request.
+
+    Anthropic signs each thinking block, and a tool-use turn replayed without
+    its thinking -- or with it edited -- is refused. The text already went out
+    as ``ReasoningDelta``; this carries the opaque whole. Provider-to-loop
+    only: it never reaches the UI or the event log.
+    """
+
+    block: dict
+
+
+@dataclass
 class ToolCallStart:
     """A tool call has begun streaming; arguments arrive via ToolCallDelta."""
 
@@ -58,6 +71,9 @@ class Usage:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float | None = None
+    # Prompt tokens written to the provider's cache on this request (billed at
+    # a premium). Like ``cached_tokens``, already counted in ``input_tokens``.
+    cache_write_tokens: int = 0
 
 
 @dataclass
@@ -105,6 +121,7 @@ class AgentStatus:
 AgentEvent = (
     TextDelta
     | ReasoningDelta
+    | ReasoningBlock
     | ToolCallStart
     | ToolCallDelta
     | ToolCallEnd
@@ -134,3 +151,4 @@ class AssistantMessage:
     tool_calls: list[AssembledToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: Usage = field(default_factory=Usage)
+    reasoning_blocks: list[dict] = field(default_factory=list)

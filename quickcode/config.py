@@ -128,17 +128,17 @@ class Profile:
 
     @property
     def api_key_env(self) -> str:
-        """Fixed, non-configurable env var name for the API key."""
-        from quickcode.secrets import API_KEY_ENV
+        """Fixed, non-configurable env var name for this provider's API key."""
+        from quickcode.secrets import provider_key_env
 
-        return API_KEY_ENV
+        return provider_key_env(self.provider)
 
     @property
     def api_key(self) -> str | None:
         """Env var first, then the DPAPI-encrypted value saved from Settings."""
-        from quickcode.secrets import load_api_key
+        from quickcode.secrets import load_provider_key
 
-        return load_api_key()
+        return load_provider_key(self.provider)
 
     def models_for(self, role: Role, tier: ModelTier | None = None) -> list[CatalogEntry]:
         """Curated models eligible for a role, optionally filtered by tier."""

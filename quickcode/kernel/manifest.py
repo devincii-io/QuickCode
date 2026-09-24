@@ -1459,6 +1459,13 @@ def authored_specs(plugins: Any, tools: dict[str, Any] | None = None) -> list[Pl
     return out
 
 
+_PROVIDER_DESCRIPTIONS = {
+    "openai-compat": "Any OpenAI-compatible endpoint, including OpenRouter.",
+    "anthropic": "Anthropic's native Messages API: signed thinking, exact cache "
+                 "breakpoints, its own API key.",
+}
+
+
 def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[PluginSpec]:
     out: list[PluginSpec] = []
     for name in sorted(factories):
@@ -1467,10 +1474,9 @@ def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[Plugi
             id=f"provider.{name}",
             kind="provider",
             title=name,
-            description="Model backend." if name != "openai-compat"
-                        else "Any OpenAI-compatible endpoint, including OpenRouter.",
+            description=_PROVIDER_DESCRIPTIONS.get(name, "Model backend."),
             group="Models",
-            source="internal" if name == "openai-compat" else "entrypoint",
+            source="internal" if name in _PROVIDER_DESCRIPTIONS else "entrypoint",
             summary="Supplies the models every agent runs on, for the whole install.",
             affects=("models",),
             audience="install",

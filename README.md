@@ -30,6 +30,8 @@ planned is in [docs/ROADMAP.md](docs/ROADMAP.md).
 uv venv --python 3.12
 uv sync --all-extras --dev
 export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (see below)
+# or, for the native Anthropic API (Settings > General > Model provider):
+# export QUICKCODE_ANTHROPIC_API_KEY=sk-ant-...
 uv run quickcode                        # start the web app  (qc also works)
 uv run qc .                             # open the app on this directory
 uv run qc C:\proj "fix the build"       # open a project, with a first prompt
@@ -82,8 +84,12 @@ editable, but always **viewable** — locked never means hidden).
 **Written in Python**, for what files cannot express:
 
 - **Tools** — entry point group `quickcode.tools` returning `Tool` instances.
-- **Providers** — entry point group `quickcode.providers`; select per profile
-  via `"provider"` in `~/.quickcode/config.json`.
+- **Providers** — two are built in: `openai-compat` (OpenRouter by default,
+  or any OpenAI-compatible endpoint) and `anthropic` (the native Messages API,
+  with signed thinking, exact prompt-cache breakpoints and its own key). More
+  come from the entry point group `quickcode.providers`. Pick one in Settings →
+  General, or per profile via `"provider"` in `~/.quickcode/config.json`; each
+  provider keeps its own API key.
 - **MCP servers** — Claude-compatible `"mcpServers"` config in
   `.quickcode/settings.json` (project) or `~/.quickcode/settings.json` (user);
   stdio transport, tools appear as `mcp__<server>__<tool>` behind the same

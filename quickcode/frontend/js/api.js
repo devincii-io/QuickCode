@@ -246,7 +246,9 @@ export const api = {
 
   // ---- per install ----
   putConfig: (cfg) => req("PUT", "/api/config", cfg),
-  putApiKey: (key) => req("POST", "/api/apikey", { key }),
+  // Stored against the named model provider, or the active one when omitted.
+  putApiKey: (key, provider) =>
+    req("POST", "/api/apikey", provider ? { key, provider } : { key }),
   // A search provider's key. Its own route because /api/config writes plain
   // text to config.json and this goes to the encrypted store; write-only, like
   // the model key — nothing ever reads one back out to the browser.

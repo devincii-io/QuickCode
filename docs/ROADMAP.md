@@ -14,10 +14,9 @@ Being built now; not in any release. Each is ticked here when it merges.
       schema and refused with an error (docs/TOOLS.md §bash).
 - [ ] User-configurable hooks. Today only in-process `LoopHook`s exist
       (`core/hooks.py`, docs/PERMISSIONS.md §Hooks).
-- [ ] A native Anthropic provider with prompt caching. Today every model is
-      reached through `openai_compat`, and cache breakpoints reach Anthropic
-      models only as far as OpenRouter forwards them (docs/ARCHITECTURE.md
-      §Provider layer).
+- [x] A native Anthropic provider with prompt caching: `provider: "anthropic"`,
+      plain `httpx`, explicit system and conversation-tail cache breakpoints,
+      cache reads and writes in the ledger (docs/ARCHITECTURE.md §Provider layer).
 
 ## M0 — Skeleton that talks
 

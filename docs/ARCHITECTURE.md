@@ -6,7 +6,7 @@
 - **Server:** FastAPI + uvicorn on 127.0.0.1, WebSocket for the live event stream
 - **UI:** vanilla ES modules, no bundler and no build step, served as static files (see docs/UI.md)
 - **Window:** pywebview (WebView2 on Windows) — a native app window, not a browser tab; the default browser when pywebview is unavailable
-- **Wire client:** `openai` package, `AsyncOpenAI(base_url=...)` — one client class, many backends (OpenRouter default)
+- **Wire clients:** `openai` package, `AsyncOpenAI(base_url=...)` — one client class, many backends (OpenRouter default); plain `httpx` for the native Anthropic Messages API
 - **Schemas:** Pydantic models → strict JSON Schema for tools
 - **Search:** ripgrep (`rg` on PATH; pure-Python fallback so nothing breaks without it)
 - **PTY:** the POSIX `pty` module for `bash` commands off Windows; `pywinpty` (ConPTY) for the terminal panel on Windows — patterns lifted from QuickTerm (see below)
@@ -104,6 +104,8 @@ quickcode/
     definitions.py runner.py jobs.py artifacts.py
   providers/
     base.py openai_compat.py credits.py
+    choice.py             # built-in providers' defaults, switching between them
+    anthropic/            # native Messages API: wire, sse, stream, retry, models
   tools/
     base.py registry.py command.py
     read.py write.py edit.py glob.py grep.py bash.py
@@ -196,8 +198,9 @@ class Provider(Protocol):
 
 AgentEvent = (
     TextDelta | ReasoningDelta
+    | ReasoningBlock  # opaque signed block, replayed next request; never shown
     | ToolCallStart | ToolCallDelta | ToolCallEnd
-    | Usage        # input/output/cached tokens, cost → ledger + status bar
+    | Usage        # input/output/cached/cache-write tokens, cost → ledger + status bar
     | TurnDone     # finish_reason: stop | tool_calls | length | error
 )
 ```
@@ -214,9 +217,52 @@ task, and cancelling that task is what aborts the request.
 - Prompt caching: `cache_control` breakpoints on the system message and the last history block — forwarded to Anthropic models by OpenRouter; OpenAI-family caches automatically; harmless elsewhere.
 - **Per-agent model choice:** every AgentInstance carries its own model — expensive orchestrator, cheap workers (see docs/AGENTS.md).
 
-A second provider is selected per profile through the `quickcode.providers`
-entry-point group (`plugins/loader.py`). A native Anthropic adapter is in
-progress (docs/ROADMAP.md).
+Third-party providers are selected per profile through the `quickcode.providers`
+entry-point group (`plugins/loader.py`).
+
+### `anthropic` (native Messages API)
+
+Selected with `"provider": "anthropic"` in the profile, or the provider select in
+Settings → General. Plain `httpx`, no SDK; `providers/anthropic/` splits it into
+request building (`wire.py`), SSE decoding (`sse.py`), event translation
+(`stream.py`), retry policy (`retry.py`) and model knowledge (`models.py`).
+
+- **Endpoint and key.** `https://api.anthropic.com` unless the profile names
+  another host (a gateway); a profile still pointing at openrouter.ai falls back
+  to the first-party endpoint so the Anthropic key is never sent there. Its own
+  key: `QUICKCODE_ANTHROPIC_API_KEY`, else `~/.quickcode/anthropic.key` saved
+  from Settings through the same encrypted store as every other key.
+- **Models.** Defaults `claude-opus-5-5` (orchestrator) and `claude-sonnet-5`
+  (worker) on a switch. OpenRouter slugs (`anthropic/claude-opus-4.8`) are
+  translated to Messages API ids (`claude-opus-4-8`), so existing profiles and
+  agent definitions keep working; another vendor's slug fails before a request.
+  The picker is filled from `GET /v1/models`, whose `capabilities` also decide
+  how thinking is configured.
+- **Thinking.** Current models run adaptive thinking with summarized display
+  (surfaced as `ReasoningDelta`) and never receive sampling parameters; models
+  that predate it get a `budget_tokens` budget only when reasoning is asked for.
+  Each finished block, with its signature, is handed to the loop as a
+  `ReasoningBlock`, stored on the assistant message (`reasoning_blocks`, also in
+  the session file) and replayed verbatim — a tool-use turn replayed without its
+  thinking is refused. A signature binds a block to the history before it, so
+  `History` drops them where it rewrites itself (a compaction, a new system
+  prompt); if the API still refuses one (a resumed session), the request is
+  resent without reasoning and the adapter never sends those blocks again.
+- **Prompt caching.** Two explicit breakpoints: the system prompt (caching tools
+  + system; byte-stable within a session) and the conversation tail, which
+  `History.build_messages` moves forward every round so a tool loop reads the
+  whole prior prefix. Request bodies are serialized deterministically.
+- **Usage.** `input_tokens` is the whole prompt (uncached + cache writes + cache
+  reads), `cached_tokens` the reads, `cache_write_tokens` the writes; the cost
+  is computed from first-party prices (writes 1.25× input, reads at the model's
+  read rate). A model with no known price reports no cost rather than a guess.
+- **Errors.** 408/409/429/5xx/529, dropped connections and mid-stream
+  `overloaded_error` are retried with backoff that honours `Retry-After`, but
+  only while nothing has reached the caller; after that the error surfaces with
+  the API's own type, message and request id. A `refusal` stop ends the round as
+  an error.
+- **Compaction.** The summary request declares no tools, which the API refuses
+  alongside tool blocks, so that one request carries the tool history as text.
 
 ## Permission system
 
