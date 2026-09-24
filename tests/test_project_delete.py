@@ -466,6 +466,8 @@ def test_a_bulk_request_without_a_selection_is_rejected(tmp_path):
             assert client.post(path, json={"ids": [1, 2]}).status_code == 400
 
 
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions (mklink /J) are Windows-only; "
+                    "the POSIX symlink and mount variants below cover the same escape")
 def test_a_junction_inside_the_data_directory_stops_the_purge(tmp_path: Path) -> None:
     """The containment check proves `.quickcode` is inside the project. It says
     nothing about what is inside `.quickcode` — and `shutil.rmtree` recurses
@@ -491,3 +493,72 @@ def test_a_junction_inside_the_data_directory_stops_the_purge(tmp_path: Path) ->
         purge_project_data(project)
     assert (outside / "keep.txt").exists(), "the junction's target was deleted"
     assert (project / ".quickcode").is_dir(), "the data directory went anyway"
+
+
+def _escape_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    project = tmp_path / "proj"
+    (project / ".quickcode" / "artifacts").mkdir(parents=True)
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("do not delete me", encoding="utf-8")
+    return project, outside, project / ".quickcode" / "artifacts" / "linked"
+
+
+def test_a_symlink_inside_the_data_directory_stops_the_purge(tmp_path: Path) -> None:
+    """The POSIX shape of the junction case: a directory symlink under
+    `.quickcode` that points out of the project."""
+    if not can_symlink(tmp_path):
+        pytest.skip("no symlink privilege on this machine")
+    project, outside, link = _escape_fixture(tmp_path)
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="points outside"):
+        purge_project_data(project)
+    assert (outside / "keep.txt").exists(), "the symlink's target was deleted"
+    assert (project / ".quickcode").is_dir(), "the data directory went anyway"
+
+
+def test_a_mount_inside_the_data_directory_stops_the_purge(tmp_path: Path, monkeypatch) -> None:
+    """A bind mount is an ordinary directory to `lstat` -- no link bit, and on
+    the same filesystem not even a different device -- and `shutil.rmtree`
+    walks straight into it, deleting whatever was mounted there. The purge
+    asks the mount table instead of trusting the directory's own answer."""
+    from quickcode.session import store
+
+    project, outside, mounted = _escape_fixture(tmp_path)
+    mounted.mkdir()
+    (mounted / "keep.txt").write_text("the mounted tree", encoding="utf-8")
+    monkeypatch.setattr(store, "_mount_points", lambda: {os.path.realpath(mounted)})
+
+    with pytest.raises(ValueError, match="points outside"):
+        purge_project_data(project)
+    assert (mounted / "keep.txt").exists(), "the mounted tree was deleted"
+
+
+def test_a_data_directory_that_is_itself_a_mount_is_not_purged(tmp_path: Path, monkeypatch) -> None:
+    """`realpath` cannot see a bind mount, so the containment proof passes for
+    a `.quickcode` that is one; the purge must still not empty the tree that
+    was mounted onto it."""
+    from quickcode.session import store
+
+    project, _outside, _link = _escape_fixture(tmp_path)
+    data = project / ".quickcode"
+    (data / "keep.txt").write_text("the mounted tree", encoding="utf-8")
+    monkeypatch.setattr(store, "_mount_points", lambda: {os.path.realpath(data)})
+
+    with pytest.raises(ValueError, match="points outside"):
+        purge_project_data(project)
+    assert (data / "keep.txt").exists()
+
+
+def test_the_mount_table_is_read_with_its_escapes_undone(tmp_path: Path) -> None:
+    """`/proc/self/mountinfo` writes a space in a mount point as `\\040`; a
+    reader that did not undo that would never match a path that has one."""
+    from quickcode.session.store import _parse_mountinfo
+
+    table = (
+        b"23 28 0:22 / /proc rw,relatime - proc proc rw\n"
+        b"91 28 8:1 /src /home/me/my\\040proj/.quickcode/x rw - ext4 /dev/sda1 rw\n"
+        b"garbage\n"
+    )
+    assert _parse_mountinfo(table) == {"/proc", "/home/me/my proj/.quickcode/x"}
