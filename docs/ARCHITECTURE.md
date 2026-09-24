@@ -81,7 +81,7 @@ quickcode/
     loop.py               # the agentic loop (single turn driver)
     hooks.py              # LoopHook: tool visibility, interception, tighten-only gating
     events.py             # AgentEvent dataclasses (internal protocol)
-    history.py            # messages, read-dedup, cache breakpoints
+    history.py            # messages, cache breakpoints, the request's call/result pairing
     compact.py            # threshold + summarization turn
     context_guard.py      # compaction between rounds; shrink and retry once when refused for length
     context_size.py       # request estimates (ledger + chars/4), cutting tool results to fit
@@ -477,7 +477,7 @@ What still differs is what drives the session, not what it is:
 1. **Cache-stable prefix:** request order `tools → system → history`, byte-identical across turns. No timestamps/randomness in the system prompt; dynamic state travels as `<system-reminder>` blocks in user messages.
 2. **Parallel tool calls** honored (gather) and encouraged in the prompt.
 3. **Cheap models for fan-out:** both built-in subagent types (`explore`, `general`) default to the profile's `worker` model role; the orchestrator stays on its own model.
-4. **Diff-based edits**; output caps + pagination hints on every tool; read-dedup (superseded file reads stubbed out of the request).
+4. **Diff-based edits**; output caps + pagination hints on every tool. **No read-dedup**: a file read twice is sent twice. Stubbing the superseded copy out of the request would change a message the cached prefix already covers, so the next request pays a cache write over everything from that message on (1.25× input at Anthropic's prices) where it would have paid a cache read (0.1×). Against the 0.1× per request the removed copy costs, that pays off only after a dozen or more further requests, and it is paid again at every re-read. The history is rewritten only where the cache is lost anyway: a compaction, a new system prompt, the context guard's cuts when a request would not fit.
 5. **Compaction at ~80%** of the model's context window; manual `/compact`. Both drivers check it after every turn — the web worker and `TranscriptRecorder.record_turn`, which is what a headless `-p` run goes through — off the one declared setting (`runtime.compaction`), and the loop checks it before every request inside a turn (§Context guard above), where a refusal for length is also answered by cutting tool results and one retry.
 6. **UI never blocks the loop, loop never blocks the UI** — bounded queues both directions.
 

@@ -1,8 +1,12 @@
-"""Conversation history: message accumulation, read-dedup, cache breakpoints.
+"""Conversation history: message accumulation and cache breakpoints.
 
 Holds the wire-neutral ``ChatMessage`` list. The request builder places the
 cache breakpoint on the system tail and the last history block so the prefix
-stays cache-stable across turns.
+stays cache-stable across turns. Which is why nothing here rewrites an earlier
+message to save tokens -- not even a file read that a later read superseded:
+the cached prefix runs through it, and changing it is a cache miss for
+everything after it. The history is rewritten only where the cache is lost
+anyway (a compaction, a new system prompt, the context guard's cuts).
 """
 
 from __future__ import annotations

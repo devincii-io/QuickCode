@@ -41,7 +41,8 @@ Being built now; not in any release. Each is ticked here when it merges.
 - [x] Plan, ask, auto-edit, dontask, and optional yolo modes
 - [x] PTY backend (POSIX `pty`, Windows ConPTY/pywinpty) with a subprocess fallback
 - [x] Token/cost ledger and context-window meter
-- [x] Output clipping, read deduplication, and headless `-p` mode
+- [x] Output clipping and headless `-p` mode (read deduplication was listed here and
+      never built; it costs the prompt cache more than it saves — see ARCHITECTURE)
 - [x] A terminal panel: your own shell in the project, plus every command the
       agent ran with its output (2.6.0)
 
