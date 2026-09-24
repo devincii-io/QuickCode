@@ -37,6 +37,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
+from quickcode import jsonfile
 from quickcode.plugins import mcp_process, mcp_wire
 from quickcode.providers.base import ToolSchema
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult, truncate
@@ -334,8 +335,8 @@ def _read_mcp_servers(path) -> dict[str, dict[str, Any]]:
     """The ``mcpServers`` block of one settings file, or ``{}``."""
     out: dict[str, dict[str, Any]] = {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = jsonfile.load(path)
+    except (OSError, ValueError):
         return out
     servers = data.get("mcpServers") if isinstance(data, dict) else None
     if isinstance(servers, dict):

@@ -240,6 +240,14 @@ project-scope, read by `Rules.load` in this order:
 2. `./.quickcode/settings.local.json` (gitignored by convention, and where
    "always allow" persists)
 
+Every reader of these two files, of `~/.quickcode/settings.json` and of
+`config.json` decodes them one way (`quickcode/jsonfile.py`), the trust hash
+included: UTF-8 with or without a byte-order mark, or UTF-16 or UTF-32 with one,
+which is what Notepad and PowerShell save. Without a mark a file must be UTF-8.
+A settings file that does not decode or parse is skipped by every reader alike,
+with a warning in the log, and is never saved over: a save from the app is
+refused with a 400 that names the file.
+
 Both go through the trust gate below. There is **no user-scope `permissions`
 block**: a `permissions` key in `~/.quickcode/config.json` is read by nobody and
 silently does nothing. Nor are there CLI flags that carry rules — `--mode` and

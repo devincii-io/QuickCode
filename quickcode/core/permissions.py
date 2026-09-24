@@ -15,7 +15,6 @@ into a modal via ``push_screen_wait``; headless turns it into an auto-deny.
 from __future__ import annotations
 
 import glob
-import json
 import logging
 import re
 import sys
@@ -134,6 +133,7 @@ class Rules:
         no settings file is in -- so an untrusted project prompts, rather than
         failing to open. ``trusted`` is for tests; see ``trust.resolve_trust``.
         """
+        from quickcode.kernel.settings_file import read_settings
         from quickcode.security import trust
 
         allowed = trust.resolve_trust(root, trusted)
@@ -144,7 +144,7 @@ class Rules:
             if not p.exists():
                 continue
             try:
-                data = json.loads(p.read_text(encoding="utf-8")).get("permissions", {})
+                data = read_settings(p).get("permissions", {})
             except Exception:
                 continue
             if allowed:
