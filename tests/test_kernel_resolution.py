@@ -21,7 +21,7 @@ from quickcode.core.events import TextDelta, TurnDone
 from quickcode.core.permissions import Mode
 from quickcode.kernel import build_registry
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import DELEGATION_TOOLS, ORCHESTRATOR_ID, Resolved
+from quickcode.kernel.composition import DELEGATION_TOOLS, ORCHESTRATOR_ID, Binding, Resolved
 from quickcode.kernel.resolve import resolve_composition
 from quickcode.providers.base import ChatMessage, ModelInfo
 from quickcode.server.app import create_app
@@ -109,6 +109,35 @@ def test_used_by_follows_the_task_alias_too(tmp_path):
     some_task = sorted(task_tools())[0]
     uses = registry.used_by(f"tool.{some_task}")
     assert any(u.kind == "agent" and u.id == "planner" for u in uses), uses
+
+
+# --------------------------------------------------------------------------
+# a revoke binding does what it says
+# --------------------------------------------------------------------------
+
+def test_a_revoke_binding_takes_an_agent_off_the_spawn_list():
+    """``{"plugin": "agent.general", "effect": "revoke"}`` was parsed, shown in
+    USED BY as "a binding revokes it", and then ignored: only tool revokes were
+    ever subtracted, so the orchestrator could still spawn ``general``."""
+    preset = preset_module.Preset(
+        id="p", title="p",
+        bindings=(Binding(plugin="agent.general", to="@orchestrator",
+                                        effect="revoke"),),
+    )
+    resolved = resolve_composition(ORCHESTRATOR_ID, pool=pool(), preset=preset,
+                                   defs=builtin_defs(), cwd=None)
+    assert "general" not in resolved.spawns
+    assert "explore" in resolved.spawns
+    assert resolved.chain.get("spawns.general") is None
+    # A revoke aimed elsewhere leaves this agent alone.
+    other = preset_module.Preset(
+        id="q", title="q",
+        bindings=(Binding(plugin="agent.general", to="@subagents",
+                                        effect="revoke"),),
+    )
+    kept = resolve_composition(ORCHESTRATOR_ID, pool=pool(), preset=other,
+                               defs=builtin_defs(), cwd=None)
+    assert "general" in kept.spawns
 
 
 # --------------------------------------------------------------------------

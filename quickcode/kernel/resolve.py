@@ -156,7 +156,7 @@ def _expand_bases(comp: Composition, defs: dict[str, Any]) -> list[Composition]:
 
 def _binding_contributions(
     bindings: Iterable[Binding], agent_id: str, role: Role, comp: Composition,
-) -> tuple[Composition, list[str], list[Binding]]:
+) -> tuple[Composition, dict[str, list[str]], list[Binding]]:
     """Desugar bindings that reach this agent into composition edits.
 
     A binding is a statement about a *relationship* and neither end owns it,
@@ -164,13 +164,14 @@ def _binding_contributions(
     a cloned repository must not ship a tool that attaches itself to your
     orchestrator. Here it stops being a separate concept: grants extend the
     preset layer's pattern lists, sets write bodies and settings, and revokes
-    are collected for subtraction after the intersection.
+    are collected per field -- tool patterns and agent ids -- for subtraction
+    after the intersection.
 
     A grant against a field the layer does not state is a no-op, and correctly
     so: "inherit everything" already includes it, and turning inheritance into
     a one-item allowlist is the opposite of what a grant means.
     """
-    revoked: list[str] = []
+    revoked: dict[str, list[str]] = {"tools": [], "spawns": []}
     unreached: list[Binding] = []
     tools = list(comp.tools) if comp.tools is not None else None
     spawns = list(comp.spawns) if comp.spawns is not None else None
@@ -196,9 +197,8 @@ def _binding_contributions(
             pattern, target = plugin, "sections"
 
         if binding.effect == "revoke":
-            if target == "tools" and pattern:
-                revoked.append(pattern)
-                touched = True
+            if target in revoked and pattern:
+                revoked[target].append(pattern)
             continue
 
         if binding.effect == "set":
@@ -429,7 +429,7 @@ def resolve_composition(
     asked, tool_chains, empty_patterns, literals = _intersect_named(
         layers, "tools", selectable, expand=expand_tool_pattern
     )
-    for pattern in revoked:
+    for pattern in revoked["tools"]:
         for name in [n for n in asked if _matches(pattern, n)]:
             asked.discard(name)
             tool_chains[name].append(
@@ -503,6 +503,13 @@ def resolve_composition(
                     provenance=Provenance(layer="parent", source=parent.id, rule=name),
                 ))
         spawn_asked &= allowed_by_parent
+
+    for pattern in revoked["spawns"]:
+        for name in [n for n in spawn_asked if _matches(pattern, n)]:
+            spawn_asked.discard(name)
+            spawn_chains[name].append(
+                preset_layer.prov(rule=pattern, note="revoked by a binding")
+            )
 
     # The orchestrator is included in this check deliberately. ``max_depth``
     # counts levels of subagent *below* the agent you talk to, so 0 has to mean
