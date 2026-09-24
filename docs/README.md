@@ -13,7 +13,7 @@ objects, so drift fails the test suite.
 | Document | Covers |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Stack, layers, repository layout, the plugin kernel, the agent loop, providers, the bash tool and PTYs, the session event log, the trust boundary |
-| [PERMISSIONS.md](PERMISSIONS.md) | Permission modes, rule syntax and precedence, protected paths, circuit breakers, the trust gate for project settings, plan mode, headless runs |
+| [PERMISSIONS.md](PERMISSIONS.md) | Permission modes, rule syntax and precedence, protected paths, circuit breakers, the trust gate for project settings, "why was I prompted?" (`qc why`, the explain endpoint), plan mode, headless runs |
 | [HOOKS.md](HOOKS.md) | Command hooks: scripts run before/after tool calls, on each message, at turn end and session start; trust gating for project hooks |
 | [TOOLS.md](TOOLS.md) | Every built-in tool: its description as the model sees it, input schema, limits and safety rules; the web tools and search providers |
 | [PROMPTS.md](PROMPTS.md) | The system prompt section by section, `<system-reminder>` injection, the compaction prompt |

@@ -60,11 +60,12 @@ checks that every path here exists and that every package is listed.
 ```
 pyproject.toml            # [project.scripts] quickcode = "quickcode.cli:main"
 quickcode/
-  cli.py                  # args, config, web app vs headless (-p) dispatch, `quickcode doctor`
+  cli.py                  # args, config, web app vs headless (-p) dispatch, `doctor`, `why`
   headless.py             # `-p` I/O: stdin prompt, console-safe output, exit codes, failure watch
   config.py               # profiles (base_url, model roles), project environment
   secrets.py              # API keys at rest: DPAPI on Windows, a 0600 file elsewhere
   doctor.py               # `quickcode doctor` environment checks
+  permission_cli.py       # `qc why` / `quickcode permissions explain`: the permission dry run as text
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every child process starts here: no console window, no API keys in its env, killable tree
@@ -86,6 +87,8 @@ quickcode/
     context_size.py       # request estimates (ledger + chars/4), cutting tool results to fit
     permissions.py        # modes, rules, PermissionSpec, bash decomposition
     profiles.py           # permission profiles: named {mode, allow, ask, deny} bundles
+    permission_posture.py # the engine a new (or live) session would ask, built as open() builds it
+    permission_explain.py # "why was I prompted?": the engine's own trace, as prose + rule provenance
     tasks.py              # task board
   hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
     config.py protocol.py runner.py plugin.py events.py specs.py
@@ -126,6 +129,7 @@ quickcode/
       inventory.py view.py drafts.py compositions.py resolution.py
       prompt_view.py tool_rows.py provenance.py
     hooks_api.py          # /api/hooks: list, add, change, remove, test-run
+    permissions_api.py    # POST .../permissions/explain: a dry run of the permission gate
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
