@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from quickcode.security import shellwords
+from quickcode.security import commands, shellwords
 from quickcode.security.protected import (
     glob_may_name_protected,
     is_protected,
@@ -46,6 +46,9 @@ _SPLIT = re.compile(r"&&|\|\||\||;|&|\n")
 # Substitution markers that forbid prefix-matching a rule. An unquoted `(` is
 # one too (``shellwords.has_unquoted_paren``): PowerShell runs `cat (rm x)`.
 _COMPOUND_MARKERS = ("$(", "`", ">", "<")
+# Commands run by other commands (`bash -c`, `xargs`, `find -exec`, `$(...)`)
+# are evaluated as if typed, to this depth; anything nested deeper asks.
+_MAX_NESTING = 4
 # Whether deny and ask rules on paths ignore case: on these filesystems
 # `KEY.PEM` opens `key.pem`, so a rule against one must hold for the other.
 CASE_INSENSITIVE_PATHS = sys.platform in ("win32", "darwin")
@@ -393,14 +396,24 @@ class PermissionEngine:
             return Decision.deny
         return Decision.ask
 
-    def _eval_bash(self, command: str) -> Decision:
+    def _eval_bash(self, command: str, depth: int = 0) -> Decision:
         subs = [s.strip() for s in _SPLIT.split(command) if s.strip()]
         has_substitution = any(
             m in command for m in _COMPOUND_MARKERS
         ) or shellwords.has_unquoted_paren(command)
         decisions: list[Decision] = []
         for sub in subs or [command]:
-            decisions.append(self._eval_bash_sub(sub, command, has_substitution))
+            decisions.append(self._eval_bash_sub(sub, has_substitution))
+        # A command another command runs is decided as if it had been typed:
+        # `find . -exec rm {} +`, `xargs rm`, `sudo rm`, `bash -c 'rm ...'`,
+        # `echo $(rm ...)` and `git -c alias.x='!rm ...' x` all run `rm`. A deny
+        # rule on `rm` must see it, and an allow rule on `find` must not cover
+        # it -- the most restrictive answer below makes both true.
+        inner = commands.inner_lines(command)
+        if inner and depth >= _MAX_NESTING:
+            decisions.append(Decision.ask)
+        elif inner:
+            decisions += [self._eval_bash(line, depth + 1) for line in inner]
         # Circuit breakers apply to the whole line even in yolo.
         if any(cb.search(command) for cb in _CIRCUIT_BREAKERS):
             decisions.append(Decision.ask)
@@ -411,8 +424,10 @@ class PermissionEngine:
             return Decision.ask
         return Decision.allow
 
-    def _eval_bash_sub(self, sub: str, full: str, has_sub: bool) -> Decision:
+    def _eval_bash_sub(self, sub: str, has_sub: bool) -> Decision:
         tokens = sub.split()
+        lexed = shellwords.segments(sub)
+        analysis = commands.analyze(lexed[0], base=self.root) if lexed else commands.Analysis()
         # Strip harmless wrappers and env-var prefixes so a rule written against
         # the command still matches. Whether an assignment was among them is
         # remembered, because the two kinds of prefix are not equally harmless.
@@ -464,11 +479,14 @@ class PermissionEngine:
         # The conservative reading costs one prompt for `FOO=1 ls`, which is
         # not a command anybody types by hand, and the auto-allow exists to
         # make the ordinary case frictionless rather than to cover every case.
+        # A builtin can still run or write something through an option
+        # (`rg --pre`, `tree -o`, `file -C`); ``commands.analyze`` knows which.
         read_only = (
             first in READONLY_BUILTINS
             and self._runs_from_path(spelled)
             and not has_sub
             and not has_env_prefix
+            and not analysis.unsafe_read_only
         )
 
         # 2. Plan mode runs the read-only builtins and nothing else -- decided
@@ -480,7 +498,9 @@ class PermissionEngine:
         # 3. Shell reads respect the same protected-path boundary as the
         #    dedicated read tool. Every argument is a potential path; ordinary
         #    words resolve inside the project and stay harmless.
-        if self._names_protected(tokens[idx:], sub):
+        # `git config` writes `.git/config`, the file every later git command
+        # takes its pager, editor and hooks path from.
+        if analysis.writes_protected or self._names_protected(tokens[idx:], sub):
             if self.mode is Mode.dontask:
                 return Decision.deny
             # Same exemption as the path tools, and this is where it was felt:
@@ -500,8 +520,10 @@ class PermissionEngine:
         # Allow rules never prefix-match a compound/substitution line, and the
         # env-stripped form is not offered to them either: approving
         # `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule
-        # that spells the assignment out still matches, via ``sub``.
-        if not has_sub:
+        # that spells the assignment out still matches, via ``sub``. Nor do
+        # they cover a command that points its program at code the rule never
+        # saw (`git -c core.pager=...`, `git --exec-path=...`).
+        if not has_sub and not analysis.opaque:
             for r in self.rules.allow:
                 if _rule_matches(r, "bash", sub) or (
                     not has_env_prefix and _rule_matches(r, "bash", stripped)

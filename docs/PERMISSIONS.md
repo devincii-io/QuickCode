@@ -81,12 +81,13 @@ today.
   status bar, and a hard circuit breaker. Four patterns prompt **even in yolo**,
   and this is the whole list (`_CIRCUIT_BREAKERS`): `rm -rf /`, `rm -rf ~`,
   `git push … --force` (any remote, any branch — not only the default one), and
-  the `:(){` fork bomb. Two things the old text promised are not breakers:
-  substitution forms like `$(rm -rf /)` are not matched by these regexes, and
-  there is no breaker for recursive deletes outside the project. Neither is
-  caught in yolo any more: the protected-path prompt that used to catch them
-  by a side door is not raised in yolo (see the next bullet), so in that mode
-  the four patterns above are the whole of what stops.
+  the `:(){` fork bomb. A breaker is also matched inside the commands another
+  command runs (`$(rm -rf /)`, `bash -c "…"`, `xargs`, `find -exec`; see
+  §Bash evaluation pipeline), since those are evaluated as if typed. There is
+  no breaker for recursive deletes outside the project, and it is not caught in
+  yolo any more: the protected-path prompt that used to catch it by a side
+  door is not raised in yolo (see the next bullet), so in that mode the
+  patterns above are the whole of what stops.
 - **Protected paths prompt in every mode except `yolo`**, regardless of allow
   rules: `.git/`,
   `.quickcode/`, `.ssh/`, `.env` and `.env.*`, and anything outside the project
@@ -270,6 +271,10 @@ command string
         substitution/redirection marker ($( ` > < or an unquoted `(`) or the
         subcommand carries an env-var prefix
       → ask rules → allow rules → mode default
+  → + every command another command runs (bash -c, eval, xargs, find -exec,
+      env/sudo/nohup/timeout…, $( ) and backticks, git aliases and exec
+      options, rg --pre), evaluated by this same pipeline, 4 levels deep
+      (deeper asks)
   → + circuit breakers, matched against the whole line
   → final decision = most restrictive across subcommands
 ```
@@ -311,7 +316,32 @@ as an allow rule is the supported way to get there.
   `cat (Remove-Item x)` and `cat x,(Remove-Item y)` before `cat` sees a thing;
   in bash an unquoted `(` inside a command is a syntax error or a
   substitution, so no ordinary command loses anything.
-- Exec-style wrappers that smuggle commands (`watch`, `xargs -I`, `find -exec`, `setsid`) are never stripped → always prompt unless the full string matches a rule.
+- **A command another command runs is decided as if typed**
+  (`security/commands.py`). `find . -exec rm {} +`, `xargs rm`, `env rm`,
+  `sudo rm`, `timeout 5 rm`, `bash -c 'rm …'`, `eval rm …`, `echo $(rm …)`,
+  `cmd /c`, `powershell -Command` / `-EncodedCommand`, `git -c
+  alias.x='!rm …' x`, `git rebase -x`, `git bisect run`, `git submodule
+  foreach` and `rg --pre rm` all run `rm`, and `rm` goes through the whole
+  pipeline on its own. The most restrictive answer wins, which gives both
+  halves of the rule: a deny on `rm` holds whatever it hides behind (in yolo
+  that deny is all there is), and an allow on `find` or `xargs` does not
+  approve the program they run — `bash(find **)` plus `bash(rm **)` does.
+  The wrappers themselves are still not stripped for the allow side, so they
+  prompt unless the full string matches a rule.
+- **Builtins that run or write something are not read-only.** `rg --pre` and
+  `rg --hostname-bin` run a program, `tree -o` / `tree -R` and `file -C` write
+  files; each forfeits the auto-allow (and is denied in plan mode).
+- **git pointed at somebody else's program.** An allow rule on git
+  (`bash(git **)`, the "Git only" profile) does not cover `git -c <key>=…`,
+  `--config-env`, `--exec-path`, `--git-dir`, `--work-tree`, `git -C` into a
+  directory holding its own `HEAD`/`config` (a committed bare repository),
+  `clone --template` / `clone -c`, or the options that name a command
+  (`fetch --upload-pack`, `push --receive-pack`, `difftool -x`, `grep -O`,
+  `filter-branch --*-filter`): each points git at code the rule never saw.
+  `git config` in a writing form (`git config k v`, `--add`, `--unset`,
+  `set`, `--global`…) is treated as a write to a protected path, because
+  `.git/config` is where every later git command takes its pager, editor and
+  hooks path from. Reads (`--get`, `--list`, `git config k`) are unaffected.
 - "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**.
 - Windows: PowerShell runs through the same pipeline, but **alias canonicalization is not implemented**. `gci`, `dir` and `Get-ChildItem` are three unrelated strings to the engine — none of them is in `READONLY_BUILTINS` either, so on PowerShell the read-only auto-allow effectively never fires and a rule has to name the exact spelling the model used. `bash` prefers Git Bash where it exists (docs/ARCHITECTURE §Windows notes), which is why this has not bitten harder.
 

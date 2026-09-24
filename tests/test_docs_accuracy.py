@@ -382,20 +382,24 @@ def test_read_only_tools_respect_the_protected_path_boundary(tmp_path):
         assert engine(root=tmp_path).evaluate(tool, ".ssh") == Decision.ask
 
 
-def test_substitution_and_outside_deletes_are_not_caught_in_yolo(tmp_path):
-    """docs/PERMISSIONS.md is explicit that these two are *not* circuit breakers.
-    They used to prompt in yolo anyway, through the bash pipeline's
-    protected-path scan; that scan no longer runs in yolo, so in that mode the
-    four breakers are the whole of what stops. The paragraph says so, and this
-    is the test that makes it stay true — in every *other* mode they still ask.
+def test_outside_deletes_are_not_caught_in_yolo_but_substituted_breakers_are(tmp_path):
+    """docs/PERMISSIONS.md is explicit that a recursive delete outside the
+    project is *not* a circuit breaker. It used to prompt in yolo anyway,
+    through the bash pipeline's protected-path scan; that scan no longer runs
+    in yolo, so there the breakers are the whole of what stops -- and in every
+    *other* mode it still asks.
+
+    The same paragraph used to say a breaker inside `$(...)` went unmatched.
+    Commands run by other commands are now evaluated as if typed, so it is
+    caught; the paragraph says that instead, and so does this test.
     """
     yolo = engine(Mode.yolo, root=tmp_path)
-    assert yolo.evaluate("bash", "echo $(rm -rf /)") == Decision.allow
     assert yolo.evaluate("bash", "rm -rf ../outside") == Decision.allow
+    assert yolo.evaluate("bash", "echo $(rm -rf /)") == Decision.ask
     asking = engine(root=tmp_path)
     assert asking.evaluate("bash", "echo $(rm -rf /)") == Decision.ask
     assert asking.evaluate("bash", "rm -rf ../outside") == Decision.ask
-    # The four that stop even there.
+    # The ones that stop even there.
     assert yolo.evaluate("bash", "rm -rf /") == Decision.ask
     assert yolo.evaluate("bash", "rm -rf ~") == Decision.ask
 
