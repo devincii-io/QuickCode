@@ -849,3 +849,18 @@ def test_the_documented_slash_commands_are_the_composer_s():
     real = set(re.findall(r'name: "(/[a-z]+)"', block[: block.index("\n];")]))
     row = next(line for line in read(DOCS / "UI.md").splitlines() if line.startswith("| `/` |"))
     assert set(re.findall(r"`(/[a-z]+)`", row)) == real
+
+
+def test_the_roadmap_is_dated_to_this_minor_version():
+    """The roadmap called the app `0.1.0` for as long as it was `2.x`. It
+    states the version it describes; a minor release that moves pyproject.toml
+    has to move that line too, which is the moment to re-read the rest."""
+    import tomllib
+
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = declared["project"]["version"]
+    stated = re.search(r"Status as of \*\*(\d+\.\d+)\.\d+\*\*", read(DOCS / "ROADMAP.md"))
+    assert stated, "docs/ROADMAP.md stopped stating the version it describes"
+    assert stated.group(1) == ".".join(version.split(".")[:2]), (
+        f"docs/ROADMAP.md describes {stated.group(1)}.x; pyproject.toml is {version}"
+    )

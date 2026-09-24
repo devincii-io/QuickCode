@@ -17,7 +17,7 @@ replay operate on the same event stream.
 
 ## Status
 
-Version 2.7.0. A persistent, permission-gated agent with streaming, plan
+A persistent, permission-gated agent with streaming, plan
 review, a task board, compaction, concurrent and background subagents, web
 fetch and search, usage tracking, session resume, the trajectory inspector, a
 terminal panel, and project workspaces with split agent panes. The web UI
