@@ -29,6 +29,7 @@ Project definitions (``.quickcode/agents/``) shadow user ones
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -226,6 +227,7 @@ def builtin_defs() -> dict[str, AgentDef]:
 # --------------------------------------------------------------------------
 
 _PROJECT_DIR = Path(".quickcode") / "agents"
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _USER_DIR = Path.home() / ".quickcode" / "agents"
 
 
@@ -249,7 +251,8 @@ def load_defs(cwd: Path) -> dict[str, AgentDef]:
             for md in sorted(d.glob("*.md")):
                 try:
                     parsed = _parse_def(md)
-                except Exception:
+                except Exception as exc:  # one bad file must not stop a session
+                    log.warning("skipping agent definition %s: %s", md, exc)
                     continue
                 if parsed is not None:
                     defs[parsed.name] = parsed
@@ -266,8 +269,13 @@ def load_defs(cwd: Path) -> dict[str, AgentDef]:
 
 
 def _parse_def(path: Path) -> AgentDef | None:
-    """One ``.quickcode/agents/*.md`` file."""
-    text = path.read_text(encoding="utf-8")
+    """One ``.quickcode/agents/*.md`` file.
+
+    ``utf-8-sig`` because Notepad saves one: with the mark left in, the first
+    line is not ``---`` and the whole frontmatter -- its ``tools:`` allowlist
+    included -- was read as prompt text.
+    """
+    text = path.read_text(encoding="utf-8-sig")
     meta, body = _split_frontmatter(text)
     return agent_def_from_meta(
         meta, body, path=str(path), source="authored", fallback_name=path.stem,
@@ -290,6 +298,16 @@ def agent_def_from_meta(
     """
     name = (meta.get("name") or fallback_name or "").strip()
     if not name:
+        return None
+    if name != ORCHESTRATOR_ID and not _NAME_RE.match(name):
+        # The name becomes the agent id, which becomes a file name under
+        # ``.quickcode/artifacts`` and an attribute in the ``<subagent id=...>``
+        # tag the parent reads. A project file is enough to set it.
+        log.warning(
+            "skipping agent definition %s: name %r is not a plain id "
+            "(letters, digits, '.', '_' and '-', starting with a letter or digit)",
+            path or name, name,
+        )
         return None
     tools_raw = meta.get("tools")
     # Kept verbatim: patterns are resolved against the live tool pool at spawn
