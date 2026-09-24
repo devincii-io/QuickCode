@@ -355,6 +355,23 @@ def test_switching_to_the_composition_already_running_is_refused(tmp_path):
     assert "already runs" in res.json()["detail"]
 
 
+def test_a_preset_id_is_trimmed_before_it_is_looked_up(tmp_path):
+    """The id was checked as sent and only trimmed on the way to the switch,
+    so an id with a stray space -- pasted, or typed after a completion -- was a
+    404 for a composition that exists. Both routes that take one."""
+    manager = make_manager(tmp_path)
+    write_settings(tmp_path, DELEGATOR)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        switched = client.post(f"/api/kernel/conversations/{conv_id}/composition",
+                               json={"preset": " delegator "})
+        active = client.put("/api/presets/active", json={"preset": " delegator"})
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["preset"] == "delegator"
+    assert active.status_code == 200, active.text
+    assert active.json()["active"] == "delegator"
+
+
 # --------------------------------------------------------------------------
 # duplicate-to-customise
 # --------------------------------------------------------------------------
