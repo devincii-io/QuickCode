@@ -3,6 +3,7 @@ import { leaves } from "./split_tree.js";
 
 export const MAX_PANES = 8;
 export const MIN_RATIO = .15, MAX_RATIO = .85;
+const STEP = .05;
 
 // The server's conversation id shape; pane ids are UUIDs, which fit it too.
 // Anything else in storage is corruption, and a conversation id the server
@@ -11,6 +12,17 @@ export const validId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1
 
 export function clampRatio(ratio) {
   return Number.isFinite(ratio) ? Math.max(MIN_RATIO, Math.min(MAX_RATIO, ratio)) : .5;
+}
+
+// The window-splitter keys: arrows step, Home and End go to the bounds.
+// null leaves the key alone, including modified arrows, which belong to the
+// Alt+arrow pane shortcuts rather than to the divider that has focus.
+export function resizeKey(ratio, { key, altKey, ctrlKey, metaKey } = {}) {
+  if (altKey || ctrlKey || metaKey) return null;
+  if (key === "Home") return MIN_RATIO;
+  if (key === "End") return MAX_RATIO;
+  const delta = ["ArrowRight", "ArrowDown"].includes(key) ? STEP : ["ArrowLeft", "ArrowUp"].includes(key) ? -STEP : 0;
+  return delta ? clampRatio(clampRatio(ratio) + delta) : null;
 }
 
 export function readLayout(raw) {

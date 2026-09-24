@@ -4,12 +4,16 @@ import { openDirBrowser } from "./modals.js";
 import { applyTheme, el, esc } from "./util.js";
 import { toastError, toastOk } from "./toast.js";
 import { renderAppearanceControls } from "./appearance.js";
-import { dwindleDir, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
-import { MAX_PANES, restoreWorkspace } from "./workspace_state.js";
+import { dwindleDir, equalize, evenRatio, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
+import { MAX_PANES, MAX_RATIO, MIN_RATIO, clampRatio, resizeKey, restoreWorkspace } from "./workspace_state.js";
 
 const KEY = "qc-workspaces-v1";
+const GAP = 6;
 const workspaces = new Map();
 const frames = new Map();
+// Keyed by split node so a re-layout moves a divider instead of replacing it,
+// which would drop its keyboard focus and any pointer capture on it.
+const dividers = new Map();
 let active = null, zoomed = null, home = true, shell, grid, sidebar, utility;
 let dragged = null, undo = null, storageWarning = false;
 let chrome = { width: 232, collapsed: false };
@@ -38,8 +42,10 @@ function initSidebarResize() {
     grip.setAttribute("aria-valuenow", String(Math.round(chrome.width)));
   };
   grip.addEventListener("keydown", (e) => {
-    if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
-    e.preventDefault(); apply(chrome.width + (e.key === "ArrowLeft" ? -10 : 10)); saveChrome();
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const width = { ArrowLeft: chrome.width - 10, ArrowRight: chrome.width + 10, Home: 160, End: 360 }[e.key];
+    if (width === undefined) return;
+    e.preventDefault(); apply(width); saveChrome();
   });
   grip.addEventListener("dblclick", () => { apply(232); saveChrome(); });
   grip.addEventListener("pointerdown", (e) => {
@@ -195,6 +201,7 @@ function mount(ws, pane) {
   // put in a frame URL, a saved layout, or a postMessage payload.
   iframe.src = `${location.pathname}?${query}`;
   element.dataset.pane = pane.id;
+  element.id = `ws-pane-${pane.id}`;
   frames.set(pane.id, { element, iframe, ws, pane });
   grid.appendChild(element); // Never reparent a mounted iframe: it would reload.
   element.addEventListener("pointerdown", () => focus(ws, pane.id, false));
@@ -256,9 +263,64 @@ function box(element, rect) {
   for (const key of ["left", "top", "width", "height"]) element.style[key] = `${rect[key]}px`;
 }
 
+function makeDivider(node) {
+  const element = el(`<div class="ws-divider" role="separator" tabindex="0"
+    aria-valuemin="${Math.round(MIN_RATIO * 100)}" aria-valuemax="${Math.round(MAX_RATIO * 100)}"></div>`);
+  const resize = (ratio) => { node.ratio = ratio; layout(); };
+  element.addEventListener("keydown", (e) => {
+    const ratio = resizeKey(node.ratio, e);
+    if (ratio === null) return;
+    e.preventDefault(); resize(ratio); save();
+  });
+  element.addEventListener("dblclick", () => { resize(evenRatio(node)); save(); });
+  element.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    // Captured on the divider itself, so the dblclick that follows lands on it.
+    element.setPointerCapture(e.pointerId);
+    grid.classList.add("ws-resizing");
+    const move = (ev) => {
+      const split = dividers.get(node)?.box;
+      if (!split) return;
+      const bounds = grid.getBoundingClientRect();
+      const horizontal = node.dir !== "v";
+      const offset = horizontal ? ev.clientX - bounds.left - split.left : ev.clientY - bounds.top - split.top;
+      resize(clampRatio(offset / Math.max(1, (horizontal ? split.width : split.height) - GAP)));
+    };
+    const end = () => {
+      for (const [type, fn] of events) element.removeEventListener(type, fn);
+      grid.classList.remove("ws-resizing");
+      save();
+    };
+    const events = [["pointermove", move], ["pointerup", end], ["pointercancel", end], ["lostpointercapture", end]];
+    for (const [type, fn] of events) element.addEventListener(type, fn);
+  });
+  return element;
+}
+
+function placeDivider(ws, d) {
+  let entry = dividers.get(d.node);
+  if (!entry) {
+    entry = { element: makeDivider(d.node) };
+    dividers.set(d.node, entry);
+    grid.appendChild(entry.element);
+  }
+  entry.box = d.box;
+  const { element } = entry;
+  const horizontal = d.node.dir !== "v";
+  const [before, after] = d.node.children.map((child) => leaves(child));
+  const title = (id) => ws.panes[id]?.title || "agent";
+  element.className = `ws-divider ${horizontal ? "horizontal" : "vertical"}`;
+  element.setAttribute("aria-orientation", horizontal ? "vertical" : "horizontal");
+  element.setAttribute("aria-valuenow", String(Math.round(clampRatio(d.node.ratio) * 100)));
+  element.setAttribute("aria-controls", before.map((id) => `ws-pane-${id}`).join(" "));
+  element.setAttribute("aria-label", `Resize ${title(before.at(-1))} and ${title(after[0])}`);
+  box(element, d);
+}
+
 function layout() {
   const ws = current();
-  grid.querySelectorAll(".ws-divider").forEach((n) => n.remove());
+  const placed = new Set();
   for (const [id, f] of frames) {
     const visible = !home && f.ws === ws && (!zoomed || id === zoomed);
     f.element.hidden = !visible;
@@ -268,50 +330,17 @@ function layout() {
     button.title = zoomed === id ? "Restore panes (Alt+Z)" : "Maximize pane (Alt+Z)";
     button.setAttribute("aria-label", zoomed === id ? "Restore panes" : "Maximize pane");
   }
-  if (!ws || home) return;
-  const rect = { left: 0, top: 0, width: grid.clientWidth, height: grid.clientHeight };
-  if (zoomed && frames.has(zoomed)) { box(frames.get(zoomed).element, rect); return; }
-  const positions = layoutRects(ws.tree, rect, 6, { min: .15, max: .85 });
-  for (const [id, r] of positions.leaves) { if (frames.has(id)) box(frames.get(id).element, r); }
-  for (const d of positions.dividers) {
-    const horizontal = d.node.dir === "h";
-    const grip = el(`<div class="ws-divider ${horizontal ? "horizontal" : "vertical"}" role="separator"
-      tabindex="0" aria-label="Resize agent panes" aria-orientation="${horizontal ? "vertical" : "horizontal"}"
-      aria-valuemin="15" aria-valuemax="85" aria-valuenow="${Math.round(d.node.ratio * 100)}"></div>`);
-    box(grip, d); grid.appendChild(grip);
-    grip.addEventListener("keydown", (e) => {
-      const delta = ["ArrowRight", "ArrowDown"].includes(e.key) ? .05 : ["ArrowLeft", "ArrowUp"].includes(e.key) ? -.05 : 0;
-      if (!delta) return;
-      e.preventDefault(); d.node.ratio = Math.max(.15, Math.min(.85, d.node.ratio + delta));
-      const index = [...grid.querySelectorAll(".ws-divider")].indexOf(grip);
-      layout(); grid.querySelectorAll(".ws-divider")[index]?.focus(); save();
-    });
-    grip.addEventListener("dblclick", () => { d.node.ratio = .5; layout(); save(); });
-    grip.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      // Capture on the stable grid; dividers are replaced while laying out.
-      grid.setPointerCapture(e.pointerId);
-      grid.classList.add("ws-resizing");
-      const move = (ev) => {
-        const bounds = grid.getBoundingClientRect();
-        const offset = horizontal ? ev.clientX - bounds.left - d.box.left : ev.clientY - bounds.top - d.box.top;
-        const size = horizontal ? d.box.width : d.box.height;
-        d.node.ratio = Math.max(.15, Math.min(.85, offset / Math.max(1, size - 6)));
-        layout();
-      };
-      const end = () => {
-        grid.removeEventListener("pointermove", move);
-        grid.removeEventListener("pointerup", end);
-        grid.removeEventListener("pointercancel", end);
-        grid.classList.remove("ws-resizing");
-        if (grid.hasPointerCapture(e.pointerId)) grid.releasePointerCapture(e.pointerId);
-        save();
-      };
-      grid.addEventListener("pointermove", move);
-      grid.addEventListener("pointerup", end);
-      grid.addEventListener("pointercancel", end);
-    });
+  if (ws && !home) {
+    const rect = { left: 0, top: 0, width: grid.clientWidth, height: grid.clientHeight };
+    if (zoomed && frames.has(zoomed)) box(frames.get(zoomed).element, rect);
+    else {
+      const positions = layoutRects(ws.tree, rect, GAP, { min: MIN_RATIO, max: MAX_RATIO });
+      for (const [id, r] of positions.leaves) { if (frames.has(id)) box(frames.get(id).element, r); }
+      for (const d of positions.dividers) { placeDivider(ws, d); placed.add(d.node); }
+    }
+  }
+  for (const [node, { element }] of dividers) {
+    if (!placed.has(node)) { element.remove(); dividers.delete(node); }
   }
 }
 
@@ -405,7 +434,6 @@ function manageWorkspace(ws) {
   const form = modal.querySelector(".ws-form");
   form.onsubmit = (e) => { e.preventDefault(); ws.name = form.elements.name.value.trim(); render(); save(); modal.close(); };
   modal.querySelector("[data-equal]").onclick = () => {
-    const equalize = (node) => { if (node?.type === "split") { node.ratio = .5; node.children.forEach(equalize); } };
     equalize(ws.tree); zoomed = null; render(); save(); modal.close();
   };
   modal.querySelector("[data-close]").onclick = () => {

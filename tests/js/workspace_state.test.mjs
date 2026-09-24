@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { insertBeside, removeLeaf, leaves, layoutRects, dwindleDir } from "../../quickcode/frontend/js/split_tree.js";
-import { readLayout, restoreWorkspace, MAX_PANES } from "../../quickcode/frontend/js/workspace_state.js";
+import { clampRatio, readLayout, resizeKey, restoreWorkspace, MAX_PANES, MAX_RATIO, MIN_RATIO } from "../../quickcode/frontend/js/workspace_state.js";
 
 test("nested split, move and close preserve each independent pane exactly once", () => {
   let tree = insertBeside(null, null, "agent-a");
@@ -78,4 +78,18 @@ test("a conversation id the server would refuse restores as a fresh conversation
     { type: "pane", pane: "../x" }, { type: "pane", pane: "x".repeat(65) }] }), null);
   assert.equal(readLayout({ type: "pane", pane: 7 }), null);
   assert.equal(restoreWorkspace({ project: { id: "p", path: "/p" }, panes: null, tree: null }).focused, null);
+});
+
+test("divider keys step within bounds and leave modified arrows to the pane shortcuts", () => {
+  assert.equal(resizeKey(.5, { key: "ArrowRight" }), .55);
+  assert.equal(resizeKey(.5, { key: "ArrowUp" }), .45);
+  assert.equal(resizeKey(.84, { key: "ArrowDown" }), MAX_RATIO);
+  assert.equal(resizeKey(.16, { key: "ArrowLeft" }), MIN_RATIO);
+  assert.equal(resizeKey(.5, { key: "Home" }), MIN_RATIO);
+  assert.equal(resizeKey(.5, { key: "End" }), MAX_RATIO);
+  assert.equal(resizeKey(NaN, { key: "ArrowRight" }), .55);
+  assert.equal(resizeKey(.5, { key: "ArrowRight", altKey: true }), null);
+  assert.equal(resizeKey(.5, { key: "ArrowLeft", ctrlKey: true }), null);
+  assert.equal(resizeKey(.5, { key: "Enter" }), null);
+  assert.equal(clampRatio(.01), MIN_RATIO);
 });

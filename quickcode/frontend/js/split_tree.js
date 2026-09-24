@@ -90,6 +90,30 @@ export function removeLeaf(root, payload) {
   return root;
 }
 
+const axis = (node) => (node.dir === "v" ? "v" : "h");
+
+// How many panes line up along `dir` inside `node`: a split along that axis
+// adds its children up, a split across it is as long as its longer child.
+function span(node, dir) {
+  if (node?.type !== "split") return 1;
+  const a = span(node.children[0], dir), b = span(node.children[1], dir);
+  return axis(node) === dir ? a + b : Math.max(a, b);
+}
+
+// The ratio that gives every pane along the split's axis the same room. A
+// flat 0.5 leaves three panes split right twice at a half and two quarters.
+export function evenRatio(split) {
+  const a = span(split.children[0], axis(split)), b = span(split.children[1], axis(split));
+  return a / (a + b);
+}
+
+export function equalize(root) {
+  if (root?.type !== "split") return root;
+  root.ratio = evenRatio(root);
+  root.children.forEach(equalize);
+  return root;
+}
+
 // Where every leaf and every divider lands inside `rect`, as plain numbers.
 // `gap` is the divider's thickness. Ratios are clamped the same way the
 // renderer clamps them, so a stored 0.01 cannot squeeze a view to nothing.

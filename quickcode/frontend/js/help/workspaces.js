@@ -6,7 +6,8 @@ export function renderWorkspaces(host) {
     body: `${sub("Open and arrange agents")}
       <p class="hp-p">Choose Open folder in the sidebar. New agent opens another conversation alongside the focused pane.
       Use Split right or Split below in a pane header to choose a direction. A workspace holds up to eight panes.</p>
-      <p class="hp-p">Drag a divider to resize. Double-click it for equal sizes, or focus it with Tab and use arrow keys.
+      <p class="hp-p">Drag a divider to resize. Double-click it for equal sizes, or focus it with Tab and use the arrow keys; Home and End jump to
+      the smallest and largest size. Equalize pane sizes in a workspace's menu evens out every row and column.
       Drag a pane header onto another pane to move it to that pane's left, right, top, or bottom edge.</p>
       ${sub("Keep your place")}
       <p class="hp-p">Switch projects in the sidebar without disconnecting their agents. The sidebar shows whether each
