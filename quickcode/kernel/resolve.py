@@ -78,6 +78,20 @@ def _admits(patterns: Iterable[str], candidate: str) -> bool:
     return any(_matches(p, candidate) for p in patterns)
 
 
+def expand_tool_pattern(pattern: str) -> str:
+    """A ``tools:`` entry the way ``tools/registry.select`` reads it.
+
+    ``task`` is documented shorthand for ``task_*`` there. Matched literally
+    here, it became an empty grant plus a "matches no tool" warning for a word
+    the selector itself defines.
+    """
+    # Imported late: the tool registry imports the runner, which imports us.
+    from quickcode.tools.registry import ALIASES
+
+    text = (pattern or "").strip()
+    return ALIASES.get(text, text)
+
+
 # --------------------------------------------------------------------------
 # layer assembly
 # --------------------------------------------------------------------------
@@ -234,6 +248,7 @@ def _intersect_named(
     layers: list[_Layer],
     field: str,
     candidates: list[str],
+    expand: Callable[[str], str] | None = None,
 ) -> tuple[set[str], dict[str, list[Provenance]], list[tuple[_Layer, str]], set[str]]:
     """Intersect one pattern-valued capability field across every layer.
 
@@ -241,6 +256,9 @@ def _intersect_named(
     pattern) pairs that matched nothing, and the set of literal names any layer
     asked for by name. Layers that state nothing contribute the identity, which
     is what makes the result independent of the order they are visited in.
+
+    ``expand`` turns a written pattern into the one that is matched; the chain
+    keeps what was written, because that is the word the author will look for.
     """
     survivors = set(candidates)
     chains: dict[str, list[Provenance]] = {name: [] for name in candidates}
@@ -253,9 +271,10 @@ def _intersect_named(
             continue
         matched: set[str] = set()
         for pattern in patterns:
-            hits = [name for name in candidates if _matches(pattern, name)]
-            if not _is_pattern(pattern):
-                literals.add(pattern)
+            wanted = expand(pattern) if expand else pattern
+            hits = [name for name in candidates if _matches(wanted, name)]
+            if not _is_pattern(wanted):
+                literals.add(wanted)
             if not hits:
                 empty_patterns.append((layer, pattern))
                 continue
@@ -408,7 +427,7 @@ def resolve_composition(
 
     # -- tools ------------------------------------------------------------
     asked, tool_chains, empty_patterns, literals = _intersect_named(
-        layers, "tools", selectable
+        layers, "tools", selectable, expand=expand_tool_pattern
     )
     for pattern in revoked:
         for name in [n for n in asked if _matches(pattern, n)]:
