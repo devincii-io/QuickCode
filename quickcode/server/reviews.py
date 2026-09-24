@@ -30,6 +30,8 @@ class PendingReview:
     kind: str  # "permission" | "plan"
     payload: dict[str, Any]
     future: asyncio.Future = field(repr=False, default=None)  # type: ignore[assignment]
+    # The permission request itself, for "Why?" (``gated`` is never sent).
+    request: PermissionRequest | None = field(repr=False, default=None)
 
 
 class ReviewDesk:
@@ -64,9 +66,11 @@ class ReviewDesk:
             "call_id": req.call_id,
             "rules": list(req.rules),
             "kept": list(req.kept),
+            "diff": req.diff,
+            "hook_reason": req.hook_reason,
         }
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self.pending[req_id] = PendingReview(req_id, "permission", payload, fut)
+        self.pending[req_id] = PendingReview(req_id, "permission", payload, fut, req)
         self._emit({"type": "permission_request", "req_id": req_id, **payload})
         try:
             outcome: PermissionOutcome = await fut

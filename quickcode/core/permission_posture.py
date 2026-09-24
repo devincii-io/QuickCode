@@ -12,7 +12,8 @@ function ``open()`` calls. ``tests/test_permissions_api.py`` opens a real
 session beside this and checks the two agree.
 
 A live conversation needs none of this: its engine already exists, with the
-"always allow" answers it accrued, and ``for_conversation`` wraps it.
+"always allow" answers it accrued, and ``for_conversation`` wraps it --
+``for_review`` narrows that to the agent whose prompt is on screen.
 
 Two what-ifs sit on top, for the pages that teach and preview rules: leaving
 out the project's rules or its active profile, and adding rules that are
@@ -154,6 +155,18 @@ def for_conversation(conv: Any, *, pool: Iterable[Any] = (),
         yolo_armed=yolo_armed,
         shell_cwd=agent.ctx.extra.get("bash_cwd") if agent.ctx else None,
     )
+
+
+def for_review(conv: Any, gated: Any, *, pool: Iterable[Any] = (),
+               yolo_armed: bool = False) -> Posture:
+    """The gate that raised a pending prompt, as it stood: the engine of the
+    agent that asked -- a subagent's is capped, and carries the session's deny
+    and ask rules but none of its allows -- and where that agent's shell stood.
+    ``gated`` is the request's ``GatedCall``; "Why?" on a prompt asks this."""
+    base = for_conversation(conv, pool=pool, yolo_armed=yolo_armed)
+    name = gated.tool.name
+    return replace(base, engine=gated.engine, shell_cwd=gated.cwd,
+                   tools={**base.tools, name: gated.tool}, offered=base.offered | {name})
 
 
 def what_if_rules(raw: Any) -> Any:

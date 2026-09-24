@@ -224,6 +224,11 @@ class Tool(Generic[In]):
     def render_call(self, input: In) -> str:  # noqa: A002
         return f"⏺ {self.name}"
 
+    def render_diff(self, input: In, ctx: ToolCtx) -> str:  # noqa: A002
+        """What the call would change, as a unified diff, for the permission
+        prompt -- "" for a tool that does not change file content."""
+        return ""
+
     def render_result(self, result: ToolResult) -> str:
         return result.content
 

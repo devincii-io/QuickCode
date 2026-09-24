@@ -12,7 +12,11 @@ Body::
     {"tool": "read", "input": {"file_path": ".env"}}            # any tool's arguments
     {"tool": "edit", "target": "src/app.py"}                    # its declared target
 
-and, all optional:
+or, for the prompt on screen ("Why?" in the permission dialog), only::
+
+    {"conv": "<conv id>", "review": "<req_id>"}   # the pending call, as it was gated
+
+and, all optional (not with "review"):
 
     "mode":          ask as if the session were in this mode
     "conv":          ask the live gate of this open conversation
@@ -93,9 +97,41 @@ def _posture(manager: Any, body: dict[str, Any]) -> Any:
     )
 
 
+def _explain_review(manager: Any, body: dict[str, Any], review_id: str) -> dict[str, Any]:
+    """The pending call itself, asked of the gate that raised it -- the asking
+    agent's engine, which for a subagent is not the conversation's."""
+    from quickcode.kernel.resolve import session_pool
+    from quickcode.security import trust
+
+    extra = sorted(set(body) - {"conv", "review"})
+    if extra:
+        raise HTTPException(400, (
+            f"a pending prompt is explained as it stands; {', '.join(extra)} "
+            "cannot be combined with 'review'"
+        ))
+    conv_id = _str_field(body, "conv")
+    conv = manager.get(conv_id) if conv_id else None
+    if conv is None:
+        raise HTTPException(404, f"no live conversation {conv_id!r}")
+    pending = conv.reviews.pending.get(review_id)
+    request = getattr(pending, "request", None)
+    if request is None or request.gated is None:
+        raise HTTPException(404, f"no permission prompt {review_id!r} is waiting")
+    tools = list(manager.registry_factory().tools.values())
+    posture = permission_posture.for_review(
+        conv, request.gated, pool=session_pool(manager.cwd, tools),
+        yolo_armed=manager.allow_yolo,
+    )
+    return permission_explain.explain(posture, request.gated.tool.name, request.gated.args,
+                                      trusted=trust.resolve_trust(manager.cwd))
+
+
 def explain_payload(manager: Any, body: dict[str, Any]) -> dict[str, Any]:
     from quickcode.security import trust
 
+    review_id = _str_field(body, "review")
+    if review_id:
+        return _explain_review(manager, body, review_id)
     tool_name = _str_field(body, "tool") or ("bash" if body.get("command") is not None else "")
     if not tool_name:
         raise HTTPException(400, "name the tool: {'tool': 'bash', 'command': '...'}")

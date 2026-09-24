@@ -468,11 +468,18 @@ async def _execute_tools(
 
 def _permission_request(
     agent: AgentInstance, call: AssembledToolCall, tool, inp, raw: dict, target: str,
+    hook_reason: str,
 ):
-    """The call, and the exact rules "Always allow" would save for it."""
-    from quickcode.core.agent import PermissionRequest
+    """Everything the prompt shows: the call, the diff it would make, the exact
+    rules "Always allow" would save, and the hook that asked, if one did."""
+    from quickcode.core.agent import GatedCall, PermissionRequest
 
-    offer = agent.permissions.suggest_rules(tool, raw, cwd=agent.ctx.extra.get("bash_cwd"))
+    gated = GatedCall(tool, raw, agent.permissions, agent.ctx.extra.get("bash_cwd"))
+    offer = agent.permissions.suggest_rules(tool, raw, cwd=gated.cwd)
+    try:
+        diff = tool.render_diff(inp, agent.ctx)
+    except Exception:  # a preview never stands between the user and the prompt
+        diff = ""
     return PermissionRequest(
         tool=call.name,
         arg=target,
@@ -482,6 +489,9 @@ def _permission_request(
         call_id=call.id,
         rules=list(offer.rules),
         kept=[{"part": part, "reason": reason} for part, reason in offer.kept],
+        diff=diff,
+        hook_reason=hook_reason,
+        gated=gated,
     )
 
 
@@ -529,7 +539,7 @@ async def _run_tool(
     # A hook may tighten that answer and never loosen it (hooks.tighten).
     decision, hook_reason = await tighten(agent, call, tool, raw, decision)
     if decision == Decision.ask:
-        req = _permission_request(agent, call, tool, inp, raw, arg_target)
+        req = _permission_request(agent, call, tool, inp, raw, arg_target, hook_reason)
         outcome = await agent.permission_cb(req)
         if not outcome.allow:
             reason = outcome.deny_message or "User denied this action."

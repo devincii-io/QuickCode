@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from quickcode.config import DEFAULT_MAX_TOKENS
 from quickcode.core.events import AgentEvent, Usage
@@ -39,6 +41,21 @@ class PermissionRequest:
     # same rules on one line, for readers that predate the list.
     rules: list[str] = field(default_factory=list)
     kept: list[dict[str, str]] = field(default_factory=list)
+    # What an edit or a write would change, as a unified diff (Tool.render_diff).
+    diff: str = ""
+    # Why a PreToolUse hook asked, when a hook is what raised the prompt.
+    hook_reason: str = ""
+    # The call as the gate saw it, so "Why?" asks the same gate about the same
+    # call. Kept on the server: never sent to a client, never logged.
+    gated: GatedCall | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class GatedCall:
+    tool: Any
+    args: dict[str, Any]
+    engine: PermissionEngine
+    cwd: Path | None = None
 
 
 @dataclass
