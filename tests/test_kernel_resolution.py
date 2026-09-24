@@ -16,8 +16,10 @@ from starlette.testclient import TestClient
 
 from quickcode.config import Config, Environment
 from quickcode.core.events import TextDelta, TurnDone
+from quickcode.core.permissions import Mode
 from quickcode.kernel import build_registry
 from quickcode.kernel import preset as preset_module
+from quickcode.kernel.composition import ORCHESTRATOR_ID
 from quickcode.kernel.resolve import resolve_composition
 from quickcode.providers.base import ModelInfo
 from quickcode.server.app import create_app
@@ -103,3 +105,46 @@ def test_used_by_follows_the_task_alias_too(tmp_path):
     some_task = sorted(task_tools())[0]
     uses = registry.used_by(f"tool.{some_task}")
     assert any(u.kind == "agent" and u.id == "planner" for u in uses), uses
+
+
+# --------------------------------------------------------------------------
+# preset `base`
+# --------------------------------------------------------------------------
+
+def test_a_preset_inherits_its_base_field_by_field(tmp_path):
+    """"Like minimal, but it may edit without asking" must still be minimal.
+
+    The orchestrator block used to be inherited all-or-nothing: stating a
+    ceiling dropped the base's tool list, so the preset quietly became the
+    full agent -- a restriction lost exactly when someone built on it.
+    """
+    write_settings(tmp_path, {"presets": {
+        "minimal-auto": {"base": "minimal", "orchestrator": {"ceiling": "auto-edit"}},
+        "explore-narrow": {"base": "explore", "tools": ["read"]},
+    }})
+    presets = preset_module.load_presets(tmp_path, trusted=True)
+
+    minimal_auto = presets["minimal-auto"].orchestrator
+    assert minimal_auto.tools == ("read", "write", "edit", "bash")
+    assert minimal_auto.spawns == ()
+    assert minimal_auto.ceiling == Mode.auto_edit
+
+    narrow = presets["explore-narrow"]
+    assert narrow.orchestrator.tools == ("read",)
+    assert narrow.orchestrator.spawns == ("explore",)
+
+    resolved = resolve_composition(
+        ORCHESTRATOR_ID, pool=pool(), preset=presets["minimal-auto"],
+        defs=builtin_defs(), cwd=tmp_path,
+    )
+    assert set(resolved.tools) == {"read", "write", "edit", "bash"}
+    assert resolved.spawns == ()
+    assert resolved.ceiling == Mode.auto_edit
+
+
+def test_a_preset_without_a_block_of_its_own_is_its_base(tmp_path):
+    write_settings(tmp_path, {"presets": {"mine": {"base": "explore", "title": "Mine"}}})
+    mine = preset_module.load_presets(tmp_path, trusted=True)["mine"]
+    assert mine.orchestrator.tools == ("read", "glob", "grep")
+    assert mine.orchestrator.spawns == ("explore",)
+    assert mine.title == "Mine"
