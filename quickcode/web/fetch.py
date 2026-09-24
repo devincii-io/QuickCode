@@ -22,6 +22,8 @@ having any to strip.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
@@ -90,6 +92,54 @@ def _is_textual(content_type: str) -> bool:
     if not kind:
         return True  # no type declared: assume text and let decoding decide
     return kind.startswith(TEXTUAL_PREFIXES) or kind in TEXTUAL_TYPES
+
+
+_BOM_CODECS = (
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+_META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""", re.I)
+# Where a page's <meta charset> may be; the HTML spec's prescan reads 1024.
+_META_SCAN_BYTES = 2048
+_BINARY_SNIFF_BYTES = 8192
+
+
+def _encoding_of(raw: bytes, declared: str | None, content_type: str) -> str:
+    """BOM, then the Content-Type charset, then ``<meta charset>``, then UTF-8.
+
+    That is the HTML spec's order. Without the ``<meta>`` step a legacy page
+    that declares its code page only in its markup -- common, since a header
+    is server configuration and a meta tag is just the file -- came back with
+    every non-ASCII character replaced.
+    """
+    for bom, codec in _BOM_CODECS:
+        if raw.startswith(bom):
+            return codec
+    candidates = [declared]
+    if "html" in content_type.lower() or not content_type:
+        match = _META_CHARSET.search(raw[:_META_SCAN_BYTES])
+        if match:
+            candidates.append(match.group(1).decode("ascii", "replace"))
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            return codecs.lookup(name).name
+        except LookupError:
+            continue
+    return "utf-8"
+
+
+def _looks_binary(raw: bytes, encoding: str) -> bool:
+    """A NUL in the first 8 KB of something not declared as UTF-16/32 --
+    the same test git and ripgrep use, for a server that labels a zip
+    ``text/plain`` or labels nothing at all."""
+    if encoding.startswith(("utf-16", "utf-32", "utf_16", "utf_32")):
+        return False
+    return b"\x00" in raw[:_BINARY_SNIFF_BYTES]
 
 
 def build_request(target: Target, *, headers: dict[str, str] | None = None) -> httpx.Request:
@@ -216,11 +266,14 @@ async def _fetch(
             finally:
                 await response.aclose()
 
-            encoding = response.charset_encoding or "utf-8"
-            try:
-                body = raw.decode(encoding, errors="replace")
-            except LookupError:
-                body = raw.decode("utf-8", errors="replace")
+            encoding = _encoding_of(raw, response.charset_encoding, content_type)
+            if _looks_binary(raw, encoding):
+                raise FetchError(
+                    f"{target.host} sent a binary body"
+                    f"{f' labelled {content_type}' if content_type else ''}. "
+                    "web_fetch reads text, HTML and JSON only."
+                )
+            body = raw.decode(encoding, errors="replace")
 
             return FetchOutcome(
                 url=url,
