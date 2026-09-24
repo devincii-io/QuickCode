@@ -106,7 +106,8 @@ change reaches every open pane without a reload.
   Stop and Send.
 - **Side panel** — **Trajectory**, **Agents**, **Tasks**, **Files**,
   **Checkpoints** and **Usage** tabs (`js/panel.js`, `js/panels/`). The panel
-  can be resized or maximised.
+  can be resized or maximised. Its tab strip, like the terminal drawer's, is a
+  set of ARIA tabs (`js/ui/tabs.js`): `←`/`→`, `Home` and `End` move between them.
 - **Terminal drawer** (`Ctrl` + `` ` ``, `js/terminal/`) — a real shell in the
   project directory for *you* (`pty/interactive.py`, `server/terminal.py`),
   plus an *Agent* tab listing every command the agent ran with its output. The

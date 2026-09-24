@@ -14,6 +14,7 @@ import { panel as checkpointsPanel } from "./panels/checkpoints.js";
 import { panel as filesPanel } from "./panels/files.js";
 import { panel as tasksPanel } from "./panels/tasks.js";
 import { panel as usagePanel } from "./panels/usage.js";
+import { markSelected, wireTabs } from "./ui/tabs.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,16 +69,12 @@ function apply() {
   main.classList.toggle("panel-max", state.open && state.max);
   aside.style.setProperty("--panel-w", state.width + "px");
   aside.setAttribute("aria-hidden", state.open ? "false" : "true");
+  markSelected(tabsEl, state.tab);
+  // The strip keeps every tab's name and scrolls when they do not fit, so the
+  // tab you just chose has to bring itself back into view.
+  const btn = tabsEl.querySelector(`[data-tab="${state.tab}"]`);
+  if (btn && state.open) btn.scrollIntoView({ inline: "nearest", block: "nearest" });
   for (const t of TABS) {
-    const btn = tabsEl.querySelector(`[data-tab="${t.id}"]`);
-    if (btn) {
-      const on = t.id === state.tab;
-      btn.classList.toggle("active", on);
-      btn.setAttribute("aria-selected", on ? "true" : "false");
-      // The strip keeps every tab's name and scrolls when they do not fit, so
-      // the tab you just chose has to bring itself back into view.
-      if (on && state.open) btn.scrollIntoView({ inline: "nearest", block: "nearest" });
-    }
     const pane = main.querySelector(`.panel-pane[data-pane="${t.id}"]`);
     if (pane) pane.classList.toggle("active", t.id === state.tab);
   }
@@ -151,6 +148,8 @@ export function initPanel() {
     if (!b) return;
     openPanelTab(b.dataset.tab);
   });
+  wireTabs(tabsEl, (tab) => main.querySelector(`.panel-pane[data-pane="${tab.dataset.tab}"]`),
+    openPanelTab);
 
   $("btn-panel-close").addEventListener("click", () => togglePanel(false));
   $("btn-panel-max").addEventListener("click", () => toggleMaximize());

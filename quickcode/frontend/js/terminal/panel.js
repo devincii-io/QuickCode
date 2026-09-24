@@ -18,6 +18,7 @@
 // like the side panel's width — "I keep a terminal open in this repo" is a
 // per-repo habit.
 
+import { markSelected, wireTabs } from "../ui/tabs.js";
 import { initAgentFeed } from "./agentfeed.js";
 import { initJobs } from "./jobs.js";
 import { inputChunks, keyToBytes, pasteBytes, stagedCommand } from "./keys.js";
@@ -71,11 +72,7 @@ function apply() {
   dock.dataset.tab = state.tab;
   dock.style.setProperty("--term-h", state.height + "px");
   dock.setAttribute("aria-hidden", state.open ? "false" : "true");
-  for (const btn of tabsEl.querySelectorAll("[data-tab]")) {
-    const on = btn.dataset.tab === state.tab;
-    btn.classList.toggle("active", on);
-    btn.setAttribute("aria-selected", on ? "true" : "false");
-  }
+  markSelected(tabsEl, state.tab);
   for (const pane of dock.querySelectorAll(".qt-pane")) {
     pane.classList.toggle("active", pane.dataset.pane === state.tab);
   }
@@ -146,12 +143,14 @@ export function toggleTerminal(force) {
   if (state.open && state.tab === "shell") focusShell();
 }
 
-export function openTerminalTab(tab) {
+// `focus: false` leaves focus where it is: on the tab strip, when the arrow
+// keys chose the Shell tab rather than a click.
+export function openTerminalTab(tab, { focus = true } = {}) {
   state.open = true;
   state.tab = tab;
   save();
   apply();
-  if (tab === "shell") focusShell();
+  if (focus && tab === "shell") focusShell();
 }
 
 function focusShell() {
@@ -216,6 +215,8 @@ export function initTerminal() {
     const b = e.target.closest("[data-tab]");
     if (b) openTerminalTab(b.dataset.tab);
   });
+  wireTabs(tabsEl, (tab) => dock.querySelector(`.qt-pane[data-pane="${tab.dataset.tab}"]`),
+    (tab) => openTerminalTab(tab, { focus: false }));
   $("btn-term-close").addEventListener("click", () => toggleTerminal(false));
   $("btn-term-clear").addEventListener("click", () => {
     view.clear({ keepModes: true });

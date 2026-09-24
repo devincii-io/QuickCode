@@ -19,6 +19,21 @@ async (page) => {
   check(!(await page.locator("#btn-term-toggle").getAttribute("data-jobs")), "a badge with no job running");
   check(await page.locator("#btn-term-clear").isHidden(), "the shell's Clear shows on the Jobs tab");
 
+  // The drawer's tabs are ARIA tabs: each names its panel, only the chosen one
+  // is a Tab stop, and the arrow keys move between them without leaving the strip.
+  const tabs = await page.locator("#term-tabs [role=tab]").evaluateAll((nodes) => nodes.map((t) => ({
+    tab: t.dataset.tab, stop: t.tabIndex,
+    panel: document.getElementById(t.getAttribute("aria-controls"))?.getAttribute("role"),
+  })));
+  check(tabs.every((t) => t.panel === "tabpanel") && tabs.filter((t) => t.stop === 0).map((t) => t.tab).join() === "jobs",
+    `terminal tabs: ${JSON.stringify(tabs)}`);
+  await page.locator('.qt-tab[data-tab="jobs"]').focus();
+  await page.keyboard.press("Home");
+  check(await page.evaluate(() => document.activeElement?.dataset.tab === "shell"
+    && document.querySelector("#term-tabs [aria-selected=true]").dataset.tab === "shell"), "Home did not choose the Shell tab");
+  await page.keyboard.press("ArrowLeft");
+  check(await page.evaluate(() => document.activeElement?.dataset.tab === "jobs"), "ArrowLeft did not wrap to Jobs");
+
   // The agent starts the job; the real permission prompt approves it.
   await page.locator("#input").fill("Start the ticker");
   await page.locator("#input").press("Enter");
@@ -85,5 +100,5 @@ async (page) => {
 
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "empty state, permission, list, badges, live tail, colour, follow, model cursor, copy, kill confirm/cancel, killed by you, transcript note, narrow", runtimeErrors: errors };
+  return { passed: true, checks: "empty state, tab keys, permission, list, badges, live tail, colour, follow, model cursor, copy, kill confirm/cancel, killed by you, transcript note, narrow", runtimeErrors: errors };
 }

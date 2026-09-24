@@ -116,7 +116,18 @@ async (page) => {
   await turnCard.locator(".pc-rewind[disabled]").waitFor();
   check(await turnCard.locator(".pc-gone").count() === 2, "the Checkpoints tab did not catch up");
 
-  await page.locator('.panel-tab[data-tab="trajectory"]').click();
+  // The panel's tabs are ARIA tabs too: → from Checkpoints lands on Usage and
+  // shows its panel; End and Home reach the ends of the strip.
+  await page.locator('.panel-tab[data-tab="checkpoints"]').focus();
+  await page.keyboard.press("ArrowRight");
+  check(await page.evaluate(() => {
+    const tab = document.activeElement;
+    const panel = document.getElementById(tab?.getAttribute("aria-controls"));
+    return tab?.dataset.tab === "usage" && tab.getAttribute("aria-selected") === "true" && tab.tabIndex === 0
+      && panel?.getAttribute("role") === "tabpanel" && panel.classList.contains("active");
+  }), "ArrowRight did not move the panel from Checkpoints to Usage");
+  await page.keyboard.press("Home");
+  check(await page.evaluate(() => document.activeElement?.dataset.tab === "trajectory"), "Home did not reach Trajectory");
   const rows = await page.locator(".tj-row .preview").allInnerTexts();
   check(rows.some((t) => t.startsWith("checkpoint README.md · turn 1")), "trajectory has no checkpoint row");
   check(rows.some((t) => t.startsWith("files rewound to before turn 1 · 1 file: notes.md deleted")),
@@ -124,5 +135,5 @@ async (page) => {
 
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "per-turn button (keyboard), preview, diff, conflict, deselect, rewind on disk, note, focus return, replay, checkpoints tab, busy refusal, force, trajectory", runtimeErrors: errors };
+  return { passed: true, checks: "per-turn button (keyboard), preview, diff, conflict, deselect, rewind on disk, note, focus return, replay, checkpoints tab, busy refusal, force, panel tab keys, trajectory", runtimeErrors: errors };
 }
