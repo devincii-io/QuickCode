@@ -22,13 +22,13 @@ having any to strip.
 from __future__ import annotations
 
 import asyncio
-import codecs
-import re
+import zlib
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
 import httpx
 
+from quickcode.web import body as body_mod
 from quickcode.web.ssrf import BlockedURL, Resolver, Target, validate_url
 
 MAX_BYTES = 4_000_000
@@ -94,54 +94,6 @@ def _is_textual(content_type: str) -> bool:
     return kind.startswith(TEXTUAL_PREFIXES) or kind in TEXTUAL_TYPES
 
 
-_BOM_CODECS = (
-    (codecs.BOM_UTF8, "utf-8-sig"),
-    (codecs.BOM_UTF32_LE, "utf-32"),
-    (codecs.BOM_UTF32_BE, "utf-32"),
-    (codecs.BOM_UTF16_LE, "utf-16"),
-    (codecs.BOM_UTF16_BE, "utf-16"),
-)
-_META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""", re.I)
-# Where a page's <meta charset> may be; the HTML spec's prescan reads 1024.
-_META_SCAN_BYTES = 2048
-_BINARY_SNIFF_BYTES = 8192
-
-
-def _encoding_of(raw: bytes, declared: str | None, content_type: str) -> str:
-    """BOM, then the Content-Type charset, then ``<meta charset>``, then UTF-8.
-
-    That is the HTML spec's order. Without the ``<meta>`` step a legacy page
-    that declares its code page only in its markup -- common, since a header
-    is server configuration and a meta tag is just the file -- came back with
-    every non-ASCII character replaced.
-    """
-    for bom, codec in _BOM_CODECS:
-        if raw.startswith(bom):
-            return codec
-    candidates = [declared]
-    if "html" in content_type.lower() or not content_type:
-        match = _META_CHARSET.search(raw[:_META_SCAN_BYTES])
-        if match:
-            candidates.append(match.group(1).decode("ascii", "replace"))
-    for name in candidates:
-        if not name:
-            continue
-        try:
-            return codecs.lookup(name).name
-        except LookupError:
-            continue
-    return "utf-8"
-
-
-def _looks_binary(raw: bytes, encoding: str) -> bool:
-    """A NUL in the first 8 KB of something not declared as UTF-16/32 --
-    the same test git and ripgrep use, for a server that labels a zip
-    ``text/plain`` or labels nothing at all."""
-    if encoding.startswith(("utf-16", "utf-32", "utf_16", "utf_32")):
-        return False
-    return b"\x00" in raw[:_BINARY_SNIFF_BYTES]
-
-
 def build_request(target: Target, *, headers: dict[str, str] | None = None) -> httpx.Request:
     """A GET aimed at the validated address, still addressed to the name.
 
@@ -154,6 +106,9 @@ def build_request(target: Target, *, headers: dict[str, str] | None = None) -> h
         "User-Agent": user_agent(),
         "Accept": "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5",
         "Accept-Language": "en,*;q=0.5",
+        # Only what body.py can inflate with an output limit. A request built
+        # by hand gets no default from the client, so this is the whole list.
+        "Accept-Encoding": body_mod.ACCEPT_ENCODING,
         "Host": target.header_host,
         **(headers or {}),
     }
@@ -163,20 +118,6 @@ def build_request(target: Target, *, headers: dict[str, str] | None = None) -> h
         headers=merged,
         extensions={"sni_hostname": target.host},
     )
-
-
-async def _read_capped(response: httpx.Response, max_bytes: int) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    total = 0
-    truncated = False
-    async for chunk in response.aiter_bytes():
-        total += len(chunk)
-        if total > max_bytes:
-            chunks.append(chunk[: max_bytes - (total - len(chunk))])
-            truncated = True
-            break
-        chunks.append(chunk)
-    return b"".join(chunks), truncated
 
 
 async def fetch_url(
@@ -262,12 +203,20 @@ async def _fetch(
                         f"({response.reason_phrase or 'error'})."
                     )
 
-                raw, truncated = await _read_capped(response, max_bytes)
+                try:
+                    raw, truncated = await body_mod.read_capped(response, max_bytes)
+                except body_mod.UnsupportedEncoding as exc:
+                    raise FetchError(
+                        f"{target.host} sent {exc}-compressed content, which web_fetch "
+                        "does not inflate (it asked for gzip or deflate)."
+                    ) from exc
+                except zlib.error as exc:
+                    raise FetchError(f"{target.host} sent a corrupt compressed body.") from exc
             finally:
                 await response.aclose()
 
-            encoding = _encoding_of(raw, response.charset_encoding, content_type)
-            if _looks_binary(raw, encoding):
+            encoding = body_mod.charset_of(raw, response.charset_encoding, content_type)
+            if body_mod.looks_binary(raw, encoding):
                 raise FetchError(
                     f"{target.host} sent a binary body"
                     f"{f' labelled {content_type}' if content_type else ''}. "

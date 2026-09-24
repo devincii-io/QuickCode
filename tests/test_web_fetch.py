@@ -362,6 +362,77 @@ async def test_an_undeclared_oversize_body_is_cut_off_mid_stream():
     assert chunks_sent <= 5
 
 
+def streamed(data: bytes, chunk: int = 65_536):
+    """A body that arrives in network-sized chunks. ``httpx.Response(content=
+    bytes)`` is read -- and inflated -- the moment it is constructed, which is
+    not what a socket does and would hide exactly what these tests look at."""
+
+    async def body():
+        for i in range(0, len(data), chunk):
+            yield data[i:i + chunk]
+
+    return body()
+
+
+async def test_a_compression_bomb_is_capped_while_inflating():
+    """The byte cap used to be applied to httpx's *decoded* chunks, and httpx
+    inflates each network chunk whole: 64 KB of gzip is 64 MB of zeros in one
+    allocation before the cap ever sees it. Inflation is now bounded."""
+    import gzip
+    import tracemalloc
+
+    bomb = gzip.compress(b"\0" * 64_000_000, compresslevel=9)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=streamed(bomb),
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+        )
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(FetchError, match="binary"):
+            await fetch_url(
+                "https://example.com/bomb", transport=httpx.MockTransport(handler),
+                resolve=resolver({}), max_bytes=1_000_000,
+            )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 16_000_000
+
+
+async def test_a_gzipped_page_is_still_read():
+    import gzip
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "gzip, deflate"
+        return httpx.Response(
+            200, content=streamed(gzip.compress(b"hello " * 1000)),
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+        )
+
+    outcome = await fetch_url(
+        "https://example.com/z", transport=httpx.MockTransport(handler), resolve=resolver({}),
+    )
+    assert outcome.body == "hello " * 1000
+    assert not outcome.truncated
+
+
+async def test_an_encoding_it_cannot_inflate_safely_is_refused():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=streamed(b"\x8b\x00\x80hello\x03"),
+            headers={"content-type": "text/plain", "content-encoding": "br"},
+        )
+
+    with pytest.raises(FetchError, match="br"):
+        await fetch_url(
+            "https://example.com/br", transport=httpx.MockTransport(handler),
+            resolve=resolver({}),
+        )
+
+
 async def test_binary_content_is_refused_by_type():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "image/png"}, content=b"\x89PNG")
