@@ -454,35 +454,33 @@ def set_auto_check(enabled: bool) -> bool:
     ``load_state`` reads underneath the project layer — so a project can still
     pin it off, and cannot turn it on for you.
     """
+    from quickcode.kernel.settings_file import write_settings
     from quickcode.kernel.state import PLUGINS_KEY, user_settings_path
 
     path = user_settings_path()
-    raw: dict[str, Any] = {}
     if path.exists():
         try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw = loaded
+            json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise UpdateError(f"could not read {path}: {exc}") from exc
 
-    section = raw.get(PLUGINS_KEY)
-    if not isinstance(section, dict):
-        section = {}
-    entry = section.get(PLUGIN_ID)
-    if not isinstance(entry, dict):
-        entry = {}
-    settings = entry.get("settings")
-    if not isinstance(settings, dict):
-        settings = {}
-    settings[AUTO_CHECK_KEY] = bool(enabled)
-    entry["settings"] = settings
-    section[PLUGIN_ID] = entry
-    raw[PLUGINS_KEY] = section
+    def merge(raw: dict[str, Any]) -> None:
+        section = raw.get(PLUGINS_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        entry = section.get(PLUGIN_ID)
+        if not isinstance(entry, dict):
+            entry = {}
+        settings = entry.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+        settings[AUTO_CHECK_KEY] = bool(enabled)
+        entry["settings"] = settings
+        section[PLUGIN_ID] = entry
+        raw[PLUGINS_KEY] = section
 
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        write_settings(path, merge)
     except OSError as exc:
         raise UpdateError(f"could not write {path}: {exc}") from exc
     return bool(enabled)

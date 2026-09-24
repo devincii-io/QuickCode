@@ -87,6 +87,7 @@ quickcode/
     config.py protocol.py runner.py plugin.py events.py specs.py
   kernel/                 # the plugin kernel (below)
     spec.py registry.py manifest.py bootstrap.py state.py
+    settings_file.py      # the one settings.json reader/writer; project writes keep trust
     composition.py        # what is attached to one agent, and the runtime limits
     resolve.py            # what an agent actually gets, with provenance
     preset.py             # presets: the composition a session's agents run

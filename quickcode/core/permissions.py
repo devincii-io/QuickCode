@@ -155,29 +155,24 @@ class Rules:
         applies to the *next* one is the trust gate's answer, same as for every
         other allow rule -- ``load`` says why.
         """
-        d = root / ".quickcode"
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / "settings.local.json"
-        data = {}
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-        perms = data.setdefault("permissions", {})
-        allow = perms.setdefault("allow", [])
-        if rule not in allow:
-            allow.append(rule)
         # This file is part of the project's trust hash, so writing to it used
         # to untrust the project -- and an untrusted project's allow rules are
         # ignored (see `load`). Answering "Always allow" therefore switched off
         # every allow rule the user had ever saved, and put the project's MCP
-        # servers back behind the gate. A project that was not trusted stays
-        # untrusted.
-        from quickcode.security.trust import keep_trust
+        # servers back behind the gate. The project writer keeps a trusted
+        # project trusted; one that was not stays untrusted.
+        from quickcode.kernel.settings_file import (
+            LOCAL_SETTINGS_FILENAME,
+            write_project_settings,
+        )
 
-        with keep_trust(root):
-            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        def add(data: dict) -> None:
+            perms = data.setdefault("permissions", {})
+            allow = perms.setdefault("allow", [])
+            if rule not in allow:
+                allow.append(rule)
+
+        write_project_settings(root, add, filename=LOCAL_SETTINGS_FILENAME)
         self.allow.append(rule)
 
 

@@ -20,14 +20,14 @@ shape, the project file shadowing the user one.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from quickcode.kernel.composition import Binding, Composition
-from quickcode.kernel.state import _read, project_settings_path, user_settings_path
+from quickcode.kernel.settings_file import read_settings, write_project_settings
+from quickcode.kernel.state import project_settings_path, user_settings_path
 from quickcode.security.trust import GATED_PRESET_FIELDS, project_may_state
 
 log = logging.getLogger("quickcode.kernel.preset")
@@ -265,18 +265,18 @@ def load_presets(cwd: Path | None, *, trusted: bool | None = None) -> dict[str, 
     from quickcode.security import trust
 
     presets = builtin_presets()
-    presets.update(_presets_from(_read(user_settings_path()), builtin_presets()))
+    presets.update(_presets_from(read_settings(user_settings_path()), builtin_presets()))
     if cwd is not None:
         presets.update(_presets_from(
-            _read(project_settings_path(cwd)), builtin_presets(),
+            read_settings(project_settings_path(cwd)), builtin_presets(),
             gated=not trust.resolve_trust(cwd, trusted),
         ))
     return presets
 
 
 def active_preset_id(cwd: Path | None) -> str:
-    for raw in ([_read(project_settings_path(cwd))] if cwd else []) + [
-        _read(user_settings_path())
+    for raw in ([read_settings(project_settings_path(cwd))] if cwd else []) + [
+        read_settings(user_settings_path())
     ]:
         value = raw.get(ACTIVE_KEY)
         if isinstance(value, str) and value:
@@ -304,26 +304,25 @@ def resolve(cwd: Path | None, preset_id: str = "", *,
 
 def save_preset(cwd: Path, preset: Preset) -> None:
     """Write a user preset into the project settings file."""
-    path = project_settings_path(cwd)
-    raw = _read(path)
-    section = raw.get(PRESETS_KEY)
-    if not isinstance(section, dict):
-        section = {}
     body = preset.to_dict()
     body.pop("id", None)
     body.pop("builtin", None)
-    section[preset.id] = body
-    raw[PRESETS_KEY] = section
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    def put(raw: dict[str, Any]) -> None:
+        section = raw.get(PRESETS_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        section[preset.id] = body
+        raw[PRESETS_KEY] = section
+
+    write_project_settings(cwd, put)
 
 
 def set_active(cwd: Path, preset_id: str) -> None:
-    path = project_settings_path(cwd)
-    raw = _read(path)
-    raw[ACTIVE_KEY] = preset_id
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    def select(raw: dict[str, Any]) -> None:
+        raw[ACTIVE_KEY] = preset_id
+
+    write_project_settings(cwd, select)
 
 
 def select_tools(preset: Preset, pool: list) -> list:
