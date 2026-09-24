@@ -93,6 +93,7 @@ def _usage_from_json(d: dict) -> Usage:
         output_tokens=int(d.get("output_tokens") or 0),
         cached_tokens=int(d.get("cached_tokens") or 0),
         cost_usd=d.get("cost_usd"),
+        cache_write_tokens=int(d.get("cache_write_tokens") or 0),
     )
 
 
@@ -102,6 +103,7 @@ class Ledger:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float = 0.0
+    cache_write_tokens: int = 0
     # The most recent request's footprint — this is the live context size
     # (the cumulative fields above measure session spend, not context).
     last_input_tokens: int = 0
@@ -117,6 +119,7 @@ class Ledger:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cached_tokens += u.cached_tokens
+        self.cache_write_tokens += u.cache_write_tokens
         self.last_input_tokens = u.input_tokens
         self.last_output_tokens = u.output_tokens
         if u.cost_usd:
@@ -135,6 +138,7 @@ class Ledger:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cached_tokens += u.cached_tokens
+        self.cache_write_tokens += u.cache_write_tokens
         self.subagent_input_tokens += u.input_tokens
         self.subagent_output_tokens += u.output_tokens
         if u.cost_usd:

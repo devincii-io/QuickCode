@@ -321,6 +321,7 @@ class Conversation:
                 "input_tokens": a.ledger.input_tokens,
                 "output_tokens": a.ledger.output_tokens,
                 "cached_tokens": a.ledger.cached_tokens,
+                "cache_write_tokens": a.ledger.cache_write_tokens,
                 "cost_usd": a.ledger.cost_usd,
                 # The part of the four numbers above that subagents spent —
                 # already included in them, reported separately so the Usage

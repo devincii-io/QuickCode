@@ -37,7 +37,12 @@ class History:
             {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in msg.tool_calls
         ]
         self.messages.append(
-            ChatMessage(role="assistant", content=msg.text, tool_calls=tool_calls)
+            ChatMessage(
+                role="assistant",
+                content=msg.text,
+                tool_calls=tool_calls,
+                reasoning_blocks=list(msg.reasoning_blocks),
+            )
         )
 
     def push_tool_results(self, results: list[tuple[AssembledToolCall, str, bool]]) -> None:

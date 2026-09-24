@@ -20,6 +20,7 @@ from quickcode.core.events import (
     AssembledToolCall,
     AssistantMessage,
     ContextInjection,
+    ReasoningBlock,
     ReasoningDelta,
     TextDelta,
     ToolCallDelta,
@@ -148,6 +149,7 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
     )
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
+    reasoning_blocks: list[dict] = []
     calls: dict[str, dict[str, str]] = {}
     order: list[str] = []
     # The subset of ``order`` that reached the wire as a whole ``tool_call``.
@@ -160,6 +162,9 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
             if agent.cancelled:
                 _abandon_round(agent, usage, calls, ended, "[interrupted]")
                 return None
+            if isinstance(ev, ReasoningBlock):
+                reasoning_blocks.append(ev.block)
+                continue
             agent.bus.emit(ev)
             if isinstance(ev, TextDelta):
                 text_parts.append(ev.text)
@@ -218,6 +223,7 @@ async def _stream_once(agent: AgentInstance) -> AssistantMessage | None:
         tool_calls=tool_calls,
         finish_reason=finish,
         usage=usage,
+        reasoning_blocks=reasoning_blocks,
     )
 
 

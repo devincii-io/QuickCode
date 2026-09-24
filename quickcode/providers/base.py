@@ -1,7 +1,7 @@
 """Provider protocol and wire-neutral request/response types.
 
 The core only ever constructs a ``ChatRequest`` and consumes an async stream of
-``AgentEvent``s. Concrete adapters (``openai_compat``, later ``anthropic``)
+``AgentEvent``s. Concrete adapters (``openai_compat``, ``anthropic``)
 translate to and from vendor wire formats behind this Protocol.
 """
 
@@ -36,8 +36,13 @@ class ChatMessage:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
-    # Optional cache hint honored by openai_compat (Anthropic-via-OpenRouter).
+    # Optional cache hint honored by openai_compat (Anthropic-via-OpenRouter)
+    # and by the native anthropic adapter.
     cache_control: bool = False
+    # Provider-opaque reasoning blocks (Anthropic ``thinking`` with its
+    # signature, ``redacted_thinking``) an assistant turn produced. Replayed
+    # verbatim by the adapter that made them; every other adapter ignores them.
+    reasoning_blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
