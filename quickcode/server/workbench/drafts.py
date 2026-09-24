@@ -44,6 +44,7 @@ def _draft_defs(
         source=base.source,
         path=base.path,
         prompt_body=base.prompt_body if body is None else body,
+        isolation=base.isolation,
     )
     return out
 

@@ -437,6 +437,7 @@ def _duplicate_agent(
         f"model_selectable: {'true' if defn.model_selectable else 'false'}",
         f"mode_cap: {defn.mode_cap.value}",
         f"max_turns: {defn.max_turns}",
+        f"isolation: {defn.isolation}",
         f"color: {defn.color}",
         f"skip_project_instructions: "
         f"{'true' if defn.skip_project_instructions else 'false'}",

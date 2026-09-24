@@ -80,8 +80,20 @@ export function previewOf(ev) {
     case "usage":
       return `tokens in ${fmtTokens(inner.input_tokens)} / out ${fmtTokens(inner.output_tokens)}`;
     case "error": return oneLine(inner.message, 200);
+    case "worktree": return worktreePreview(inner);
     default: return oneLine(JSON.stringify(inner), 160);
   }
+}
+
+// An isolated subagent's checkout: where it went, and where its work ended up.
+function worktreePreview(inner) {
+  const where = inner.branch ? ` → ${inner.branch}` : "";
+  if (inner.action === "committed") {
+    return `worktree committed${where} · ${inner.files} file${inner.files === 1 ? "" : "s"} ` +
+      `+${inner.insertions} −${inner.deletions}`;
+  }
+  const why = inner.detail ? ` · ${oneLine(inner.detail, 120)}` : "";
+  return `worktree ${inner.action}${where}${why}`;
 }
 
 // A composition switch is the single most consequential row in the log — the

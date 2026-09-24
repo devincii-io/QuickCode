@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  LANES, LANE_AGENTS, LANE_TOOLS, configTarget, laneOf, roleOf,
+  LANES, LANE_AGENTS, LANE_TOOLS, configTarget, laneOf, previewOf, roleOf,
 } from "../../quickcode/frontend/js/trajectory/roles.js";
 import {
   GAP_MIN_MS, buildSegments, clampView, eventTimes, homeSegment, isFitted, pickStep, planTicks,
@@ -48,6 +48,17 @@ test("every role lands in exactly one lane, and a subagent's tool calls are SUBT
   assert.equal(laneOf("TOOL"), LANE_TOOLS);
   assert.equal(laneOf("META"), 1);
   assert.equal(roleOf({ type: "usage" }), "META");
+});
+
+test("an isolated subagent's worktree record says where its work went", () => {
+  const wt = (ev) => ({ type: "agent_event", agent_id: "general-1", ev: { type: "worktree", ...ev } });
+  const committed = wt({ action: "committed", branch: "quickcode/general-1-ab12",
+    files: 2, insertions: 5, deletions: 1 });
+  assert.equal(roleOf(committed), "AGENT");
+  assert.equal(previewOf(committed), "worktree committed → quickcode/general-1-ab12 · 2 files +5 −1");
+  assert.equal(previewOf(wt({ action: "created", branch: "" })), "worktree created");
+  assert.equal(previewOf(wt({ action: "kept", branch: "quickcode/x", detail: "in use" })),
+    "worktree kept → quickcode/x · in use");
 });
 
 test("a subagent's event links to the definition it was spawned from", () => {
