@@ -63,12 +63,13 @@ Each milestone ends in something runnable. Checked items are present in the curr
 - [x] Mouse-first focus behavior, resizable subagent pane, and theme presets
 - [x] Toasts, prefix-filtered input history, and a fleet view that survives fifty subagents
       (grid layout, per-card follow, filters, solo view)
-- [ ] Native Anthropic adapter, hooks, and background bash
+- [x] Command hooks — PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart
+      ([docs/HOOKS.md](HOOKS.md))
+- [ ] Native Anthropic adapter and background bash
 
 ## Next priorities
 
 1. Background shell jobs and a dedicated PTY panel (`bash(run_in_background)` is still a
    declared-and-refused stub).
 2. Native Anthropic adapter and provider-specific prompt-cache controls.
-3. Hooks.
-4. Teammate mode after task claiming and worktree isolation are designed together.
+3. Teammate mode after task claiming and worktree isolation are designed together.

@@ -63,12 +63,14 @@ quickcode/
   core/
     agent.py              # AgentInstance: loop + history + ledger + event bus
     loop.py               # the agentic loop (single turn driver)
-    hooks.py              # LoopHook: tool visibility, call interception
+    hooks.py              # LoopHook: tool visibility, interception, tighten-only gating
     events.py             # AgentEvent dataclasses (internal protocol)
     history.py            # messages, serialization, read-registry
     compact.py            # threshold + summarization turn
     permissions.py        # modes, rules, PermissionSpec, bash decomposition
     tasks.py              # task board
+  hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
+    config.py protocol.py runner.py plugin.py events.py specs.py
   kernel/                 # the plugin kernel (below)
     spec.py registry.py manifest.py bootstrap.py preset.py state.py
   server/

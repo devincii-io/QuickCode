@@ -177,6 +177,7 @@ The full plan lives in `docs/`:
 | [docs/UI.md](docs/UI.md) | The web UI: chat/trajectory/split views, event log protocol, modals (partly historical — describes the retired TUI) |
 | [docs/AGENTS.md](docs/AGENTS.md) | Subagents, teammate mode, task board, orchestration playbook |
 | [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Permission modes (plan → yolo), rules engine, plan mode, bypass guardrails |
+| [docs/HOOKS.md](docs/HOOKS.md) | Command hooks: scripts run before/after tool calls, on each message, at turn end and session start; trust gating |
 | [docs/PROMPTS.md](docs/PROMPTS.md) | System prompt (XML-sectioned), dynamic reminders, compaction + delegation prompts |
 | [docs/TOOLS.md](docs/TOOLS.md) | Tool surface: schemas, description copy, safety rules |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M6 |
