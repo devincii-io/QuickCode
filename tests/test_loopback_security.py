@@ -201,3 +201,49 @@ def test_the_shell_has_no_inline_script_the_policy_would_block():
         text = js.read_text(encoding="utf-8")
         assert not re.search(r"\bnew Function\(|\beval\(", text), js
         assert not re.search(r"""<[a-z][^>]*\son[a-z]+=["'$]""", text), js
+
+
+# ---- every route, enumerated rather than remembered ----
+
+
+def _concrete(path: str) -> str:
+    return re.sub(r"\{[^}]+\}", "x", path)
+
+
+def test_every_http_route_is_under_the_guard_and_refuses_a_missing_token(client):
+    """A route module added later is behind the guard because of where it is
+    mounted, not because someone remembered: every HTTP route this app serves
+    other than the health probe is under ``/api/``, and each one answers a
+    token-less request with 403 before its handler runs."""
+    from fastapi.routing import APIRoute, APIWebSocketRoute
+    from starlette.routing import Mount
+
+    checked = 0
+    for route in client.app.routes:
+        if isinstance(route, Mount):
+            assert route.path == "", f"unexpected mount {route.path}"
+            continue
+        if isinstance(route, APIWebSocketRoute):
+            assert route.path.startswith("/ws/"), route.path
+            continue
+        assert isinstance(route, APIRoute), f"route outside the guard: {route.path}"
+        assert route.path.startswith("/api/"), f"route outside the guard: {route.path}"
+        if route.path == "/api/health":
+            continue
+        for method in route.methods:
+            r = client.request(method, _concrete(route.path), json={})
+            assert r.status_code == 403, (method, route.path, r.status_code)
+            checked += 1
+    assert checked > 100
+
+
+def test_every_websocket_route_refuses_a_handshake_without_the_token(client):
+    from fastapi.routing import APIWebSocketRoute
+
+    sockets = [r for r in client.app.routes if isinstance(r, APIWebSocketRoute)]
+    assert len(sockets) >= 4
+    for route in sockets:
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+            _concrete(route.path), headers={"host": HOST},
+        ):
+            pass

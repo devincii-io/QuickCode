@@ -67,7 +67,7 @@ def create_app(
     # A bare manager is the single-project shape; wrap it so every handler has
     # exactly one code path.
     hub = target if isinstance(target, ProjectHub) else ProjectHub.from_manager(target)
-    app = FastAPI(title="QuickCode", docs_url=None, redoc_url=None)
+    app = FastAPI(title="QuickCode", docs_url=None, redoc_url=None, openapi_url=None)
     register_error_handlers(app)
     allowed_hosts, allowed_origins = _allowed_origins(host, port)
     hardening = security_headers(allowed_hosts)
