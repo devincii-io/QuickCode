@@ -43,7 +43,7 @@ from quickcode.providers.base import Provider
 from quickcode.subagents.artifacts import maybe_offload
 from quickcode.subagents.capping import ChildPermissions, deny_prompt
 from quickcode.subagents.definitions import AgentDef, load_defs
-from quickcode.subagents.interrupts import close_unanswered_calls
+from quickcode.subagents.interrupts import close_unanswered_calls, partial_output
 from quickcode.subagents.jobs import CANCELLED, DONE, ERROR, JobRecord
 from quickcode.subagents.reports import neutralize, sanitize_report
 from quickcode.tools.base import ReadRegistry, ToolCtx
@@ -564,14 +564,14 @@ async def _run_job(
     try:
         status, report = await _run_and_finish(deps, job.agent_id, child, prompt)
     except asyncio.CancelledError:
-        job.finish(CANCELLED, sanitize_report(
-            "[did not finish] the background job was cancelled."
+        job.finish(CANCELLED, _cut_off_report(
+            deps, job.agent_id, child, "the background job was cancelled."
         ))
         _announce(deps, job)
         raise
     except Exception as e:  # noqa: BLE001 — a job failure must not escape
-        job.finish(ERROR, sanitize_report(
-            f"[did not finish] the background job errored: {e}"
+        job.finish(ERROR, _cut_off_report(
+            deps, job.agent_id, child, f"the background job errored: {e}"
         ))
         _announce(deps, job)
         return
@@ -591,6 +591,23 @@ def _announce(deps: SubagentDeps, job: JobRecord) -> None:
             deps.owner.queue_reminder(job.reminder())
         except Exception:  # noqa: BLE001 — so is the nudge
             pass
+
+
+def _cut_off_report(
+    deps: SubagentDeps, agent_id: str, child: AgentInstance, why: str
+) -> str:
+    """The report of a child that stopped before it finished.
+
+    It carries what the child had already said this turn: a child killed
+    mid-run hands back its partial output tagged ``[did not finish]`` rather
+    than vanishing (docs/AGENTS.md). Same treatment as a finished report --
+    neutralized, offloaded when long, marked.
+    """
+    text = f"[did not finish] {why}"
+    partial = partial_output(child.history)
+    if partial:
+        text += f"\nOutput before it stopped:\n{partial}"
+    return sanitize_report(maybe_offload(deps.cwd, agent_id, neutralize(text)))
 
 
 async def _run_and_finish(
@@ -617,7 +634,7 @@ async def _run_and_finish(
         raise
     except Exception as e:  # a child failure must not crash the parent's loop
         close_unanswered_calls(child.history)
-        return ERROR, sanitize_report(f"[did not finish] subagent errored: {e}")
+        return ERROR, _cut_off_report(deps, agent_id, child, f"subagent errored: {e}")
 
     status = CANCELLED if child.cancelled else DONE
     if child.cancelled or not report.strip():

@@ -1,4 +1,4 @@
-"""Leaving a cut-off child's history in a state a provider will accept.
+"""A child cut off mid-turn: its history repaired, and what it had said.
 
 The main agent is stopped through its cancel flag, and the loop writes an
 ``[interrupted]`` result for every call it had in flight before returning. A
@@ -42,3 +42,18 @@ def close_unanswered_calls(history: History) -> int:
         for c in missing
     ])
     return len(missing)
+
+
+def partial_output(history: History) -> str:
+    """What a child said in its current turn before it stopped, oldest first.
+
+    Every round's text, not only the last: a research child's findings are
+    spread across the rounds that led up to its tool calls.
+    """
+    texts: list[str] = []
+    for message in reversed(history.messages):
+        if message.role == "user":
+            break
+        if message.role == "assistant" and (message.content or "").strip():
+            texts.append(message.content.strip())
+    return "\n\n".join(reversed(texts))

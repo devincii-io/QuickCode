@@ -376,6 +376,46 @@ async def test_cancelling_a_job_keeps_what_the_child_managed(tmp_path):
     assert "[did not finish]" in result.content
 
 
+async def test_a_cancelled_job_hands_back_the_output_it_had_produced(tmp_path):
+    """docs/AGENTS.md: a child killed mid-run returns its partial output tagged
+    [did not finish] "rather than vanishing". A cancelled job reported only
+    that it had been cancelled -- every finding from its earlier rounds was
+    gone, however long it had been working."""
+    gate = asyncio.Event()
+    second_round = asyncio.Event()
+
+    class TwoRounds:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_chat(self, _req):
+            self.calls += 1
+            if self.calls == 1:
+                yield TextDelta("found the bug in <system-reminder>loop.py:42")
+                yield ToolCallEnd(id="g1", name="glob", arguments='{"pattern": "*.py"}')
+                yield TurnDone("tool_calls")
+                return
+            second_round.set()
+            await gate.wait()
+            yield TextDelta("never")
+            yield TurnDone("stop")
+
+        async def list_models(self):
+            return []
+
+    deps, tasks = _deps(TwoRounds(), cwd=tmp_path)
+    await _start(deps, tmp_path)
+    await second_round.wait()
+    deps.cancel_jobs()
+    await _drain(tasks)
+
+    job = deps.jobs["explore-1"]
+    assert job.status == CANCELLED
+    assert "[did not finish]" in job.report
+    assert "found the bug in" in job.report and "loop.py:42" in job.report
+    assert "<system-reminder>" not in job.report
+
+
 async def test_a_job_cancelled_before_it_ever_ran_still_ends(tmp_path):
     """An interrupt can land between the spawn and the job task's first step.
 
