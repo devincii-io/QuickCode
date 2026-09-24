@@ -114,6 +114,7 @@ quickcode/
     projects_api.py       # project registry, data purge, directory browser, trust gate
     kernel_api.py         # plugin registry and settings, presets
     profiles_api.py prompt_api.py config_api.py update_api.py
+    checkpoints_api.py    # a conversation's checkpoints: list, preview a rewind, rewind
     manager.py            # ConversationManager / Conversation
     projects.py           # ProjectHub, project registry
     serialization.py      # re-exports session/wire.py under its old import path
