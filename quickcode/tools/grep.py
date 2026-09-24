@@ -118,7 +118,9 @@ class GrepTool(Tool[GrepInput]):
 
 
 def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
-    args = [rg, "--no-heading", "--line-number", "--color=never"]
+    # ``--with-filename`` because ``rg -c`` leaves the path off when it is
+    # handed a single file, and the count would then be read as the path.
+    args = [rg, "--no-heading", "--line-number", "--color=never", "--with-filename"]
     if input.ignore_case:
         args.append("-i")
     if input.glob:
@@ -163,7 +165,21 @@ def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
     if not rows:
         return "No matches found."
 
+    # ripgrep prints files in whichever order its threads finish them. Sorting
+    # here rather than passing ``--sort path`` keeps the search parallel; the
+    # sort is stable, so a file's rows keep their line order.
+    rows.sort(key=lambda row: path_key(row["path"]))
     return _emit(KEYS[input.output_mode], rows[: input.head_limit], len(rows))
+
+
+def path_key(path: str) -> tuple[str, ...]:
+    """Sort key for a slash-separated path: component by component.
+
+    Plain string order would put ``sub.py`` before ``sub/b.py`` ('.' < '/'),
+    which is not the order a directory walk visits them in -- and the
+    fallback's walk is what this order has to agree with.
+    """
+    return tuple(path.split("/"))
 
 
 def _count_row(line: str) -> dict[str, Any]:
@@ -238,7 +254,7 @@ def _iter_files(root: Path, glob_pat: str | None):
         if glob_pat is None or root.match(glob_pat):
             yield root
         return
-    for p in root.rglob("*"):
+    for p in sorted(root.rglob("*"), key=lambda p: p.parts):
         if not p.is_file():
             continue
         if any(part in IGNORED_DIRS for part in p.parts):
