@@ -45,6 +45,7 @@ from quickcode.kernel.composition import (
     Composition,
     Resolved,
 )
+from quickcode.kernel.manifest import is_shipped_agent
 from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.prompts import sections as sections_module
 from quickcode.prompts.subagent import render_subagent_prompt
@@ -447,7 +448,7 @@ def _identity(agent_id: str, defn: AgentDef | None, preset: Any) -> dict[str, An
         "role": getattr(defn, "role", "subagent"),
         "source": getattr(defn, "source", "internal"),
         "path": getattr(defn, "path", ""),
-        "builtin": agent_id in ("explore", "general"),
+        "builtin": is_shipped_agent(agent_id, defn),
         # The body the editor edits, so the workbench never has to guess at what
         # it is about to send as a draft.
         "prompt_body": getattr(defn, "prompt_body", ""),

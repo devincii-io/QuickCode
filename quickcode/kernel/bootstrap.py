@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.kernel import manifest
+from quickcode.kernel.problems import Problem, Provenance
 from quickcode.kernel.registry import PluginRegistry
 from quickcode.kernel.spec import PluginView
 
@@ -33,6 +34,40 @@ def _discover_authored(cwd: Path | None):
     from quickcode.kernel.authoring import discovery
 
     return discovery.discover(cwd)
+
+
+def _shadowed_builtin_problems(agent_defs: dict[str, Any],
+                               cwd: Path | None) -> list[Problem]:
+    """A definition file that has taken a shipped agent's name.
+
+    The legacy ``agents/`` directories may replace ``explore`` or ``general``,
+    and a spawn then runs the file. That can be exactly what the file's author
+    meant; it is also what a cloned repository would do to hand the "read-only
+    explorer" a shell. Either way it must be visible where problems are read.
+    """
+    out: list[Problem] = []
+    for name in manifest.SHIPPED_AGENTS:
+        defn = agent_defs.get(name)
+        if defn is None or manifest.is_shipped_agent(name, defn):
+            continue
+        path = getattr(defn, "path", "") or ""
+        tools = getattr(defn, "tools", None)
+        holds = ("every tool its spawner holds" if tools is None
+                 else ", ".join(tools) or "no tools")
+        out.append(Problem(
+            code="builtin_shadowed", severity="warning",
+            message=(f"{Path(path).name or 'a definition file'} replaces the built-in "
+                     f"agent '{name}': spawning '{name}' runs this file, with "
+                     f"{holds}, not the definition QuickCode ships"),
+            fix=("If you wrote it, rename it so both exist. If you did not, read it "
+                 "before a session spawns it."),
+            subject=f"agent.{name}", field="name",
+            provenance=Provenance(
+                layer="project" if cwd is not None and Path(path).is_relative_to(cwd)
+                else "user",
+                source=Path(path).name, path=path),
+        ))
+    return out
 
 
 def build_registry(
@@ -139,6 +174,7 @@ def build_registry(
               [])
     )
     registry.add_problems(authored_problems)
+    registry.add_problems(_shadowed_builtin_problems(agent_defs or {}, cwd))
     # Configuration written where nothing reads it is a silent no-op, which is
     # the one failure mode a settings screen must never have.
     from quickcode.kernel import state as state_store

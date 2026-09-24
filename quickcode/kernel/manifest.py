@@ -1196,11 +1196,26 @@ _AGENT_LOCKED = (
 )
 
 
+SHIPPED_AGENTS = ("explore", "general")
+
+
+def is_shipped_agent(name: str, defn: Any) -> bool:
+    """The shipped definition, not a file that took its name.
+
+    ``.quickcode/agents/explore.md`` replaces the built-in at spawn, and the
+    loader stamps it with its path and an ``authored`` source. Deciding by name
+    presented a repository's file as QuickCode's own, locked and "fixed by
+    design".
+    """
+    return (name in SHIPPED_AGENTS and not getattr(defn, "path", "")
+            and getattr(defn, "source", "internal") == "internal")
+
+
 def agent_specs(defs: dict[str, Any]) -> list[PluginSpec]:
     """One plugin per subagent definition -- built-in and user-authored alike."""
     out: list[PluginSpec] = []
     for name, defn in sorted(defs.items()):
-        builtin = name in ("explore", "general")
+        builtin = is_shipped_agent(name, defn)
         tools = getattr(defn, "tools", None)
         prose = _agent_prose(defn)
         # Provenance is stamped by the loader, never declared by the file. A
