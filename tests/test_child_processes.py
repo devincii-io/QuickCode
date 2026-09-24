@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,7 @@ from quickcode.tools import bash as bash_mod
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.bash import BashTool
 from quickcode.tools.bash_jobs import BashJobs
+from tests.conftest import await_until
 from tests.test_command_runtime import run as run_command_tool
 from tests.test_command_runtime import tool_for
 
@@ -211,3 +214,76 @@ async def test_a_piped_command_reads_the_null_device_not_the_servers_stdin(
         for fd in (saved, read_end, write_end):
             os.close(fd)
     assert result.content.strip() == "/dev/null", result.content
+
+
+# ---------------------------------------------------------------- the tree
+
+
+GRANDCHILD = "sleep 60 > /dev/null 2>&1 & echo $!"
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def wait_for_death(pid: int, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.02)
+    return not _alive(pid)
+
+
+@POSIX_ONLY
+def test_kill_tree_still_reaches_it_once_the_shell_itself_is_gone(tmp_path):
+    """``npm run dev &`` as a whole command: the shell exits at once and the
+    server lives on in its group. Looking the group up from the shell's pid
+    finds nothing once the shell has been reaped, so nothing was killed."""
+    proc = subproc.popen(["/bin/sh", "-c", GRANDCHILD], cwd=str(tmp_path),
+                         stdout=subprocess.PIPE, start_new_session=True)
+    grandchild = int(proc.stdout.readline().decode())
+    proc.wait()
+    proc.stdout.close()
+    try:
+        assert _alive(grandchild)
+        subproc.kill_tree(proc.pid)
+        assert wait_for_death(grandchild)
+    finally:
+        if _alive(grandchild):
+            os.kill(grandchild, 9)
+
+
+@POSIX_ONLY
+async def test_a_command_tool_timeout_kills_what_outlived_its_program(tmp_path, monkeypatch):
+    """The program exits and leaves a child holding its output pipe. The
+    timeout's kill looked the group up from a pid already reaped, found
+    nothing, and the child ran on after the tool had given up."""
+    import quickcode.config as config_module
+    from quickcode.security import trust
+
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "home" / ".quickcode")
+    monkeypatch.setattr(trust, "is_trusted", lambda cwd: True)
+    project = tmp_path / "proj"
+    (project / ".quickcode" / "plugins").mkdir(parents=True)
+    pidfile = tmp_path / "gc.pid"
+    tool = tool_for(project, ["/bin/sh", "-c", f"sleep 60 & echo $! > {pidfile}"],
+                    timeout_ms=1000)
+
+    result = await run_command_tool(tool, project)
+
+    grandchild = int(pidfile.read_text())
+    try:
+        assert result.is_error and "timed out" in result.content, result.content
+        assert await await_until(lambda: not _alive(grandchild), timeout_s=5)
+    finally:
+        if _alive(grandchild):
+            os.kill(grandchild, 9)

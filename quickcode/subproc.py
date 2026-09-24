@@ -108,14 +108,15 @@ def popen(argv: list[str], **kwargs: Any) -> subprocess.Popen:
 
 
 def kill_tree(pid: int | None) -> None:
-    """Kill a process and everything it started. Never raises.
+    """Kill a child started with ``start_new_session=True``, and everything it
+    started. Never raises.
 
-    On POSIX this reaches the whole tree only when the process was started
-    with ``start_new_session=True``, which makes it the leader of its own
-    process group; otherwise it kills the one process. Killing just the top
-    of a tree is not enough for a caller holding its pipes: a grandchild that
-    inherited them keeps them open, and asyncio's ``Process.wait()`` does not
-    return until every pipe has closed.
+    POSIX: the child leads a process group of its own, and the group is
+    signalled by that id rather than looked up from the pid. Once the child
+    has exited and been reaped the lookup finds nothing -- while what it
+    started (``cmd &``) lives on in the group, holding the caller's pipes --
+    or finds whoever has the pid now. The group's id cannot be reused while
+    any member of it lives.
     """
     if not pid:
         return
@@ -125,17 +126,9 @@ def kill_tree(pid: int | None) -> None:
         except Exception:  # noqa: BLE001 - already gone, or taskkill missing
             pass
         return
-    import os
     import signal
 
     try:
-        group = os.getpgid(pid)
-        if group != os.getpgrp():
-            os.killpg(group, signal.SIGKILL)
-            return
-    except OSError:
-        pass
-    try:
-        os.kill(pid, signal.SIGKILL)
+        os.killpg(pid, signal.SIGKILL)
     except OSError:
         pass
