@@ -887,6 +887,31 @@ async def _get_text(url: str, transport: httpx.AsyncBaseTransport | None) -> str
         return response.text
 
 
+def _require_upgrade(status: UpdateStatus) -> None:
+    """Refuse anything but a stable release newer than the running version.
+
+    ``check`` already decides this for the chip and the Install page, but the
+    download is where a release becomes an executable on disk, so it is decided
+    again here instead of trusted from a status that may be cached or stale.
+    Without it the route would fetch the running version, an older one (a
+    downgrade the installer would happily perform), or a pre-release.
+    """
+    release = status.release
+    if release is None:
+        raise UpdateError("there is no release to download")
+    if release.draft or release.prerelease:
+        raise UpdateError(
+            f"{release.tag or 'this release'} is a pre-release, so it is not "
+            "offered as an update; nothing was downloaded"
+        )
+    installed = installed_version()
+    if status.state != "available" or is_newer(release.version, installed) is not True:
+        raise UpdateError(
+            f"{release.version or 'the latest release'} is not newer than the "
+            f"running {installed}; nothing was downloaded"
+        )
+
+
 def _record_path(target: Path) -> Path:
     return target.with_suffix(target.suffix + ".sha256")
 
@@ -913,6 +938,7 @@ async def download_installer(
             "this install is not the Windows installer layout, so downloading "
             "an installer would not update it. " + manual_instructions(info)[0]
         )
+    _require_upgrade(status)
     installer = status.release.installer_asset()
     if installer is None:
         raise UpdateError("this release has no Windows installer attached")

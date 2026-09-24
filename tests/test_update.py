@@ -539,6 +539,45 @@ async def test_a_pip_install_refuses_to_download_an_installer(home, monkeypatch)
     assert rec.requests == []
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"tag": "v2.0.0"},                       # the version already running
+        {"tag": "v1.9.0"},                       # older: a downgrade
+        {"tag": "v3.0.0", "prerelease": True},   # newer, but not a release
+    ],
+    ids=["same", "older", "prerelease"],
+)
+async def test_only_a_newer_stable_release_is_ever_downloaded(home, monkeypatch, kwargs):
+    """/api/update/download used to fetch whatever release the last check
+    returned, whatever the check had concluded about it -- so the button's
+    route would hand over the running version, an older one, or a pre-release
+    the check had just declined to offer."""
+    status = await available_status(home, monkeypatch, **kwargs)
+    assert status.state == "current"
+    rec = download_transport()
+    with pytest.raises(update.UpdateError, match="not newer|pre-release"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert rec.requests == []
+
+
+async def test_a_status_that_claims_an_upgrade_is_checked_again(home, monkeypatch):
+    """The status may be cached or hand-built; the version decides, not the label."""
+    status = update.UpdateStatus(
+        state="available", installed="2.0.0",
+        release=update.Release.from_payload(release_payload(tag="v1.9.0")),
+        install=update.InstallInfo("installer", "fake", app_dir="C:/x"),
+    )
+    rec = download_transport()
+    with pytest.raises(update.UpdateError, match="not newer"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert rec.requests == []
+
+
 async def test_a_plaintext_asset_url_is_refused_before_anything_is_fetched(
     home, monkeypatch,
 ):
@@ -749,6 +788,25 @@ def test_put_update_settings_rejects_a_body_that_is_not_a_boolean(home, tmp_path
     assert client.put(
         "/api/update/settings", json={"check_automatically": "maybe"}
     ).status_code == 400
+
+
+def test_download_route_refuses_when_nothing_newer_is_out(home, tmp_path, monkeypatch):
+    async def fake_fetch(**_kwargs):
+        return update.Release.from_payload(release_payload(tag="v2.0.0")), "", "", 0.0
+
+    def no_network(*_args, **_kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("the download route went to the network")
+
+    monkeypatch.setattr(update, "fetch_latest_release", fake_fetch)
+    monkeypatch.setattr(update, "_client", no_network)
+    monkeypatch.setattr(
+        update, "detect_install",
+        lambda *a, **k: update.InstallInfo("installer", "fake", app_dir="C:/x"),
+    )
+    response = make_client(tmp_path).post("/api/update/download")
+    assert response.status_code == 400
+    assert "not newer" in response.json()["detail"]
+    assert not (home / "updates").exists()
 
 
 def test_install_requires_an_explicit_confirmation_and_a_digest(home, tmp_path):
