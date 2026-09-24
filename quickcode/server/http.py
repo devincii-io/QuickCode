@@ -17,7 +17,9 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
+from quickcode.kernel.settings_file import SettingsUnreadable
 from quickcode.server.manager import ConversationManager
 from quickcode.server.projects import ProjectHub
 from quickcode.session.store import safe_conv_id
@@ -44,6 +46,16 @@ def project(hub: ProjectHub, pid: str) -> ConversationManager:
     if manager is None:
         raise HTTPException(404, f"unknown project: {pid}")
     return manager
+
+
+def register_error_handlers(app: FastAPI) -> None:
+    """Refusals a route lets escape, answered as the client errors they are."""
+
+    # 400 rather than 409: the settings routes answer 409 to mean "confirm and
+    # send again", and sending again cannot fix a file only its owner can.
+    @app.exception_handler(SettingsUnreadable)
+    async def settings_unreadable(_request: Request, exc: SettingsUnreadable) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
 def scoped(

@@ -171,6 +171,27 @@ def test_always_allow_over_a_broken_file_still_allows_for_this_session(project):
     assert path.read_text(encoding="utf-8") == BROKEN
 
 
+@pytest.mark.parametrize(("method", "path", "body"), [
+    ("PUT", "/api/presets/active", {"preset": "minimal"}),
+    ("POST", "/api/kernel/compositions/standard/derive", {"name": "Mine"}),
+    ("POST", "/api/profiles", {"id": "mine", "title": "Mine", "scope": "project"}),
+    ("POST", "/api/profiles/active", {"id": "readonly"}),
+])
+def test_a_save_over_a_broken_file_is_refused_with_the_reason_not_a_500(
+        project, method, path, body):
+    """400 rather than 409: these routes use 409 for "confirm and resend", and
+    resending cannot fix a file only the user can."""
+    settings = project / ".quickcode" / "settings.json"
+    settings.write_text(BROKEN, encoding="utf-8")
+
+    with _client(project) as client:
+        answer = client.request(method, path, json=body)
+
+    assert answer.status_code == 400, answer.text
+    assert "not valid JSON" in answer.json()["detail"]
+    assert settings.read_text(encoding="utf-8") == BROKEN
+
+
 def _symlink(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)

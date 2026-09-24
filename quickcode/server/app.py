@@ -29,7 +29,7 @@ from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.config_api import register_config_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.headers import security_headers
-from quickcode.server.http import DEFAULT, PROJECT, project
+from quickcode.server.http import DEFAULT, PROJECT, project, register_error_handlers
 from quickcode.server.kernel_api import register_kernel_routes
 from quickcode.server.manager import ConversationManager
 from quickcode.server.paths import register_path_routes
@@ -64,6 +64,7 @@ def create_app(
     # exactly one code path.
     hub = target if isinstance(target, ProjectHub) else ProjectHub.from_manager(target)
     app = FastAPI(title="QuickCode", docs_url=None, redoc_url=None)
+    register_error_handlers(app)
     allowed_hosts, allowed_origins = _allowed_origins(host, port)
     hardening = security_headers(allowed_hosts)
 
