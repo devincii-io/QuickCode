@@ -175,7 +175,9 @@ def _binding_contributions(
         if plugin.startswith("tool."):
             pattern, target = plugin[len("tool."):], "tools"
         elif plugin.startswith("mcp."):
-            pattern, target = f"mcp__{plugin[len('mcp.'):]}__*", "tools"
+            from quickcode.plugins.mcp_wire import server_prefix
+
+            pattern, target = f"{server_prefix(plugin[len('mcp.'):])}*", "tools"
         elif plugin.startswith("agent."):
             pattern, target = plugin[len("agent."):], "spawns"
         elif plugin.startswith("prompt."):
