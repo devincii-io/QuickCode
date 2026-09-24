@@ -438,8 +438,11 @@ async def _run_tool(
         return (f"Invalid arguments for {call.name}: {e}", True, {})
 
     # Permission gate. The tool declares which argument is the target and how
-    # it wants to be gated; the engine no longer recognises tools by name.
-    decision, arg_target = agent.permissions.evaluate_tool(tool, raw)
+    # it wants to be gated; the engine no longer recognises tools by name. A
+    # shell's relative paths are relative to where its last `cd` left it.
+    decision, arg_target = agent.permissions.evaluate_tool(
+        tool, raw, cwd=agent.ctx.extra.get("bash_cwd")
+    )
     # A hook may tighten that answer and never loosen it (hooks.tighten).
     decision, hook_reason = await tighten(agent, call, tool, raw, decision)
     if decision == Decision.ask:

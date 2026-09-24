@@ -38,8 +38,15 @@ def test_a_path_built_from_an_expansion_is_not_assumed_to_be_inside_the_project(
     """It resolved as a literal relative path, so `$HOME/.aws/credentials`
     looked like a file inside the project and auto-allowed — in every mode,
     while the same file named plainly prompted. The shell expands it long after
-    this decision is made, so the engine cannot know where it points."""
-    assert engine(mode).evaluate("bash", command) == Decision.ask
+    this decision is made, so the engine cannot know where it points.
+
+    Plan mode refuses the substitution forms outright: a command substitution
+    is not a read-only builtin, and plan mode runs nothing else -- the prompt
+    it used to show instead offered to run `$(...)` in the one mode that
+    promises not to."""
+    substitutes = "$(" in command or "`" in command
+    expected = Decision.deny if mode is Mode.plan and substitutes else Decision.ask
+    assert engine(mode).evaluate("bash", command) == expected
 
 
 def test_an_expansion_is_denied_rather_than_allowed_where_there_is_nobody_to_ask():

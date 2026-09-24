@@ -54,9 +54,10 @@ export const MODES = [
     shell: "prompts — this mode does not auto-run commands",
     protected: "prompts",
     withholds: false,
-    caveat: "The name promises less than people read into it: it auto-allows the "
-          + "mutating tools, and the shell is handled by its own pipeline, which "
-          + "still lands on a prompt.",
+    caveat: "The name promises less than people read into it: it auto-allows "
+          + "edits to files inside the project and nothing else. A web fetch, "
+          + "a command tool or an MCP tool that writes still prompts, and the "
+          + "shell is handled by its own pipeline, which still lands on a prompt.",
   },
   {
     id: "dontask",

@@ -40,22 +40,24 @@ export async function renderPermissions(host) {
   const body = `
     ${sub("The order the answer is decided in")}
     <p class="hp-p">One call, five checks, and the first one that answers wins.
-      Knowing the order explains almost every surprising decision.</p>
+      Knowing the order explains almost every surprising decision. A shell
+      command is first taken apart — each subcommand, and each command another
+      command runs, is judged on its own in this same order, and the most
+      restrictive answer governs the whole line.</p>
     <ol class="hp-order">
-      <li><strong>Is the target a protected path?</strong> Checked before any
-        rule, and only for tools whose target is declared to be a filesystem
-        path. If so it prompts — or refuses outright where there is nobody to
-        ask. <em>An “always allow” you granted earlier cannot reach past
-        this.</em></li>
-      <li><strong>Is this a shell tool?</strong> Then the command line is taken
-        apart and each subcommand is judged on its own, and the most restrictive
-        answer governs the whole line.</li>
+      <li><strong>Does a <code>deny</code> rule match?</strong> Then it is
+        denied, whatever else is true. Nothing below can turn a deny into a
+        prompt.</li>
       <li><strong>Are we in plan mode and is this tool mutating?</strong> Denied
         — though in practice you rarely see this, because plan mode does not
         offer those tools to the model in the first place.</li>
-      <li><strong>Do the rules say anything?</strong> <code>deny</code>, then
-        <code>ask</code>, then <code>allow</code>, first match wins. Deny beats
-        ask beats allow, always, whatever order they were written in.</li>
+      <li><strong>Is the target a protected path?</strong> Checked before the
+        remaining rules, for tools whose target is a filesystem path and for
+        every word of a shell command. If so it prompts — or refuses outright
+        where there is nobody to ask; yolo does neither. <em>An “always
+        allow” you granted earlier cannot reach past this.</em></li>
+      <li><strong>Do the other rules say anything?</strong> <code>ask</code>,
+        then <code>allow</code>, first match wins.</li>
       <li><strong>Otherwise, the mode decides.</strong> A read-only tool is
         allowed; everything else takes the mode's default.</li>
     </ol>

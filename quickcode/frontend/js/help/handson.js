@@ -40,9 +40,14 @@ const SAMPLES = [
     allow: "bash(npm *)", ask: "", deny: "",
   },
   {
-    label: "protected path beats yolo",
-    mode: "yolo", tool: "edit", target: ".env",
+    label: "protected path beats an allow",
+    mode: "auto-edit", tool: "edit", target: ".env",
     allow: "edit(**)", ask: "", deny: "",
+  },
+  {
+    label: "a deny beats the protected-path prompt",
+    mode: "ask", tool: "read", target: ".env",
+    allow: "read", ask: "", deny: "read(**.env)",
   },
   {
     label: "read-only builtins in plan mode",

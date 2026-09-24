@@ -13,9 +13,11 @@
 //   `_eval_bash_sub`  → evalBashSub
 //   `_protected`      → protectedPath   ← the one approximation, see below
 //
-// Everything here mirrors `quickcode/core/permissions.py` line for line, with
-// the same constants and the same ordering. Two deviations, both surfaced in
-// the UI rather than buried here:
+// Everything here mirrors `quickcode/core/permissions.py` -- the same
+// constants and the same ordering: deny rules, then plan mode, then the
+// protected-path prompt (skipped in yolo), then ask and allow rules, then the
+// mode default. Two deviations, both surfaced in the UI rather than buried
+// here:
 //
 //   1. **Path resolution.** Python resolves the target against the real project
 //      root and consults the filesystem. A browser cannot. This models the
@@ -30,6 +32,13 @@
 //      is computed *from* it and is an exact encoding of the three fields that
 //      matter here — so the shape is recovered from live data rather than from
 //      a table written into this file. See `characterToSpec`.
+//
+// Not ported, because each needs the shell parser or the disk the backend
+// has (`quickcode/security/`): reading words the way the shell does (globs,
+// braces, escapes, option values), commands run by other commands (`bash -c`,
+// `xargs`, `find -exec`, `$(...)`), recursive reads that reach a secret, and
+// the circuit breakers beyond their plainest spellings. The sandbox answers
+// for the command as written; the real engine can only be stricter.
 //
 // The trace this returns is the point of the whole exercise: not just the
 // verdict but which check produced it, and which checks never got to run.
@@ -46,10 +55,9 @@ const ENV_ASSIGNMENT = /^\w+=[\s\S]*$/;
 const SPLIT = /&&|\|\||\||;|&|\n/;
 const COMPOUND_MARKERS = ["$(", "`", ">", "<"];
 const CIRCUIT_BREAKERS = [
-  /\brm\s+-rf?\s+\/(?:\s|$)/,
-  /\brm\s+-rf?\s+~/,
-  /git\s+push\s+.*--force/,
-  /:\(\)\s*\{/,
+  /\brm\s+(?:-\S+\s+)*-[a-zA-Z]*[rRf][a-zA-Z]*\s+(?:-\S+\s+)*["']?(?:\/|~|\$\{?HOME\}?)\/?\*?["']?(?:\s|$)/,
+  /\bgit\s+(?:-\S+\s+)*push\b.*(?:\s--force|\s--mirror|\s-[a-zA-Z]*f|\s\+)/,
+  /\(\)\s*\{[^}]*\|/,
 ];
 
 export const DECISIONS = ["allow", "ask", "deny"];
@@ -155,21 +163,7 @@ export function evaluate({ mode, tool, spec, target, rules }) {
     return { decision, trace };
   };
 
-  // 1. Protected paths always prompt, before any rule.
-  if (spec.pathTarget) {
-    if (protectedPath(target)) {
-      return done(mode === "dontask" ? "deny" : "ask", "protected path",
-        mode === "dontask"
-          ? "The target is protected and this mode never prompts, so it is refused."
-          : "The target is protected, so it prompts before any rule is consulted.");
-    }
-    trace.push(step("protected path", false, "The target is not protected."));
-  } else {
-    trace.push(step("protected path", "skip",
-      "This tool's target is not declared to be a filesystem path."));
-  }
-
-  // 2. Shell tools get decomposed and judged per subcommand.
+  // Shell tools get decomposed and judged per subcommand, in the same order.
   if (spec.shell) {
     const bash = evalBash(target, mode, rules);
     trace.push(...bash.trace);
@@ -178,7 +172,12 @@ export function evaluate({ mode, tool, spec, target, rules }) {
   trace.push(step("shell decomposition", "skip",
     "This tool is not a shell tool."));
 
-  // 3. Plan mode structurally blocks mutation.
+  // 1. Deny rules first: nothing after them may turn a deny into a prompt.
+  for (const r of rules.deny || []) {
+    if (matchRule(r, tool, target)) return done("deny", "deny rule", `Matched ${r}`);
+  }
+
+  // 2. Plan mode structurally blocks mutation.
   if (mode === "plan" && spec.mutates) {
     return done("deny", "plan mode",
       "Plan mode denies mutating tools — and in a real session it would not have "
@@ -188,8 +187,24 @@ export function evaluate({ mode, tool, spec, target, rules }) {
     ? "In plan mode, but this tool does not mutate."
     : "Not in plan mode."));
 
-  // 4. deny → ask → allow, first match wins.
-  for (const kind of DECISIONS.slice().reverse()) {   // deny, ask, allow
+  // 3. Protected paths prompt before any allow rule, except in yolo.
+  if (spec.pathTarget) {
+    if (protectedPath(target) && mode !== "yolo") {
+      return done(mode === "dontask" ? "deny" : "ask", "protected path",
+        mode === "dontask"
+          ? "The target is protected and this mode never prompts, so it is refused."
+          : "The target is protected, so it prompts before any allow rule is consulted.");
+    }
+    trace.push(step("protected path", false, mode === "yolo"
+      ? "Yolo does not ask about protected paths."
+      : "The target is not protected."));
+  } else {
+    trace.push(step("protected path", "skip",
+      "This tool's target is not declared to be a filesystem path."));
+  }
+
+  // 4. ask → allow, first match wins.
+  for (const kind of ["ask", "allow"]) {
     for (const r of rules[kind] || []) {
       if (matchRule(r, tool, target)) {
         return done(kind, `${kind} rule`, `Matched ${r}`);
@@ -203,13 +218,15 @@ export function evaluate({ mode, tool, spec, target, rules }) {
     return done("allow", "mode default",
       "The tool declares itself read-only, so it is allowed in every mode.");
   }
-  return done(modeDefaultForWrite(mode), "mode default",
+  return done(modeDefaultForWrite(mode, spec), "mode default",
     `Nothing named this call, so ${mode} decides.`);
 }
 
-export function modeDefaultForWrite(mode) {
+export function modeDefaultForWrite(mode, spec = { pathTarget: true }) {
   if (mode === "yolo") return "allow";
-  if (mode === "auto-edit") return "allow";
+  // auto-edit allows edits -- a mutating tool whose target is a path -- and
+  // nothing else: a fetch, a command tool or an MCP tool that writes asks.
+  if (mode === "auto-edit") return spec.pathTarget ? "allow" : "ask";
   if (mode === "dontask") return "deny";
   return "ask";
 }
@@ -243,8 +260,8 @@ export function evalBash(command, mode, rules) {
   if (breaker) {
     decisions.push("ask");
     trace.push(step("circuit breaker", true,
-      "This line matches one of the four catastrophic shapes, which prompt even "
-      + "in yolo mode."));
+      "This line matches a catastrophic shape (deleting / or ~, a forced push, "
+      + "a fork bomb), which prompts even in yolo mode."));
   }
 
   const decision = decisions.includes("deny") ? "deny"
@@ -266,30 +283,34 @@ function evalBashSub(sub, mode, rules, hasSub) {
   const stripped = tokens.slice(idx).join(" ");
   const first = idx < tokens.length ? tokens[idx].split("/").pop() : "";
 
-  // Every non-option argument is treated as a possible path.
-  for (const token of tokens.slice(idx + 1)) {
-    if (token.startsWith("-")) continue;
-    let candidate = token.includes("=") ? token.split("=").pop() : token;
-    candidate = candidate.replace(/^['"{(,)}]+|['"{(,)}]+$/g, "");
-    if (candidate && protectedPath(candidate)) {
-      return mode === "dontask"
-        ? { decision: "deny", why: `${candidate} is a protected path and this mode never prompts.` }
-        : { decision: "ask", why: `${candidate} is a protected path, so it prompts.` };
-    }
-  }
-
   for (const r of rules.deny || []) {
     if (matchRule(r, "bash", sub) || matchRule(r, "bash", stripped)) {
       return { decision: "deny", why: `Matched the deny rule ${r}.` };
     }
   }
 
-  if (READONLY_BUILTINS.has(first) && !hasSub && !hasEnvPrefix) {
-    return { decision: "allow", why: `${first} is a read-only builtin, so it is allowed without a prompt.` };
+  const readOnly = READONLY_BUILTINS.has(first) && !hasSub && !hasEnvPrefix
+    && !/[\\/]/.test(tokens[idx] || "");
+  if (mode === "plan" && !readOnly) {
+    return { decision: "deny", why: "Plan mode allows only the read-only builtins." };
   }
 
-  if (mode === "plan") {
-    return { decision: "deny", why: "Plan mode allows only the read-only builtins." };
+  // Every argument, option values included, is treated as a possible path.
+  if (mode !== "yolo") {
+    for (const token of tokens.slice(idx + 1)) {
+      let candidate = token.includes("=") ? token.split("=").pop() : token;
+      if (candidate.startsWith("-")) continue;
+      candidate = candidate.replace(/['"]/g, "").replace(/^[{(,)}]+|[{(,)}]+$/g, "");
+      if (candidate && protectedPath(candidate)) {
+        return mode === "dontask"
+          ? { decision: "deny", why: `${candidate} is a protected path and this mode never prompts.` }
+          : { decision: "ask", why: `${candidate} is a protected path, so it prompts.` };
+      }
+    }
+  }
+
+  if (readOnly) {
+    return { decision: "allow", why: `${first} is a read-only builtin, so it is allowed without a prompt.` };
   }
 
   for (const r of rules.ask || []) {

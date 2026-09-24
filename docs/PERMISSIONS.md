@@ -61,9 +61,13 @@ match on (`Tool.permission_paths`).
 | `dontask` | ✅ | rule-matched only, else **auto-deny** | rule-matched only, else auto-deny | never blocks on a prompt |
 | `yolo` | ✅ | ✅ | ✅ | bypass; explicit opt-in |
 
-`auto-edit` auto-allows *edits*, and nothing else. A shell command in `auto-edit`
-takes the same path it takes in `ask`: the read-only builtins below are allowed,
-everything else prompts. There is **no allowlist of file-op commands** —
+`auto-edit` auto-allows *edits*, and nothing else. An edit is a mutating tool
+whose target is a path (`path_target`), which the protected-path check has
+already confined to the project; every other mutating tool — `web_fetch`,
+`web_search`, a plugin's command tool, an MCP tool that is not read-only —
+prompts exactly as in `ask`. (The mode default used to allow all of them.)
+A shell command in `auto-edit` takes the same path it takes in `ask`: the
+read-only builtins below are allowed, everything else prompts. There is **no allowlist of file-op commands** —
 `mkdir`, `touch`, `mv`, `cp` and `rm` all prompt, in every mode but `yolo`.
 Earlier versions of this document described such a list; it was never
 implemented, and the entry that would carry it does not exist in
@@ -81,29 +85,52 @@ today.
 - **Yolo guardrails:** it has to be armed first — `--yolo` at launch, or the
   Settings → General checkbox, which asks for confirmation and persists as
   `allow_yolo` — the mode pill turns red while it is on, and there is a hard
-  circuit breaker. Four patterns prompt **even in yolo**,
-  and this is the whole list (`_CIRCUIT_BREAKERS`): `rm -rf /`, `rm -rf ~`,
-  `git push … --force` (any remote, any branch — not only the default one), and
-  the `:(){` fork bomb. Two things the old text promised are not breakers:
-  substitution forms like `$(rm -rf /)` are not matched by these regexes, and
-  there is no breaker for recursive deletes outside the project. Neither is
-  caught in yolo any more: the protected-path prompt that used to catch them
-  by a side door is not raised in yolo (see the next bullet), so in that mode
-  the four patterns above are the whole of what stops.
+  circuit breaker. Three kinds of command prompt **even
+  in yolo**, and this is the whole list (`security/breakers.py`):
+  1. a recursive or forced delete (`rm`, `Remove-Item`, `rd /s`, `del /s`) of
+     the filesystem root, a drive root, a top-level system directory (`/usr`,
+     `/home`, `C:\Windows`…) or a home directory, however spelled — `rm -rf /`,
+     `rm -fr /*`, `rm -rf --no-preserve-root /`, `rm -rf -- /`,
+     `rm -rf build /`, `rm -rf ~/`, `rm -rf "$HOME"`, `rm -rf ${HOME:?}/`;
+  2. a forced `git push` to any remote and branch — `--force`, `-f` in any
+     cluster (`-uf`), `--force-with-lease`, `--force-if-includes`, `--mirror`,
+     a `+refspec`, with global options in front (`git -C . push -f`) or behind
+     a `-c alias.…` or a `-c remote.*.push=+…`;
+  3. a fork bomb, whatever its function is called (`:(){ :|:& };:`,
+     `f(){ f|f& };f`, `fork while fork`).
+
+  They are matched on the command's words, not on one spelling of it; the
+  regexes they replace knew one shape each. A breaker is also matched inside
+  the commands another command runs (`$(rm -rf /)`, `bash -c "…"`, `xargs`,
+  `find -exec`; see §Bash evaluation pipeline), since those are evaluated as
+  if typed. There is
+  no breaker for recursive deletes outside the project, and it is not caught in
+  yolo any more: the protected-path prompt that used to catch it by a side
+  door is not raised in yolo (see the next bullet), so in that mode the
+  patterns above are the whole of what stops.
 - **Protected paths prompt in every mode except `yolo`**, regardless of allow
   rules: `.git/`,
   `.quickcode/`, `.ssh/`, `.env` and `.env.*`, and anything outside the project
-  root. The test is on the *resolved* path's components, so `~/.quickcode/` is
-  caught twice over — once as a `.quickcode` component, once as outside the
-  root. Checked *before* allow-rule
-  evaluation so no rule can accidentally unprotect them. In `dontask` the same
+  root. The test runs on the path as *written* and on the path as *resolved*
+  (`security/protected.py`), and either is enough: a symlink named `.env` is
+  protected by its name, a harmless name that links into `.git` by its target.
+  Names are compared the way Windows compares them, on every platform — case
+  folded, trailing dots and spaces dropped, an NTFS stream suffix
+  (`.env::$DATA`) dropped, 8.3 short names (`GIT~1`) recognised, and `\` taken
+  as a separator. Only components *below* the project root count, so a project
+  kept under a directory named `.quickcode` is not protected wholesale.
+  Checked *before* allow-rule
+  evaluation so no rule can accidentally unprotect them, and *after* deny rules,
+  so a `read(**.env)` deny denies `.env` rather than turning into a prompt with
+  an Allow button on it. Plan mode's refusal of mutating calls also comes first:
+  a write to `.git/config` in plan mode is denied, not offered. In `dontask` the same
   check denies instead of prompting, because there is nobody to ask. In `yolo`
   it does neither: the mode exists to stop asking, and asking anyway made a
   plain `find / -name "*x*"` stop and wait — `bash` treats every non-option
   token as a possible path, so the `/` was enough. The gate is entry to the
   mode (arming it, confirming that, a red mode pill), not a second
   conversation per command. Deny rules still deny in yolo, and the
-  four circuit breakers still prompt. The prompt
+  circuit breakers still prompt. The prompt
   is the ordinary three-button one; there is no "allow self-config edits for
   this session" option — an always-allow on a `.quickcode/` path writes an
   ordinary persisted rule like any other.
@@ -120,11 +147,16 @@ today.
   to ordinary rule evaluation, so a `deny` rule covering the file still denies
   it. A shell `cat` of an artifact still prompts — `bash` declares itself
   mutating and the bash pipeline's own scan is unchanged.
-- **Subagent capping:** a child agent's mode is `min(parent mode, its definition's cap)`, with the parent's mode read live — a yolo orchestrator does not imply yolo workers, and a parent cycled down to plan caps children already running. Children inherit the spawner's `deny` and `ask` rules at every depth (not `allow`). Detail in docs/AGENTS.md.
+- **Subagent capping:** a child agent's mode is `min(parent mode, its definition's cap)`, with the parent's mode read live — a yolo orchestrator does not imply yolo workers, and a parent cycled down to plan caps children already running. Detail in docs/AGENTS.md.
+  A child's engine also starts with the session's `deny` and `ask` rules
+  (read live, handed down every level), and with none of its `allow` rules: a
+  deny holds for the work the orchestrator delegates, and a grant does not
+  travel anywhere it was not given. Children used to start with no rules at
+  all, so an `auto-edit` or `yolo` child did what the session was denied.
 
 ## Rules
 
-Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fixed: **deny → ask → allow → mode default**. First match wins — a broad deny beats a narrow allow by design.
+Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fixed: **deny → (plan mode refuses mutation) → protected-path prompt → ask → allow → mode default**. First match wins — a broad deny beats a narrow allow by design, and beats the protected-path prompt too.
 
 ```jsonc
 // .quickcode/settings.json
@@ -171,9 +203,16 @@ The matching is a **whole-string glob**, not gitignore semantics:
   `bash(uv run pytest*)` does not cover `uv run pytest tests/test_x.py`. Any
   rule whose argument may contain a path or a URL wants `**`. The examples above
   are written that way for exactly this reason.
-- Paths are matched as the *strings the tool was called with*. There is no
-  normalisation step, so an absolute call and a relative one are different
-  targets and a rule that means to cover both has to say so.
+- A path rule (on a tool that declares `path_target`) is matched against
+  where the path *lands*: its resolved location relative to the project root
+  (`src/a.py`) and absolute (`/home/me/proj/src/a.py`). So `edit(src/**)` covers
+  the absolute spelling of the same file, and a deny on `src/secret.py` holds for
+  `./src/secret.py`, `lib/../src/secret.py` and a symlink that points there.
+  `deny` and `ask` also see the string exactly as the tool was called with it;
+  `allow` sees that string only when it names its location plainly (no `..`, no
+  symlink on the way), so `edit(src/**)` does not cover `src/../pyproject.toml`.
+  On Windows and macOS `deny` and `ask` path rules ignore case, as those
+  filesystems do; `allow` rules never do.
 - `agent(researcher)` gates which subagent types may spawn.
 - A bare tool name (`write`) matches every use of that tool, in any of the three
   lists.
@@ -253,13 +292,22 @@ command string
   → split into subcommands on && || | ; & and newlines
   → per subcommand:
       strip harmless wrappers (timeout, time, nice, nohup) and env-var prefixes*
-      → any non-option argument that resolves to a protected path
-        (.git .quickcode .ssh .env* / outside the project) → ask (deny in dontask)
-      → deny rules → builtin read-only? → auto-allow, unless the line carries
-        a substitution/redirection marker ($( ` > <) or the subcommand carries
-        an env-var prefix
-      → plan mode stops here: anything not read-only is denied
+      → deny rules
+      → plan mode: anything that is not an auto-allowable read-only builtin
+        is denied
+      → any argument or option value that may name a protected path, read
+        as the shell will read it (.git .quickcode .ssh .env* / outside the
+        project), or a recursive read that would reach one on disk
+        → ask (deny in dontask)
+      → builtin read-only? → auto-allow, if the command word is a bare name
+        (or an absolute path outside the project), unless the line carries a
+        substitution/redirection marker ($( ` > < or an unquoted `(`) or the
+        subcommand carries an env-var prefix
       → ask rules → allow rules → mode default
+  → + every command another command runs (bash -c, eval, xargs, find -exec,
+      env/sudo/nohup/timeout…, $( ) and backticks, git aliases and exec
+      options, rg --pre), evaluated by this same pipeline, 4 levels deep
+      (deeper asks)
   → + circuit breakers, matched against the whole line
   → final decision = most restrictive across subcommands
 ```
@@ -274,13 +322,90 @@ ls  pwd  rg  stat  tail  tree  wc  which
 **`git` is not among them.** Earlier text here promised that "read-only git
 forms" auto-allow; no such special case exists and none ever did — `git status`
 prompts in `ask` and `auto-edit` like any other command, and is denied in
-`plan`. Recognising read-only git *forms* would need subcommand parsing the
-engine does not do, and the first token is all it looks at. `bash(git status)`
-as an allow rule is the supported way to get there.
+`plan`. The engine does read git's options now, but only to be stricter (the
+config writes, `-c` and friends, and forced pushes below); no git form is
+auto-allowed. `bash(git status)` as an allow rule is the supported way to get
+there.
 
 - *Env-prefix stripping is for **deny** matching: `FOO=x rm -rf y` still hits a `rm` deny. It does **not** buy the read-only auto-allow, and it does not match an allow rule written against the bare command — `PATH=. ls` is not `ls`, and approving `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule that spells the assignment out still matches.
 - Any assignment disqualifies, not a list of dangerous names: such a list would have to be complete, and `PATH`/`LD_PRELOAD` are only the obvious entries next to `BASH_ENV`, `IFS`, `PYTHONSTARTUP`, `NODE_OPTIONS` — and `RIPGREP_CONFIG_PATH`, which points `rg` (a read-only builtin) at a config file that can set `--pre`, which runs a program. The set grows with every program installed on the machine. The cost of the conservative reading is one prompt for `FOO=1 ls`.
-- Exec-style wrappers that smuggle commands (`watch`, `xargs -I`, `find -exec`, `setsid`) are never stripped → always prompt unless the full string matches a rule.
+- **Words are read the way the shell reads them** (`security/shellwords.py`).
+  Every argument is expanded into each string it may become before the
+  protected-path test: quotes and backslash escapes removed (`.en''v`,
+  `.e\nv`), ANSI-C quoting decoded (`$'\x2eenv'`), braces expanded
+  (`{.env,x}`), an option's value split off (`--from-file=.env`, `-f.env`), an
+  assignment's right-hand side, a redirection's target (`cat<.env`) and each
+  element of a PowerShell array (`x,.env`). A glob counts if it could expand to
+  a protected name (`.e?v`, `.en*`, `.*`); one that opens with a wildcard
+  (`*`, `*.py`) cannot match a dotfile in bash and is let through, except on
+  Windows, where PowerShell and cmd would match `.env` with `*`. A brace
+  expansion too large to enumerate is treated as unknown, and unknown asks.
+- **Relative paths are relative to where the shell stands.** A lone `cd` persists
+  across `bash` calls, and the loop passes that directory to the engine
+  (`evaluate_tool(..., cwd=)`). Relative arguments resolve from it, and a shell
+  standing outside the project or inside a protected directory treats every
+  command as touching a protected path: after an approved `cd ..`, `ls` asks
+  and `rm -rf *` is not covered by `bash(rm **)`. It used to resolve everything
+  against the project root, so the one approved `cd` carried the rest of the
+  session out of the project unprompted. Within one line the same holds for a
+  `cd` that names no directory: a bare `cd` goes home and `cd -` goes back, so
+  either counts as touching a protected path (`cd && cat .bash_history` used
+  to be two read-only builtins, auto-allowed in every mode).
+- **A recursive read is gated by what it reaches** (`security/sweep.py`).
+  `grep -r KEY .` names `.`, which is not protected, and used to print `.env`
+  and `.git/config` on the way through — the sweep the `grep` tool was fixed
+  to skip. For `grep -r`/`-R`, `diff -r`, and `rg` with `--hidden`, `-uu`,
+  `-.`, `-L` or a whitelist glob (`-g '*'` selects dotfiles even without
+  `--hidden`), the engine walks the directories named (the project, if none)
+  and treats the command as touching a protected path if the walk would reach
+  one; a followed symlink counts by its target. The walk stops at 20,000
+  entries and answers yes, since unknown is not safe. Plain `rg`, which skips
+  dotfiles by itself, is never walked, and neither is anything in yolo.
+- **The auto-allow is for the system's `cat`, not a file called `cat`.**
+  `./cat`, `bin/ls` or `tools/grep` is whatever the repository shipped under
+  that name, so a command word with a path in it takes the auto-allow only if
+  it resolves outside the project (`/bin/cat`). The command word is also tested
+  for protected *names* (`.git/hooks/post-checkout`), though not for being
+  outside the project, since every program on `PATH` is.
+- **An unquoted `(` forfeits the auto-allow.** PowerShell evaluates
+  `cat (Remove-Item x)` and `cat x,(Remove-Item y)` before `cat` sees a thing;
+  in bash an unquoted `(` inside a command is a syntax error or a
+  substitution, so no ordinary command loses anything.
+- **A command another command runs is decided as if typed**
+  (`security/commands.py`). `find . -exec rm {} +`, `xargs rm`, `env rm`,
+  `sudo rm`, `timeout 5 rm`, `bash -c 'rm …'`, `eval rm …`, `echo $(rm …)`,
+  `cmd /c`, `powershell -Command` / `-EncodedCommand`, `git -c
+  alias.x='!rm …' x`, `git rebase -x`, `git bisect run`, `git submodule
+  foreach` and `rg --pre rm` all run `rm`, and `rm` goes through the whole
+  pipeline on its own. The most restrictive answer wins, which gives both
+  halves of the rule: a deny on `rm` holds whatever it hides behind (in yolo
+  that deny is all there is), and an allow on `find` or `xargs` does not
+  approve the program they run — `bash(find **)` plus `bash(rm **)` does.
+  The wrappers themselves are still not stripped for the allow side, so they
+  prompt unless the full string matches a rule. The same goes for commands the
+  first split does not cut out: a subshell `(rm …)`, a `case` arm, a `coproc`,
+  and a function body (`f() { rm …; }`, `function f { rm …; }`).
+- **Deny and ask rules see the words as the shell reads them**, too:
+  `bash(rm -rf build)` holds for `rm -rf 'build'` and `r''m -rf build`. A
+  command word only the shell can finish — `$CMD`, `rm${IFS}-rf`,
+  `$(echo rm)`, `/bin/r?` — may be any command, the denied ones included, so
+  when a `bash` deny rule exists it asks (denies in `dontask`) even in yolo.
+  Deny rules on commands are still name-based: a copy or link of the binary
+  under another name is a different command to them.
+- **Builtins that run or write something are not read-only.** `rg --pre` and
+  `rg --hostname-bin` run a program, `tree -o` / `tree -R` and `file -C` write
+  files; each forfeits the auto-allow (and is denied in plan mode).
+- **git pointed at somebody else's program.** An allow rule on git
+  (`bash(git **)`, the "Git only" profile) does not cover `git -c <key>=…`,
+  `--config-env`, `--exec-path`, `--git-dir`, `--work-tree`, `git -C` into a
+  directory holding its own `HEAD`/`config` (a committed bare repository),
+  `clone --template` / `clone -c`, or the options that name a command
+  (`fetch --upload-pack`, `push --receive-pack`, `difftool -x`, `grep -O`,
+  `filter-branch --*-filter`): each points git at code the rule never saw.
+  `git config` in a writing form (`git config k v`, `--add`, `--unset`,
+  `set`, `--global`…) is treated as a write to a protected path, because
+  `.git/config` is where every later git command takes its pager, editor and
+  hooks path from. Reads (`--get`, `--list`, `git config k`) are unaffected.
 - "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**.
 - Windows: PowerShell runs through the same pipeline, but **alias canonicalization is not implemented**. `gci`, `dir` and `Get-ChildItem` are three unrelated strings to the engine — none of them is in `READONLY_BUILTINS` either, so on PowerShell the read-only auto-allow effectively never fires and a rule has to name the exact spelling the model used. `bash` prefers Git Bash where it exists (docs/ARCHITECTURE §Windows notes), which is why this has not bitten harder.
 
