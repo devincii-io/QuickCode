@@ -676,9 +676,11 @@ _SECTION_PROSE: dict[str, tuple[str, str, str]] = {
         "Rendered only when the session can spawn subagents. " + _OVERRIDE_UNCONDITIONAL,
     ),
     "prompt.plan_mode": (
-        "Added while the session is in plan mode: investigate, design, change nothing.",
-        "Appears and disappears as you switch modes. The mutating tools are "
-        "withheld by the plan-mode hook whether or not this text is present.",
+        "Added when a session opens in plan mode: investigate, design, change nothing.",
+        "Present when a session opens in plan mode and kept for the session, "
+        "since the prompt is frozen; a mode switch reaches the model as a "
+        "reminder. The mutating tools are withheld by the plan-mode hook "
+        "whether or not this text is present.",
         "Rendered only while the mode is plan. " + _OVERRIDE_UNCONDITIONAL,
     ),
     "prompt.headless": (

@@ -42,7 +42,9 @@ on the system message, so the same inputs must produce the same bytes.
 
 Sections in composition order. `<orchestration>`, `<send_message_hint>`,
 `<plan_mode>` and `<headless_mode>` render empty — and so are dropped — unless
-the session is orchestrating, in plan mode, or headless.
+the session is orchestrating, opened in plan mode, or headless. A later mode
+switch does not re-render the prompt (the mode reminder carries it), which is
+why `<plan_mode>` is worded to stay true after its plan is approved.
 
 ```xml
 <identity>
@@ -164,9 +166,11 @@ fresh subagent.
 </send_message_hint>
 
 <plan_mode>
-You are in PLAN MODE. Investigate and design; do not mutate anything. The
-editing and mutating tools are withheld. When you have a complete plan, call
-the plan tool with the plan as markdown. Do not attempt to implement yet.
+This session opened in PLAN MODE. While the mode is PLAN, investigate and
+design; do not mutate anything — the editing and mutating tools are
+withheld. When you have a complete plan, call the plan tool with the plan as
+markdown. Once a plan is approved the mode changes and you are told so; from
+then on, implement it.
 </plan_mode>
 
 <headless_mode>
