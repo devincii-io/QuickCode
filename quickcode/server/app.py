@@ -38,7 +38,7 @@ from quickcode.kernel.spec import (
 )
 from quickcode.kernel.state import prompt_overrides
 from quickcode.prompts.system import render_with_sections
-from quickcode.server import auth
+from quickcode.server import auth, provider_settings
 from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
@@ -182,6 +182,10 @@ def create_app(
             "theme": cfg.theme_colors(),
             "has_api_key": bool(profile.api_key),
             "api_key_env": profile.api_key_env,
+            # The backend plugin (``provider`` above is its display name) and
+            # every one Settings can switch to.
+            "model_provider": profile.provider,
+            "model_providers": provider_settings.payload(cfg),
             "max_tokens": cfg.max_tokens,
             "temperature": cfg.temperature,
             "search": _search_payload(cfg),
@@ -1162,9 +1166,7 @@ def create_app(
         default_mode = body.get("default_mode")
         if isinstance(default_mode, str):
             cfg.default_mode = default_mode
-        base_url = body.get("base_url")
-        if isinstance(base_url, str) and base_url.strip():
-            cfg.profile.base_url = base_url.strip()
+        backend_changed = provider_settings.apply(cfg, body)
         search = body.get("search")
         if isinstance(search, dict):
             _apply_search(cfg, search)
@@ -1182,6 +1184,8 @@ def create_app(
             # profile saying `mode: yolo` was rewritten to `ask` in silence.
             cfg.allow_yolo = bool(body.get("allow_yolo"))
         cfg.save()
+        if backend_changed:
+            provider_settings.rebuild(hub)
         return Response(status_code=204)
 
     def _apply_search(cfg, block: dict) -> None:
@@ -1236,7 +1240,12 @@ def create_app(
         key = body.get("key") if isinstance(body, dict) else None
         if not isinstance(key, str) or not key.strip():
             raise HTTPException(400, "body must be {'key': <non-empty string>}")
-        secrets.save_api_key(key.strip())
+        # Each model provider bills its own account, so the key is stored
+        # against the one it belongs to -- the active one unless named.
+        target = provider_settings.key_target(hub.config, body)
+        secrets.save_provider_key(target, key.strip())
+        if target == hub.config.profile.provider:
+            provider_settings.rebuild(hub)
         return Response(status_code=204)
 
     @app.post("/api/search-key")

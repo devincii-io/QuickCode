@@ -400,6 +400,22 @@ class ProjectHub:
 
         self._models_task = asyncio.create_task(warm())
 
+    def replace_provider(self, provider: Provider) -> None:
+        """Swap the install's model backend after its settings changed.
+
+        The catalog belongs to the old backend, so it is dropped and fetched
+        again from the new one.
+        """
+        if self._models_task is not None and not self._models_task.done():
+            self._models_task.cancel()
+        self._models_task = None
+        self._models = None
+        self.provider = provider
+        for manager in self.managers.values():
+            manager.use_provider(provider)
+        if self.managers and not self._defer_catalog:
+            self._warm_catalog(next(iter(self.managers.values())))
+
     # ---- trust ----
     def trust_status(self, pid: str) -> dict[str, Any]:
         """The trust decision for an open project: trusted?, which project-scope

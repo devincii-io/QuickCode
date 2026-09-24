@@ -48,6 +48,7 @@ from quickcode.kernel.resolve import default_mode as resolved_default_mode
 from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.prompts.system import render_system_prompt
 from quickcode.providers.base import ModelInfo, Provider, ProviderError
+from quickcode.providers.choice import display_name
 from quickcode.session.recorder import TranscriptRecorder
 from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import load_defs
@@ -892,10 +893,7 @@ class ConversationManager:
         self.default_mode = default_mode
         self.conversations: dict[str, Conversation] = {}
         self._models: list[ModelInfo] | None = None
-        profile = config.profile
-        self.provider_name = (
-            "OpenRouter" if "openrouter.ai" in profile.base_url else profile.base_url
-        )
+        self.provider_name = display_name(config.profile)
         # Injectable so tests and the plugin loader can shape the toolset.
         if registry_factory is None:
             from quickcode.tools.registry import default_registry
@@ -934,6 +932,17 @@ class ConversationManager:
             "tools": tools,
             "mcp_servers": list(self.mcp_servers),
         }
+
+    def use_provider(self, provider: Provider) -> None:
+        """New conversations talk to ``provider``; open ones keep theirs.
+
+        A conversation already running holds its own reference, so its turn in
+        flight and its prompt cache are not pulled out from under it -- the same
+        "new sessions pick this up" rule every other install setting follows.
+        """
+        self.provider = provider
+        self.provider_name = display_name(self.config.profile)
+        self._models = None
 
     # ---- models ----
     async def models(self, *, refresh: bool = False) -> list[ModelInfo]:
