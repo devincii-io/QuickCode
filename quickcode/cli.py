@@ -411,6 +411,11 @@ def main(argv: list[str] | None = None) -> None:
         from quickcode.doctor import main as doctor_main
 
         raise SystemExit(doctor_main())
+    # `qc why "<command>"` / `quickcode permissions explain`: the permission dry run.
+    if raw and raw[0] in ("why", "permissions"):
+        from quickcode.permission_cli import main as permissions_main
+
+        raise SystemExit(permissions_main(raw))
 
     parser = _build_parser()
     args = parser.parse_args(argv)
