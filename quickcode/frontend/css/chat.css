@@ -127,13 +127,6 @@
 .io-diff { border-top: 1px solid var(--line); padding: 9px 11px; }
 .io-trace { margin-top: 8px; }
 
-/* ---- payload highlighting ---- */
-
-.hl-key { color: var(--primary); }
-.hl-str { color: var(--secondary); }
-.hl-num { color: var(--accent); }
-.hl-lit { color: var(--warning); }
-
 /* ---- file references ---- */
 
 .file-ref {
