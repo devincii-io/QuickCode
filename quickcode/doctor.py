@@ -1,21 +1,21 @@
 """``quickcode doctor`` diagnostics.
 
 Self-contained health checks for the current environment: interpreter
-version, external tool availability (ripgrep, git), PTY backend
-importability, API key resolution, user config loadability, and whether
-``web_search`` has a provider it can actually reach.
+version, external tool availability (ripgrep, git), whether a pseudo-terminal
+can be opened, the shells the agent and the terminal panel will run, API key
+resolution, user config loadability, and whether ``web_search`` has a
+provider it can actually reach.
 
 Each check is a small pure function returning a :class:`Check` — no
 printing, no side effects — so they're easy to unit test individually.
 :func:`run_checks` runs them all in a sensible order and :func:`format_report`
-renders the results as a plain-text checklist. :func:`main` is the CLI entry
-point; this module is intentionally NOT wired into ``quickcode/cli.py`` here
-(that wiring is left to a follow-up change) but can be invoked directly via
-``python -m quickcode.doctor``.
+renders the results as a plain-text checklist. :func:`main` is the entry
+point behind ``quickcode doctor`` (and ``python -m quickcode.doctor``).
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -71,7 +71,19 @@ def check_git() -> Check:
 def check_pty() -> Check:
     """PTY backend: winpty (ConPTY) on Windows, stdlib pty on POSIX."""
     if not sys.platform.startswith("win"):
-        return Check("PTY backend", True, "ok", "n/a on this platform (uses stdlib pty)")
+        # Opened rather than assumed: a container without /dev/pts has the
+        # module and no terminals to hand out.
+        try:
+            master, slave = os.openpty()
+        except OSError as exc:
+            return Check(
+                "PTY backend", False, "warn",
+                f"cannot open a pseudo-terminal ({exc}) — the terminal panel "
+                "cannot start, and commands run on plain pipes",
+            )
+        os.close(master)
+        os.close(slave)
+        return Check("PTY backend", True, "ok", "stdlib pty (a pseudo-terminal opens)")
     try:
         import winpty  # noqa: F401
     except ImportError:
@@ -85,10 +97,43 @@ def check_pty() -> Check:
     return Check("PTY backend", True, "ok", "winpty importable (ConPTY available)")
 
 
+def check_agent_shell() -> Check:
+    """The shell the agent's ``bash`` tool runs commands in."""
+    if sys.platform.startswith("win"):
+        from quickcode.tools.bash import _find_git_bash
+
+        found = _find_git_bash()
+        if found:
+            return Check("Agent shell", True, "ok", f"Git Bash at {found}")
+        return Check(
+            "Agent shell", False, "warn",
+            "Git Bash not found — commands run in PowerShell, and the model "
+            "writes bash more reliably than PowerShell",
+        )
+    if os.path.exists("/bin/bash"):
+        return Check("Agent shell", True, "ok", "/bin/bash")
+    return Check(
+        "Agent shell", False, "fail",
+        "/bin/bash does not exist — every bash tool call will fail",
+    )
+
+
+def check_terminal_shell() -> Check:
+    """The shell the terminal panel opens (``pty.shells``)."""
+    from quickcode.pty.shells import interactive_shell_argv
+
+    argv = interactive_shell_argv()
+    shell = argv[0]
+    if os.path.isabs(shell) and os.access(shell, os.X_OK) or shutil.which(shell):
+        return Check("Terminal shell", True, "ok", " ".join(argv))
+    return Check(
+        "Terminal shell", False, "warn",
+        f"{shell} not found — the terminal panel cannot start a shell",
+    )
+
+
 def check_api_key() -> Check:
     """API key: env var first, then a saved (DPAPI-encrypted) key."""
-    import os
-
     from quickcode.secrets import API_KEY_ENV, has_saved_key
 
     if os.environ.get(API_KEY_ENV):
@@ -225,6 +270,8 @@ def run_checks() -> list[Check]:
         check_git(),
         check_ripgrep(),
         check_pty(),
+        check_agent_shell(),
+        check_terminal_shell(),
         check_config(),
         check_api_key(),
         check_search(),

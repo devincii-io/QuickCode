@@ -1,3 +1,8 @@
+import os
+import sys
+
+import pytest
+
 import quickcode.doctor as doctor
 from quickcode.doctor import (
     Check,
@@ -245,3 +250,47 @@ def test_main_returns_int():
 
 def test_module_runnable_as_script():
     assert hasattr(doctor, "main")
+
+
+# ---- the shells and the pty, checked rather than assumed ----
+
+posix_only = pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX pty and shells")
+
+
+@posix_only
+def test_the_pty_check_really_opens_one():
+    """It used to say "n/a on this platform" and pass. The terminal panel and
+    the agent's commands both need a pseudo-terminal here, and a container
+    without /dev/pts has none."""
+    result = check_pty()
+    assert result.ok and "n/a" not in result.detail
+
+
+@posix_only
+def test_a_machine_without_a_pty_is_told_what_that_costs(monkeypatch):
+    def refuse():
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "openpty", refuse)
+    result = check_pty()
+    assert result.level == "warn"
+    assert "terminal panel" in result.detail
+
+
+@posix_only
+def test_the_report_names_the_shells_both_sides_will_use(monkeypatch, tmp_path):
+    zsh = tmp_path / "zsh"
+    zsh.write_text("#!/bin/sh\n", encoding="utf-8")
+    zsh.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(zsh))
+    checks = {c.name: c for c in run_checks()}
+    assert str(zsh) in checks["Terminal shell"].detail
+    assert "/bin/bash" in checks["Agent shell"].detail
+
+
+@posix_only
+def test_no_bin_bash_is_a_failure_for_the_agent(monkeypatch):
+    real = os.path.exists
+    monkeypatch.setattr(doctor.os.path, "exists",
+                        lambda p: False if str(p) == "/bin/bash" else real(p))
+    assert doctor.check_agent_shell().level == "fail"
