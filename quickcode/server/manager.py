@@ -433,11 +433,23 @@ class Conversation:
                 self.emit_system_prompt()
             self.emit({"type": "user_message", "text": text})
             self._emit_state()
+            failure: Exception | None = None
             try:
                 await self.agent.run_turn(text)
             except Exception as e:  # never kill the worker
                 log.exception("turn failed")
-                self.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
+                failure = e
+            # The pump is a task, so the turn's last events can still be queued
+            # here. Handled now, before anything is said *about* the turn, or
+            # the log records the error ahead of what led to it -- and text
+            # that streamed before a raise, which no TurnDone will ever flush,
+            # is glued onto the front of the next turn's answer.
+            self.rec.drain()
+            self.rec.flush_assistant(
+                finish="error" if failure else "interrupted" if self.agent.cancelled else "stop"
+            )
+            if failure is not None:
+                self.emit({"type": "error", "message": f"{type(failure).__name__}: {failure}"})
             # Everything after the turn is bookkeeping, and none of it is
             # allowed to be the reason a client never hears that the turn
             # ended: ``busy`` is cleared by a state event, so the state event
