@@ -4,9 +4,9 @@ The log is a plain file in the user's project: gitignored, but attached to bug
 reports, synced by backup tools and read by anything that indexes the tree. Two
 things keep keys out of it.
 
-**Keys QuickCode holds** -- the provider key (environment or saved), every key
-saved from Settings, and the search providers' environment keys -- are replaced
-wherever they appear, in any record. Nothing legitimate in a transcript is one
+**Keys QuickCode holds** -- every key saved from Settings, and every credential
+variable in the environment (``secrets.credential_env_names``, the list child
+processes are denied) -- are replaced wherever they appear, in any record. Nothing legitimate in a transcript is one
 of those strings, so this cannot damage content; it catches the key however it
 got there, an echoing proxy or a tool that printed the environment alike.
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 from typing import Any
 
@@ -54,24 +53,17 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
 _cache: dict[str, Any] = {"signature": None, "values": ()}
 
 
-def _search_key_envs() -> list[str]:
-    try:
-        from quickcode.search.resolve import provider_infos
-    except Exception:  # noqa: BLE001 - redaction must never break a write
-        return []
-    return [info.api_key_env for info in provider_infos() if info.api_key_env]
-
-
 def known_secrets() -> tuple[str, ...]:
     """Every credential value QuickCode holds right now.
 
-    Cached against the environment values and the key files' mtimes, so a
-    write costs a directory listing rather than a decryption.
+    The environment half is ``secrets.credential_envs_set``: whatever
+    ``subproc.child_env`` keeps from a child, the log keeps out as well.
+    Cached against those values and the key files' mtimes, so a write costs a
+    directory listing rather than a decryption.
     """
     from quickcode import secrets
 
-    envs = [secrets.API_KEY_ENV, *_search_key_envs()]
-    env_values = tuple(os.environ.get(name, "") for name in envs)
+    env_values = tuple(sorted(secrets.credential_envs_set().values()))
     try:
         files = tuple(sorted(
             (p.name, p.stat().st_mtime_ns) for p in secrets.SECRETS_DIR.glob("*.key")

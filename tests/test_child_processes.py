@@ -99,6 +99,27 @@ def test_child_env_drops_quickcodes_keys_and_keeps_the_rest(keys_in_env):
     assert env.get("PATH") == os.environ.get("PATH")
 
 
+def test_one_list_of_key_variables_is_scrubbed_redacted_and_reported(monkeypatch):
+    """``child_env`` withholds, the session log redacts, and ``doctor`` names
+    the same variables -- one list, so a key one of them learns about is never
+    one another has forgotten."""
+    from quickcode import doctor, secrets
+    from quickcode.session import redact
+
+    names = secrets.credential_env_names()
+    assert {"QUICKCODE_OPENROUTER_API_KEY", "QUICKCODE_ANTHROPIC_API_KEY",
+            "QUICKCODE_BRAVE_API_KEY", "QUICKCODE_EXA_API_KEY"} <= set(names)
+    values = {name: f"value-for-{name.lower()}" for name in (*names, "QUICKCODE_SOMEDAY_TOKEN")}
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+    assert not set(values) & set(subproc.child_env())
+    assert set(values.values()) <= set(redact.known_secrets())
+    report = doctor.check_credential_env().detail
+    assert all(name in report for name in values)
+    assert not any(value in report for value in values.values())
+
+
 def test_what_a_caller_adds_goes_on_top_of_the_scrubbed_base(keys_in_env):
     env = subproc.child_env({"DECLARED": "yes", PROBE[0]: "overridden"})
     assert env["DECLARED"] == "yes"

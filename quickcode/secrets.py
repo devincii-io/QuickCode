@@ -24,6 +24,7 @@ import base64
 import os
 import platform
 import re
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 API_KEY_ENV = "QUICKCODE_OPENROUTER_API_KEY"
@@ -194,3 +195,48 @@ def has_saved_provider_key(provider: str) -> bool:
 def has_provider_key(provider: str) -> bool:
     """Whether a key is available, without decrypting it."""
     return bool(os.environ.get(provider_key_env(provider))) or has_saved_provider_key(provider)
+
+
+# --------------------------------------------------------------------------- #
+# Credential environment variables
+# --------------------------------------------------------------------------- #
+# A credential by the shape of its name: ``credential_env_names`` lists the ones
+# QuickCode reads today, this catches the next one before anybody lists it.
+_CREDENTIAL_SHAPE = re.compile(r"^QUICKCODE_\w*(KEY|TOKEN|SECRET|PASSWORD)$")
+
+
+def credential_env_names() -> tuple[str, ...]:
+    """Every environment variable QuickCode reads a credential from.
+
+    The one list: ``subproc.child_env`` withholds these from what QuickCode
+    starts, ``session.redact`` blanks their values out of the session log, and
+    ``doctor`` names the ones that are set. Three lists is how the Anthropic
+    key came to be withheld from children and still written to the log.
+    """
+    names = [API_KEY_ENV, *PROVIDER_KEY_ENV.values()]
+    try:
+        from quickcode.search.resolve import provider_infos
+    except Exception:  # noqa: BLE001 - the shape below still catches their keys
+        pass
+    else:
+        names += [info.api_key_env for info in provider_infos() if info.api_key_env]
+    return tuple(dict.fromkeys(names))
+
+
+def is_credential_env(name: str, known: Collection[str] | None = None) -> bool:
+    """Whether ``name`` holds a credential: one listed, or one shaped like one.
+
+    ``known`` is ``credential_env_names()``, passed in by a caller testing a
+    whole environment so the list is built once rather than per variable.
+    """
+    upper = name.upper()
+    listed = credential_env_names() if known is None else known
+    return upper in listed or bool(_CREDENTIAL_SHAPE.match(upper))
+
+
+def credential_envs_set(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The credential variables ``environ`` (default: this process's) holds."""
+    environ = os.environ if environ is None else environ
+    known = credential_env_names()
+    return {name: value for name, value in environ.items()
+            if value and is_credential_env(name, known)}

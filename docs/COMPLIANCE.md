@@ -423,8 +423,15 @@ unredacted:**
   team's agent instructions is duplicated into every session log.
 - The absolute working directory.
 
-There is **no redaction, no filtering and no field-level suppression anywhere
-in the write path.**
+There is **no general redaction, filtering or field-level suppression in the
+write path.** Since after 2.7.0 (unreleased) exactly two things are scrubbed
+(`quickcode/session/redact.py`): the values of the keys QuickCode itself holds
+— every key saved from Settings, and every credential environment variable
+`child_env()` withholds (§4.1; one list, `secrets.credential_env_names()`) —
+wherever they appear, and credential shapes (`Bearer …`, `Authorization:`,
+`user:password@`, `?api_key=`) in error text only. A secret pasted into chat,
+printed by a command, or living in `AGENTS.md` that is not one of those keys is
+still written verbatim.
 
 | | |
 |---|---|

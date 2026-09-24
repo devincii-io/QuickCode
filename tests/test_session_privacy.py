@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import subprocess
 
+import pytest
+
 from quickcode import secrets
 from quickcode.core.tasks import TaskBoard
 from quickcode.providers.base import ChatMessage, ProviderError
@@ -231,3 +233,23 @@ def test_ordinary_transcript_text_is_left_alone(tmp_path, monkeypatch):
                         "content": code, "is_error": False, "ms": 1})
     events = SessionStore(tmp_path, "conv").load_events()
     assert events[0]["content"] == code
+
+
+@pytest.mark.parametrize("name", [
+    "QUICKCODE_ANTHROPIC_API_KEY", "QUICKCODE_EXA_API_KEY", "QUICKCODE_SOMEDAY_TOKEN",
+])
+def test_a_key_set_only_in_its_environment_variable_is_redacted(tmp_path, monkeypatch, name):
+    """Every variable ``child_env`` withholds is a credential, so its value is
+    one the log must not keep either: the Anthropic key, a search key, and a
+    ``QUICKCODE_*_TOKEN`` nobody has listed yet alike."""
+    monkeypatch.delenv("QUICKCODE_OPENROUTER_API_KEY", raising=False)
+    value = "sk-" + name.lower().replace("_", "-") + "-0123456789"
+    monkeypatch.setenv(name, value)
+
+    store = SessionStore(tmp_path, "conv")
+    store.append_event({"type": "tool_result", "id": "c1", "name": "bash",
+                        "content": f"{name}={value}", "is_error": False, "ms": 1})
+
+    text = _log_text(tmp_path)
+    assert value not in text
+    assert f"{name}=[redacted]" in text
