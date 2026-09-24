@@ -259,13 +259,22 @@ function renderEvent(ev) {
   }
 }
 
-// Let go of the live bubble. It is created as soon as *anything* streams —
-// including a tool call's arguments — so a round that went straight to a tool
-// left an empty message behind, once per round, each one a stray gap in the
-// transcript. Text already streamed is kept: it is what the model said.
+// Drop the live bubble if nothing has been drawn in it. It is created as soon
+// as *anything* streams — including a tool call's arguments — so a round that
+// went straight to a tool left an empty message behind, once per round, each
+// one a stray gap in the transcript. (Its text cannot be the test: copy.js puts
+// a "copy" button in every bubble.)
+//
+// A bubble that has text stays live. Its assistant_message always follows —
+// session/recorder.py flushes one before each tool call, at the end of every
+// round and on an interrupt — and replaces it. Letting it go here, when an
+// unrelated event such as a mode switch landed mid-reply, left the partial copy
+// on the page and streamed the whole reply a second time underneath it.
 function closeStream() {
-  if (streamNode && !streamNode.textContent.trim()) streamNode.remove();
-  streamNode = null;
+  if (streamNode && !streamNode.querySelector(".reasoning, .bubble > :not(.copy-btn)")) {
+    streamNode.remove();
+    streamNode = null;
+  }
 }
 
 function addNode(node) {
