@@ -198,7 +198,12 @@ function fragment(html) {
 }
 
 function renderStream() {
-  if (!store.streamText && !store.streamReasoning && !store.pendingCalls.size) return;
+  if (!store.streamText && !store.streamReasoning && !store.pendingCalls.size) {
+    // Emptied without the message that normally replaces it: a replayed
+    // message superseded what streamed (store.js). What is on screen is stale.
+    if (streamNode) { streamNode.remove(); streamNode = null; }
+    return;
+  }
   const node = ensureStreamNode();
   if (store.streamReasoning) {
     // Built once and then only its text moves, so collapsing it mid-stream
