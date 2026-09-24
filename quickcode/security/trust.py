@@ -44,11 +44,11 @@ import hashlib
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quickcode import frontmatter
 from quickcode.config import CONFIG_DIR
 
 log = logging.getLogger("quickcode.security.trust")
@@ -67,13 +67,6 @@ PROJECT_SETTINGS_FILES = (
 # Authored plugins live here. A ``kind: tool`` file names a program and an argv,
 # so it is executable config in exactly the way an mcpServers block is.
 PROJECT_PLUGINS_DIR = Path(".quickcode") / "plugins"
-
-_KIND_RE = re.compile(r"^kind\s*:\s*[\"']?([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
-
-# Any line anywhere that some reading could take as ``kind: tool``: indented,
-# any case, spaced, or with the value on a continuation line. Deliberately
-# looser than the parser, so a file the parser calls a tool always matches.
-_TOOL_KIND_RE = re.compile(r"^\s*kind\s*:\s*[\"']?tool\b", re.MULTILINE | re.IGNORECASE)
 
 # The policy half of what this gate governs, named once so the hash, the report
 # and the three loaders that drop it can never disagree about the list.
@@ -165,28 +158,19 @@ def project_mcp_servers(cwd: str | os.PathLike[str]) -> dict[str, dict[str, Any]
 
 
 def _declared_kind(text: str) -> str | None:
-    """The ``kind:`` an authored plugin file declares, or ``None`` if unreadable.
+    """The ``kind:`` an authored plugin file declares, or ``None`` if unclear.
 
-    This reads the frontmatter directly instead of calling the real parser
-    because ``kernel.authoring.discovery`` imports *this* module: security sits
-    below the kernel and cannot import it back. Only enough is read to answer
-    one question — is this a command tool — and ``None`` means "could not tell",
-    which the caller resolves the safe way.
-
-    A file that says ``kind: tool`` *anywhere* is a tool here, whatever its
-    first ``kind:`` line says: the parser keeps the last of duplicate keys and
-    reads indented keys after a blank line, and a decoy ``kind: prompt`` above
-    the real one must not take the file out of the hash.
+    Read with ``quickcode.frontmatter`` -- the parser the plugin loader itself
+    uses -- so this gate and the loader cannot reach different answers about
+    the same bytes. ``None`` means "could not tell" (no kind, no frontmatter,
+    or a key written twice, which the loader refuses), and the caller resolves
+    it the safe way.
     """
-    if _TOOL_KIND_RE.search(text):
-        return "tool"
-    if not text.startswith("---"):
+    head = frontmatter.parse(text)
+    if head.duplicates:
         return None
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None
-    match = _KIND_RE.search(text[:end])
-    return match.group(1).lower() if match else None
+    kind = head.meta.get("kind", "").strip().lower()
+    return kind or None
 
 
 def project_command_tools(cwd: str | os.PathLike[str]) -> dict[str, str]:

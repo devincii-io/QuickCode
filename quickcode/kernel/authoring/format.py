@@ -9,7 +9,9 @@ Three things come out of a document and nothing else does:
 
 ``meta``    the frontmatter, ``key: value``, scalars and inline lists only.
             An indented continuation line appends to the previous key, which is
-            how a two-line ``description:`` stays one value.
+            how a two-line ``description:`` stays one value. The reading itself
+            is ``quickcode/frontmatter.py``, shared with the trust gate so the
+            two can never disagree about what a file declares.
 ``body``    everything after the closing ``---``, verbatim.
 ``blocks``  fenced blocks whose info string carries a *tag* -- ```` ```json
             params ````, ```` ```json argv ````, ```` ```text stdin ````. The
@@ -26,6 +28,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+from quickcode import frontmatter
 
 _FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*(.*)$")
 
@@ -50,6 +54,8 @@ class Document:
     # The body with every tagged block removed: a tool's long description, an
     # agent's system prompt, a section's text.
     prose: str = ""
+    # key -> every line that set it, for a key written more than once.
+    duplicate_keys: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def line_of(self, key: str) -> int:
         return self.meta_lines.get(key, 0)
@@ -58,54 +64,20 @@ class Document:
 def parse_document(text: str) -> Document:
     """Never raises. A file that is not in this shape parses as all-body."""
     lines = text.splitlines()
-    meta, meta_lines, start = _frontmatter(lines)
+    head = frontmatter.split(lines)
+    start = head.end
     body_lines = lines[start:]
     body = "\n".join(body_lines)
     blocks, prose = _blocks(body_lines, start)
     return Document(
-        meta=meta,
-        meta_lines=meta_lines,
+        meta=dict(head.meta),
+        meta_lines=dict(head.lines),
         body=body,
         body_line=start + 1,
         blocks=blocks,
         prose=prose,
+        duplicate_keys=dict(head.duplicates),
     )
-
-
-def _frontmatter(lines: list[str]) -> tuple[dict[str, str], dict[str, int], int]:
-    if not lines or lines[0].strip() != "---":
-        return {}, {}, 0
-    close = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            close = i
-            break
-    if close < 0:
-        # Unterminated frontmatter is a broken file, not a document whose body
-        # happens to start with three dashes. Read nothing rather than half.
-        return {}, {}, 0
-
-    meta: dict[str, str] = {}
-    meta_lines: dict[str, int] = {}
-    last: str | None = None
-    for i in range(1, close):
-        raw = lines[i]
-        if not raw.strip():
-            last = None
-            continue
-        if raw[:1] in (" ", "\t") and last is not None:
-            meta[last] = f"{meta[last]} {raw.strip()}".strip()
-            continue
-        if ":" in raw:
-            key, _, value = raw.partition(":")
-            key = key.strip()
-            if key:
-                meta[key] = value.strip()
-                meta_lines[key] = i + 1
-                last = key
-                continue
-        last = None
-    return meta, meta_lines, close + 1
 
 
 def _blocks(body_lines: list[str], offset: int) -> tuple[dict[str, Block], str]:

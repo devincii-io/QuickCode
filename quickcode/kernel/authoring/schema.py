@@ -63,6 +63,7 @@ NEEDS_TRUST = "needs_trust"
 NOT_DUPLICABLE = "not_duplicable"
 SUBAGENT_SECTION_UNSUPPORTED = "subagent_section_unsupported"
 BAD_PATTERN = "bad_pattern"
+DUPLICATE_KEY = "duplicate_key"
 
 KINDS = ("tool", "agent", "prompt")
 # Named so the refusal can say what happened to them rather than "bad kind".
@@ -123,6 +124,18 @@ def validate(
         problems.append(_problem(code, severity, message, fix, subject=subject,
                                  field=field, scope=scope, path=path,
                                  line=line or doc.line_of(field)))
+
+    # -- keys written twice -------------------------------------------------
+    if doc.duplicate_keys:
+        for key, lines in sorted(doc.duplicate_keys.items()):
+            where = ", ".join(str(n) for n in lines)
+            add(DUPLICATE_KEY, "error",
+                f"'{key}' is set more than once (lines {where}), so this file "
+                "says two different things",
+                f"Keep one '{key}:' line. The file is refused rather than read "
+                "either way, because which copy wins is a guess.",
+                field=key, line=lines[-1])
+        return None, problems
 
     # -- kind --------------------------------------------------------------
     if not kind:
