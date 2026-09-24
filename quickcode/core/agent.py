@@ -9,6 +9,7 @@ modal; headless supplies an auto-deny).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,6 +98,11 @@ class EventBus:
         q: asyncio.Queue[AgentEvent] = asyncio.Queue(size)
         self._subs.append(q)
         return q
+
+    def unsubscribe(self, q: asyncio.Queue[AgentEvent]) -> None:
+        with contextlib.suppress(ValueError):
+            self._subs.remove(q)
+        self.overflowed.discard(id(q))
 
     def emit(self, ev: AgentEvent) -> None:
         for q in self._subs:

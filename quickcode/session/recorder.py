@@ -377,6 +377,16 @@ class TranscriptRecorder:
         if self.ledger is None:
             self.ledger = agent.ledger
         q = self.subscribe(agent.bus, self.handle)
+        try:
+            return await self._record(agent, text, q)
+        finally:
+            # Held through the compaction, whose usage reaches the log only by
+            # the drain. Left on the bus after that, the queue would hear the
+            # next turn too, and that turn's drain would log every event twice.
+            agent.bus.unsubscribe(q)
+            self._queues.remove((q, self.handle))
+
+    async def _record(self, agent: AgentInstance, text: str, q: asyncio.Queue) -> str:
         pump = asyncio.create_task(self._consume(q, self.handle))
         self.emit({"type": "user_message", "text": text})
         note: dict[str, Any] | None = None
