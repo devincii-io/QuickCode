@@ -319,6 +319,14 @@ as an allow rule is the supported way to get there.
   (`*`, `*.py`) cannot match a dotfile in bash and is let through, except on
   Windows, where PowerShell and cmd would match `.env` with `*`. A brace
   expansion too large to enumerate is treated as unknown, and unknown asks.
+- **Relative paths are relative to where the shell stands.** A lone `cd` persists
+  across `bash` calls, and the loop passes that directory to the engine
+  (`evaluate_tool(..., cwd=)`). Relative arguments resolve from it, and a shell
+  standing outside the project or inside a protected directory treats every
+  command as touching a protected path: after an approved `cd ..`, `ls` asks
+  and `rm -rf *` is not covered by `bash(rm **)`. It used to resolve everything
+  against the project root, so the one approved `cd` carried the rest of the
+  session out of the project unprompted.
 - **A recursive read is gated by what it reaches** (`security/sweep.py`).
   `grep -r KEY .` names `.`, which is not protected, and used to print `.env`
   and `.git/config` on the way through — the sweep the `grep` tool was fixed

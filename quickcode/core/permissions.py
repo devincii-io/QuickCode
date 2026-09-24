@@ -315,28 +315,36 @@ class PermissionEngine:
         value = args.get(spec.target_field)
         return "" if value is None else str(value)
 
-    def evaluate_tool(self, tool, args: dict) -> tuple[Decision, str]:
+    def evaluate_tool(
+        self, tool, args: dict, *, cwd: Path | None = None
+    ) -> tuple[Decision, str]:
         """Gate one call, given the tool object and its parsed arguments.
 
         Returns the decision and the target it was matched on, so the caller
-        can show the user what they are approving.
+        can show the user what they are approving. ``cwd`` is where a shell
+        tool's session currently stands (``ToolCtx.extra["bash_cwd"]``), when
+        it has moved from the project root.
         """
         spec = getattr(tool, "permission", DEFAULT_SPEC)
         # A tool may know its effective location better than one field can say
         # (see Tool.permission_target). Its answer wins when it gives one.
         declared = getattr(tool, "permission_target", None)
         target = (declared(args) if callable(declared) else "") or self.target_for(spec, args)
-        return self.evaluate(tool.name, target, spec=spec), target
+        return self.evaluate(tool.name, target, spec=spec, cwd=cwd), target
 
-    def evaluate(self, tool: str, arg: str, spec: PermissionSpec | None = None) -> Decision:
+    def evaluate(
+        self, tool: str, arg: str, spec: PermissionSpec | None = None, *,
+        cwd: Path | None = None,
+    ) -> Decision:
         """Decide for a single tool invocation. ``arg`` is the match target
-        (a shell command line, or a path -- whichever the tool declares)."""
+        (a shell command line, or a path -- whichever the tool declares).
+        ``cwd`` is the shell's working directory, for a shell tool."""
         spec = spec or self.spec_for(tool)
 
         # Shell tools get decomposed and evaluated per subcommand, through the
         # same order as below.
         if spec.shell:
-            return self._eval_bash(arg)
+            return self._eval_bash(arg, self._shell_base(cwd))
 
         if spec.path_target:
             restrict, permit = _path_rule_targets(arg, self.root)
@@ -403,14 +411,28 @@ class PermissionEngine:
             return Decision.deny
         return Decision.ask
 
-    def _eval_bash(self, command: str, depth: int = 0) -> Decision:
+    def _shell_base(self, cwd: Path | None) -> Path:
+        """What a shell command's relative paths are relative to.
+
+        A lone `cd` persists across calls (the bash tool keeps `bash_cwd`), and
+        the engine used to resolve every relative path against the project root
+        regardless. After one approved `cd ..`, `rm -rf *` under a `bash(rm **)`
+        rule, or `cat notes.txt` as a read-only builtin, ran unprompted in the
+        directory above the project, because the engine thought it was in it.
+        """
+        where = resolve(str(cwd), self.root) if cwd is not None else None
+        if where is None or where == self.root.resolve():
+            return self.root
+        return where
+
+    def _eval_bash(self, command: str, base: Path, depth: int = 0) -> Decision:
         subs = [s.strip() for s in _SPLIT.split(command) if s.strip()]
         has_substitution = any(
             m in command for m in _COMPOUND_MARKERS
         ) or shellwords.has_unquoted_paren(command)
         decisions: list[Decision] = []
         for sub in subs or [command]:
-            decisions.append(self._eval_bash_sub(sub, has_substitution))
+            decisions.append(self._eval_bash_sub(sub, has_substitution, base))
         # A command another command runs is decided as if it had been typed:
         # `find . -exec rm {} +`, `xargs rm`, `sudo rm`, `bash -c 'rm ...'`,
         # `echo $(rm ...)` and `git -c alias.x='!rm ...' x` all run `rm`. A deny
@@ -420,7 +442,7 @@ class PermissionEngine:
         if inner and depth >= _MAX_NESTING:
             decisions.append(Decision.ask)
         elif inner:
-            decisions += [self._eval_bash(line, depth + 1) for line in inner]
+            decisions += [self._eval_bash(line, base, depth + 1) for line in inner]
         # Circuit breakers apply to the whole line even in yolo.
         if breakers.tripped(command):
             decisions.append(Decision.ask)
@@ -431,10 +453,10 @@ class PermissionEngine:
             return Decision.ask
         return Decision.allow
 
-    def _eval_bash_sub(self, sub: str, has_sub: bool) -> Decision:
+    def _eval_bash_sub(self, sub: str, has_sub: bool, base: Path) -> Decision:
         tokens = sub.split()
         lexed = shellwords.segments(sub)
-        analysis = commands.analyze(lexed[0], base=self.root) if lexed else commands.Analysis()
+        analysis = commands.analyze(lexed[0], base=base) if lexed else commands.Analysis()
         # Strip harmless wrappers and env-var prefixes so a rule written against
         # the command still matches. Whether an assignment was among them is
         # remembered, because the two kinds of prefix are not equally harmless.
@@ -509,8 +531,9 @@ class PermissionEngine:
         # takes its pager, editor and hooks path from.
         if (
             analysis.writes_protected
-            or self._names_protected(tokens[idx:], sub)
-            or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep))
+            or (base != self.root and is_protected(str(base), self.root))
+            or self._names_protected(tokens[idx:], sub, base)
+            or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep, base))
         ):
             if self.mode is Mode.dontask:
                 return Decision.deny
@@ -563,7 +586,7 @@ class PermissionEngine:
             return False
         return not resolved.is_relative_to(self.root.resolve())
 
-    def _names_protected(self, words: list[str], sub: str) -> bool:
+    def _names_protected(self, words: list[str], sub: str, base: Path) -> bool:
         """Whether any word of a subcommand may name a protected path.
 
         Each word is read every way the shell might read it
@@ -586,11 +609,11 @@ class PermissionEngine:
             candidates = shellwords.path_candidates(word)
             if candidates is None:
                 return True
-            if any(self._candidate_protected(c) for c in candidates):
+            if any(self._candidate_protected(c, base) for c in candidates):
                 return True
         return False
 
-    def _sweeps_protected(self, walk: commands.Sweep | None) -> bool:
+    def _sweeps_protected(self, walk: commands.Sweep | None, base: Path) -> bool:
         """Whether a recursive read (`grep -r`, `rg --hidden`, `rg -g '*'`,
         `diff -r`) would reach a protected file under the directories it names.
 
@@ -606,21 +629,21 @@ class PermissionEngine:
             for candidate in shellwords.path_candidates(operand) or []:
                 matches = [candidate]
                 if shellwords.has_glob(candidate):
-                    matches = glob.glob(candidate, root_dir=self.root)
+                    matches = glob.glob(candidate, root_dir=base)
                 for match in matches:
-                    where = resolve(match, self.root)
+                    where = resolve(match, base)
                     if where is not None and where.is_dir():
                         roots.append(where)
                     elif where is not None and where.exists():
                         names_a_file = True
         if not roots and not names_a_file:
-            roots = [self.root]
+            roots = [base]
         return sweep.reaches_protected(
             roots, self.root, hidden=walk.hidden, globs=walk.globs, follow=walk.follow
         )
 
-    def _candidate_protected(self, candidate: str) -> bool:
-        if is_protected(candidate, self.root):
+    def _candidate_protected(self, candidate: str, base: Path) -> bool:
+        if is_protected(candidate, self.root, base=base):
             return True
         return shellwords.has_glob(candidate) and any(
             glob_may_name_protected(p, dotfiles=shellwords.GLOB_MATCHES_DOTFILES)
