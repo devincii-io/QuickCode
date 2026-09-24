@@ -1,7 +1,9 @@
-// Syntax-highlighted JSON built from text nodes and spans — never markup — so a
-// payload carrying `<img onerror=…>` in a tool result renders as the characters
-// it is. The tokenizer is the same shape as settings/ui.js `highlightJson`;
-// this one feeds DOM construction instead of an HTML string.
+// Syntax-highlighted JSON. The inspector builds it from text nodes and spans —
+// never markup — so a payload carrying `<img onerror=…>` in a tool result
+// renders as the characters it is; Settings' templates take the same tokens as
+// escaped HTML.
+
+import { esc } from "./util.js";
 
 const JSON_RE = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
 
@@ -32,6 +34,13 @@ export function jsonTokens(src) {
   }
   plain(src.slice(last));
   return out;
+}
+
+/** Highlighted JSON as escaped HTML, for a template. */
+export function jsonHtml(src) {
+  return jsonTokens(String(src ?? ""))
+    .map(({ cls, text }) => (cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text)))
+    .join("");
 }
 
 /** Fill `pre` with highlighted JSON. */

@@ -13,7 +13,7 @@ import {
 import {
   MIN_BAR_PX, bottomTop, cullBars, hitTest, laneTrackAt, rowRange, trackBox,
 } from "../../quickcode/frontend/js/trajectory/windowing.js";
-import { jsonTokens, prettyJson } from "../../quickcode/frontend/js/json_view.js";
+import { jsonHtml, jsonTokens, prettyJson } from "../../quickcode/frontend/js/json_view.js";
 
 // ---- a tiny log builder --------------------------------------------------
 
@@ -400,4 +400,13 @@ test("JSON tokens cover the text exactly and classify keys, strings, numbers and
   assert.equal(prettyJson('{"a":1}'), '{\n  "a": 1\n}');
   assert.equal(prettyJson("12345"), null);
   assert.equal(prettyJson("{broken"), null);
+});
+
+test("JSON as markup escapes every run and wraps only the tokens", () => {
+  const q = (s) => `&quot;${s}&quot;`;
+  assert.equal(jsonHtml('{"k": "<b>&", "n": 2, "ok": false}'),
+    `{<span class="j-key">${q("k")}</span>: <span class="j-str">${q("&lt;b&gt;&amp;")}</span>, `
+    + `<span class="j-key">${q("n")}</span>: <span class="j-num">2</span>, `
+    + `<span class="j-key">${q("ok")}</span>: <span class="j-lit">false</span>}`);
+  assert.equal(jsonHtml("<not json>"), "&lt;not json&gt;");
 });

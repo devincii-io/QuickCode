@@ -1,11 +1,12 @@
-// Shared Settings primitives: badges, the stacked sheet, the confirm dialog,
-// the raw-view inspector and the JSON highlighter.
+// Shared Settings primitives: badges, the stacked sheet, the confirm dialog
+// and the raw-view inspector.
 //
 // Settings itself lives in a modal, and several of its affordances (confirm a
 // risky change, read a plugin's raw definition) have to appear *over* it
 // without destroying it — ui/modal.js `modal()` clears the whole modal root, so
 // these open as their own layer inside it instead.
 
+import { jsonHtml } from "../json_view.js";
 import { el, esc } from "../util.js";
 
 // ---- tier / kind / source badges -----------------------------------------
@@ -102,38 +103,13 @@ export function confirmRisk({ title, what, reason, applyLabel = "Change it anywa
 
 // ---- the raw view ---------------------------------------------------------
 
-const JSON_RE = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
-
-/** Minimal JSON tokenizer → spans. Deliberately dependency-free: the payloads
- *  here are tool schemas and MCP definitions, not arbitrary source. */
-export function highlightJson(src) {
-  const out = [];
-  let last = 0;
-  let m;
-  JSON_RE.lastIndex = 0;
-  while ((m = JSON_RE.exec(src)) !== null) {
-    out.push(esc(src.slice(last, m.index)));
-    if (m[1] !== undefined) {
-      out.push(`<span class="${m[2] ? "j-key" : "j-str"}">${esc(m[1])}</span>`);
-      if (m[2]) out.push(esc(m[2]));
-    } else if (m[3] !== undefined) {
-      out.push(`<span class="j-lit">${esc(m[3])}</span>`);
-    } else {
-      out.push(`<span class="j-num">${esc(m[4])}</span>`);
-    }
-    last = JSON_RE.lastIndex;
-  }
-  out.push(esc(src.slice(last)));
-  return out.join("");
-}
-
-export function viewBodyHtml(view) {
+function viewBodyHtml(view) {
   if (!view) {
     return `<div class="set-empty">This plugin does not publish a definition of
       its own — everything it is, is in its settings above.</div>`;
   }
   const body = view.format === "json" || view.format === "schema"
-    ? `<pre class="raw json">${highlightJson(view.content || "")}</pre>`
+    ? `<pre class="raw json">${jsonHtml(view.content || "")}</pre>`
     : `<pre class="raw">${esc(view.content || "")}</pre>`;
   const path = view.path
     ? `<div class="raw-path" title="${esc(view.path)}">on disk: <code>${esc(view.path)}</code></div>`
