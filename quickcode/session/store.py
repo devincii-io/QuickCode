@@ -21,6 +21,7 @@ reader to misread a record it does not know.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime
 import json
 import os
@@ -100,6 +101,72 @@ def message_from_dict(d: dict[str, Any]) -> ChatMessage:
         name=d.get("name"),
         cache_control=d.get("cache_control", False),
     )
+
+
+def _messages_of(records: list[dict[str, Any]]) -> list[ChatMessage]:
+    """The model context a record list amounts to; see ``load_messages``."""
+    messages: list[ChatMessage] = []
+    for rec in records:
+        kind = rec.get("kind")
+        if kind == "compaction" and isinstance(rec.get("messages"), list):
+            rebuilt: list[ChatMessage] = []
+            for raw in rec["messages"]:
+                try:
+                    rebuilt.append(message_from_dict(raw))
+                except (KeyError, TypeError):
+                    continue
+            messages = rebuilt
+        elif kind == "message" and "message" in rec:
+            try:
+                messages.append(message_from_dict(rec["message"]))
+            except (KeyError, TypeError):
+                continue
+    return messages
+
+
+def _events_of(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for rec in records:
+        if rec.get("kind") == "event" and isinstance(rec.get("ev"), dict):
+            ev = dict(rec["ev"])
+            ev["seq"] = rec.get("seq")
+            ev["ts"] = rec.get("ts")
+            events.append(ev)
+    return events
+
+
+def _title_of(records: list[dict[str, Any]]) -> str:
+    # The *last* meta title wins, not the first. Renaming is an append —
+    # there is no other kind of write this format has — so a log that has
+    # been renamed twice carries two titles, and reading the first one back
+    # would show the name the user just replaced. Empty is not a title: a
+    # session is opened with ``title=""``, and a rename to nothing is a
+    # request to go back to the derived name below, not to display blank.
+    chosen = ""
+    for rec in records:
+        if rec.get("kind") == "meta" and "title" in rec:
+            chosen = str(rec["title"] or "").strip()
+    if chosen:
+        return chosen
+    # The event before the message, because the event carries what the user
+    # typed and the persisted message carries what the model was sent —
+    # which has `<system-reminder>` blocks spliced into it. Titling a
+    # session with the runtime's own scaffolding, rather than the sentence
+    # the person wrote, puts internals in the session list.
+    for ev in _events_of(records):
+        if ev.get("type") == "user_message" and ev.get("text"):
+            return str(ev["text"]).strip()[:60]
+    # A turn interrupted before messages were persisted, or a log old
+    # enough to predate user_message events, still has to produce a title.
+    for msg in _messages_of(records):
+        if msg.role == "user" and msg.content:
+            return msg.content.strip()[:60]
+    return "(empty)"
+
+
+# Listing rows by log path, with the stat fields they were read at (see
+# ``SessionStore._info``). ctime too: on POSIX nothing can set it back.
+_INFO_CACHE: dict[str, tuple[tuple[int, ...], SessionInfo]] = {}
 
 
 def _events_from_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
@@ -405,34 +472,11 @@ class SessionStore:
         are the turns that followed and are kept. The last such record wins,
         because a long session compacts more than once.
         """
-        messages: list[ChatMessage] = []
-        for rec in self._iter_records():
-            kind = rec.get("kind")
-            if kind == "compaction" and isinstance(rec.get("messages"), list):
-                rebuilt: list[ChatMessage] = []
-                for raw in rec["messages"]:
-                    try:
-                        rebuilt.append(message_from_dict(raw))
-                    except (KeyError, TypeError):
-                        continue
-                messages = rebuilt
-            elif kind == "message" and "message" in rec:
-                try:
-                    messages.append(message_from_dict(rec["message"]))
-                except (KeyError, TypeError):
-                    continue
-        return messages
+        return _messages_of(self._iter_records())
 
     def load_events(self) -> list[dict[str, Any]]:
         """All trace events, oldest first, with ``seq``/``ts`` folded in."""
-        events: list[dict[str, Any]] = []
-        for rec in self._iter_records():
-            if rec.get("kind") == "event" and isinstance(rec.get("ev"), dict):
-                ev = dict(rec["ev"])
-                ev["seq"] = rec.get("seq")
-                ev["ts"] = rec.get("ts")
-                events.append(ev)
-        return events
+        return _events_of(self._iter_records())
 
     def replay_events(self) -> list[dict[str, Any]]:
         """The event stream a freshly attached client should replay.
@@ -470,32 +514,7 @@ class SessionStore:
         return merged
 
     def title(self) -> str:
-        # The *last* meta title wins, not the first. Renaming is an append —
-        # there is no other kind of write this format has — so a log that has
-        # been renamed twice carries two titles, and reading the first one back
-        # would show the name the user just replaced. Empty is not a title: a
-        # session is opened with ``title=""``, and a rename to nothing is a
-        # request to go back to the derived name below, not to display blank.
-        chosen = ""
-        for rec in self._iter_records():
-            if rec.get("kind") == "meta" and "title" in rec:
-                chosen = str(rec["title"] or "").strip()
-        if chosen:
-            return chosen
-        # The event before the message, because the event carries what the user
-        # typed and the persisted message carries what the model was sent —
-        # which has `<system-reminder>` blocks spliced into it. Titling a
-        # session with the runtime's own scaffolding, rather than the sentence
-        # the person wrote, puts internals in the session list.
-        for ev in self.load_events():
-            if ev.get("type") == "user_message" and ev.get("text"):
-                return str(ev["text"]).strip()[:60]
-        # A turn interrupted before messages were persisted, or a log old
-        # enough to predate user_message events, still has to produce a title.
-        for msg in self.load_messages():
-            if msg.role == "user" and msg.content:
-                return msg.content.strip()[:60]
-        return "(empty)"
+        return _title_of(self._iter_records())
 
     def is_empty(self) -> bool:
         """True only when this log holds no transcript whatsoever.
@@ -530,38 +549,49 @@ class SessionStore:
     # ---- listing ----
     @classmethod
     def _info(cls, root: Path, path: Path, *, archived: bool) -> SessionInfo | None:
+        """One row of the listing, read from the log in a single pass.
+
+        Remembered against the file's identity, size and mtime: a log is only
+        ever appended to, so a row whose file has not changed since the last
+        listing is the row it was, and the sidebar's refresh stops re-reading
+        every session in the project to redraw the one that moved.
+        """
         conv_id = path.stem
         try:
-            store = cls(root, conv_id=conv_id)
-            mtime = path.stat().st_mtime
-            model = ""
-            message_count = 0
-            for rec in store._iter_records():
-                kind = rec.get("kind")
-                if kind == "meta" and not model and rec.get("model"):
-                    model = str(rec["model"])
-                elif kind == "message":
-                    message_count += 1
-            if not message_count:
-                # Same fallback as title(): an event-only session (no
-                # persisted message log) still has a real transcript, so
-                # count that rather than showing "0 msgs" for it.
-                message_count = sum(
-                    1 for ev in store.load_events()
-                    if ev.get("type") in TRANSCRIPT_EVENT_TYPES
-                )
-            title = store.title()
+            st = path.stat()
+            key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            cached = _INFO_CACHE.get(str(path))
+            if cached is not None and cached[0] == key:
+                return dataclasses.replace(cached[1])
+            records = cls(root, conv_id=conv_id)._iter_records()
         except OSError:
             return None
-        return SessionInfo(
+        model = ""
+        message_count = 0
+        for rec in records:
+            kind = rec.get("kind")
+            if kind == "meta" and not model and rec.get("model"):
+                model = str(rec["model"])
+            elif kind == "message":
+                message_count += 1
+        if not message_count:
+            # Same fallback as title(): an event-only session (no
+            # persisted message log) still has a real transcript, so
+            # count that rather than showing "0 msgs" for it.
+            message_count = sum(
+                1 for ev in _events_of(records) if ev.get("type") in TRANSCRIPT_EVENT_TYPES
+            )
+        info = SessionInfo(
             conv_id=conv_id,
             path=path,
-            mtime=mtime,
-            title=title,
+            mtime=st.st_mtime,
+            title=_title_of(records),
             model=model,
             message_count=message_count,
             archived=archived,
         )
+        _INFO_CACHE[str(path)] = (key, info)
+        return dataclasses.replace(info)
 
     @classmethod
     def list_sessions(
@@ -571,18 +601,28 @@ class SessionStore:
         glob is non-recursive, so the archive subdirectory costs nothing."""
         sessions_dir = Path(root) / SESSIONS_DIRNAME
         infos: list[SessionInfo] = []
+        scanned: set[str] = set()
+        seen: set[str] = set()
         if not archived_only and sessions_dir.is_dir():
+            scanned.add(str(sessions_dir))
             for path in sessions_dir.glob("*.jsonl"):
+                seen.add(str(path))
                 info = cls._info(root, path, archived=False)
                 if info is not None:
                     infos.append(info)
         if include_archived or archived_only:
             archive_dir = sessions_dir / ARCHIVE_DIRNAME
             if archive_dir.is_dir():
+                scanned.add(str(archive_dir))
                 for path in archive_dir.glob("*.jsonl"):
+                    seen.add(str(path))
                     info = cls._info(root, path, archived=True)
                     if info is not None:
                         infos.append(info)
+        # Rows for logs that are gone from a directory just listed.
+        for stale in [p for p in _INFO_CACHE if p not in seen]:
+            if os.path.dirname(stale) in scanned:
+                _INFO_CACHE.pop(stale, None)
         infos.sort(key=lambda s: s.mtime, reverse=True)
         return infos
 
