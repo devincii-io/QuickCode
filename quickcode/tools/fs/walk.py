@@ -91,7 +91,8 @@ def walk_files(
     """
     start = Path(start)
     repo = repo_root(start) if ignore_files else None
-    walk = _Walk(exclude, hidden, ignore_files, follow_file_links, repo is not None, max_depth)
+    walk = _Walk(exclude, hidden, ignore_files, follow_file_links, repo is not None, max_depth,
+                 visited=set())
     inherited = _ancestor_rules(start, repo) if ignore_files else []
     yield from walk.visit(start, "", inherited, 1)
 
@@ -104,10 +105,23 @@ class _Walk:
     follow_file_links: bool
     in_repo: bool
     max_depth: int | None
+    # (device, inode) of every directory entered. Links are never followed,
+    # but a bind mount or a filesystem that reports no links can still bring
+    # a walk back to where it has been; this is what stops it looping.
+    visited: set[tuple[int, int]]
 
     def visit(
         self, directory: Path, rel: str, rules: list[_RuleSet], depth: int
     ) -> Iterator[tuple[str, Path]]:
+        try:
+            st = os.stat(directory)
+        except OSError:
+            return
+        if st.st_ino:
+            key = (st.st_dev, st.st_ino)
+            if key in self.visited:
+                return
+            self.visited.add(key)
         if self.ignore_files:
             local = _load_rules(directory, self.in_repo)
             if local:
@@ -132,7 +146,9 @@ class _Walk:
                 continue
             child = f"{rel}{name}"
             try:
-                if entry.is_symlink():
+                # A junction is Windows' directory link, and is_symlink() says
+                # False for it -- pnpm's node_modules is made of them.
+                if entry.is_symlink() or entry.is_junction():
                     if not self.follow_file_links or not entry.is_file():
                         continue
                     is_dir = False

@@ -202,6 +202,27 @@ def test_a_symlink_cycle_is_not_followed(tmp_path):
     assert [rel for rel, _ in walk_files(tmp_path)] == ["loop/a.py"]
 
 
+def test_a_directory_reached_twice_is_walked_once(tmp_path, monkeypatch):
+    """A bind mount (or a junction on a filesystem that does not report it)
+    leads back into a directory already on the path. No link is involved, so
+    only the directory's identity can stop the loop."""
+    from quickcode.tools.fs import walk as walk_module
+
+    put(tmp_path, "a/x.py")
+    put(tmp_path, "a/mount/y.py")
+    real_stat = os.stat
+    a_identity = real_stat(tmp_path / "a")
+
+    def stat(path, *args, **kwargs):
+        if Path(path) == tmp_path / "a" / "mount":
+            return a_identity
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(walk_module.os, "stat", stat)
+
+    assert [rel for rel, _ in walk_files(tmp_path)] == ["a/x.py"]
+
+
 def test_the_depth_bound_stops_the_descent(tmp_path):
     put(tmp_path, "a.py")
     put(tmp_path, "d/b.py")
