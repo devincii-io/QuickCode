@@ -23,7 +23,20 @@ class History:
     def set_system_prompt(self, system_prompt: str) -> None:
         """Replace the system prompt (e.g. to refresh the model identity after a
         mid-conversation model switch, which already invalidates the cache)."""
+        if system_prompt != self._system.content:
+            self._drop_reasoning()
         self._system = ChatMessage(role="system", content=system_prompt, cache_control=True)
+
+    def _drop_reasoning(self) -> None:
+        """Forget signed reasoning once the history before it is rewritten.
+
+        A provider signature binds each thinking block to the exact prefix that
+        produced it; after a new system prompt or a compaction the API refuses
+        those blocks, and every later request would pay for that refusal. The
+        rewrite is the boundary where letting them go costs least.
+        """
+        for m in self.messages:
+            m.reasoning_blocks = []
 
     # ---- appenders ----
     def push_user(self, text: str, reminders: list[str] | None = None) -> None:
@@ -73,3 +86,4 @@ class History:
             ChatMessage(role="user", content=f"<compaction-summary>{summary}</compaction-summary>"),
             *tail,
         ]
+        self._drop_reasoning()

@@ -446,6 +446,7 @@ async def test_a_rejected_thinking_signature_is_resent_once_without_reasoning() 
                        "messages.1.content.0: Invalid `signature` in `thinking` block. "
                        "The block is bound to a different conversation."),
         stream_response(start(), *text_block(0, "ok"), *finish()),
+        stream_response(start(), *text_block(0, "ok"), *finish()),
     )
     req = request(
         ChatMessage(role="user", content="go"),
@@ -453,11 +454,18 @@ async def test_a_rejected_thinking_signature_is_resent_once_without_reasoning() 
                     reasoning_blocks=[{"type": "thinking", "thinking": "t", "signature": "s"}]),
         ChatMessage(role="user", content="again"),
     )
-    events = await collect(provider(api), req)
+    p = provider(api)
+    events = await collect(p, req)
     assert events[-1] == TurnDone("stop")
     first, second = api.body(0), api.body(1)
     assert first["messages"][1]["content"][0]["type"] == "thinking"
     assert [b["type"] for b in second["messages"][1]["content"]] == ["text"]
+
+    # A refusal is permanent: the next request of the session does not pay
+    # for it again.
+    await collect(p, req)
+    assert len(api.requests) == 3
+    assert [b["type"] for b in api.body(2)["messages"][1]["content"]] == ["text"]
 
 
 # ---------------------------------------------------------------------------

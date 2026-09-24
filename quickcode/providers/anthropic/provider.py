@@ -22,7 +22,7 @@ from quickcode.providers.anthropic import sse
 from quickcode.providers.anthropic.models import normalize_model, price_for, traits_for
 from quickcode.providers.anthropic.retry import RetryPolicy, describe, retryable_status
 from quickcode.providers.anthropic.stream import StreamError, StreamTranslator
-from quickcode.providers.anthropic.wire import build_body
+from quickcode.providers.anthropic.wire import build_body, reasoning_key
 from quickcode.providers.base import ChatRequest, ModelInfo, ProviderError
 
 log = logging.getLogger("quickcode.providers.anthropic")
@@ -73,6 +73,10 @@ class AnthropicProvider:
         # Per-model entries from GET /v1/models; they refine how thinking is
         # configured once the catalog has been fetched.
         self._models: dict[str, dict[str, Any]] = {}
+        # Reasoning blocks the API has refused once (history changed under
+        # their signature). A refusal is permanent, so they are never sent
+        # again -- otherwise every later request would pay for it first.
+        self._refused: set[str] = set()
         self._client: httpx.AsyncClient | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
 
@@ -121,6 +125,7 @@ class AnthropicProvider:
                 # gateway in front of the API may reject it.
                 eager_tools=self.first_party,
                 strip_reasoning=strip_reasoning,
+                refused=self._refused,
             )
             # "replace": a lone surrogate from undecodable tool output must cost
             # one character, not the request.
@@ -147,6 +152,9 @@ class AnthropicProvider:
                             # compaction, a model switch). The documented
                             # recovery: resend once without any of them.
                             log.info("replayed thinking refused; retrying without it")
+                            self._refused.update(
+                                reasoning_key(b) for m in req.messages for b in m.reasoning_blocks
+                            )
                             strip_reasoning = True
                             continue
                         if not retryable_status(resp.status_code):

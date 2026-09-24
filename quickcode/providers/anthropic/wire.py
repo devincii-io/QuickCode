@@ -41,6 +41,7 @@ def build_body(
     traits: Traits,
     eager_tools: bool = False,
     strip_reasoning: bool = False,
+    refused: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     system, rest = _split_system(req.messages)
     # A request with tool traffic in its history but no tools declared (the
@@ -49,7 +50,7 @@ def build_body(
     # having the tool_use they preceded rewritten.
     flatten = not req.tools and any(m.tool_calls or m.role == "tool" for m in rest)
     messages = translate_messages(
-        rest, flatten_tools=flatten, strip_reasoning=strip_reasoning or flatten
+        rest, flatten_tools=flatten, strip_reasoning=strip_reasoning or flatten, refused=refused
     )
 
     max_tokens = req.max_tokens or FALLBACK_MAX_TOKENS
@@ -130,6 +131,11 @@ def tool_input(arguments: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"_invalid_json": str(arguments)}
 
 
+def reasoning_key(block: dict[str, Any]) -> str:
+    """What identifies one reasoning block: its signature, or its payload."""
+    return str(block.get("signature") or block.get("data") or "")
+
+
 def replayable(block: Any) -> bool:
     """A reasoning block the API will accept back: signed thinking, or a
     redacted block with its opaque payload."""
@@ -147,11 +153,14 @@ def translate_messages(
     *,
     flatten_tools: bool = False,
     strip_reasoning: bool = False,
+    refused: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for msg in messages:
         role = "assistant" if msg.role == "assistant" else "user"
-        blocks = _blocks(msg, flatten_tools=flatten_tools, strip_reasoning=strip_reasoning)
+        blocks = _blocks(
+            msg, flatten_tools=flatten_tools, strip_reasoning=strip_reasoning, refused=refused
+        )
         if all(b["type"] in _REASONING_TYPES for b in blocks):
             # Nothing but reasoning (a turn cut off while thinking) is not a
             # turn the API will take back.
@@ -171,7 +180,11 @@ def translate_messages(
 
 
 def _blocks(
-    msg: ChatMessage, *, flatten_tools: bool, strip_reasoning: bool
+    msg: ChatMessage,
+    *,
+    flatten_tools: bool,
+    strip_reasoning: bool,
+    refused: set[str] | frozenset[str],
 ) -> list[dict[str, Any]]:
     if msg.role == "tool":
         body = msg.content or ""
@@ -192,7 +205,10 @@ def _blocks(
 
     blocks: list[dict[str, Any]] = []
     if msg.role == "assistant" and not strip_reasoning:
-        blocks.extend(dict(b) for b in msg.reasoning_blocks if replayable(b))
+        blocks.extend(
+            dict(b) for b in msg.reasoning_blocks
+            if replayable(b) and reasoning_key(b) not in refused
+        )
     if msg.content:
         blocks.append({"type": "text", "text": msg.content})
     if msg.role == "assistant":

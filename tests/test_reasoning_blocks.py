@@ -74,3 +74,31 @@ def test_cache_writes_are_logged_and_counted_again_on_resume() -> None:
     wire = event_to_json(Usage(input_tokens=10, cache_write_tokens=4))
     assert wire["cache_write_tokens"] == 4
     assert Ledger.from_events([wire]).cache_write_tokens == 4
+
+
+def _signed_history() -> History:
+    history = History("SYS")
+    history.push_user("hi")
+    history.messages.append(
+        ChatMessage(role="assistant", content="a", reasoning_blocks=[dict(BLOCK)])
+    )
+    return history
+
+
+def test_a_rewritten_history_lets_go_of_its_signed_reasoning() -> None:
+    """A signature binds a block to the history before it. After a compaction
+    or a new system prompt the API refuses the block, so it is dropped at that
+    boundary instead of being refused on every request that follows."""
+    compacted = _signed_history()
+    compacted.replace_with_summary("summary", list(compacted.messages))
+    assert all(not m.reasoning_blocks for m in compacted.messages)
+
+    switched = _signed_history()
+    switched.set_system_prompt("SYS, now for another model")
+    assert all(not m.reasoning_blocks for m in switched.messages)
+
+
+def test_an_unchanged_system_prompt_keeps_the_reasoning() -> None:
+    history = _signed_history()
+    history.set_system_prompt("SYS")
+    assert history.messages[-1].reasoning_blocks == [BLOCK]
