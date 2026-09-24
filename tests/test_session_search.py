@@ -8,12 +8,15 @@ import itertools
 import os
 
 import pytest
+from starlette.testclient import TestClient
 
 from quickcode.providers.base import ChatMessage
+from quickcode.server import auth
+from quickcode.server.app import create_app
 from quickcode.session.search import Limits, QueryError, parse_query, search_sessions, snippet
 from quickcode.session.store import SessionStore
 from tests.test_projects import make_app, mkdirs
-from tests.test_server import FakeProvider
+from tests.test_server import FakeProvider, make_manager
 
 
 def session(root, conv_id, *, title="", said=(), answered=(), tools=(), mtime=None):
@@ -226,3 +229,14 @@ def test_the_route_answers_in_both_shapes_and_refuses_a_bad_query(tmp_path):
 
         capped = client.get("/api/sessions/search", params={"q": "needle", "limit": 0})
         assert capped.status_code == 200 and len(capped.json()["results"]) == 1
+
+
+def test_the_route_is_behind_the_token_like_every_other(tmp_path):
+    session(tmp_path, "private", said=["what I typed"])
+    token = "t" * 43
+    app = create_app(make_manager(tmp_path, FakeProvider([])), port=8642, token=token)
+    with TestClient(app, base_url="http://127.0.0.1:8642") as client:
+        params = {"q": "typed"}
+        assert client.get("/api/sessions/search", params=params).status_code == 403
+        answer = client.get("/api/sessions/search", params=params, headers={auth.HEADER: token})
+        assert ids(answer.json()) == ["private"]
