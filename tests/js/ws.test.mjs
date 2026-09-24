@@ -45,7 +45,7 @@ class FakeSocket {
 globalThis.WebSocket = FakeSocket;
 
 mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-const { connect, retryNow } = await import("../../quickcode/frontend/js/ws.js");
+const { actions, connect, retryNow } = await import("../../quickcode/frontend/js/ws.js");
 
 test("a socket revived by retryNow is still watched for silence", () => {
   connect("p", "c");
@@ -62,4 +62,18 @@ test("a socket revived by retryNow is still watched for silence", () => {
   now += 60_000;
   mock.timers.tick(5_000);
   assert.equal(revived.closed, 4001, "the watchdog should have closed the silent socket");
+});
+
+test("a frame over the server's size limit is refused instead of silently lost", () => {
+  connect("p", "c");
+  const sock = sockets.at(-1);
+  sock.live();
+  toasts.length = 0;
+  assert.equal(actions.userMessage("x".repeat(17 * 1024 * 1024)), false);
+  assert.equal(sock.sent.length, 0);
+  assert.match(toasts.join(""), /Too large to send: 17\.0 MB/);
+  assert.equal(actions.userMessage("fine"), true);
+  assert.deepEqual(JSON.parse(sock.sent[0]), { type: "user_message", text: "fine" });
+  // Multi-byte text is measured in bytes, which is what the server counts.
+  assert.equal(actions.userMessage("é".repeat(9 * 1024 * 1024)), false);
 });
