@@ -104,6 +104,8 @@ quickcode/
     projects.py           # ProjectHub, project registry
     serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
     agents_api.py authoring_api.py gitinfo.py paths.py terminal.py auth.py
+    workbench/            # the agent workbench behind agents_api.py's routes
+      prompt_view.py provenance.py
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
