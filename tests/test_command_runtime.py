@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 
-from quickcode import subproc
 from quickcode.kernel.authoring import discovery
 from quickcode.tools import command as command_module
 from quickcode.tools.base import ReadRegistry, ToolCtx
