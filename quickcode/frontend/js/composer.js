@@ -279,7 +279,8 @@ async function openProfileMenu(anchor) {
     </a>
     <div class="prof-note" data-prof-note>A profile's rules are added to this
       project's own rather than replacing them, so it narrows by denying; its
-      mode is where a session starts, and Shift+Tab still works afterwards.
+      mode is where a session starts, and the mode pill or /mode still changes
+      it afterwards.
       Switching applies straight away, to every session open on this project.</div>`;
   document.body.appendChild(m);
   profMenuEl = m;

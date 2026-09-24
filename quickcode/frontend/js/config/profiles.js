@@ -15,8 +15,8 @@
 //   * A profile's rules **merge** with the project's own — they never replace
 //     them. So a profile narrows by saying `deny`, never by leaving something
 //     out, and the editor says so beside the deny box rather than in a doc.
-//   * `mode` is where a session **starts**, not a ceiling. Shift+Tab still
-//     works afterwards, which is why "Read only" denies `write` outright
+//   * `mode` is where a session **starts**, not a ceiling. The mode pill still
+//     changes it afterwards, which is why "Read only" denies `write` outright
 //     instead of trusting plan mode to still be the mode in ten minutes.
 //
 // The refusal rendering is the other half of the point. A profile a project
@@ -219,7 +219,7 @@ function editorHtml(draft, { tools, scope, isNew, builtinIds }) {
         `<option value="${id}"${id === draft.mode ? " selected" : ""}>${esc(text)}</option>`
       ).join("")}</select>
       <div class="pf-note">Where a session <em>starts</em>, not a ceiling —
-        Shift+Tab still works afterwards. A profile that means to hold has to
+        the mode pill still changes it afterwards. A profile that means to hold has to
         say so in its deny list.</div>
     </div>
 
