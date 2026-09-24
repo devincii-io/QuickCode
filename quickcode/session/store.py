@@ -298,9 +298,12 @@ class SessionStore:
         except OSError:
             return path, 0
 
-    def _allocate_seq(self) -> int:
+    def _rescan_if_stale(self) -> None:
         if self._next_seq is None or self._current_size() != self._known_size:
             self._scan()
+
+    def _allocate_seq(self) -> int:
+        self._rescan_if_stale()
         assert self._next_seq is not None
         seq = self._next_seq
         self._next_seq += 1
@@ -308,8 +311,7 @@ class SessionStore:
 
     def last_turn(self) -> int:
         """The highest turn number already logged; 0 for a new session."""
-        if self._next_seq is None:
-            self._scan()
+        self._rescan_if_stale()
         return self._last_turn
 
     # ---- writing ----
@@ -469,6 +471,8 @@ class SessionStore:
         # session. Everything before it was the app getting ready.
         if ev.get("type") == "user_message":
             self.release()
+        if isinstance(ev.get("turn"), int):
+            self._last_turn = max(self._last_turn, ev["turn"])
         # A copy: a held record is written later, and the caller goes on to
         # stamp ``seq`` into its own dict, which must not reach the file.
         self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": dict(ev)})

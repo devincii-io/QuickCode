@@ -205,6 +205,23 @@ def test_reading_the_log_does_not_hide_a_second_writer_from_the_counter(tmp_path
     assert seqs == [1, 2, 3]
 
 
+def test_the_last_turn_follows_what_the_store_itself_appends(tmp_path):
+    store = SessionStore(tmp_path, "conv")
+    store.append_event({"type": "user_message", "text": "one", "turn": 1})
+    assert store.last_turn() == 1
+    store.append_event({"type": "user_message", "text": "two", "turn": 2})
+    assert store.last_turn() == 2
+
+
+def test_the_last_turn_follows_a_second_writer(tmp_path):
+    live = SessionStore(tmp_path, "conv")
+    live.append_event({"type": "user_message", "text": "one", "turn": 1})
+    assert live.last_turn() == 1
+    SessionStore(tmp_path, "conv").append_event(
+        {"type": "user_message", "text": "two", "turn": 2})
+    assert live.last_turn() == 2
+
+
 def test_a_held_event_is_written_in_the_same_shape_as_an_unheld_one(tmp_path):
     held = SessionStore(tmp_path, "held")
     held.begin(title="", model="m")
