@@ -101,7 +101,8 @@ quickcode/
     launch.py             # resolving and launching command/MCP executables safely (PATHEXT, .cmd/.bat)
   server/
     app.py                # FastAPI routes + WebSocket attach
-    manager.py            # ConversationManager / Conversation
+    manager.py            # ConversationManager: opens and tracks one project's conversations
+    conversation.py       # Conversation: one live agent, its windows, its turn worker
     projects.py           # ProjectHub, project registry
     serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
     agents_api.py authoring_api.py gitinfo.py paths.py terminal.py auth.py

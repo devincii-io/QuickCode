@@ -336,8 +336,14 @@ def test_nothing_the_model_can_call_knows_the_terminal_exists() -> None:
     """
     root = Path(__file__).resolve().parents[1] / "quickcode"
     doors = ["ws/terminal", "InteractivePty", "serve_terminal", "server.terminal"]
+    # The conversation's side of the server, and what assembles its session.
+    driven = [
+        root / "server" / "manager.py",
+        root / "server" / "conversation.py",
+        root / "session" / "assemble.py",
+    ]
     offenders = []
-    for path in list((root / "tools").rglob("*.py")) + [root / "server" / "manager.py"]:
+    for path in list((root / "tools").rglob("*.py")) + driven:
         text = path.read_text(encoding="utf-8")
         for door in doors:
             if door in text:
