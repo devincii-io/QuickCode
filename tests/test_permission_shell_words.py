@@ -65,7 +65,8 @@ def test_a_value_after_an_equals_sign_is_not_the_only_reading(project):
 
 @pytest.mark.parametrize("command", [
     "cat *.py", "ls *", "grep -n TODO src/*.py", "ls -la", "cat src/a.py",
-    "rg --color=never x src", "ls --sort=size",
+    "rg --color=never x src", "ls --sort=size", "ls; echo $?", "echo $$ $!",
+    "echo $'a\\tb'",
 ])
 def test_ordinary_globs_and_options_stay_unprompted(command, project):
     """Bash does not match a leading dot with `*`, so `ls *` reads no dotfile."""

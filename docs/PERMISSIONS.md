@@ -61,8 +61,8 @@ whose target is a path (`path_target`), which the protected-path check has
 already confined to the project; every other mutating tool — `web_fetch`,
 `web_search`, a plugin's command tool, an MCP tool that is not read-only —
 prompts exactly as in `ask`. (The mode default used to allow all of them.)
-A shell command in `auto-edit` takes the same path it takes in `ask`: the read-only builtins below are allowed,
-everything else prompts. There is **no allowlist of file-op commands** —
+A shell command in `auto-edit` takes the same path it takes in `ask`: the
+read-only builtins below are allowed, everything else prompts. There is **no allowlist of file-op commands** —
 `mkdir`, `touch`, `mv`, `cp` and `rm` all prompt, in every mode but `yolo`.
 Earlier versions of this document described such a list; it was never
 implemented, and the entry that would carry it does not exist in
@@ -93,9 +93,10 @@ today.
      `f(){ f|f& };f`, `fork while fork`).
 
   They are matched on the command's words, not on one spelling of it; the
-  regexes they replace knew one shape each. A breaker is also matched inside the commands another
-  command runs (`$(rm -rf /)`, `bash -c "…"`, `xargs`, `find -exec`; see
-  §Bash evaluation pipeline), since those are evaluated as if typed. There is
+  regexes they replace knew one shape each. A breaker is also matched inside
+  the commands another command runs (`$(rm -rf /)`, `bash -c "…"`, `xargs`,
+  `find -exec`; see §Bash evaluation pipeline), since those are evaluated as
+  if typed. There is
   no breaker for recursive deletes outside the project, and it is not caught in
   yolo any more: the protected-path prompt that used to catch it by a side
   door is not raised in yolo (see the next bullet), so in that mode the
@@ -118,8 +119,8 @@ today.
   a write to `.git/config` in plan mode is denied, not offered. In `dontask` the same
   check denies instead of prompting, because there is nobody to ask. In `yolo`
   it does neither: the mode exists to stop asking, and asking anyway made a
-  plain `find / -name "*x*"` stop and wait — `bash` treats every non-option
-  token as a possible path, so the `/` was enough. The gate is entry to the
+  plain `find / -name "*x*"` stop and wait — `bash` treats every argument as
+  a possible path, so the `/` was enough. The gate is entry to the
   mode (a confirmation screen, a persisted acceptance, a red status bar), not
   a second conversation per command. Deny rules still deny in yolo, and the
   circuit breakers still prompt. The prompt
@@ -307,9 +308,10 @@ ls  pwd  rg  stat  tail  tree  wc  which
 **`git` is not among them.** Earlier text here promised that "read-only git
 forms" auto-allow; no such special case exists and none ever did — `git status`
 prompts in `ask` and `auto-edit` like any other command, and is denied in
-`plan`. Recognising read-only git *forms* would need subcommand parsing the
-engine does not do, and the first token is all it looks at. `bash(git status)`
-as an allow rule is the supported way to get there.
+`plan`. The engine does read git's options now, but only to be stricter (the
+config writes, `-c` and friends, and forced pushes below); no git form is
+auto-allowed. `bash(git status)` as an allow rule is the supported way to get
+there.
 
 - *Env-prefix stripping is for **deny** matching: `FOO=x rm -rf y` still hits a `rm` deny. It does **not** buy the read-only auto-allow, and it does not match an allow rule written against the bare command — `PATH=. ls` is not `ls`, and approving `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule that spells the assignment out still matches.
 - Any assignment disqualifies, not a list of dangerous names: such a list would have to be complete, and `PATH`/`LD_PRELOAD` are only the obvious entries next to `BASH_ENV`, `IFS`, `PYTHONSTARTUP`, `NODE_OPTIONS` — and `RIPGREP_CONFIG_PATH`, which points `rg` (a read-only builtin) at a config file that can set `--pre`, which runs a program. The set grows with every program installed on the machine. The cost of the conservative reading is one prompt for `FOO=1 ls`.

@@ -193,7 +193,8 @@ def path_candidates(token: str) -> list[str] | None:
     (``x,.env``) each element.
     """
     out: list[str] = []
-    for word in {token.replace("'", "").replace('"', ""), dequote(token)}:
+    unquoted = re.sub(r"\$(?=['\"])", "", token).replace("'", "").replace('"', "")
+    for word in {unquoted, dequote(token)}:
         expanded = brace_expand(word)
         if expanded is None:
             return None

@@ -51,7 +51,7 @@ _REPRESENTATIVE = (
 # so `cat $HOME/.aws/credentials` is not a relative path inside the project --
 # which is what it resolved as, and was auto-allowed as, until 2.4.1. Unknown
 # is not safe.
-UNRESOLVABLE = re.compile(r"\$[\w{(@*#?$!-]|`|%\w+%")
+UNRESOLVABLE = re.compile(r"\$[\w{(]|`|%\w+%")
 
 _SEPARATORS = re.compile(r"[\\/]+")
 
