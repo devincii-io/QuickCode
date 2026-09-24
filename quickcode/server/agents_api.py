@@ -46,33 +46,28 @@ from quickcode.kernel.composition import (
     Resolved,
 )
 from quickcode.kernel.manifest import is_shipped_agent
-from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
+from quickcode.kernel.patterns import is_glob
+from quickcode.kernel.resolve import (
+    expand_tool_pattern,
+    resolve_composition,
+    runtime_limits,
+    session_pool,
+)
 from quickcode.prompts import sections as sections_module
 from quickcode.prompts.subagent import render_subagent_prompt
 from quickcode.prompts.system import render_with_sections
 from quickcode.server.manager import ConversationManager, SwitchRefused
 from quickcode.subagents.definitions import AgentDef, load_defs
-from quickcode.tools.registry import ALIASES, ToolRegistry, build_registry
+from quickcode.tools.registry import ToolRegistry, build_registry
 
 log = logging.getLogger("quickcode.server.agents")
 
 JSON_BODY_CAP = 1024 * 1024
-_GLOB_CHARS = ("*", "?", "[")
 
 
 # --------------------------------------------------------------------------
 # small helpers
 # --------------------------------------------------------------------------
-
-def _is_glob(pattern: str) -> bool:
-    return any(ch in pattern for ch in _GLOB_CHARS)
-
-
-def _expand(pattern: str) -> str:
-    """A pattern as ``select()`` sees it: aliases resolved, whitespace gone."""
-    text = (pattern or "").strip()
-    return ALIASES.get(text, text)
-
 
 def _prov_json(prov: Any) -> dict[str, Any]:
     return prov.to_json() if prov is not None else {}
@@ -369,7 +364,7 @@ def _pool_rows(
         if name in granted:
             prov = _last_prov(resolved, f"tools.{name}")
             rule = getattr(prov, "rule", "") or ("*" if inherits else "")
-            by_glob = inherits or _is_glob(rule) or _expand(rule) != name
+            by_glob = inherits or is_glob(rule) or expand_tool_pattern(rule) != name
             rows.append(_tool_row(
                 tool,
                 state="matched-by-glob" if by_glob else "matched",

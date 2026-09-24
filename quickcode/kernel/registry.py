@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from quickcode.kernel import state as state_store
+from quickcode.kernel.patterns import pattern_matches
 from quickcode.kernel.problems import Problem, Provenance
 from quickcode.kernel.spec import (
     Kind,
@@ -64,10 +64,6 @@ class Use:
     def to_json(self) -> dict[str, str]:
         return {"kind": self.kind, "id": self.id, "title": self.title,
                 "via": self.via, "href": self.href}
-
-
-def _matches(pattern: str, name: str) -> bool:
-    return pattern == name or fnmatchcase(name, pattern)
 
 
 def _mcp_server(tool_name: str) -> str:
@@ -333,7 +329,7 @@ class PluginRegistry:
             for pattern in comp.tools or ():
                 wanted = expand_tool_pattern(pattern)
                 for tool in tool_names:
-                    if not _matches(wanted, tool):
+                    if not pattern_matches(wanted, tool):
                         continue
                     add(f"tool.{tool}", agent_use(name, (
                         f"matched by `{pattern}` in its tools" if wanted != tool
@@ -345,7 +341,7 @@ class PluginRegistry:
                 add(f"mcp.{server}", agent_use(name, "it lists tools from this server"))
             for pattern in comp.spawns or ():
                 for other in agent_ids:
-                    if _matches(pattern, other):
+                    if pattern_matches(pattern, other):
                         add(f"agent.{other}", agent_use(name, "it may spawn it"))
             if comp.base:
                 add(f"agent.{comp.base}", agent_use(name, "it derives from it (`base:`)"))

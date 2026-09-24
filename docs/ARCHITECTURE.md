@@ -88,6 +88,7 @@ quickcode/
     spec.py registry.py manifest.py bootstrap.py state.py
     composition.py        # what is attached to one agent, and the runtime limits
     resolve.py            # what an agent actually gets, with provenance
+    patterns.py           # a tools:/spawns:/models: entry: literal name or glob
     preset.py             # presets: the composition a session's agents run
     problems.py           # provenance and problem records
     authoring/            # .quickcode/plugins/*.md → plugins
