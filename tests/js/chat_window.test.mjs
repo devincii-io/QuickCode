@@ -6,9 +6,9 @@ import {
 
 // Just enough DOM for the window: nodes with a parent, fragments that empty
 // into whatever they are inserted into, and a scroller that lays its children
-// out 10px apart.
+// out one after another, 10px each unless a test says otherwise.
 class Node {
-  constructor(name) { this.name = name; this.parent = null; this.children = []; }
+  constructor(name) { this.name = name; this.parent = null; this.children = []; this.height = 10; }
   get isConnected() { return !!this.parent; }
   get nextSibling() {
     const sibs = this.parent?.children;
@@ -33,7 +33,8 @@ class Node {
   addEventListener(type, fn) { this.onclick = fn; }
   getBoundingClientRect() {
     const root = this.parent;
-    return { top: root.children.indexOf(this) * 10 - root.scrollTop };
+    const above = root.children.slice(0, root.children.indexOf(this));
+    return { top: above.reduce((sum, n) => sum + n.height, 0) - root.scrollTop };
   }
 }
 class Fragment extends Node {}
@@ -88,7 +89,7 @@ test("a short replay attaches everything and offers nothing earlier", () => {
   assert.equal(win.more, null);
 });
 
-test("revealing brings back the previous chunk in order and keeps the view still", () => {
+test("revealing brings back the previous chunk in order and keeps the view still", async () => {
   const root = scroller();
   const win = new TranscriptWindow(root);
   win.defer();
@@ -101,7 +102,10 @@ test("revealing brings back the previous chunk in order and keeps the view still
   assert.equal(win.revealOlder(), true);
   assert.deepEqual(names(root).slice(1, 3), ["b10", "b11"]);
   assert.equal(win.more.textContent, "show 10 earlier items");
-  // No scroll anchoring in this "browser": the window moved the page itself.
+  // No scroll anchoring in this "browser", and a decorator (copy.js) grows a
+  // revealed block before the window measures: it still holds the view.
+  all[40].height = 18;
+  await null;
   assert.equal(anchor.getBoundingClientRect().top, before);
   assert.equal(win.revealOlder(), true);
   assert.equal(win.more, null);

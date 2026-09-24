@@ -88,15 +88,21 @@ export class TranscriptWindow {
     this.root.insertBefore(batch, anchor);
     this.first = start;
     this.syncMore();
-    // A browser with scroll anchoring has already held the anchor in place;
-    // one without (WebKit) has not.
-    if (anchor) {
-      const moved = anchor.getBoundingClientRect().top - before;
-      if (Math.abs(moved) >= 1) {
-        this.root.scrollTo({ top: this.root.scrollTop + moved, behavior: "instant" });
-      }
-    }
+    // Measured in a microtask: copy.js decorates the new blocks from a
+    // MutationObserver, which runs first and changes their height. Scroll
+    // anchoring (Chromium) may already have held the anchor, or only part of
+    // the way — a decoration that sets `position` suppresses it — and WebKit
+    // has none, so whatever is left over is corrected here.
+    if (anchor) queueMicrotask(() => this.hold(anchor, before));
     return true;
+  }
+
+  hold(anchor, top) {
+    if (!anchor.isConnected) return;
+    const moved = anchor.getBoundingClientRect().top - top;
+    if (Math.abs(moved) >= 1) {
+      this.root.scrollTo({ top: this.root.scrollTop + moved, behavior: "instant" });
+    }
   }
 
   /** Shed the backlog above a reader who is following the newest line. */
