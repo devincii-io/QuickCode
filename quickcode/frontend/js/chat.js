@@ -3,12 +3,13 @@
 import { promptNote } from "./inspect.js";
 import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
-import { argSummary, markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
+import { markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
 import { CardRegistry, MAIN } from "./chat/registry.js";
 import { Follower } from "./chat/scroll.js";
 import { LiveBubble } from "./chat/stream.js";
 import { REVEAL_PX, TranscriptWindow } from "./chat/window.js";
 import { setCopySource } from "./copy.js";
+import { argSummary } from "./tool_args.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;

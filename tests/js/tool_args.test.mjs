@@ -28,3 +28,13 @@ test("arguments that are not an object show as they came", () => {
   assert.equal(argSummary("bash", "null"), "null");
   assert.equal(argSummary("read", ""), "");
 });
+
+test("the transcript's tool cards summarise with this function, not a copy", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const js = new URL("../../quickcode/frontend/js/", import.meta.url);
+  const defines = readdirSync(js, { recursive: true })
+    .filter((f) => f.endsWith(".js"))
+    .filter((f) => /function\s+argSummary\b/.test(readFileSync(new URL(f, js), "utf8")))
+    .map((f) => f.replaceAll("\\", "/"));
+  assert.deepEqual(defines, ["tool_args.js"]);
+});
