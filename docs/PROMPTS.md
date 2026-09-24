@@ -42,7 +42,9 @@ on the system message, so the same inputs must produce the same bytes.
 
 Sections in composition order. `<orchestration>`, `<send_message_hint>`,
 `<plan_mode>` and `<headless_mode>` render empty — and so are dropped — unless
-the session is orchestrating, in plan mode, or headless.
+the session is orchestrating, opened in plan mode, or headless. A later mode
+switch does not re-render the prompt (the mode reminder carries it), which is
+why `<plan_mode>` is worded to stay true after its plan is approved.
 
 ```xml
 <identity>
@@ -164,9 +166,11 @@ fresh subagent.
 </send_message_hint>
 
 <plan_mode>
-You are in PLAN MODE. Investigate and design; do not mutate anything. The
-editing and mutating tools are withheld. When you have a complete plan, call
-the plan tool with the plan as markdown. Do not attempt to implement yet.
+This session opened in PLAN MODE. While the mode is PLAN, investigate and
+design; do not mutate anything — the editing and mutating tools are
+withheld. When you have a complete plan, call the plan tool with the plan as
+markdown. Once a plan is approved the mode changes and you are told so; from
+then on, implement it.
 </plan_mode>
 
 <headless_mode>
@@ -231,7 +235,7 @@ Tool descriptions are prompts too — the highest-leverage ones. House rules (fu
 
 ## 4. Compaction prompt
 
-Run as a one-off request (same model, no tools) when the token ledger crosses ~80% of the context window, or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history.
+Run as a one-off request (same model) when the token ledger crosses ~80% of the context window, or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history. It declares the conversation's tools but tells the model not to call them: tools lead the cached prefix, so a request with none would re-send nearly a full window uncached. A reply with no summary text is refused and history is left alone.
 
 ```xml
 <task>
@@ -268,6 +272,7 @@ continuation, not narration.
 </required_sections>
 
 <rules>
+- Do not call any tools. Answer with the summary text alone.
 - Facts only; no praise, no meta-commentary.
 - Prefer paths, symbols, and commands over prose descriptions of them.
 </rules>
@@ -279,6 +284,13 @@ Rebuilt history after compaction:
 [user: <compaction-summary>…model output…</compaction-summary> + post-compaction reminder]
 [the last runtime.compaction.keep_turns user turns verbatim (default 2), cut at a user-message boundary]
 ```
+
+The cut never lands in front of a tool result, so no call loses its answer.
+When the whole transcript is "the last few turns" — one request worked for
+many rounds — the tail is its last `keep_turns` rounds instead, and the tail
+is capped at a quarter of the context window (`core/compact.TAIL_SHARE`), so a
+compaction cannot rebuild a history already over the threshold that
+triggered it. The summarization request's own usage is logged and counted.
 
 ## 5. Headless / print mode (`-p`)
 

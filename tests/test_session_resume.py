@@ -21,6 +21,7 @@ from quickcode import cli
 from quickcode.core.events import TextDelta, ToolCallEnd, TurnDone
 from quickcode.providers.base import ChatMessage
 from quickcode.session.store import SessionStore
+from quickcode.tools.read import ReadTool
 from tests.test_headless import _headless, _install
 from tests.test_server import FakeProvider, make_client, make_manager, recv_until, ws_connect
 
@@ -102,24 +103,22 @@ def test_the_repair_is_the_same_on_every_resume(tmp_path):
     assert store.load_messages() == SessionStore(tmp_path, "conv").load_messages()
 
 
-class _CancelDuringTools(FakeProvider):
-    """Ends round one with a tool call, then Ctrl-C lands while it runs."""
-
-    async def stream_chat(self, req):
-        if not self.requests:
-            task = asyncio.current_task()
-            asyncio.get_running_loop().call_soon(task.cancel)
-        async for ev in super().stream_chat(req):
-            yield ev
+async def _read_then_ctrl_c(self, input, ctx):  # noqa: A002
+    """Ctrl-C lands while the tool runs: the task running the turn is cancelled."""
+    turn = next(t for t in asyncio.all_tasks() if t.get_coro().__name__ == "_run_headless")
+    turn.cancel()
+    await asyncio.Event().wait()
 
 
 def test_a_headless_run_cut_off_mid_tool_can_be_continued(tmp_path, monkeypatch, capsys):
     target = tmp_path / "note.txt"
     target.write_text("hello", encoding="utf-8")
     call = ToolCallEnd(id="c1", name="read", arguments=json.dumps({"file_path": str(target)}))
-    _install(monkeypatch, _CancelDuringTools([[call, TurnDone("tool_calls")]]))
-    with pytest.raises(asyncio.CancelledError):
-        cli.main(_headless(tmp_path, "read it"))
+    _install(monkeypatch, FakeProvider([[call, TurnDone("tool_calls")]]))
+    with monkeypatch.context() as patched:
+        patched.setattr(ReadTool, "run", _read_then_ctrl_c)
+        with pytest.raises(asyncio.CancelledError):
+            cli.main(_headless(tmp_path, "read it"))
     capsys.readouterr()
 
     second = FakeProvider([[TextDelta("carrying on"), TurnDone("stop")]])

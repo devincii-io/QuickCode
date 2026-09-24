@@ -528,6 +528,11 @@ class Conversation:
         except ProviderError as e:
             self.emit({"type": "error", "message": f"compaction failed: {e}"})
             return
+        finally:
+            # The summary request's usage is logged ahead of ``compacted``, so
+            # a replayed ledger counts its spend and then resets the context
+            # footprint -- in the order the live one did.
+            self.rec.drain()
         # History was rebuilt wholesale; future messages persist from here.
         # The rebuilt history goes into the log as well, or the work is
         # undone by the next resume: `load_messages` would replay every

@@ -1,6 +1,6 @@
 """Compaction prompt: compress a long transcript into a continuation handoff.
 
-Run as a one-off request (same model, no tools) when the token ledger crosses
+Run as a one-off request (same model and tools) when the token ledger crosses
 the context threshold or on /compact. The model's output becomes the seed
 message of the rebuilt history (see quickcode.core.compact).
 """
@@ -42,6 +42,7 @@ continuation, not narration.
 </required_sections>
 
 <rules>
+- Do not call any tools. Answer with the summary text alone.
 - Facts only; no praise, no meta-commentary.
 - Prefer paths, symbols, and commands over prose descriptions of them.
 </rules>"""

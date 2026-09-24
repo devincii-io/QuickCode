@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import Decimal
 from typing import Any
 
 # The spec allows comma, tab or pipe. Comma reads best and tokenizes well; tab
@@ -50,6 +51,11 @@ MAX_DEPTH = 24
 _LITERALS = frozenset({"true", "false", "null"})
 _NUMBERISH = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# What JavaScript's ``trim()`` removes: its WhiteSpace and LineTerminator sets.
+_JS_SPACE = (
+    "\t\n\v\f\r \xa0          "
+    "      　﻿"
+)
 
 _ESCAPES = {
     "\\": "\\\\",
@@ -180,7 +186,9 @@ def _write_array(
         if not block:
             block = [" " * (lead + indent)]
         first = block[0]
-        block[0] = (first[:lead] + "- " + first[lead + indent :]).rstrip()
+        # Only what JS's ``\s`` strips: a bare ``rstrip()`` also ate a trailing
+        # NEL, which is part of an unquoted value.
+        block[0] = (first[:lead] + "- " + first[lead + indent :]).rstrip(_JS_SPACE)
         lines.extend(block)
 
 
@@ -269,14 +277,50 @@ def _fmt_scalar(value: Any, d: str) -> str:
         # beats a bare `null` the model would read as "no value".
         if math.isnan(value) or math.isinf(value):
             return _quote(repr(value))
-        return repr(value)
+        return _number(value)
     if isinstance(value, str):
         return _quote(value) if _needs_quote(value, d) else value
     return _quote(str(value))
 
 
+def _number(x: float) -> str:
+    """A finite float as JavaScript's ``String(x)`` spells it.
+
+    The browser encoder renders the same values from the model's JSON, and
+    ``repr`` disagrees with it on whole floats (``2.0``), on where exponents
+    start (``1e-05``, ``1e+16``) and on ``-0.0``. Both use the shortest
+    round-tripping digits, so only the layout has to be translated.
+    """
+    if x == 0:
+        return "0"
+    sign, digits, exp = Decimal(repr(abs(x))).as_tuple()
+    ds = "".join(map(str, digits)).rstrip("0")
+    exp += len(digits) - len(ds)
+    k = len(ds)
+    n = exp + k  # x == 0.ds * 10**n
+    if k <= n <= 21:
+        s = ds + "0" * (n - k)
+    elif 0 < n <= 21:
+        s = ds[:n] + "." + ds[n:]
+    elif -6 < n <= 0:
+        s = "0." + "0" * -n + ds
+    else:
+        e = n - 1
+        s = ds[0] + ("." + ds[1:] if k > 1 else "") + ("e+" if e >= 0 else "e-") + str(abs(e))
+    return ("-" if x < 0 else "") + s
+
+
+def _edge_space(s: str) -> bool:
+    """Leading or trailing whitespace, by ``String.prototype.trim``'s rules.
+
+    ``str.strip`` disagrees at the edges -- it trims NEL and keeps a BOM --
+    and the two encoders then quoted different values.
+    """
+    return s != s.strip(_JS_SPACE)
+
+
 def _needs_quote(s: str, d: str) -> bool:
-    if s == "" or s != s.strip():
+    if s == "" or _edge_space(s):
         return True
     if d in s or '"' in s or _CONTROL.search(s):
         return True
@@ -301,7 +345,7 @@ def _quote(s: str) -> str:
 
 def _fmt_key(key: str, d: str) -> str:
     s = str(key)
-    if not s or s != s.strip():
+    if not s or _edge_space(s):
         return _quote(s)
     if d in s or any(c in s for c in _KEY_BREAKERS) or _CONTROL.search(s):
         return _quote(s)

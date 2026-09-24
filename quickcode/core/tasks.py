@@ -8,7 +8,10 @@ state survives restarts and compaction.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,8 +19,17 @@ from typing import Any
 from quickcode.context import toon
 from quickcode.workspace import ensure_project_dir_for
 
+log = logging.getLogger("quickcode.core.tasks")
+
 STATUSES = ("pending", "in_progress", "completed", "deleted")
 DESCRIPTION_CHARS = 200
+
+
+def _id_number(task_id: str) -> int:
+    try:
+        return int(task_id[1:])
+    except ValueError:
+        return 0
 
 
 def _clip(text: str, limit: int) -> str:
@@ -95,13 +107,7 @@ class TaskBoard:
         return self.tasks[task_id]
 
     def list(self, include_deleted: bool = False) -> list[Task]:
-        def key(task_id: str) -> int:
-            try:
-                return int(task_id[1:])
-            except ValueError:
-                return 0
-
-        ids = sorted(self.tasks.keys(), key=key)
+        ids = sorted(self.tasks.keys(), key=_id_number)
         tasks = [self.tasks[i] for i in ids]
         if not include_deleted:
             tasks = [t for t in tasks if t.status != "deleted"]
@@ -116,28 +122,24 @@ class TaskBoard:
         add_blocked_by: list[str] | None = None,
         add_blocks: list[str] | None = None,
     ) -> Task:
+        """Apply one update, or none of it.
+
+        Everything is checked before anything changes. The model is told a
+        refused call failed, and it used to be half-applied anyway: the edges
+        added before a bad id stayed, and the next save persisted them.
+        """
         task = self.get(task_id)
-
-        if add_blocked_by:
-            for other_id in add_blocked_by:
-                if other_id == task_id:
-                    continue
-                # will raise KeyError if unknown
-                other = self.get(other_id)
-                if other_id not in task.blocked_by:
-                    task.blocked_by.append(other_id)
-                if task_id not in other.blocks:
-                    other.blocks.append(task_id)
-
-        if add_blocks:
-            for other_id in add_blocks:
-                if other_id == task_id:
-                    continue
-                other = self.get(other_id)
-                if other_id not in task.blocks:
-                    task.blocks.append(other_id)
-                if task_id not in other.blocked_by:
-                    other.blocked_by.append(task_id)
+        # (blocker, blocked) pairs: the blocker has to complete first.
+        edges = [(other, task_id) for other in add_blocked_by or () if other != task_id]
+        edges += [(task_id, other) for other in add_blocks or () if other != task_id]
+        for blocker, blocked in edges:
+            self.get(blocked if blocker == task_id else blocker)
+        for blocker, blocked in edges:
+            # There is no call that removes an edge, so a cycle is permanent.
+            if self._reaches(blocked, blocker, edges):
+                raise ValueError(
+                    f"{blocker} blocking {blocked} would make a dependency cycle"
+                )
 
         if status is not None:
             if status not in STATUSES:
@@ -145,8 +147,11 @@ class TaskBoard:
                     f"invalid status {status!r}; must be one of {', '.join(STATUSES)}"
                 )
             if status == "in_progress":
+                blockers = dict.fromkeys(
+                    [*task.blocked_by, *(b for b, d in edges if d == task_id)]
+                )
                 incomplete = [
-                    b for b in task.blocked_by if self.tasks.get(b, None) is None
+                    b for b in blockers if self.tasks.get(b, None) is None
                     or self.tasks[b].status != "completed"
                 ]
                 if incomplete:
@@ -154,13 +159,35 @@ class TaskBoard:
                         f"{task_id} is blocked by incomplete "
                         f"{', '.join(incomplete)}; complete them first"
                     )
-            task.status = status
 
+        for blocker, blocked in edges:
+            if blocked not in self.tasks[blocker].blocks:
+                self.tasks[blocker].blocks.append(blocked)
+            if blocker not in self.tasks[blocked].blocked_by:
+                self.tasks[blocked].blocked_by.append(blocker)
+        if status is not None:
+            task.status = status
         if owner is not None:
             task.owner = owner
 
         self.save()
         return task
+
+    def _reaches(self, start: str, goal: str, extra: list[tuple[str, str]]) -> bool:
+        """Whether ``goal`` has to wait on ``start``, counting ``extra`` edges."""
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if node == goal:
+                return True
+            if node in seen:
+                continue
+            seen.add(node)
+            known = self.tasks.get(node)
+            stack.extend(known.blocks if known else ())
+            stack.extend(d for b, d in extra if b == node)
+        return False
 
     def claimable(self) -> list[Task]:
         result = []
@@ -184,7 +211,11 @@ class TaskBoard:
             "counter": self._counter,
             "tasks": [t.to_dict() for t in self.list(include_deleted=True)],
         }
-        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Written beside and swapped in, so a process that dies mid-write
+        # leaves the previous board rather than half of this one.
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     @classmethod
     def load(cls, path: Path) -> TaskBoard:
@@ -192,11 +223,23 @@ class TaskBoard:
         board = cls(path=path)
         if not path.exists():
             return board
-        data = json.loads(path.read_text(encoding="utf-8"))
-        board._counter = data.get("counter", 0)
-        for task_data in data.get("tasks", []):
-            task = Task.from_dict(task_data)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            tasks = [Task.from_dict(t) for t in data.get("tasks", [])]
+            counter = int(data.get("counter", 0))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            # The board is opened with its conversation, and an unreadable one
+            # used to stop the conversation opening at all. It is set aside
+            # instead of being overwritten by the next save.
+            log.warning("task board %s is unreadable (%s); starting empty", path, exc)
+            with contextlib.suppress(OSError):
+                os.replace(path, path.with_name(path.name + ".corrupt"))
+            return board
+        for task in tasks:
             board.tasks[task.id] = task
+        # Never below an id already on the board, or the next create reuses it
+        # and silently replaces that task.
+        board._counter = max([counter, *(_id_number(t) for t in board.tasks)])
         return board
 
     # --- rendering -----------------------------------------------------

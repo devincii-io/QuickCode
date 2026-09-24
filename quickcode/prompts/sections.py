@@ -208,11 +208,15 @@ continue the same task with its full context intact, instead of respawning a
 fresh subagent.
 </send_message_hint>"""
 
+# Worded to stay true for the whole session: the prompt is frozen at open, and
+# approving the plan changes the mode without re-rendering it.
 _PLAN_MODE = """\
 <plan_mode>
-You are in PLAN MODE. Investigate and design; do not mutate anything. The
-editing and mutating tools are withheld. When you have a complete plan, call
-the plan tool with the plan as markdown. Do not attempt to implement yet.
+This session opened in PLAN MODE. While the mode is PLAN, investigate and
+design; do not mutate anything — the editing and mutating tools are
+withheld. When you have a complete plan, call the plan tool with the plan as
+markdown. Once a plan is approved the mode changes and you are told so; from
+then on, implement it.
 </plan_mode>"""
 
 _HEADLESS = """\
@@ -305,7 +309,7 @@ SECTIONS: list[PromptSection] = [
     PromptSection("prompt.send_message_hint", "Resume hint", 110, "confirm",
                   _send_message_hint, "Reminds the agent that subagents are resumable."),
     PromptSection("prompt.plan_mode", "Plan mode", 120, "confirm", _plan_mode,
-                  "Added while the session is in plan mode."),
+                  "Added when the session opens in plan mode."),
     PromptSection("prompt.headless", "Headless mode", 130, "confirm", _headless,
                   "Added for non-interactive runs."),
 ]

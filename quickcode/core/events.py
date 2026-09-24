@@ -74,6 +74,9 @@ class Usage:
     # Prompt tokens written to the provider's cache on this request (billed at
     # a premium). Like ``cached_tokens``, already counted in ``input_tokens``.
     cache_write_tokens: int = 0
+    # The part of ``output_tokens`` spent thinking. Billed, but never sent
+    # back to the model, so it is spend without being context.
+    reasoning_tokens: int = 0
 
 
 @dataclass

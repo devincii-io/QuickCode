@@ -134,7 +134,14 @@ class PlanModeHook(LoopHook):
     ) -> Interception | None:
         if tool.name != PLAN_TOOL:
             return None
-        plan_md = args.get("plan", "")
+        plan_md = args.get("plan")
+        # Checked here because an interception runs before the tool's own
+        # schema is: a missing or non-text plan went to the review as it was.
+        if not isinstance(plan_md, str) or not plan_md.strip():
+            return Interception(
+                "The plan tool needs the full plan as markdown text in `plan`.",
+                is_error=True,
+            )
         if agent.plan_cb is None:
             agent.approved_plan = plan_md
             return Interception("Plan recorded (no interactive review available).")
