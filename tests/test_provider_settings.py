@@ -200,3 +200,17 @@ def test_a_new_key_for_the_active_provider_is_used_without_a_restart(tmp_path, s
 
     assert isinstance(manager.provider, AnthropicProvider)
     assert manager.provider._api_key == ANTHROPIC_KEY
+
+
+def test_a_refused_save_does_not_switch_the_backend_halfway(tmp_path, sandbox) -> None:
+    """Switched in memory but never saved or rebuilt, the config and the
+    running backend would disagree -- and the next save would not notice."""
+    provider = FakeProvider([])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        resp = client.put("/api/config", json={"provider": "anthropic",
+                                               "search": {"provider": "nonesuch"}})
+
+    assert resp.status_code == 400
+    assert manager.config.profile.provider == "openai-compat"
+    assert manager.provider is provider

@@ -1166,10 +1166,13 @@ def create_app(
         default_mode = body.get("default_mode")
         if isinstance(default_mode, str):
             cfg.default_mode = default_mode
-        backend_changed = provider_settings.apply(cfg, body)
         search = body.get("search")
         if isinstance(search, dict):
             _apply_search(cfg, search)
+        # After everything that can refuse the request: a backend switched in
+        # memory but never saved or rebuilt would leave the running provider
+        # and the config disagreeing, and the next save would not notice.
+        backend_changed = provider_settings.apply(cfg, body)
         if "max_tokens" in body:
             # Clamped in `Config`, because config.json is hand-editable and this
             # number is what the provider reserves credit against.
