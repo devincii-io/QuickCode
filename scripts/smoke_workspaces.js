@@ -123,7 +123,20 @@ async (page) => {
   await settings.locator('select[name="width"]').selectOption("full");
   await settings.locator('input[name="fontSize"]').fill("17");
   await settings.locator('input[name="fontSize"]').dispatchEvent("input");
-  await settings.locator("#cfg-done").click();
+  // Escape peels one layer inside Settings: the search box first, then a sheet
+  // (the raw view), and only then Settings itself.
+  await settings.locator("#cfg-search").fill("read");
+  await settings.locator("#cfg-search").press("Escape");
+  check(await page.locator(".ws-utility").count() === 1 && await settings.locator("#cfg-search").inputValue() === "",
+    "Escape in the Settings search closed Settings or kept the query");
+  await settings.getByRole("link", { name: "Tools", exact: false }).first().click();
+  await settings.locator(".k-card [data-raw]").first().click();
+  await settings.locator(".set-sheet").waitFor();
+  await page.keyboard.press("Escape");
+  await settings.locator(".set-sheet").waitFor({ state: "detached", timeout: 3000 }).catch(() => {});
+  check(await page.locator(".ws-utility").count() === 1 && await settings.locator(".set-sheet").count() === 0,
+    "Escape on a sheet closed Settings instead of the sheet");
+  await page.keyboard.press("Escape");
   await page.waitForSelector(".ws-utility", { state: "detached" });
   check(await frame(ids[1]).locator("html").getAttribute("data-spacing") === "compact", "appearance did not reach other agent");
   await page.locator("#ws-help").click();

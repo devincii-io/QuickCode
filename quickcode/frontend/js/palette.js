@@ -261,12 +261,13 @@ export function isPaletteKey(e, mac) {
 }
 
 /** The palette key in this document opens `open()`, or closes a palette
- *  already showing. Nothing happens under a modal dialog. */
+ *  already showing. Nothing happens under a modal dialog or a Settings sheet,
+ *  both of which sit above the palette. */
 export function bindPaletteKey(open) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   document.addEventListener("keydown", (e) => {
     if (!isPaletteKey(e, mac)) return;
-    if (document.querySelector(".modal-backdrop, dialog[open]")) return;
+    if (document.querySelector(".modal-backdrop, .set-sheet, dialog[open]")) return;
     e.preventDefault();
     const showing = document.querySelector(".menu.palette");
     if (showing) { showing.closeMenu?.(); return; }

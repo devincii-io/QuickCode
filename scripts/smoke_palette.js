@@ -125,7 +125,17 @@ async (page) => {
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector("#ws-title").textContent === "Client portal");
 
+  // A pane on its own shows Settings in place; a sheet there is a dialog the
+  // palette would open underneath, so the key does nothing.
+  await page.goto("http://127.0.0.1:8769/?pane=1#token=workspace-preview");
+  await page.evaluate(() => { location.hash = "#/config/parts/tools"; });
+  await page.locator(".k-card [data-raw]").first().click();
+  await page.locator(".set-sheet").waitFor();
+  await page.keyboard.press("Control+K");
+  await page.waitForTimeout(200);
+  check(await page.locator(".menu.palette").count() === 0, "the palette opened under a Settings sheet");
+
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "shell palette aria, groups, keys, run, toggle, utility, pane palette, slash, mode, message search, split, hand-over", runtimeErrors: errors };
+  return { passed: true, checks: "shell palette aria, groups, keys, run, toggle, utility, pane palette, slash, mode, message search, split, hand-over, not under a sheet", runtimeErrors: errors };
 }
