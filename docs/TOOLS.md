@@ -90,7 +90,8 @@ without the server sniffing for a `task_` name prefix.
 { "pattern": "string", "path": "string? (default cwd)" }
 ```
 
-- Respects `.gitignore`; caps at 200 results with truncation marker.
+- Respects `.gitignore` (inside a git repository, as ripgrep does), `.ignore`, `.rgignore` and `.git/info/exclude`, including the ignore files of directories above `path`; never enters `.git`, `node_modules`, `__pycache__`, `.venv`/`venv`, `.mypy_cache`, `.pytest_cache` below where it starts. Naming an ignored directory in the pattern (`dist/*.js`) still lists it. Caps at 200 results with truncation marker.
+- `{a,b}` alternatives are expanded; absolute patterns work; a pattern without `**` does not descend deeper than it has segments; symlinked directories are never entered. Equal mtimes are ordered by path, so the listing is stable.
 
 ## grep `[read-only]`
 
@@ -109,6 +110,8 @@ without the server sniffing for a `task_` name prefix.
 ```
 
 - `output_mode='content'` returns a TOON table, one row per match: `matches{path,line,text}`. The header declares the row count, and a value containing the delimiter is quoted — `path:line:text` could not be split back into fields once a Windows drive letter put a colon in the first one. The other two modes stay plain lines behind a `<files count="N"/>` or `<counts count="N"/>` marker: a bare path, and a count that is digits after the last colon, already survive a split, so a table there costs tokens (10–30%, measured with o200k_base) and fixes nothing. Both search backends (ripgrep and the pure-Python walk) emit the same records, so the format does not depend on what is installed.
+- Both backends also search the same files, in the same order: path order (ripgrep's parallel output is sorted afterwards); `.gitignore` honoured; hidden files searched inside the project and skipped outside it (dot-directories in a home directory are where credentials live); `.git`, `.quickcode`, `.ssh`, `.env`, `.env.*` and the directories glob prunes are never walked into, though naming one as `path` searches it (with the permission prompt); binary files and files over 5 MB skipped. `glob` filters use ripgrep's rule — no slash matches the name at any depth, a slash anchors to `path` — on both backends.
+- A matched line over 500 characters is cut to a window around the first match. Overlapping `context` windows print each line once.
 
 ## bash
 
