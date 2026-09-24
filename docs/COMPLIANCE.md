@@ -7,6 +7,15 @@ organisation — legal, security, or procurement.
 tree. Where the audit found something in flight and not yet released, it says
 so.
 
+> **Read this first (2.7.0).** This is a point-in-time audit, and "on `main`,
+> unreleased" below means *as of 2026-08-18*: every fix it records as
+> unreleased shipped in **2.1.0** (`CHANGELOG.md`, 2.1.0 → Security). Releases
+> 2.1.0–2.7.0 then added surface this audit did not review end to end —
+> permission profiles, a frozen installer that downloads nothing (§6.1 notes
+> it), an interactive terminal panel (2.6.0) and project workspaces (2.7.0).
+> The network, storage and licence answers in §1–§5 were not re-derived for
+> 2.7.0. `SECURITY.md` lists the known-open issues as they stand in 2.7.0.
+
 **Revised 2026-08-18**, the same day, after fixes for most of the audit's
 findings landed on `main`. **Those fixes are on `main` and are not in any
 published release.** The newest tag is `v2.0.0`; the fixes are recorded in
@@ -273,7 +282,7 @@ Answering the questions a reviewer would otherwise have to establish:
   answers HTTP 200; an unreachable host is a *state* (`unknown`) carrying a
   reason, never an error. Nothing is surfaced in the UI unless a newer release
   exists, so a blocked network produces no banner, no retry storm and no
-  nagging. The reason is visible on Install → Updates for anyone who looks.
+  nagging. The reason is visible on Settings → Updates for anyone who looks.
 - **It never executes anything on its own.** Only the Windows installer layout
   is offered a download, and only after the release's own `SHA256SUMS.txt`
   — fetched *before* any executable byte is written — vouches for the bytes.
@@ -295,8 +304,9 @@ server:
 - **No web fonts.** The CSS uses system font stacks.
 - No `@import` of any remote stylesheet, no remote images, no source-map URLs.
 - **No vendored third-party JavaScript at all.** The markdown renderer and the
-  JSON tokenizer are hand-written in-house. (`js/highlight.js` is *not* the
-  `highlight.js` library, despite the name.)
+  JSON and TOON highlighters are hand-written in-house (`js/markdown.js`,
+  `js/settings/ui.js::highlightJson`, `js/toon.js::highlightToon`); the
+  terminal panel's emulator (`js/terminal/`) is in-house too.
 - Runtime network primitives are `fetch()` with relative paths and
   `new WebSocket("ws://" + location.host + …)` — same-origin, loopback.
 
