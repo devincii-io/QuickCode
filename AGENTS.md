@@ -21,7 +21,7 @@ env unless you actually changed `pyproject.toml`.
 ```powershell
 uv sync --all-extras --dev                          # once, or after pyproject.toml changes
 uv run --no-sync quickcode                           # run the app (native window; qc also works)
-uv run --no-sync pytest -q                           # tests (~1,000, ~25 s)
+uv run --no-sync pytest -q                           # tests (~2,650, ~2 min)
 uv run --no-sync ruff check quickcode tests scripts
 node --test tests/js/*.test.mjs                      # frontend unit tests
 .venv\Scripts\python.exe scripts\release.py --check  # the local release gate: tests, ruff,
@@ -82,6 +82,21 @@ installer layout).
   present), and `quickcode/webapp.py` falls back to the system
   browser when it isn't. Must be started on the main thread — the server
   runs in a background thread instead when the window is used.
+- **Session assembly** (`quickcode/session/assemble.py`) — `build_session`
+  is the only place a session is put together, for the app
+  (`ConversationManager.open`) and for headless `-p` alike: pool, preset,
+  composition, limits, mode, permissions, prompt, hooks. Don't build an
+  `AgentInstance` for a session anywhere else.
+- **Child processes** (`quickcode/subproc.py`) — every process QuickCode
+  starts goes through `spawn`/`spawn_async`/`run`: no console window,
+  `child_env()` (QuickCode's API keys removed), its own process group, and
+  `kill_tree`. `tests/test_no_console_window.py` fails on a spawn anywhere
+  else. Git goes through `quickcode/gitcmd.py`, which also switches off the
+  repository's hooks, fsmonitor, textconv and filter drivers.
+- **Settings files** (`quickcode/kernel/settings_file.py`, `jsonfile.py`,
+  `textio.py`) — one BOM-aware reader for every settings/config JSON and
+  every hand-edited text file, and one writer; a project write goes through
+  `write_project_settings`, which keeps the project's trust.
 - **PTY** (`quickcode/pty/`) — `session.py` runs one `bash` command per
   pseudo-terminal on POSIX; on Windows `bash` uses plain pipes by default,
   because under a tty a command that reads stdin waits for nobody.
@@ -121,7 +136,7 @@ installer layout).
 - Tests: pytest, `asyncio_mode = auto`. Prefer exercising the real
   `PermissionEngine` and FastAPI `TestClient` over deep mocking — most of
   the existing suite does this and it catches wiring bugs a mock would
-  hide. Keep the suite fast (currently ~25 s for about a thousand tests on
+  hide. Keep the suite fast (currently ~2 min for about 2,650 tests on
   Linux).
 - No secrets in the session event log or diagnostics — API keys live in
   `secrets.py`-managed storage, never in a tool call's recorded arguments

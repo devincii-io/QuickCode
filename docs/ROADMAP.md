@@ -5,19 +5,26 @@ Status as of **2.7.0**. Checked items ship in 2.7.0; unchecked items do not.
 first built on the Textual TUI (0.1.0) and carried over when the web UI
 replaced it in 1.0.0.
 
-## In progress
+## Unreleased (after 2.7.0)
 
-Being built now; not in any release. Each is ticked here when it merges.
+Merged on `main`, not yet in a tagged release (CHANGELOG.md §Unreleased).
 
 - [x] Background bash jobs: `bash(run_in_background)` with `bash_output` and
       `bash_kill`, a per-conversation cap, bounded output and process-tree
-      cleanup on close (docs/TOOLS.md §bash).
+      cleanup on close, and a Jobs tab in the terminal drawer (docs/TOOLS.md §bash).
 - [x] User-configurable command hooks — PreToolUse, PostToolUse,
       UserPromptSubmit, Stop, SessionStart — on the `LoopHook` seam, trust-gated
-      for project hooks (docs/HOOKS.md).
+      for project hooks, with a Hooks page in Settings (docs/HOOKS.md).
 - [x] A native Anthropic provider with prompt caching: `provider: "anthropic"`,
       plain `httpx`, explicit system and conversation-tail cache breakpoints,
       cache reads and writes in the ledger (docs/ARCHITECTURE.md §Provider layer).
+- [x] Checkpoints and rewind for edits and writes (docs/CHECKPOINTS.md).
+- [x] A context guard: compaction between rounds of one long turn, and one
+      truncate-and-retry on a length refusal.
+- [x] "Why was I prompted?" from the real engine — the dialog, the Help sandbox
+      and `qc why` — and an "Always allow" that saves exactly what was approved.
+- [x] Notifications, a `Ctrl+K` command palette, and search across sessions.
+- [x] Headless `-p` builds the app's session: presets, plugins, MCP servers.
 
 ## M0 — Skeleton that talks
 
@@ -102,13 +109,18 @@ subagents rather than teammates.
 
 Not started. Roughly in order of value.
 
-1. A panel for background shell jobs: live output, exit state and a kill button (today
-   they show only as tool calls and a transcript note on exit).
-2. Teammate mode (M5), once task claiming is designed alongside the worktree isolation
+1. Teammate mode (M5), once task claiming is designed alongside the worktree isolation
    subagents already have.
+2. Conversation rewind: truncate the history to before a turn from the same dialog
+   that rewinds its files, and undo a rewind from the backups it keeps.
 3. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
-4. A `deny` rule on a bare tool name that withholds the tool from the request instead of
+4. Rule syntax: a `\*` escape so a glob command can be allowed exactly, quote-aware
+   subcommand splitting, and allow rules that tolerate harmless redirections (`2>&1`).
+5. MCP over Streamable HTTP, behind the same trust gate as stdio servers.
+6. Cost and token budgets per session, and model fallback chains.
+7. A `deny` rule on a bare tool name that withholds the tool from the request instead of
    refusing the call (docs/PERMISSIONS.md §Rules).
-5. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
+8. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
    (docs/PERMISSIONS.md §Plan mode).
-6. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).
+9. Windows Job Objects for process-tree kills, and a code-signed installer
+   (docs/COMPLIANCE.md §8).
