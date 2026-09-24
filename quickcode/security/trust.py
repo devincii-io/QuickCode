@@ -287,6 +287,10 @@ def config_hash(cwd: str | os.PathLike[str]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+class ConfigChanged(ValueError):
+    """The project's gated config is not the configuration the grant named."""
+
+
 @dataclass
 class TrustStatus:
     """What the frontend needs to render the trust prompt for one project."""
@@ -415,9 +419,19 @@ class TrustStore:
         )
 
     # ---- mutations ----
-    def grant(self, cwd: str | os.PathLike[str]) -> str:
-        """Trust this project for its current config. Returns the bound hash."""
+    def grant(self, cwd: str | os.PathLike[str], *, expected: str | None = None) -> str:
+        """Trust this project for its current config. Returns the bound hash.
+
+        ``expected`` is the hash the person reviewed; when the config no longer
+        hashes to it, nothing is recorded and ``ConfigChanged`` is raised, so an
+        edit that lands between reading the prompt and clicking it is not
+        approved unseen.
+        """
         h = config_hash(cwd)
+        if expected is not None and expected != h:
+            raise ConfigChanged(
+                "the project's configuration changed since it was reviewed; "
+                "review it again before trusting it")
         data = self._load()
         data.setdefault("version", STORE_VERSION)
         data["projects"][_norm(cwd)] = {

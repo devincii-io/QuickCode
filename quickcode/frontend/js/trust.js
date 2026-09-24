@@ -400,13 +400,22 @@ function card() {
     grant.textContent = "…";
     grant.disabled = true;
     try {
-      const next = await api.grantTrust();
+      const next = await api.grantTrust(current.status && current.status.hash);
       writeApproved(pid, next, specs);
       current = { ...current, status: next, granted: next.connected || [] };
       collapsed = false;
       render();
       refreshIfOpen();   // the tool list just changed underneath it
     } catch (err) {
+      if (err.message.startsWith("409")) {
+        // The files changed after this card was drawn: show what is there now
+        // rather than approving what was.
+        await checkTrust(pid);
+        const fresh = host && host.querySelector(".trust-err");
+        if (fresh) fail(fresh.parentElement, "The configuration changed while you " +
+          "were reading it. This is the current version — review it again.");
+        return;
+      }
       grant.disabled = false;
       disarm(grant, resting);
       fail(el_, `Could not record trust: ${err.message}`);

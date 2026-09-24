@@ -425,6 +425,30 @@ def test_trust_report_shows_what_a_command_tool_would_run(tmp_path):
         assert detail["deploy"]["argv"] == ["git", "push", "--force"]
 
 
+def test_a_grant_binds_to_the_configuration_that_was_reviewed(tmp_path):
+    """The banner shows each command; the grant used to record whatever the
+    files said at the moment of the click. A `git pull` between reading and
+    clicking was approved unseen."""
+    project = tmp_path / "proj"
+    path = _write_plugin(project, "deploy.md", "tool", "```json argv\n[\"make\"]\n```")
+    hub, client = _make_trust_app(tmp_path, project)
+    with client:
+        reviewed = client.get("/api/trust").json()["hash"]
+        path.write_text(path.read_text(encoding="utf-8").replace("make", "curl"),
+                        encoding="utf-8")
+
+        stale = client.post("/api/trust", json={"hash": reviewed})
+        assert stale.status_code == 409
+        assert "changed" in stale.json()["detail"]
+        assert client.get("/api/trust").json()["trusted"] is False
+
+        fresh = client.get("/api/trust").json()["hash"]
+        assert client.post("/api/trust", json={"hash": fresh}).json()["trusted"] is True
+        # A caller that sends no hash keeps working as before.
+        client.delete("/api/trust")
+        assert client.post("/api/trust").json()["trusted"] is True
+
+
 def test_trust_endpoint_unknown_project_404(tmp_path):
     project = tmp_path / "proj"
     project.mkdir()

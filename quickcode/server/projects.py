@@ -414,7 +414,7 @@ class ProjectHub:
         status = self._trust_store.status(manager.cwd)
         return {**status.to_json(), "running": list(manager.mcp_servers)}
 
-    async def grant_trust(self, pid: str) -> dict[str, Any]:
+    async def grant_trust(self, pid: str, *, expected: str | None = None) -> dict[str, Any]:
         """Record trust for an open project and connect its (now-permitted)
         project-scope MCP servers live, so the user need not reopen the project.
 
@@ -430,7 +430,7 @@ class ProjectHub:
         if manager is None:
             raise KeyError(pid)
         store = self._trust_store
-        store.grant(manager.cwd)
+        store.grant(manager.cwd, expected=expected)
 
         connected: list[str] = []
         # Only start servers not already tracked, so a repeat grant is a no-op.

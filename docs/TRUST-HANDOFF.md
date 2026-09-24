@@ -77,7 +77,8 @@ and `"stopped": [...]` — the project's MCP servers the revocation stopped.
    `.quickcode/settings.json` → `mcpServers`; consider showing the raw block so
    the user reviews the commands before trusting).
 
-3. **Trust action.** `POST .../trust`. On success, surface `connected` ("started
+3. **Trust action.** `POST .../trust` with `{"hash": <the hash the prompt showed>}`;
+   a `409` means the files changed after they were read — re-fetch and re-show. On success, surface `connected` ("started
    2 servers") and clear the banner. New conversations in the project pick up
    the tools immediately; a conversation already open keeps its toolset until
    restarted — tell the user that if a session is live.

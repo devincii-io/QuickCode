@@ -966,11 +966,20 @@ def create_app(
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
 
-    async def _grant_trust(pid: str) -> dict:
+    async def _grant_trust(pid: str, request: Request) -> dict:
+        from quickcode.security.trust import ConfigChanged
+
+        # The hash the prompt showed, when the caller sends it: the grant is
+        # then for that configuration or for nothing.
+        body = await _read_json(request)
+        expected = body.get("hash") if isinstance(body, dict) else None
         try:
-            return _with_tool_detail(pid, await hub.grant_trust(pid))
+            return _with_tool_detail(pid, await hub.grant_trust(
+                pid, expected=expected if isinstance(expected, str) else None))
         except KeyError as e:
             raise HTTPException(404, f"unknown project: {pid}") from e
+        except ConfigChanged as e:
+            raise HTTPException(409, str(e)) from e
 
     async def _revoke_trust(pid: str) -> dict:
         try:
@@ -983,8 +992,8 @@ def create_app(
         return _trust_status(hub.default_id)
 
     @app.post("/api/trust")
-    async def grant_trust() -> dict:
-        return await _grant_trust(hub.default_id)
+    async def grant_trust(request: Request) -> dict:
+        return await _grant_trust(hub.default_id, request)
 
     @app.delete("/api/trust")
     async def revoke_trust() -> dict:
@@ -995,8 +1004,8 @@ def create_app(
         return _trust_status(pid)
 
     @app.post("/api/projects/{pid}/trust")
-    async def project_grant_trust(pid: str) -> dict:
-        return await _grant_trust(pid)
+    async def project_grant_trust(pid: str, request: Request) -> dict:
+        return await _grant_trust(pid, request)
 
     @app.delete("/api/projects/{pid}/trust")
     async def project_revoke_trust(pid: str) -> dict:
