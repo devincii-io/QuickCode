@@ -8,6 +8,7 @@ each chunk into the ``AgentEvent`` union defined in ``quickcode.core.events``.
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +38,70 @@ _FINISH_REASON_MAP = {
     "tool_calls": "tool_calls",
     "length": "length",
 }
+
+
+class _ToolCalls:
+    """Tool-call deltas into whole calls, however the server numbers them.
+
+    OpenAI streams each call under a stable ``index`` and sends its ``id``
+    once. Compatible servers vary: some number every parallel call 0 and tell
+    them apart only by id, some send no index, some send no id. Keying on the
+    index alone concatenated two calls' arguments into one unparseable string,
+    and ``call_{index}`` for a missing id repeated in every round -- the same
+    id twice in one conversation, which the UI and the log key results by.
+    """
+
+    def __init__(self) -> None:
+        # [id, name, argument chunks] per call, in the order they began.
+        self._calls: list[tuple[str, list[str], list[str]]] = []
+        self._raw_ids: list[str | None] = []
+        self._by_index: dict[Any, int] = {}
+        self._by_raw_id: dict[str, int] = {}
+
+    def feed(
+        self, index: Any, raw_id: str | None, name: str | None, arguments: str | None
+    ) -> list[AgentEvent]:
+        raw_id = raw_id or None
+        pos: int | None = None
+        if index is not None:
+            pos = self._by_index.get(index)
+            if pos is not None and raw_id and self._raw_ids[pos] not in (None, raw_id):
+                pos = None  # a new id under a reused index is a new call
+        elif raw_id:
+            pos = self._by_raw_id.get(raw_id)
+        elif self._calls:
+            pos = len(self._calls) - 1
+
+        events: list[AgentEvent] = []
+        if pos is None:
+            call_id = raw_id if raw_id and raw_id not in self._by_raw_id else _fresh_call_id()
+            pos = len(self._calls)
+            self._calls.append((call_id, [name or ""], []))
+            self._raw_ids.append(raw_id)
+            if raw_id:
+                self._by_raw_id.setdefault(raw_id, pos)
+            if index is not None:
+                self._by_index[index] = pos
+            events.append(ToolCallStart(call_id, name or ""))
+        else:
+            if raw_id and self._raw_ids[pos] is None:
+                self._raw_ids[pos] = raw_id
+                self._by_raw_id.setdefault(raw_id, pos)
+            if name and not self._calls[pos][1][0]:
+                self._calls[pos][1][0] = name
+
+        if arguments:
+            call_id, _, args = self._calls[pos]
+            args.append(arguments)
+            events.append(ToolCallDelta(call_id, arguments))
+        return events
+
+    def ends(self) -> list[ToolCallEnd]:
+        return [ToolCallEnd(cid, name[0], "".join(args)) for cid, name, args in self._calls]
+
+
+def _fresh_call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:24]}"
 
 
 class OpenAICompatProvider:
@@ -184,12 +249,10 @@ class OpenAICompatProvider:
         if extra_body:
             kwargs["extra_body"] = extra_body
 
-        # index -> synthesized/assigned tool call id
-        tool_ids: dict[int, str] = {}
-        tool_names: dict[int, str] = {}
-        tool_args: dict[int, list[str]] = {}
+        calls = _ToolCalls()
         usage_event: Usage | None = None
         finish_reason = "stop"
+        stream = None
 
         try:
             stream = await self.client.chat.completions.create(**kwargs)
@@ -231,34 +294,18 @@ class OpenAICompatProvider:
                 if reasoning:
                     yield ReasoningDelta(reasoning)
 
-                delta_tool_calls = getattr(delta, "tool_calls", None)
-                if delta_tool_calls:
-                    for tc in delta_tool_calls:
-                        index = getattr(tc, "index", 0)
-                        func = getattr(tc, "function", None)
-                        name = getattr(func, "name", None) if func else None
-                        arguments = getattr(func, "arguments", None) if func else None
-                        raw_id = getattr(tc, "id", None)
+                for tc in getattr(delta, "tool_calls", None) or ():
+                    func = getattr(tc, "function", None)
+                    for ev in calls.feed(
+                        getattr(tc, "index", None),
+                        getattr(tc, "id", None),
+                        getattr(func, "name", None) if func else None,
+                        getattr(func, "arguments", None) if func else None,
+                    ):
+                        yield ev
 
-                        if index not in tool_ids:
-                            call_id = raw_id or f"call_{index}"
-                            tool_ids[index] = call_id
-                            tool_names[index] = name or ""
-                            tool_args[index] = []
-                            yield ToolCallStart(call_id, name or "")
-                        elif name and not tool_names.get(index):
-                            tool_names[index] = name
-
-                        if arguments:
-                            tool_args.setdefault(index, []).append(arguments)
-                            yield ToolCallDelta(tool_ids[index], arguments)
-
-            for index, call_id in tool_ids.items():
-                yield ToolCallEnd(
-                    call_id,
-                    tool_names.get(index, ""),
-                    "".join(tool_args.get(index, [])),
-                )
+            for ev in calls.ends():
+                yield ev
 
             if usage_event is not None:
                 yield usage_event
@@ -269,6 +316,17 @@ class OpenAICompatProvider:
             if usage_event is not None:
                 yield usage_event
             raise ProviderError(str(e)) from e
+        finally:
+            # A reader that stops early (an interrupt) leaves the response
+            # open until the generator is collected, and the server keeps
+            # generating -- and billing -- into it until then.
+            if stream is not None:
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    try:
+                        await close()
+                    except Exception:  # noqa: BLE001 - already on the way out
+                        pass
 
     # ------------------------------------------------------------------
     # Model listing
