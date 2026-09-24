@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -312,3 +314,26 @@ def test_a_subagent_under_conv_is_what_that_session_would_spawn(tmp_path):
 
     assert set(live["resolved"]["tools"]) - own == {"read", "grep"}
     assert live["frozen"] is False
+
+
+def test_importing_the_resolver_does_not_load_the_manifest():
+    """``quickcode.kernel`` imported ``bootstrap`` eagerly, so the resolver --
+    imported to open every session, app and ``-p`` -- also loaded every manifest
+    module and all of its prose, which only the Settings page reads.
+
+    A fresh interpreter: the suite's module table has long since loaded both.
+    """
+    code = (
+        "import sys, quickcode.kernel.resolve; "
+        "print(sorted(m for m in sys.modules "
+        "if m.startswith(('quickcode.kernel.manifest', 'quickcode.kernel.bootstrap'))))"
+    )
+    out = subprocess.run([sys.executable, "-c", code],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]"
+
+    # The package's own names still resolve, on first use.
+    code = "from quickcode.kernel import PluginSpec, build_registry; print(build_registry.__module__)"
+    out = subprocess.run([sys.executable, "-c", code],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "quickcode.kernel.bootstrap"
