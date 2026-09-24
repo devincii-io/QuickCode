@@ -1303,6 +1303,7 @@ class ConversationManager:
             limits=limits,
             bash_jobs=bash_jobs,
             hooks=hooks,
+            context_window=lambda m: getattr(self.model_info(m), "context_length", None),
         )
         if not resuming:
             # Held, not written: opening a project opens a conversation, so

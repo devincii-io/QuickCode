@@ -133,6 +133,10 @@ class SubagentDeps:
     # own tool calls (``hooks.child_hooks``); a guard that stopped at the
     # orchestrator would be one delegation away from not being a guard.
     hooks: list | None = None
+    # A model id's context window, when the catalog knows it. A child runs its
+    # own context guard (core/context_guard.py), and without a window that
+    # guard can only react to the provider's refusal instead of heading it off.
+    context_window: Callable[[str], int | None] | None = None
 
     def child(self, depth: int, permissions: PermissionEngine,
               *, self_id: str, tool_pool: list | None = None,
@@ -175,7 +179,16 @@ class SubagentDeps:
             limits=self.limits,
             bash_jobs=self.bash_jobs,
             hooks=self.hooks,
+            context_window=self.context_window,
         )
+
+    def window_for(self, model: str) -> int | None:
+        """The context window a child on ``model`` should guard, if known."""
+        if self.context_window is not None and (n := self.context_window(model)):
+            return n
+        if getattr(self.owner, "model", None) == model:
+            return getattr(self.owner, "context_length", None)
+        return None
 
     def owns(self, agent_id: str) -> bool:
         """Whether this level, or an agent it spawned, started ``agent_id``."""

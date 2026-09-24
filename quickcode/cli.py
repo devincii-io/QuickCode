@@ -297,16 +297,25 @@ async def _warm_context_length(agent: AgentInstance) -> None:
     put a network round trip in front of every ``-p`` invocation. So it is
     fetched alongside the turn, and a failure leaves things exactly as they
     were: no meter, no compaction.
+
+    The subagents it spawns run a context guard of their own, on models of
+    their own, so they are handed the same catalog's windows.
     """
     if agent.context_length is not None or not agent.limits.compaction_enabled:
         return
     try:
-        for info in await agent.provider.list_models():
-            if info.id == agent.model:
-                agent.context_length = info.context_length
-                return
+        catalog = await agent.provider.list_models()
     except Exception:
         return
+    windows = {m.id: m.context_length for m in catalog if m.context_length}
+    # Still None unless the context guard learned the window from a refusal
+    # while this was in flight -- the provider's own word beats the catalog's.
+    if agent.context_length is None:
+        agent.context_length = windows.get(agent.model)
+    ctx = getattr(agent, "ctx", None)
+    deps = ctx.extra.get("subagent") if ctx is not None else None
+    if deps is not None and deps.context_window is None:
+        deps.context_window = windows.get
 
 
 async def _run_headless(

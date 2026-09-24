@@ -515,3 +515,69 @@ async def test_a_headless_turn_is_compacted_mid_turn_and_not_again_after_it(tmp_
     assert [m.content for m in store.load_messages()] == [
         m.content for m in agent.history.messages
     ]
+
+
+async def test_a_subagent_runs_the_guard_on_the_window_of_its_own_model(tmp_path):
+    from quickcode.config import Environment, Profile
+    from quickcode.subagents.runner import SubagentDeps, spawn_subagent
+
+    big = _big_file(tmp_path)
+    provider = FakeProvider([
+        [ToolCallEnd("c1", "read", json.dumps({"file_path": str(big)})),
+         Usage(input_tokens=1_500, output_tokens=20), TurnDone("tool_calls")],
+        [TextDelta("SUMMARY of the read"), Usage(input_tokens=9_000, output_tokens=30),
+         TurnDone("stop")],
+        [TextDelta("the report"), Usage(input_tokens=3_000, output_tokens=10), TurnDone("stop")],
+    ])
+    asked: list[str] = []
+
+    def window(model: str) -> int:
+        asked.append(model)
+        return 12_000
+
+    deps = SubagentDeps(
+        provider=provider, profile=Profile(), env=Environment.detect(tmp_path),
+        mode_getter=lambda: Mode.ask, cwd=tmp_path, context_window=window,
+    )
+
+    agent_id, report, _status = await spawn_subagent(deps, agent_type="explore", prompt="read it")
+
+    child = deps.roster[agent_id]
+    assert asked == [child.model] and child.context_length == 12_000
+    assert "the report" in report
+    assert child.history.messages[0].content.startswith("<compaction-summary>")
+    assert sum(1 for r in provider.requests if _is_summary(r)) == 1
+
+
+async def test_a_headless_run_hands_its_catalog_windows_to_the_subagents_it_spawns(tmp_path):
+    from quickcode import cli
+    from quickcode.config import Environment, Profile
+    from quickcode.subagents.runner import SubagentDeps
+
+    deps = SubagentDeps(
+        provider=FakeProvider([]), profile=Profile(), env=Environment.detect(tmp_path),
+        mode_getter=lambda: Mode.ask, cwd=tmp_path,
+    )
+    agent = _agent(tmp_path, FakeProvider([]), window=None)
+    agent.ctx.extra["subagent"] = deps
+
+    await cli._warm_context_length(agent)
+
+    assert agent.context_length == 100_000
+    assert deps.window_for("test/model") == 100_000
+    assert deps.window_for("unknown/model") is None
+
+
+def test_a_child_on_the_spawners_model_inherits_its_window(tmp_path):
+    from quickcode.config import Environment, Profile
+    from quickcode.subagents.runner import SubagentDeps
+
+    owner = _agent(tmp_path, Scripted([]), window=64_000)
+    deps = SubagentDeps(
+        provider=owner.provider, profile=Profile(), env=Environment.detect(tmp_path),
+        mode_getter=lambda: Mode.ask, cwd=tmp_path, owner=owner,
+    )
+    assert deps.window_for("test/model") == 64_000
+    assert deps.window_for("another/model") is None
+    deps.context_window = {"another/model": 32_000}.get
+    assert deps.window_for("another/model") == 32_000
