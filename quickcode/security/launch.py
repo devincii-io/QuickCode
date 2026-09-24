@@ -8,7 +8,8 @@ code: authored command tools and MCP servers.
 started by name. ``shutil.which`` knows ``PATHEXT`` but searches the current
 directory first -- the directory a cloned repository is opened from -- so it
 would trade "does not start" for "starts the repository's ``npx.cmd``". This
-walks ``PATH`` and ``PATHEXT`` itself and nothing else.
+is ``subproc.find_program``, the lookup every spawn uses, with the ``PATHEXT``
+batch extensions allowed.
 
 **Batch targets.** A ``.cmd``/``.bat`` file runs under ``cmd.exe``, which
 re-parses the command line ``subprocess`` built for the C runtime's rules. An
@@ -21,9 +22,9 @@ characters is refused rather than escaped.
 from __future__ import annotations
 
 import os
-from pathlib import PurePath
+from collections.abc import Mapping
 
-from quickcode.subproc import IS_WINDOWS
+from quickcode import subproc
 
 _BATCH_SUFFIXES = (".bat", ".cmd")
 
@@ -33,38 +34,28 @@ _BATCH_SUFFIXES = (".bat", ".cmd")
 # out: they only matter inside a block, and "file (1).txt" is common.
 _CMD_SPECIAL = frozenset('"%!^&|<>\r\n\x00')
 
-_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-
 
 def resolve_program(
     name: str,
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
-    windows: bool = IS_WINDOWS,
+    cwd: str | os.PathLike[str] | None = None,
+    windows: bool | None = None,
     pathext: str | None = None,
-    pathsep: str = os.pathsep,
+    pathsep: str | None = None,
 ) -> str:
     """The file ``name`` means, on Windows; ``name`` unchanged otherwise.
 
     Only bare names are resolved -- a path is already what its author meant --
     and a name that resolves to nothing is returned as written, so the spawn
-    fails with the usual "not found" rather than a message invented here.
+    fails with ``subproc``'s own "not found".
     """
-    if not windows or not name or "/" in name or "\\" in name:
+    windows = subproc.IS_WINDOWS if windows is None else windows
+    if not windows:
         return name
-    exts = [e for e in (pathext or env.get("PATHEXT") or _DEFAULT_PATHEXT).split(";") if e]
-    suffix = PurePath(name).suffix.lower()
-    candidates = [name] if suffix and suffix in {e.lower() for e in exts} else []
-    candidates += [name + ext.lower() for ext in exts]
-    for directory in (env.get("PATH") or "").split(pathsep):
-        directory = directory.strip().strip('"')
-        if not directory:
-            continue
-        for candidate in candidates:
-            full = os.path.join(directory, candidate)
-            if os.path.isfile(full):
-                return full
-    return name
+    found = subproc.find_program(name, env=env, cwd=cwd, windows=True, pathext=pathext,
+                                 pathsep=pathsep, batch=True)
+    return found or name
 
 
 def is_batch(program: str) -> bool:

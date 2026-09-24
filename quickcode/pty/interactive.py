@@ -138,8 +138,10 @@ class InteractivePty:
         except Exception as exc:  # noqa: BLE001 - any import failure -> caller falls back
             raise PtyError(f"pywinpty unavailable: {exc}") from exc
         try:
+            # Resolved here: pywinpty looks a bare name up with shutil.which,
+            # which searches the current directory first on Windows.
             proc = winpty.PtyProcess.spawn(
-                self.argv,
+                subproc.resolve_argv(self.argv, env=self.env, cwd=self.cwd),
                 cwd=self.cwd,
                 env=self.env,
                 dimensions=(self.rows, self.cols),

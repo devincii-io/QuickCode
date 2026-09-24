@@ -25,9 +25,16 @@ site having to remember:
   as the leader of a process group of its own (POSIX), which is what lets
   ``kill_tree`` reach what it started; on Windows ``taskkill /T`` walks the
   tree instead.
+* **A program from ``PATH``, never from the current directory.** Handed a bare
+  name, ``CreateProcess`` -- and ``shutil.which`` -- look in the current
+  directory first on Windows, and QuickCode's is wherever it was started: the
+  repository, for ``qc`` run in one. A program committed there would run in
+  place of the real one before the project was trusted. So every spawn here
+  resolves a bare name to an absolute path first (``resolve_program``).
 
-``tests/test_no_console_window.py`` fails on a spawn anywhere else. The one
-exception is a program the user is meant to see: the installer has its own
+``tests/test_no_console_window.py`` fails on a spawn anywhere else, and
+``tests/test_program_lookup.py`` on a lookup that goes around the resolver. The
+one exception is a program the user is meant to see: the installer has its own
 window and wants one (see ``update.py``).
 """
 
@@ -57,6 +64,134 @@ DEVNULL = subprocess.DEVNULL
 # rather than a wait for EOF.
 DRAIN_S = 5.0
 _READ_SIZE = 65536
+
+# What CreateProcess itself can start. A .bat or .cmd is handed to cmd.exe,
+# which re-parses the arguments (see security/launch.py), so the programs
+# QuickCode names itself never resolve to one.
+_EXECUTABLE_EXTS = (".com", ".exe")
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+class ProgramNotFound(FileNotFoundError):
+    """A program named without a path that no trusted ``PATH`` directory holds."""
+
+
+def find_program(
+    name: str, *, env: Mapping[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None, windows: bool | None = None,
+    pathext: str | None = None, pathsep: str | None = None, batch: bool = False,
+) -> str | None:
+    """Where the bare program ``name`` is, from ``PATH`` alone; None if nowhere.
+
+    Unlike ``shutil.which`` and ``CreateProcess`` on Windows, never the current
+    directory: a relative ``PATH`` entry is skipped everywhere (``.``, or the
+    empty one a POSIX shell reads as ``.``), and on Windows so is an entry that
+    *is* the current directory or ``cwd``. On Windows only a ``.exe`` or
+    ``.com`` is accepted unless ``batch``. A name with a path in it is not
+    looked up at all (None).
+
+    ``env`` is the environment the child will get, for its ``PATH`` and
+    ``PATHEXT``. ``windows``, ``pathext`` and ``pathsep`` default to this
+    machine's; tests pass Windows' to exercise its rules anywhere.
+    """
+    windows = IS_WINDOWS if windows is None else windows
+    if not _is_bare(name, windows):
+        return None
+    env = os.environ if env is None else env
+    search = _env_value(env, "PATH", windows)
+    if search is None:
+        search = "" if windows else os.defpath
+    if windows:
+        candidates = _windows_candidates(
+            name, _env_value(env, "PATHEXT", True) if pathext is None else pathext, batch)
+        untrusted = _untrusted_dirs(cwd)
+    else:
+        candidates, untrusted = [name], set()
+    for entry in search.split(pathsep or (";" if windows else ":")):
+        directory = entry.strip().strip('"') if windows else entry
+        if not directory or not os.path.isabs(directory):
+            continue
+        for candidate in candidates:
+            full = os.path.join(directory, candidate)
+            if os.path.isfile(full) and (windows or os.access(full, os.X_OK)):
+                if untrusted and _canonical(directory) in untrusted:
+                    break  # the rest of this directory is no more trusted
+                return full
+    return None
+
+
+def resolve_program(
+    name: str, *, env: Mapping[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None, windows: bool | None = None,
+    pathext: str | None = None, pathsep: str | None = None, batch: bool = False,
+) -> str:
+    """``name`` as the absolute path that will run; a path is returned as written.
+
+    Raises :class:`ProgramNotFound` -- an ``OSError``, as a failed spawn is --
+    when ``find_program`` cannot place a bare name.
+    """
+    windows = IS_WINDOWS if windows is None else windows
+    if not _is_bare(name, windows):
+        return name
+    found = find_program(name, env=env, cwd=cwd, windows=windows, pathext=pathext,
+                         pathsep=pathsep, batch=batch)
+    if found is None:
+        kind = " as a .exe or .com" if windows and not batch else ""
+        raise ProgramNotFound(
+            f"{name!r} was not found on PATH{kind} (the current directory and "
+            "relative PATH entries are never searched)")
+    return found
+
+
+def resolve_argv(
+    argv: Sequence[Any], *, env: Mapping[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+) -> list[Any]:
+    """``argv`` with a bare program name replaced by ``resolve_program``'s path."""
+    argv = list(argv)
+    if argv:
+        program = os.fspath(argv[0]) if isinstance(argv[0], os.PathLike) else argv[0]
+        if isinstance(program, str):
+            argv[0] = resolve_program(program, env=env, cwd=cwd)
+    return argv
+
+
+def _is_bare(name: str, windows: bool) -> bool:
+    if not name:
+        return False
+    return not any(ch in name for ch in "/\\:") if windows else "/" not in name
+
+
+def _env_value(env: Mapping[str, str], key: str, windows: bool) -> str | None:
+    if not windows:
+        return env.get(key)
+    # Windows names are case-insensitive, and a hand-built env may say "Path".
+    return next((value for name, value in env.items() if name.upper() == key), None)
+
+
+def _windows_candidates(name: str, pathext: str | None, batch: bool) -> list[str]:
+    exts = [e.strip().lower() for e in (pathext or _DEFAULT_PATHEXT).split(";") if e.strip()]
+    allowed = exts if batch else [e for e in exts if e in _EXECUTABLE_EXTS] or [".exe"]
+    suffix = os.path.splitext(name)[1].lower()
+    if suffix in allowed:
+        return [name]
+    if suffix in exts or suffix in (".bat", ".cmd"):
+        return []  # named as a kind of file this lookup does not start
+    return [name + ext for ext in allowed]
+
+
+def _untrusted_dirs(cwd: str | os.PathLike[str] | None) -> set[str]:
+    dirs: list[str | os.PathLike[str]] = [cwd] if cwd else []
+    with contextlib.suppress(OSError):  # the working directory was deleted
+        dirs.append(os.getcwd())
+    return {_canonical(d) for d in dirs}
+
+
+def _canonical(directory: str | os.PathLike[str]) -> str:
+    # Real paths, so a junction, a symlink or an 8.3 short name for the
+    # directory is still recognised as the directory.
+    return os.path.normcase(os.path.realpath(directory))
+
 
 def child_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """QuickCode's environment as a child may see it, with ``extra`` on top.
@@ -115,9 +250,14 @@ def _managed(kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _resolved(argv: Sequence[Any], kwargs: dict[str, Any]) -> list[Any]:
+    return resolve_argv(argv, env=kwargs.get("env"), cwd=kwargs.get("cwd"))
+
+
 def run(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
     """``subprocess.run`` for a one-shot program: git, ripgrep, taskkill."""
-    return subprocess.run(list(argv), **_no_window(kwargs))  # noqa: S603 - argv is caller-controlled
+    kwargs = _no_window(kwargs)
+    return subprocess.run(_resolved(argv, kwargs), **kwargs)  # noqa: S603 - argv is caller-controlled
 
 
 def spawn(
@@ -125,11 +265,9 @@ def spawn(
     stdin: Any = DEVNULL, stdout: Any = PIPE, stderr: Any = PIPE, **kwargs: Any,
 ) -> subprocess.Popen:
     """Start a child QuickCode manages: it reads the output and may kill the tree."""
-    return subprocess.Popen(  # noqa: S603 - argv is caller-controlled
-        list(argv),
-        **_managed({"cwd": cwd, "env": env, "stdin": stdin, "stdout": stdout,
-                    "stderr": stderr, **kwargs}),
-    )
+    kwargs = _managed({"cwd": cwd, "env": env, "stdin": stdin, "stdout": stdout,
+                       "stderr": stderr, **kwargs})
+    return subprocess.Popen(_resolved(argv, kwargs), **kwargs)  # noqa: S603 - argv is caller-controlled
 
 
 async def spawn_async(
@@ -137,12 +275,9 @@ async def spawn_async(
     stdin: Any = DEVNULL, stdout: Any = PIPE, stderr: Any = PIPE, **kwargs: Any,
 ) -> asyncio.subprocess.Process:
     """``spawn`` for a caller on the event loop."""
-    program, *args = argv
-    return await asyncio.create_subprocess_exec(
-        program, *args,
-        **_managed({"cwd": cwd, "env": env, "stdin": stdin, "stdout": stdout,
-                    "stderr": stderr, **kwargs}),
-    )
+    kwargs = _managed({"cwd": cwd, "env": env, "stdin": stdin, "stdout": stdout,
+                       "stderr": stderr, **kwargs})
+    return await asyncio.create_subprocess_exec(*_resolved(argv, kwargs), **kwargs)
 
 
 async def communicate(

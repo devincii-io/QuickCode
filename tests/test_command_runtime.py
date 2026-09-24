@@ -84,7 +84,7 @@ async def test_a_command_tool_asks_for_no_console_window(project, monkeypatch):
 
     monkeypatch.setattr(command_module.subproc, "NO_WINDOW", 0x0800_0000)
     monkeypatch.setattr(command_module.subproc.asyncio, "create_subprocess_exec", fake_exec)
-    tool = tool_for(project, ["python", "-c", "pass"])
+    tool = tool_for(project, [sys.executable, "-c", "pass"])
 
     await run(tool, project)
 
@@ -104,7 +104,8 @@ async def test_a_batch_file_is_refused_on_windows(project, monkeypatch, resolved
         return _FakeProc()
 
     monkeypatch.setattr(command_module.subproc, "IS_WINDOWS", True)
-    monkeypatch.setattr(command_module.shutil, "which", lambda name, path=None: resolved)
+    monkeypatch.setattr(command_module.launch, "resolve_program",
+                        lambda name, env, **_kw: resolved)
     monkeypatch.setattr(command_module.subproc.asyncio, "create_subprocess_exec", fake_exec)
     tool = tool_for(project, ["npm", "run", "{script}"],
                     [{"name": "script", "type": "string", "required": True}])
@@ -121,7 +122,8 @@ async def test_the_same_program_on_posix_is_not_second_guessed(project, monkeypa
         return _FakeProc()
 
     monkeypatch.setattr(command_module.subproc, "IS_WINDOWS", False)
-    monkeypatch.setattr(command_module.shutil, "which", lambda name, path=None: "/x/npm.cmd")
+    monkeypatch.setattr(command_module.launch, "resolve_program",
+                        lambda name, env, **_kw: "/x/npm.cmd")
     monkeypatch.setattr(command_module.subproc.asyncio, "create_subprocess_exec", fake_exec)
     tool = tool_for(project, ["npm", "test"])
 

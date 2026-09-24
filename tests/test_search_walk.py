@@ -50,7 +50,7 @@ def rels(root: Path, lines: list[str]) -> list[str]:
 @pytest.fixture
 def backend(request, monkeypatch):
     if request.param == "fallback":
-        monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(grep_module.subproc, "find_program", lambda _name, **_kw: None)
     return request.param
 
 

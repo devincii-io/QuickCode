@@ -164,9 +164,9 @@ def _repository_filter_names(cwd: Path, env: dict[str, str]) -> set[str]:
 def _config_listing(cwd: Path, env: dict[str, str], *options: str) -> list[str] | None:
     """The fields of ``git config -z --get-regexp ^filter\\.``; None when this
     git does not know one of ``options``. Raises :class:`FilterRefused`."""
-    argv = ["git", "-C", str(cwd), "config", "-z", *options, "--name-only",
-            "--get-regexp", r"^filter\."]
     try:
+        argv = [_git(cwd, env), "-C", str(cwd), "config", "-z", *options, "--name-only",
+                "--get-regexp", r"^filter\."]
         proc = subproc.run(argv, capture_output=True, timeout=10, env=env,
                            stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -184,6 +184,16 @@ def _config_listing(cwd: Path, env: dict[str, str], *options: str) -> list[str] 
         return [f for f in proc.stdout.decode("utf-8").split("\0") if f]
     except UnicodeDecodeError as exc:
         raise FilterRefused("the repository names a content filter that is not UTF-8") from exc
+
+
+def _git(cwd: Path, env: dict[str, str]) -> str:
+    """The git on ``PATH`` -- never a ``git.exe`` in the repository it will read.
+
+    ``subproc.run`` already keeps a bare name out of QuickCode's own working
+    directory; naming ``cwd`` keeps it out of this repository's too, which
+    need not be where QuickCode was started. Raises ``ProgramNotFound``.
+    """
+    return subproc.resolve_program("git", env=env, cwd=cwd)
 
 
 def _command(args: Sequence[str]) -> str:
@@ -220,8 +230,9 @@ def run(
             filters = filter_overrides(cwd, child_env)
         except FilterRefused as exc:
             return GitResult(-1, "", f"git was not run: {exc}")
-    argv = ["git", "-C", str(cwd), *BASE, *(WRITE_SAFE if write else ()), *filters, *args]
     try:
+        argv = [_git(cwd, child_env), "-C", str(cwd), *BASE, *(WRITE_SAFE if write else ()),
+                *filters, *args]
         proc = subproc.run(
             argv,
             input=stdin,
