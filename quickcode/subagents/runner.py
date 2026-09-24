@@ -32,6 +32,7 @@ from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import (
     MODE_PRIVILEGE,
+    ORCHESTRATOR_ID,
     Resolved,
     RuntimeLimits,
     cap_mode,
@@ -322,6 +323,17 @@ def _prepare_child(
             name: d for name, d in defs.items()
             if any(fnmatchcase(name, p) for p in deps.allowed_agents)
         }
+    # The resolver resolves the id as the orchestrator, which no spawn is.
+    if agent_type == ORCHESTRATOR_ID:
+        raise ValueError(f"'{ORCHESTRATOR_ID}' is the session's own agent, not a subagent type")
+    # What the spawner may start is part of its composition. The ``agent`` tool
+    # is present whenever that list is non-empty, and the model can name any
+    # definition in it -- so the list has to hold here, not only in the prose.
+    if deps.parent is not None and agent_type not in deps.parent.spawns:
+        allowed = ", ".join(deps.parent.spawns) or "none"
+        raise ValueError(
+            f"'{deps.parent.id}' may not spawn '{agent_type}'. It may spawn: {allowed}"
+        )
 
     # Resolution is total, so this cannot fail; the refusal comes next, and it
     # comes before the id is minted -- a refused composition should not burn an

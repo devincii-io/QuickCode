@@ -224,3 +224,54 @@ async def test_a_spawn_refused_before_it_starts_opens_no_row_to_close():
     with pytest.raises(ValueError):
         await spawn_subagent(deps, agent_type="no-such-agent", prompt="p")
     assert started == [] and ended == []
+
+
+# --------------------------------------------------------------------------
+# which agents a spawner may start
+# --------------------------------------------------------------------------
+
+
+def _deps_under(spawns: tuple[str, ...], provider):
+    """Deps for an orchestrator whose preset lets it spawn only ``spawns``."""
+    import dataclasses
+
+    from quickcode.kernel import preset as preset_module
+    from quickcode.kernel.composition import ORCHESTRATOR_ID
+    from quickcode.kernel.resolve import resolve_composition
+    from quickcode.tools.registry import default_registry
+
+    pool = list(default_registry().tools.values())
+    defs = builtin_defs()
+    base = preset_module.builtin_presets()["standard"]
+    preset = dataclasses.replace(
+        base, orchestrator=base.orchestrator.with_fields(spawns=spawns)
+    )
+    orch = resolve_composition(ORCHESTRATOR_ID, pool=pool, preset=preset,
+                               defs=defs, cwd=None)
+    assert orch.spawns == spawns
+    deps = _deps(provider, mode=Mode.auto_edit)
+    deps.pool, deps.parent, deps.defs, deps.preset = pool, orch, defs, preset
+    return deps
+
+
+async def test_a_spawner_cannot_start_an_agent_its_composition_does_not_list():
+    """The built-in "explore" preset lets the orchestrator spawn ``explore``
+    and nothing else. The ``agent`` tool is present either way, and the model
+    can name any definition -- ``general`` inherits write, edit and bash from
+    the session pool at depth 0. The list has to be enforced where the spawn
+    happens, not only in the tool's description."""
+    deps = _deps_under(("explore",), ScriptedProvider("x"))
+
+    with pytest.raises(ValueError, match="may not spawn 'general'.*explore"):
+        await spawn_subagent(deps, agent_type="general", prompt="p")
+    assert deps.spawned == []
+
+    agent_id, _report, _status = await spawn_subagent(deps, agent_type="explore", prompt="p")
+    assert agent_id == "explore-1"
+
+
+async def test_the_orchestrator_id_is_never_a_spawnable_agent_type():
+    # Refused as a spawn, not surfaced as a KeyError from the tool.
+    with pytest.raises(ValueError, match="@orchestrator"):
+        await spawn_subagent(_deps(ScriptedProvider("x")), agent_type="@orchestrator",
+                             prompt="p")
