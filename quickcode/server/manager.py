@@ -443,13 +443,19 @@ class Conversation:
             if not self._prompt_shown:
                 self.emit_system_prompt()
             self.emit({"type": "user_message", "text": text})
-            self._emit_state()
             failed: Exception | None = None
             try:
+                # Busy from here, not from inside ``run_turn``: this state
+                # event is what shows the Stop button, and the next one may be
+                # a whole round away.
+                self.agent.busy = True
+                self._emit_state()
                 await self.agent.run_turn(text)
             except Exception as e:  # never kill the worker
                 log.exception("turn failed")
                 failed = e
+            finally:
+                self.agent.busy = False
             # Everything after the turn is bookkeeping, and none of it is
             # allowed to be the reason a client never hears that the turn
             # ended: ``busy`` is cleared by a state event, so the state event

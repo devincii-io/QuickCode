@@ -132,6 +132,36 @@ async def test_closing_a_conversation_stops_a_compaction_still_in_flight(tmp_pat
     assert "compaction" not in kinds
 
 
+# ---- what a client is told while a turn runs ----
+
+
+async def test_the_state_that_follows_a_message_says_the_turn_is_running(tmp_path):
+    """The Stop button is drawn from ``state.busy``. The worker announced the
+    message with a state event before the agent had marked itself busy, so
+    for the whole first round -- all of a one-round answer -- the last word a
+    client had was ``busy: false`` and there was no way to stop it."""
+    import json
+
+    from tests.test_terminal_events import StallingProvider
+
+    provider = StallingProvider()
+    manager = make_manager(tmp_path, provider)
+    conv = manager.open()
+    client = manager_module.Client()
+    conv.clients.add(client)
+    try:
+        conv.submit("think out loud")
+        await asyncio.wait_for(provider.talking.wait(), 5)
+        wire = [json.loads(t) for t in _drain(client) if t is not None]
+        after = wire[next(i for i, e in enumerate(wire) if e["type"] == "user_message"):]
+        states = [e["busy"] for e in after if e["type"] == "state"]
+        assert states and all(states), f"a state during the turn said idle: {states}"
+        conv.interrupt()
+        await _settle(conv)
+    finally:
+        await manager.close()
+
+
 # ---- frames the protocol does not use ----
 
 
