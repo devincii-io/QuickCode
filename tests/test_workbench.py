@@ -196,6 +196,23 @@ def test_the_footer_counts_what_a_person_actually_asks(tmp_path):
     assert payload["footer"].startswith("7 tools · 7 read-only")
 
 
+def test_the_picker_files_tools_under_the_same_groups_as_the_plugin_cards(tmp_path):
+    """The picker kept a grouping table of its own, and the two drifted: the
+    shell-job tools and the web tools were "Other" there and "Shell"/"Web" on
+    the cards, and ``plan`` was "Planning" there and "Tools" on the cards."""
+    from quickcode.kernel.manifest import tool_group
+
+    with make_client(make_manager(tmp_path)) as client:
+        payload = client.get("/api/kernel/agents/%40orchestrator/resolved").json()
+    groups = {row["name"]: row["group"] for row in payload["pool"]}
+    assert groups["plan"] == "Planning"
+    assert groups["bash_output"] == groups["bash_kill"] == groups["bash"] == "Shell"
+    assert groups["web_fetch"] == groups["web_search"] == "Web"
+    assert "Other" not in groups.values()
+    for name, group in groups.items():
+        assert group == tool_group(name, by_server=True), name
+
+
 # --------------------------------------------------------------------------
 # /preview
 # --------------------------------------------------------------------------

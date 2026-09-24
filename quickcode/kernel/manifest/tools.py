@@ -16,14 +16,17 @@ from quickcode.kernel.manifest._text import (
 from quickcode.kernel.spec import Effect, PluginSpec, Recourse, SettingSpec
 
 _FILE_TOOLS = ("read", "write", "edit", "glob", "grep")
+_WEB_TOOLS = ("web_fetch", "web_search")
 
 
 def tool_group(name: str, *, by_server: bool = False) -> str:
     """The group a tool is filed under, decided by its name alone.
 
-    ``by_server`` files an MCP tool under its server (``MCP · docs``), for a
-    list that puts several servers' tools side by side; the plugin cards keep
-    every MCP tool in one ``MCP`` group.
+    The one table: the plugin cards and the workbench's tool picker both file
+    by it. ``by_server`` files an MCP tool under its server (``MCP · docs``),
+    for the picker, which puts several servers' tools side by side; the plugin
+    cards keep every MCP tool in one ``MCP`` group. A name no family claims --
+    an entry-point or authored tool -- is ``Other``.
     """
     if name.startswith("mcp__"):
         parts = name.split("__")
@@ -32,13 +35,15 @@ def tool_group(name: str, *, by_server: bool = False) -> str:
         return "Shell"
     if name in _FILE_TOOLS:
         return "Files"
-    if name in ("web_fetch", "web_search"):
+    if name in _WEB_TOOLS:
         return "Web"
-    if name.startswith("task"):
+    if name.startswith("task_"):
         return "Tasks"
     if name in DELEGATION_TOOLS:
         return "Subagents"
-    return "Tools"
+    if name == "plan":
+        return "Planning"
+    return "Other"
 
 
 # -- tool prose, derived from the tool's own declarations --------------------

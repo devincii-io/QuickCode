@@ -12,6 +12,7 @@ from typing import Any
 
 from quickcode.core.permissions import DEFAULT_SPEC
 from quickcode.kernel.composition import DELEGATION_TOOLS, Composition, Resolved
+from quickcode.kernel.manifest.tools import tool_group
 from quickcode.kernel.patterns import is_glob
 from quickcode.kernel.resolve import expand_tool_pattern
 from quickcode.server.workbench.provenance import last_prov, prov_json
@@ -65,23 +66,6 @@ def _family(name: str) -> str:
     return ""
 
 
-def _group(name: str) -> str:
-    if name.startswith("mcp__"):
-        parts = name.split("__")
-        return f"MCP · {parts[1]}" if len(parts) >= 3 else "MCP"
-    if name.startswith("task_"):
-        return "Tasks"
-    if name in DELEGATION_TOOLS:
-        return "Subagents"
-    if name in ("read", "write", "edit", "glob", "grep"):
-        return "Files"
-    if name == "bash":
-        return "Shell"
-    if name == "plan":
-        return "Planning"
-    return "Other"
-
-
 def stated_patterns(
     preset: Any, defn: AgentDef | None, agent_id: str, is_orchestrator: bool,
 ) -> tuple[list[str], bool, str]:
@@ -117,7 +101,7 @@ def _tool_row(tool: Any, *, state: str, pattern: str, provenance: dict[str, Any]
         "read_only": bool(tool.is_read_only),
         "shell": _shell(tool),
         "mutates": _mutates(tool),
-        "group": _group(tool.name),
+        "group": tool_group(tool.name, by_server=True),
         "family": _family(tool.name),
         "state": state,
         "pattern": pattern,
