@@ -9,12 +9,12 @@ import and one call.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from starlette.routing import Mount
 
+from quickcode.server import http
 from quickcode.server.manager import ConversationManager
 from quickcode.server.workbench.compositions import (
     derive_composition,
@@ -24,35 +24,6 @@ from quickcode.server.workbench.compositions import (
 from quickcode.server.workbench.drafts import preview_payload
 from quickcode.server.workbench.inventory import agents_payload
 from quickcode.server.workbench.view import resolved_payload
-
-JSON_BODY_CAP = 1024 * 1024
-
-
-async def _read_json(request: Request, maximum: int = JSON_BODY_CAP) -> Any:
-    """A JSON body, refused once it passes ``maximum`` bytes rather than after
-    the whole request has been buffered.
-
-    Local until ``server/http.py``'s shared reader is in this tree; the two
-    differ only in the wording of their 413 and 400 details.
-    """
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > maximum:
-        raise HTTPException(413, "request body too large")
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > maximum:
-            raise HTTPException(413, "request body too large")
-        chunks.append(chunk)
-    raw = b"".join(chunks)
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except ValueError as exc:
-        raise HTTPException(400, f"malformed JSON: {exc}") from exc
-
 
 # --------------------------------------------------------------------------
 # registration
@@ -67,10 +38,7 @@ def register_agent_routes(app: FastAPI, hub: Any) -> None:
     """
 
     def _project(pid: str) -> ConversationManager:
-        manager = hub.get(pid)
-        if manager is None:
-            raise HTTPException(404, f"unknown project: {pid}")
-        return manager
+        return http.project(hub, pid)
 
     # ---- inventory ----
 
@@ -100,42 +68,42 @@ def register_agent_routes(app: FastAPI, hub: Any) -> None:
 
     @app.post("/api/kernel/agents/{agent_id}/preview")
     async def preview(agent_id: str, request: Request) -> dict:
-        return preview_payload(hub.default, agent_id, await _read_json(request))
+        return preview_payload(hub.default, agent_id, await http.read_json(request))
 
     @app.post("/api/projects/{pid}/kernel/agents/{agent_id}/preview")
     async def project_preview(pid: str, agent_id: str, request: Request) -> dict:
-        return preview_payload(_project(pid), agent_id, await _read_json(request))
+        return preview_payload(_project(pid), agent_id, await http.read_json(request))
 
     # ---- saving a composition edit ----
 
     @app.put("/api/kernel/agents/{agent_id}/composition")
     async def write_composition(agent_id: str, request: Request) -> dict:
-        return save_composition(hub.default, agent_id, await _read_json(request))
+        return save_composition(hub.default, agent_id, await http.read_json(request))
 
     @app.put("/api/projects/{pid}/kernel/agents/{agent_id}/composition")
     async def project_write_composition(pid: str, agent_id: str,
                                         request: Request) -> dict:
-        return save_composition(_project(pid), agent_id, await _read_json(request))
+        return save_composition(_project(pid), agent_id, await http.read_json(request))
 
     # ---- duplicate-to-customise ----
 
     @app.post("/api/kernel/compositions/{preset_id}/derive")
     async def derive(preset_id: str, request: Request) -> dict:
-        return derive_composition(hub.default, preset_id, await _read_json(request))
+        return derive_composition(hub.default, preset_id, await http.read_json(request))
 
     @app.post("/api/projects/{pid}/kernel/compositions/{preset_id}/derive")
     async def project_derive(pid: str, preset_id: str, request: Request) -> dict:
-        return derive_composition(_project(pid), preset_id, await _read_json(request))
+        return derive_composition(_project(pid), preset_id, await http.read_json(request))
 
     # ---- session-scoped switching ----
 
     @app.post("/api/kernel/conversations/{conv_id}/composition")
     async def switch(conv_id: str, request: Request) -> dict:
-        return switch_conversation(hub.default, conv_id, await _read_json(request))
+        return switch_conversation(hub.default, conv_id, await http.read_json(request))
 
     @app.post("/api/projects/{pid}/kernel/conversations/{conv_id}/composition")
     async def project_switch(pid: str, conv_id: str, request: Request) -> dict:
-        return switch_conversation(_project(pid), conv_id, await _read_json(request))
+        return switch_conversation(_project(pid), conv_id, await http.read_json(request))
 
     # The frontend is mounted at "/" and matches every path, so it has to stay
     # last whatever order this module is registered in. ``app.py`` calls us

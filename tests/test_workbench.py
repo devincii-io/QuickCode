@@ -262,7 +262,7 @@ def test_a_draft_body_is_bounded_whether_or_not_it_declares_its_length(tmp_path)
     assert declared.status_code == 413
     assert streamed.status_code == 413
     assert malformed.status_code == 400
-    assert malformed.json()["detail"].startswith("malformed JSON")
+    assert malformed.json()["detail"] == "request body must be valid JSON"
     # An empty body is an empty draft, which is the saved agent.
     assert empty.status_code == 200 and empty.json()["draft"] is True
 
