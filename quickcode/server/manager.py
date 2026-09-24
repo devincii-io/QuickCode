@@ -54,6 +54,7 @@ from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import load_defs
 from quickcode.subagents.runner import SubagentDeps
 from quickcode.tools.base import ReadRegistry, ToolCtx
+from quickcode.tools.bash_jobs import BashJobs
 from quickcode.tools.registry import ToolRegistry
 
 log = logging.getLogger("quickcode.server")
@@ -221,6 +222,11 @@ class Conversation:
         for t in [*self._tasks, *children, *jobs]:
             t.cancel()
         await asyncio.gather(*self._tasks, *children, *jobs, return_exceptions=True)
+        # A shell job is a process, not a task: nothing above reaches it, and
+        # it would outlive the conversation, the project and the app itself.
+        shell_jobs = self._bash_jobs()
+        if shell_jobs is not None:
+            await asyncio.to_thread(shell_jobs.close)
 
     # ---- detached subagent jobs ----
     def adopt_job(self, task: asyncio.Task) -> None:
@@ -235,6 +241,39 @@ class Conversation:
 
     def _subagent_deps(self):
         return self.agent.ctx.extra.get("subagent") if self.agent.ctx else None
+
+    # ---- background shell jobs ----
+    def _bash_jobs(self):
+        return self.agent.ctx.extra.get("bash_jobs") if self.agent.ctx else None
+
+    def on_bash_job(self, ev: dict[str, Any]) -> None:
+        """A background shell job started or ended; called on the loop thread.
+
+        The transcript gets a note only when a job ends on its own. A kill was
+        either asked for (the ``bash_kill`` result already says so) or is the
+        conversation closing, when nobody is reading.
+        """
+        self.emit(ev)
+        if ev.get("type") != "bash_job_done" or ev.get("status") != "exited":
+            return
+        self.emit({
+            "type": "system_note",
+            "text": f"(background job {ev.get('job_id')} exited with code "
+                    f"{ev.get('exit_code')} after {ev.get('seconds')}s)",
+        })
+
+    def _queue_bash_notices(self) -> None:
+        """Tell the model about job endings it has not seen, as a turn starts.
+
+        Decided then rather than when the job ends: until the next turn begins
+        the model -- or a subagent sharing the table -- may still read the
+        ending itself, and a reminder about something already read is noise.
+        """
+        jobs = self._bash_jobs()
+        if jobs is None:
+            return
+        for text in jobs.exit_notices():
+            self.agent.queue_reminder(text)
 
     def cancel_jobs(self) -> int:
         """Cancel every background job still in flight. Returns how many."""
@@ -435,6 +474,7 @@ class Conversation:
                 self.emit_system_prompt()
             self.emit({"type": "user_message", "text": text})
             self._emit_state()
+            self._queue_bash_notices()
             try:
                 await self.agent.run_turn(text)
             except Exception as e:  # never kill the worker
@@ -1175,6 +1215,8 @@ class ConversationManager:
         )
         agent.permission_cb = conv.permission_cb
         agent.plan_cb = conv.plan_cb
+        bash_jobs = BashJobs(on_event=conv.on_bash_job)
+        ctx.extra["bash_jobs"] = bash_jobs
         ctx.extra["subagent"] = SubagentDeps(
             provider=self.provider,
             profile=profile,
@@ -1202,6 +1244,7 @@ class ConversationManager:
             defs=defs,
             preset=preset,
             limits=limits,
+            bash_jobs=bash_jobs,
         )
         if not resuming:
             # Held, not written: opening a project opens a conversation, so

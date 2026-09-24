@@ -9,9 +9,9 @@ replaced it in 1.0.0.
 
 Being built now; not in any release. Each is ticked here when it merges.
 
-- [ ] Background bash jobs: `bash(run_in_background)`, plus tools to read a
-      running job's output and to kill it. Today the flag is declared on the
-      schema and refused with an error (docs/TOOLS.md §bash).
+- [x] Background bash jobs: `bash(run_in_background)` with `bash_output` and
+      `bash_kill`, a per-conversation cap, bounded output and process-tree
+      cleanup on close (docs/TOOLS.md §bash).
 - [ ] User-configurable hooks. Today only in-process `LoopHook`s exist
       (`core/hooks.py`, docs/PERMISSIONS.md §Hooks).
 - [x] A native Anthropic provider with prompt caching: `provider: "anthropic"`,
@@ -97,12 +97,14 @@ Designed in docs/AGENTS.md §2; none of it is built.
 
 Not started. Roughly in order of value.
 
-1. Teammate mode (M5), once task claiming and worktree isolation are designed together.
-2. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
-3. "Always allow" that writes one rule per subcommand instead of one for the first token
+1. A panel for background shell jobs: live output, exit state and a kill button (today
+   they show only as tool calls and a transcript note on exit).
+2. Teammate mode (M5), once task claiming and worktree isolation are designed together.
+3. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
+4. "Always allow" that writes one rule per subcommand instead of one for the first token
    (docs/PERMISSIONS.md §Bash evaluation pipeline).
-4. A `deny` rule on a bare tool name that withholds the tool from the request instead of
+5. A `deny` rule on a bare tool name that withholds the tool from the request instead of
    refusing the call (docs/PERMISSIONS.md §Rules).
-5. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
+6. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
    (docs/PERMISSIONS.md §Plan mode).
-6. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).
+7. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).

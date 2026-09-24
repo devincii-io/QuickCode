@@ -47,6 +47,7 @@ from quickcode.kernel import state as state_store
 from quickcode.kernel.composition import (
     DELEGATION_TOOLS,
     ORCHESTRATOR_ID,
+    SHELL_JOB_TOOLS,
     Binding,
     Composition,
     Resolved,
@@ -431,6 +432,15 @@ def resolve_composition(
         parent_note = f"parent {parent.id}"
 
     granted = {n for n in asked if n in parent_tools}
+    if "bash" in granted:
+        for name in SHELL_JOB_TOOLS:
+            if name in parent_tools and name not in granted and not _admits(revoked, name):
+                granted.add(name)
+                tool_chains.setdefault(name, []).append(
+                    Provenance(layer="runtime", source="tools/registry.py", rule="with bash",
+                               note="granted with bash, whose background jobs only it "
+                                    "can read or stop")
+                )
     for name in sorted(asked - granted):
         tool_chains[name].append(
             Provenance(layer="parent", source=parent_note, rule=name,

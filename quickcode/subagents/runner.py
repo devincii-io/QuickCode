@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import time
 from fnmatch import fnmatchcase
+from typing import Any
 
 from quickcode.core.agent import AgentInstance
 from quickcode.core.history import History
@@ -191,12 +192,15 @@ def _prepare_child(
     child_definition = defn.name
     deps.kinds[agent_id] = child_definition
 
+    extra: dict[str, Any] = {"subagent": child_deps} if include_agent else {}
+    if deps.bash_jobs is not None:
+        extra["bash_jobs"] = deps.bash_jobs
     child_ctx = ToolCtx(
         cwd=deps.cwd,
         read_registry=ReadRegistry(),
         shell_name=deps.env.shell_name,
         platform=deps.env.platform,
-        extra={"subagent": child_deps} if include_agent else {},
+        extra=extra,
     )
 
     system_prompt = render_subagent_prompt(defn, deps.env, model=model)

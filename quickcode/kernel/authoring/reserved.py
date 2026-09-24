@@ -28,7 +28,7 @@ RESERVED_ID_PREFIXES = (
 # Wire names the model already knows. An authored tool taking one of these
 # would be called in place of the real one.
 RESERVED_WIRE_NAMES = frozenset({
-    "read", "write", "edit", "glob", "grep", "bash", "plan",
+    "read", "write", "edit", "glob", "grep", "bash", "bash_output", "bash_kill", "plan",
     "agent", "send_message", "agent_status", "agent_result",
 })
 

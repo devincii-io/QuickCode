@@ -1,6 +1,6 @@
 # Tool Surface
 
-Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `agent_status`, `agent_result`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
+Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), the two readers of bash's background jobs (`bash_output`, `bash_kill`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `agent_status`, `agent_result`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
 
 Every tool implements:
 
@@ -135,28 +135,70 @@ without the server sniffing for a `task_` name prefix.
 
 ## bash
 
-> Executes a shell command and returns its combined stdout/stderr. Use this for
-> anything the other tools don't cover: running tests, git, build tools, package
-> managers, etc. Prefers Git Bash on Windows (falls back to PowerShell),
-> /bin/bash elsewhere. The working directory persists across calls in this
-> session. Output over 30000 characters is truncated (head and tail kept).
-> timeout_ms defaults to 120000 and caps at 600000. run_in_background is not yet
-> supported.
+> Executes a shell command and returns its combined stdout/stderr. Use this
+> for anything the other tools don't cover: running tests, git, build tools,
+> package managers, etc. Prefers Git Bash on Windows (falls back to
+> PowerShell), /bin/bash elsewhere. The working directory persists across
+> calls in this session. Output over 30000 characters is truncated (head and
+> tail kept). timeout_ms defaults to 120000 and caps at 600000. For a command
+> that should keep running -- a dev server, a watcher, a build you will check
+> on later -- pass run_in_background=true: it returns a job id (bash_1, ...)
+> immediately and the command runs on past this turn; read it with bash_output
+> and stop it with bash_kill. At most 8 run at once, and all of them are
+> stopped when the conversation closes.
 
 ```json
 {
   "command": "string",
   "description": "string (5-10 words shown to the user, e.g. \"Run test suite\")",
   "timeout_ms": "number? (default 120000, max 600000)",
-  "run_in_background": "boolean?"
+  "run_in_background": "boolean? (default false)"
 }
 ```
 
-- **`run_in_background` is not implemented.** It is declared on the schema and a call that sets it is refused with an error telling the model to re-run without it. Background jobs are in progress (docs/ROADMAP.md).
 - One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
 - There is no persistent shell. A bare `cd <dir>` is handled without spawning anything and moves a tracked working directory that later calls start in; `cd` inside a longer command line affects that command only.
 - Output is decoded (UTF-8, then the system code page), stripped of ANSI escapes, and capped at 30 000 chars to the model (head and tail kept, middle elided with a marker). Every command and its output is listed in the terminal drawer's *Agent* tab.
 - **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree.
+
+**Background jobs (`run_in_background: true`).** The command starts detached and the call returns at once with a job id (`bash_1`, `bash_2`, …); the model keeps its turn and the command keeps running past it. `bash_output` reads it and `bash_kill` stops it (below). What differs from a foreground call, and what does not:
+
+- **The permission gate is identical.** The gate reads `command` and nothing else, so a background call is decomposed per subcommand, checked against protected paths and circuit breakers, and matched against rules exactly as the same command in the foreground would be. The dialog says `Bash (background)` so the user knows they are approving something that keeps running.
+- **Plain pipes on every platform, stdin on the null device.** A detached program that reads stdin would otherwise wait for ever rather than until a timeout. `PYTHONUNBUFFERED` defaults to `1` so a Python server's first lines are not stuck in a pipe buffer. `timeout_ms` does not apply.
+- **Bounded.** At most 8 jobs run at once per conversation; a ninth is refused with the running ids named, never queued. Each job keeps its most recent 1 MiB of output between reads, and a read after an overflow says how many bytes were dropped. The 32 most recent finished jobs stay readable; older ones are forgotten.
+- **Owned by the conversation.** Jobs live in one table per conversation (`ToolCtx.extra["bash_jobs"]`, `tools/bash_jobs.py`), shared with its subagents the way the subagent job table is. Closing the conversation, removing its project or quitting the app kills every job's process tree. `Esc` does not: a background job is one the model deliberately detached from the turn, and a dev server dying because a turn was interrupted would be a surprise. A headless `-p` run kills its jobs when its one turn ends.
+- **Logged additively.** `bash_job_started` (`{job_id, command, description}`, the command cut to 200 characters — the full text is already in the `tool_call`) and `bash_job_done` (`{job_id, status, exit_code, seconds}`, status `exited | killed`) go into the session log. A job that exits on its own also leaves a transcript note, and if the model has not seen that ending by the time its next turn starts, a reminder naming the job and its unread output is queued for that turn.
+
+## bash_output `[read-only]`
+
+> Read what a background shell job (bash with run_in_background=true) has written since you last read it, and whether it is still running or what it exited with. Each call returns only new output. Pass wait_s to wait for it to finish, or with filter for a matching line such as a server's ready message. Omit bash_id to list this conversation's jobs.
+
+```json
+{
+  "bash_id": "string? (omit to list every job)",
+  "filter": "string? (regex; only matching new lines are returned, the rest are consumed)",
+  "wait_s": "number? (default 0, max 120)"
+}
+```
+
+- The first line is the job's state (`bash_1 is still running (4.2s).`, `… exited with code 1 after 9.8s.`, `… was killed after 30.0s.`), then the new output, decoded and cleaned exactly as a foreground result is (`decode_output`, ANSI stripped, carriage-return redraws collapsed). A UTF-8 character split across two reads waits for its second half instead of turning the first read into mojibake.
+- `wait_s` returns early when the job exits or, with `filter`, as soon as a new line matches — the way to wait for a server's "listening on" line without polling in a `sleep` loop. `Esc` cuts a wait short.
+- Without `bash_id`: a `bash_jobs{id,status,exit_code,seconds,unread_bytes,command}` TOON table.
+- `PermissionSpec(mutates=False, target_field="bash_id")`: it reads a buffer the conversation already holds, so it never prompts and batches with the other reads.
+
+## bash_kill
+
+> Stop a background shell job started with bash(run_in_background=true), killing its whole process tree. Whatever it wrote before it died stays readable with bash_output. Takes a job id, never a pid, so only jobs this conversation started can be stopped.
+
+```json
+{
+  "bash_id": "string"
+}
+```
+
+- Kills the tree (`taskkill /T /F` on Windows, the job's own process group on POSIX — the same `_kill_tree` the PTY code uses). Killing a job that already finished says so and changes nothing.
+- `PermissionSpec(mutates=False, target_field="bash_id")`, not read-only: it never prompts, because the command was approved when it started and the id can only name a job in this conversation's own table, but it runs alone rather than alongside the reads in a round.
+- `bash_output` and `bash_kill` are granted wherever `bash` is (`kernel/composition.py::SHELL_JOB_TOOLS`), so a composition or agent definition that names only `bash` cannot start a job it has no way to read or stop. A binding that revokes one of them by name still wins.
 
 ---
 

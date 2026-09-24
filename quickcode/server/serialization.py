@@ -121,6 +121,8 @@ LOGGED_TYPES = {
     "compacted",
     "agent_spawned",
     "agent_done",
+    "bash_job_started",
+    "bash_job_done",
     "system_note",
     "error",
 }

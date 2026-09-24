@@ -250,7 +250,11 @@ class PluginRegistry:
 
     def _build_used_by(self) -> dict[str, list[Use]]:
         from quickcode.kernel import preset as preset_module
-        from quickcode.kernel.composition import DELEGATION_TOOLS, ORCHESTRATOR_ID
+        from quickcode.kernel.composition import (
+            DELEGATION_TOOLS,
+            ORCHESTRATOR_ID,
+            SHELL_JOB_TOOLS,
+        )
         from quickcode.kernel.resolve import resolve_composition
 
         index: dict[str, dict[tuple[str, str], Use]] = {}
@@ -286,9 +290,12 @@ class PluginRegistry:
             )
             servers: set[str] = set()
             for name in resolved.tools:
-                via = ("granted by depth, because it can spawn"
-                       if name in DELEGATION_TOOLS
-                       else "its orchestrator holds it")
+                if name in DELEGATION_TOOLS:
+                    via = "granted by depth, because it can spawn"
+                elif name in SHELL_JOB_TOOLS and "bash" in resolved.tools:
+                    via = "granted with bash, whose background jobs it reads or stops"
+                else:
+                    via = "its orchestrator holds it"
                 add(f"tool.{name}", composition_use(preset, via))
                 server = _mcp_server(name)
                 if server:

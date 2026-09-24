@@ -125,6 +125,10 @@ class SubagentDeps:
     # The session's frozen runtime numbers, shared down the whole tree so every
     # depth counts against the same budget the session opened with.
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
+    # The conversation's background shell jobs (``tools/bash_jobs.py``). Shared
+    # down the tree like ``jobs``: one cap, and one table the conversation
+    # closes, whichever agent started the command.
+    bash_jobs: Any = None
 
     def child(self, depth: int, permissions: PermissionEngine,
               *, self_id: str, tool_pool: list | None = None,
@@ -165,6 +169,7 @@ class SubagentDeps:
             spawners=self.spawners,
             self_id=self_id,
             limits=self.limits,
+            bash_jobs=self.bash_jobs,
         )
 
     def owns(self, agent_id: str) -> bool:
