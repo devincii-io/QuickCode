@@ -1,9 +1,10 @@
 """Outbound HTTP for the agent: what it may reach, and what comes back.
 
-Three modules, in the order a fetch goes through them: ``ssrf`` decides whether
+Four modules, in the order a fetch goes through them: ``ssrf`` decides whether
 a URL leaves the machine, ``fetch`` performs the request with every redirect
-re-checked and the body capped while streaming, ``markdown`` turns the page
-into something worth spending context on.
+re-checked, ``body`` inflates and decodes what came back without letting it
+outgrow the cap, ``markdown`` turns the page into something worth spending
+context on.
 """
 
 from quickcode.web.fetch import (

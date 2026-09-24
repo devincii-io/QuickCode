@@ -101,10 +101,54 @@ class TaskBoard:
         self.save()
         return task
 
+    def _resolve(self, task_id: str) -> str:
+        """The board's own spelling of an id. A model writes ``t3`` or ``T3 ``
+        as readily as ``T3``, and "unknown task id" for either sent it hunting
+        for a task that was right there."""
+        key = (task_id or "").strip()
+        for candidate in (key, key.upper()):
+            if candidate in self.tasks:
+                return candidate
+        raise KeyError(f"unknown task id: {task_id}")
+
     def get(self, task_id: str) -> Task:
-        if task_id not in self.tasks:
-            raise KeyError(f"unknown task id: {task_id}")
-        return self.tasks[task_id]
+        return self.tasks[self._resolve(task_id)]
+
+    def _blocking(self, blocker_id: str) -> bool:
+        """Whether this blocker still stops a dependent from starting.
+
+        A deleted blocker does not: deleting is how work gets dropped, and
+        there is no way to remove an edge, so a dependent of a deleted task
+        used to stay unstartable and unclaimable for good.
+        """
+        blocker = self.tasks.get(blocker_id)
+        return blocker is not None and blocker.status not in ("completed", "deleted")
+
+    def _cycle_through(self, edges: list[tuple[str, str]]) -> list[str]:
+        """A dependency cycle the new ``(blocker, blocked)`` edges would close,
+        as a path of ids, or ``[]``. Every task on a cycle waits for itself."""
+        graph: dict[str, list[str]] = {tid: list(t.blocks) for tid, t in self.tasks.items()}
+        for blocker, blocked in edges:
+            graph.setdefault(blocker, []).append(blocked)
+        for blocker, blocked in edges:
+            path = self._path(graph, blocked, blocker)
+            if path:
+                return [blocker, *path]
+        return []
+
+    @staticmethod
+    def _path(graph: dict[str, list[str]], start: str, goal: str) -> list[str]:
+        stack = [(start, [start])]
+        seen: set[str] = set()
+        while stack:
+            node, path = stack.pop()
+            if node == goal:
+                return path
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.extend((nxt, [*path, nxt]) for nxt in graph.get(node, ()))
+        return []
 
     def list(self, include_deleted: bool = False) -> list[Task]:
         ids = sorted(self.tasks.keys(), key=_id_number)
@@ -122,49 +166,43 @@ class TaskBoard:
         add_blocked_by: list[str] | None = None,
         add_blocks: list[str] | None = None,
     ) -> Task:
-        """Apply one update, or none of it.
+        """Apply every change or none of them.
 
-        Everything is checked before anything changes. The model is told a
-        refused call failed, and it used to be half-applied anyway: the edges
-        added before a bad id stayed, and the next save persisted them.
+        Everything is checked before anything is changed. An unknown id in the
+        middle of a list, or a status the new edges forbid, used to raise
+        after the edges before it had already been linked -- a half-applied
+        update reported as a failed one.
         """
         task = self.get(task_id)
-        # (blocker, blocked) pairs: the blocker has to complete first.
-        edges = [(other, task_id) for other in add_blocked_by or () if other != task_id]
-        edges += [(task_id, other) for other in add_blocks or () if other != task_id]
-        for blocker, blocked in edges:
-            self.get(blocked if blocker == task_id else blocker)
-        for blocker, blocked in edges:
-            # There is no call that removes an edge, so a cycle is permanent.
-            if self._reaches(blocked, blocker, edges):
+        task_id = task.id
+        blockers = [self._resolve(o) for o in add_blocked_by or ()]
+        blocked = [self._resolve(o) for o in add_blocks or ()]
+        if status is not None and status not in STATUSES:
+            raise ValueError(f"invalid status {status!r}; must be one of {', '.join(STATUSES)}")
+
+        edges = [(o, task_id) for o in blockers if o != task_id]
+        edges += [(task_id, o) for o in blocked if o != task_id]
+        cycle = self._cycle_through(edges)
+        if cycle:
+            raise ValueError(
+                f"that would make a dependency cycle ({' blocks '.join(cycle)}); a task "
+                "on a cycle waits for itself and can never start"
+            )
+        if status == "in_progress":
+            waiting_on = dict.fromkeys([*task.blocked_by, *(b for b, _ in edges if b != task_id)])
+            incomplete = [b for b in waiting_on if self._blocking(b)]
+            if incomplete:
                 raise ValueError(
-                    f"{blocker} blocking {blocked} would make a dependency cycle"
+                    f"{task_id} is blocked by incomplete "
+                    f"{', '.join(incomplete)}; complete them first"
                 )
 
-        if status is not None:
-            if status not in STATUSES:
-                raise ValueError(
-                    f"invalid status {status!r}; must be one of {', '.join(STATUSES)}"
-                )
-            if status == "in_progress":
-                blockers = dict.fromkeys(
-                    [*task.blocked_by, *(b for b, d in edges if d == task_id)]
-                )
-                incomplete = [
-                    b for b in blockers if self.tasks.get(b, None) is None
-                    or self.tasks[b].status != "completed"
-                ]
-                if incomplete:
-                    raise ValueError(
-                        f"{task_id} is blocked by incomplete "
-                        f"{', '.join(incomplete)}; complete them first"
-                    )
-
-        for blocker, blocked in edges:
-            if blocked not in self.tasks[blocker].blocks:
-                self.tasks[blocker].blocks.append(blocked)
-            if blocker not in self.tasks[blocked].blocked_by:
-                self.tasks[blocked].blocked_by.append(blocker)
+        for blocker_id, blocked_id in edges:
+            blocker, dependent = self.tasks[blocker_id], self.tasks[blocked_id]
+            if blocked_id not in blocker.blocks:
+                blocker.blocks.append(blocked_id)
+            if blocker_id not in dependent.blocked_by:
+                dependent.blocked_by.append(blocker_id)
         if status is not None:
             task.status = status
         if owner is not None:
@@ -173,28 +211,12 @@ class TaskBoard:
         self.save()
         return task
 
-    def _reaches(self, start: str, goal: str, extra: list[tuple[str, str]]) -> bool:
-        """Whether ``goal`` has to wait on ``start``, counting ``extra`` edges."""
-        seen: set[str] = set()
-        stack = [start]
-        while stack:
-            node = stack.pop()
-            if node == goal:
-                return True
-            if node in seen:
-                continue
-            seen.add(node)
-            known = self.tasks.get(node)
-            stack.extend(known.blocks if known else ())
-            stack.extend(d for b, d in extra if b == node)
-        return False
-
     def claimable(self) -> list[Task]:
         result = []
         for task in self.list():
             if task.status != "pending" or task.owner:
                 continue
-            if all(self.tasks.get(b) and self.tasks[b].status == "completed" for b in task.blocked_by):
+            if not any(self._blocking(b) for b in task.blocked_by):
                 result.append(task)
         return result
 
@@ -276,9 +298,6 @@ class TaskBoard:
         return toon.fenced({"tasks": rows})
 
     def _open_blockers(self, task: Task) -> list[str]:
-        """Blockers that are not completed yet -- the only ones that still stop
-        this task from starting."""
-        return [
-            b for b in task.blocked_by
-            if not (self.tasks.get(b) and self.tasks[b].status == "completed")
-        ]
+        """Blockers that still stop this task from starting: not completed,
+        and not deleted."""
+        return [b for b in task.blocked_by if self._blocking(b)]

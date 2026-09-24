@@ -227,6 +227,90 @@ async def test_a_ripgrep_that_cannot_speak_json_falls_back_instead_of_lying(
     assert body.splitlines()[1] == "matches[3]{path,line,text}:"
 
 
+async def test_one_unreadable_file_does_not_throw_away_ripgreps_results(tree, monkeypatch):
+    """ripgrep exits 2 when any file could not be read, matches or not. That
+    used to discard its answer and run the whole search again in Python."""
+    calls = fake_rg(monkeypatch, "/p/a.py\n", code=2)
+    monkeypatch.setattr(grep_module, "_run_fallback",
+                        lambda *a, **k: pytest.fail("fell back to the Python walk"))
+
+    body = await grep(tree, pattern="run")
+
+    assert len(calls) == 1
+    assert body.splitlines()[1:] == ["/p/a.py"]
+
+
+async def test_a_ripgrep_error_with_no_output_still_falls_back(tree, monkeypatch):
+    fake_rg(monkeypatch, "", code=2)
+
+    body = await grep(tree, pattern="run")
+
+    assert body.splitlines()[0] == '<files count="2"/>'
+
+
+# ---- grep: the order is the path order, whoever searched ----
+
+
+@pytest.mark.parametrize("mode", ["count", "files_with_matches"])
+async def test_ripgreps_thread_order_does_not_reach_the_model(tree, monkeypatch, mode):
+    """ripgrep searches files on several threads and prints whichever finishes
+    first, so the same search answered ``b, a`` on one run and ``a, b`` on the
+    next. A result that reorders itself between identical calls reads as a
+    change that did not happen."""
+    lines = ["/p/z.py", "/p/sub/b.py", "/p/a.py", "/p/sub.py"]
+    out = [f"{p}:1" for p in lines] if mode == "count" else lines
+    fake_rg(monkeypatch, "\n".join(out) + "\n")
+
+    body = await grep(tree, pattern="run", output_mode=mode)
+
+    paths = [line.rsplit(":", 1)[0] if mode == "count" else line
+             for line in body.splitlines()[1:]]
+    assert paths == ["/p/a.py", "/p/sub/b.py", "/p/sub.py", "/p/z.py"]
+
+
+async def test_ripgrep_content_rows_are_ordered_by_path_and_keep_line_order(tree, monkeypatch):
+    fake_rg(monkeypatch, rg_json(("/p/b.py", 3, "x"), ("/p/b.py", 9, "y"), ("/p/a.py", 5, "z")))
+
+    body = await grep(tree, pattern="run", output_mode="content")
+
+    assert [r.split(",")[:2] for r in rows(body)] == [
+        ["/p/a.py", "5"], ["/p/b.py", "3"], ["/p/b.py", "9"],
+    ]
+
+
+@pytest.mark.parametrize("mode", ["count", "files_with_matches", "content"])
+async def test_the_fallback_walks_in_the_same_path_order(tmp_path, monkeypatch, mode):
+    for name in ("z.py", "sub/b.py", "a.py", "sub.py", "m/n/o.py", "b.py"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("hit\n", encoding="utf-8")
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
+
+    body = await grep(tmp_path, pattern="hit", output_mode=mode)
+
+    found = [row.split(",")[0] for row in rows(body)] if mode == "content" else [
+        line.rsplit(":", 1)[0] if mode == "count" else line
+        for line in body.splitlines()[1:]
+    ]
+    rel = [p.removeprefix(str(tmp_path).replace(BACKSLASH, "/") + "/") for p in found]
+    assert rel == ["a.py", "b.py", "m/n/o.py", "sub/b.py", "sub.py", "z.py"]
+
+
+@pytest.mark.skipif(not grep_module.shutil.which("rg"), reason="needs ripgrep installed")
+async def test_counting_in_one_named_file_still_names_it(tree):
+    """``rg -c`` leaves the path off when it was given a single file, so the
+    count came back as a row whose *path* was the number."""
+    body = await grep(tree, pattern="run", path=str(tree / "b.py"), output_mode="count")
+
+    assert body.splitlines()[1] == str(tree / "b.py").replace(BACKSLASH, "/") + ":2"
+
+
+async def test_the_fallback_names_the_file_it_counted_in_too(tree, monkeypatch):
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
+    body = await grep(tree, pattern="run", path=str(tree / "b.py"), output_mode="count")
+
+    assert body.splitlines()[1] == str(tree / "b.py").replace(BACKSLASH, "/") + ":2"
+
+
 # ---- glob ----
 
 

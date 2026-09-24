@@ -73,6 +73,10 @@ BLOCKED_SUFFIXES = (
 
 BLOCKED_NAMES = ("localhost",)
 
+# RFC 6052's well-known NAT64 prefix. The local-use 64:ff9b:1::/48 is left to
+# ``is_private``, which refuses it: its embedding depends on the operator.
+NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 
 
@@ -125,6 +129,17 @@ def classify_ip(raw: str) -> str:
             inner = classify_ip(str(embedded))
             if inner:
                 return f"{raw} embeds the IPv4 address {embedded}, which {inner}"
+        if ip in NAT64_PREFIX:
+            # DNS64 answers 64:ff9b::<v4> for every IPv4-only site on an
+            # IPv6-only network, and the gateway connects to that v4. So the
+            # v4 is the destination and the only thing worth judging: the
+            # prefix itself sits in ::/8 and would read as "reserved", which
+            # refused every such site, while 64:ff9b::a00:1 is 10.0.0.1.
+            inner_v4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+            inner = classify_ip(str(inner_v4))
+            return f"{raw} is NAT64 for {inner_v4}, which {inner}" if inner else ""
+        if ip.is_site_local:
+            return "is site-local (fec0::/10) — the deprecated IPv6 private range"
 
     if ip.is_unspecified:
         return "is the unspecified address (0.0.0.0 / ::), which means 'this host'"
@@ -170,6 +185,21 @@ def classify_host(host: str) -> str:
             "this machine's search domains, which is how intranet hosts get reached"
         )
     return ""
+
+
+def _ascii_host(host: str) -> str:
+    """The name as DNS, the Host header and TLS SNI all need it: ASCII.
+
+    ``bücher.de`` went into the Host header as-is and httpx refused to encode
+    it, so no internationalised site could be fetched. The name rules are
+    applied to this form too, so ``*.local`` cannot hide behind punycode.
+    """
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise BlockedURL(f"{host!r} is not a valid internationalised hostname.") from exc
 
 
 # --------------------------------------------------------------------------
@@ -221,7 +251,7 @@ async def validate_url(
             "would be sent, logged and followed through redirects."
         )
 
-    host = (parts.hostname or "").strip().rstrip(".").lower()
+    host = _ascii_host((parts.hostname or "").strip().rstrip(".").lower())
     reason = classify_host(host)
     if reason:
         raise BlockedURL(f"refusing to fetch {host or raw!r}: it {reason}.")

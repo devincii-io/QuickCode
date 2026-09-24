@@ -18,14 +18,27 @@ format depending on whether ripgrep happens to be installed. That is why the
 ripgrep content path asks for ``--json`` rather than parsing rg's own
 ``path:line:text``: the fields arrive already separated, which is the only way
 to hand back the same records the Python walk produces.
+
+They must also agree on *which files* are searched, and in what order:
+
+* results come back in path order (ripgrep's are sorted after the fact);
+* ``.gitignore`` is honoured by both (``fs/walk.py`` reads it the way
+  ripgrep does), and so are the always-pruned directories below;
+* hidden files are searched inside the project -- ``.github/workflows`` is
+  code -- and skipped outside it, where dot-directories are where credentials
+  live;
+* files over ``MAX_FILE_BYTES`` and binary files are skipped by both.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
 import shutil
+import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -34,18 +47,24 @@ from pydantic import BaseModel, Field
 from quickcode import subproc
 from quickcode.context import toon
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
+from quickcode.tools.fs import textfile
+from quickcode.tools.fs.patterns import PatternError, compile_glob
+from quickcode.tools.fs.walk import IGNORED_DIRS, walk_files
 
-IGNORED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"}
-# Secret-bearing paths, skipped while *walking*. The permission gate prompts
-# before a search that names one of these, but a search of the whole project
-# names none of them and would otherwise return the contents of every one it
-# passed. Naming the file explicitly still searches it -- with the prompt --
-# which is the same shape ``read`` has: reachable, never incidental.
-SECRET_PARTS = (".ssh", ".env")
-SECRET_GLOBS = ("!.env", "!.env.*", "!.ssh/**")
-BINARY_SNIFF_BYTES = 8192
+# Secret-bearing and QuickCode-private paths, skipped while *walking*. The
+# permission gate prompts before a search that names one of these, but a search
+# of the whole project names none of them and would otherwise return the
+# contents of every one it passed. Naming the file explicitly still searches it
+# -- with the prompt -- which is the same shape ``read`` has: reachable, never
+# incidental. The list is the permission engine's protected set.
+PROTECTED_NAMES = (".git", ".quickcode", ".ssh", ".env")
+PROTECTED_GLOBS = tuple(f"!{name}" for name in PROTECTED_NAMES) + ("!.env.*",)
 MAX_FILE_BYTES = 5_000_000
 MAX_OUTPUT_CHARS = 40_000
+# A matched line longer than this is cut to a window around the match. One
+# minified bundle used to put a megabyte-long row into the result.
+MAX_TEXT_CHARS = 500
+RG_TIMEOUT_S = 30
 
 # The TOON key each output mode reports under. The key names what the rows
 # are, so a model reading only the header line already knows which mode ran.
@@ -101,30 +120,67 @@ class GrepTool(Tool[GrepInput]):
             return ToolResult(content=f"Error: path not found: {root}", is_error=True)
 
         try:
-            re.compile(input.pattern, re.IGNORECASE if input.ignore_case else 0)
+            rx = re.compile(input.pattern, re.IGNORECASE if input.ignore_case else 0)
         except re.error as exc:
             return ToolResult(content=f"Error: invalid regex {input.pattern!r}: {exc}", is_error=True)
+        try:
+            include = compile_glob(input.glob, anywhere=True) if input.glob else None
+        except PatternError as exc:
+            return ToolResult(content=f"Error: {exc}", is_error=True)
 
-        rg = shutil.which("rg")
-        if rg:
-            try:
-                body = _run_ripgrep(rg, input, root)
-                return ToolResult(content=body)
-            except Exception:
-                pass  # fall through to pure-python fallback
-
-        body = _run_fallback(input, root)
+        hidden = _inside(root, ctx.cwd)
+        # Off the event loop: a search of a large tree is seconds of blocking
+        # I/O, and the loop it would block serves every session and socket.
+        try:
+            body = await asyncio.to_thread(_search, input, root, rx, include, hidden)
+        except subprocess.TimeoutExpired:
+            return ToolResult(
+                content=f"Error: the search took longer than {RG_TIMEOUT_S}s. {HINT}.",
+                is_error=True,
+            )
         return ToolResult(content=body)
 
 
-def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
-    args = [rg, "--no-heading", "--line-number", "--color=never"]
+def _inside(root: Path, project: Path) -> bool:
+    try:
+        return root.resolve().is_relative_to(Path(project).resolve())
+    except OSError:
+        return False
+
+
+def _search(input: GrepInput, root: Path, rx: re.Pattern[str],  # noqa: A002
+            include: re.Pattern[str] | None, hidden: bool) -> str:
+    rg = shutil.which("rg")
+    if rg:
+        try:
+            return _run_ripgrep(rg, input, root, hidden=hidden)
+        except subprocess.TimeoutExpired:
+            raise
+        except Exception:
+            pass  # fall through to pure-python fallback
+    return _run_fallback(input, root, rx, include, hidden=hidden)
+
+
+# -- ripgrep ------------------------------------------------------------------
+
+
+def _run_ripgrep(rg: str, input: GrepInput, root: Path, *, hidden: bool = True) -> str:  # noqa: A002
+    # ``--with-filename`` because ``rg -c`` leaves the path off when it is
+    # handed a single file, and the count would then be read as the path.
+    # ``--no-ignore-global``: the walk cannot see git's core.excludesFile, and
+    # a machine-specific ignore list is exactly how the two backends would
+    # come to disagree on one user's machine and not on another's.
+    args = [rg, "--no-heading", "--line-number", "--color=never", "--with-filename",
+            f"--max-filesize={MAX_FILE_BYTES}", "--no-ignore-global"]
+    if hidden:
+        args.append("--hidden")
     if input.ignore_case:
         args.append("-i")
     if input.glob:
         args += ["--glob", input.glob]
     if root.is_dir():
-        for pattern in SECRET_GLOBS:
+        pruned = sorted(IGNORED_DIRS.difference(PROTECTED_NAMES))
+        for pattern in (*PROTECTED_GLOBS, *(f"!{d}" for d in pruned)):
             args += ["--glob", pattern]
     if input.output_mode == "files_with_matches":
         args.append("-l")
@@ -140,17 +196,20 @@ def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
             args += ["-C", str(input.context)]
     args += ["--", input.pattern, str(root)]
 
-    proc = subproc.run(
-        args,
-        capture_output=True,
-        timeout=30,
-        text=False,
-    )
-    if proc.returncode not in (0, 1):
+    # ripgrep anchors ``--glob`` patterns to its working directory, not to the
+    # path it searches. Run from anywhere else and ``src/*.ts`` matches nothing
+    # -- which it did, from the server's own cwd, until this.
+    where = root if root.is_dir() else root.parent
+    proc = subproc.run(args, capture_output=True, timeout=RG_TIMEOUT_S, text=False,
+                       cwd=str(where))
+    # 2 is also what ripgrep exits with when it found matches but could not
+    # read some file (a locked file on Windows, a root-owned one elsewhere).
+    # Those results are good; only an error with no output at all -- a bad
+    # pattern -- sends the search to the Python walk.
+    if proc.returncode not in (0, 1) and not proc.stdout.strip():
         raise RuntimeError(proc.stderr.decode("utf-8", errors="replace"))
 
-    out = proc.stdout.decode("utf-8", errors="replace")
-    lines = out.splitlines()
+    lines = proc.stdout.decode("utf-8", errors="replace").splitlines()
     if not lines:
         return "No matches found."
 
@@ -160,10 +219,147 @@ def _run_ripgrep(rg: str, input: GrepInput, root: Path) -> str:
         rows = [_count_row(line) for line in lines]
     else:
         rows = _rows_from_json(lines)
+        rx = _python_regex(input)
+        for row in rows:
+            row["text"] = _clip(row["text"], rx)
     if not rows:
         return "No matches found."
 
-    return _emit(KEYS[input.output_mode], rows[: input.head_limit], len(rows))
+    # ripgrep prints files in whichever order its threads finish them. Sorting
+    # here rather than passing ``--sort path`` keeps the search parallel; the
+    # sort is stable, so a file's rows keep their line order.
+    rows.sort(key=lambda row: path_key(row["path"]))
+    return _emit(KEYS[input.output_mode], rows[: max(1, input.head_limit)], len(rows))
+
+
+def _python_regex(input: GrepInput) -> re.Pattern[str] | None:  # noqa: A002
+    try:
+        return re.compile(input.pattern, re.IGNORECASE if input.ignore_case else 0)
+    except re.error:
+        return None
+
+
+# -- pure Python ----------------------------------------------------------------
+
+
+def _run_fallback(input: GrepInput, root: Path, rx: re.Pattern[str],  # noqa: A002
+                  include: re.Pattern[str] | None, *, hidden: bool) -> str:
+    files = _iter_files(root, include, hidden)
+    limit = max(1, input.head_limit)
+    if input.output_mode == "files_with_matches":
+        return _collect_files_with_matches(files, rx, limit)
+    if input.output_mode == "count":
+        return _collect_counts(files, rx, limit)
+    return _collect_content(files, rx, limit, max(0, input.context or 0))
+
+
+def _iter_files(root: Path, include: re.Pattern[str] | None, hidden: bool) -> Iterator[Path]:
+    if root.is_file():
+        if include is None or include.match(root.name):
+            yield root
+        return
+    for rel, path in walk_files(root, exclude=_excluded, hidden=hidden):
+        if include is None or include.match(rel):
+            yield path
+
+
+def _collect_files_with_matches(files: Iterator[Path], rx: re.Pattern[str], limit: int) -> str:
+    results = []
+    for p in files:
+        lines = _read_text_lines(p)
+        if lines is None:
+            continue
+        if any(rx.search(line) for line in lines):
+            results.append({"path": _norm(p)})
+        if len(results) > limit:
+            break
+    if not results:
+        return "No matches found."
+    return _emit("files", results[:limit], len(results), approx=True)
+
+
+def _collect_counts(files: Iterator[Path], rx: re.Pattern[str], limit: int) -> str:
+    results = []
+    for p in files:
+        lines = _read_text_lines(p)
+        if lines is None:
+            continue
+        n = sum(1 for line in lines if rx.search(line))
+        if n:
+            results.append({"path": _norm(p), "matches": n})
+    if not results:
+        return "No matches found."
+    return _emit("counts", results[:limit], len(results))
+
+
+def _collect_content(
+    files: Iterator[Path], rx: re.Pattern[str], limit: int, context: int
+) -> str:
+    rows: list[dict[str, Any]] = []
+    total_matches = 0
+    for p in files:
+        lines = _read_text_lines(p)
+        if lines is None:
+            continue
+        shown_upto = -1  # context windows overlap; ripgrep prints a line once
+        for i, line in enumerate(lines):
+            if not rx.search(line):
+                continue
+            total_matches += 1
+            if len(rows) >= limit:
+                continue
+            lo = max(i - context, shown_upto + 1)
+            hi = min(len(lines), i + context + 1)
+            for j in range(lo, hi):
+                rows.append({"path": _norm(p), "line": j + 1, "text": _clip(lines[j], rx)})
+            shown_upto = max(shown_upto, hi - 1)
+        if total_matches > limit and len(rows) >= limit:
+            break
+    if not rows:
+        return "No matches found."
+    return _emit("matches", rows[:limit], max(total_matches, len(rows)), approx=True)
+
+
+def _excluded(name: str, is_dir: bool) -> bool:
+    if name in PROTECTED_NAMES or name.startswith(".env."):
+        return True
+    return is_dir and name in IGNORED_DIRS
+
+
+def _read_text_lines(path: Path) -> list[str] | None:
+    try:
+        if path.stat().st_size > MAX_FILE_BYTES:
+            return None
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        encoding = textfile.detect(data)
+    except textfile.NotText:
+        return None
+    return textfile.split_lines(textfile.decode(data, encoding, errors="replace"))
+
+
+def _clip(text: str, rx: re.Pattern[str] | None) -> str:
+    """A long line cut down to a window around its first match."""
+    if len(text) <= MAX_TEXT_CHARS:
+        return text
+    hit = rx.search(text) if rx is not None else None
+    start = max(0, (hit.start() if hit else 0) - MAX_TEXT_CHARS // 4)
+    end = start + MAX_TEXT_CHARS
+    head = "…" if start else ""
+    tail = f"…[{len(text):,} chars]" if end < len(text) else ""
+    return f"{head}{text[start:end]}{tail}"
+
+
+def path_key(path: str) -> tuple[str, ...]:
+    """Sort key for a slash-separated path: component by component.
+
+    Plain string order would put ``sub.py`` before ``sub/b.py`` ('.' < '/'),
+    which is not the order a directory walk visits them in -- and the
+    fallback's walk is what this order has to agree with.
+    """
+    return tuple(path.split("/"))
 
 
 def _count_row(line: str) -> dict[str, Any]:
@@ -215,109 +411,6 @@ def _rg_text(field: Any) -> str:
     if isinstance(raw, str):
         return base64.b64decode(raw).decode("utf-8", errors="replace")
     return ""
-
-
-def _run_fallback(input: GrepInput, root: Path) -> str:
-    flags = re.IGNORECASE if input.ignore_case else 0
-    try:
-        rx = re.compile(input.pattern, flags)
-    except re.error as exc:
-        return f"Error: invalid regex: {exc}"
-
-    files = _iter_files(root, input.glob)
-
-    if input.output_mode == "files_with_matches":
-        return _collect_files_with_matches(files, rx, input.head_limit)
-    if input.output_mode == "count":
-        return _collect_counts(files, rx, input.head_limit)
-    return _collect_content(files, rx, input.head_limit, input.context or 0)
-
-
-def _iter_files(root: Path, glob_pat: str | None):
-    if root.is_file():
-        if glob_pat is None or root.match(glob_pat):
-            yield root
-        return
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part in IGNORED_DIRS for part in p.parts):
-            continue
-        if any(part in SECRET_PARTS or part.startswith(".env.") for part in p.parts):
-            continue
-        if glob_pat and not p.match(glob_pat):
-            continue
-        yield p
-
-
-def _is_binary(data: bytes) -> bool:
-    return b"\x00" in data
-
-
-def _read_text_lines(path: Path) -> list[str] | None:
-    try:
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return None
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if _is_binary(data[:BINARY_SNIFF_BYTES]):
-        return None
-    return data.decode("utf-8", errors="replace").splitlines()
-
-
-def _collect_files_with_matches(files, rx: re.Pattern, head_limit: int) -> str:
-    results = []
-    for p in files:
-        lines = _read_text_lines(p)
-        if lines is None:
-            continue
-        if any(rx.search(line) for line in lines):
-            results.append({"path": _norm(p)})
-        if len(results) > head_limit:
-            break
-    if not results:
-        return "No matches found."
-    return _emit("files", results[:head_limit], len(results), approx=True)
-
-
-def _collect_counts(files, rx: re.Pattern, head_limit: int) -> str:
-    results = []
-    for p in files:
-        lines = _read_text_lines(p)
-        if lines is None:
-            continue
-        n = sum(1 for line in lines if rx.search(line))
-        if n:
-            results.append({"path": _norm(p), "matches": n})
-    if not results:
-        return "No matches found."
-    return _emit("counts", results[:head_limit], len(results))
-
-
-def _collect_content(files, rx: re.Pattern, head_limit: int, context: int) -> str:
-    rows: list[dict[str, Any]] = []
-    total_matches = 0
-    for p in files:
-        lines = _read_text_lines(p)
-        if lines is None:
-            continue
-        for i, line in enumerate(lines):
-            if rx.search(line):
-                total_matches += 1
-                if len(rows) < head_limit:
-                    if context:
-                        lo = max(0, i - context)
-                        hi = min(len(lines), i + context + 1)
-                        for j in range(lo, hi):
-                            rows.append({"path": _norm(p), "line": j + 1, "text": lines[j]})
-                    else:
-                        rows.append({"path": _norm(p), "line": i + 1, "text": line})
-        if total_matches > head_limit and len(rows) >= head_limit:
-            break
-    if not rows:
-        return "No matches found."
-    return _emit("matches", rows[:head_limit], max(total_matches, len(rows)), approx=True)
 
 
 def _norm(p: Path) -> str:

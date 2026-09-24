@@ -22,10 +22,13 @@ be a key in a transcript for ever.
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
+from urllib.parse import quote, quote_plus, urlsplit
 
 import httpx
 
@@ -76,6 +79,9 @@ class ProviderInfo:
     # query per second and answers a burst with 429s.
     min_interval_s: float = 0.0
     free_tier: str = ""
+    # What a status means for *this* provider, where the shared vocabulary in
+    # ``_STATUS_HINTS`` would send somebody the wrong way.
+    status_hints: tuple[tuple[int, str], ...] = ()
 
     @property
     def needs_key(self) -> bool:
@@ -190,11 +196,20 @@ RATE_GUARD = RateGuard()
 _STATUS_HINTS = {
     400: "the provider rejected the query as malformed",
     401: "the API key was rejected (check it is current and for this provider)",
+    402: "the account is out of credit -- top it up or check the plan",
     403: "the API key was refused (wrong plan, or the key lacks this endpoint)",
     404: "the provider endpoint was not found (check the configured base URL)",
     422: "the provider rejected the query parameters",
     429: "rate limit or monthly quota exhausted -- wait, or check the plan",
+    # Tavily's "plan usage limit exceeded".
+    432: "the plan's usage limit is exhausted -- wait for it to reset, or upgrade",
 }
+_SERVER_ERROR_HINT = "the provider is having trouble on its side -- try again later"
+# The provider's own words, when it gives any, are clipped to this.
+PROVIDER_DETAIL_CHARS = 240
+# Anything shaped like a credential in a query string, whoever echoes it back.
+_CREDENTIAL_PARAM = re.compile(r"(?i)\b(key|api[_-]?key|token|access_token)=[^&\s\"']+")
+_TAG = re.compile(r"<[^>]+>")
 
 
 async def run_search(
@@ -235,11 +250,15 @@ async def run_search(
             ) from exc
 
         if response.status_code >= 400:
-            hint = _STATUS_HINTS.get(
-                response.status_code, "the provider returned an error"
+            hint = dict(info.status_hints).get(response.status_code) or _STATUS_HINTS.get(
+                response.status_code,
+                _SERVER_ERROR_HINT if response.status_code >= 500
+                else "the provider returned an error",
             )
+            detail = _provider_detail(response, _secrets_of(provider))
+            said = f" The provider said: {detail}" if detail else ""
             raise SearchError(
-                f"{info.label} returned HTTP {response.status_code} from {host}: {hint}."
+                f"{info.label} returned HTTP {response.status_code} from {host}: {hint}.{said}"
             )
 
         try:
@@ -257,7 +276,85 @@ async def run_search(
             "The provider's API may have changed."
         ) from exc
 
-    return results[:count]
+    return _tidy(results)[:count]
+
+
+def _secrets_of(provider: SearchProvider) -> list[str]:
+    credentials = getattr(provider, "credentials", None)
+    if not isinstance(credentials, Credentials):
+        return []
+    return [s for s in (credentials.api_key, *credentials.extra.values()) if s]
+
+
+def _provider_detail(response: httpx.Response, secrets: list[str]) -> str:
+    """The error message the provider put in its body, with credentials blanked.
+
+    Google explains a 403 as "Custom Search API has not been used in project
+    …", which is the whole answer; the generic hint cannot be. But a provider
+    may echo the request, and one of them carries the key in its query string,
+    so every known secret -- raw and URL-encoded -- and anything shaped like a
+    credential parameter is blanked before a word of it goes anywhere.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    text = _error_text(payload)
+    if not text:
+        return ""
+    for secret in secrets:
+        for form in {secret, quote(secret, safe=""), quote_plus(secret)}:
+            text = text.replace(form, "***")
+    text = _CREDENTIAL_PARAM.sub(r"\1=***", " ".join(text.split()))
+    if len(text) > PROVIDER_DETAIL_CHARS:
+        text = text[:PROVIDER_DETAIL_CHARS].rstrip() + "…"
+    return text
+
+
+def _error_text(payload: Any) -> str:
+    """``error.message`` / ``detail`` / ``message`` -- whichever the vendor uses."""
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if isinstance(error, str):
+        return error
+    for node in (error, payload):
+        text = first_str(node, "message", "detail", "error_message", "description")
+        if text:
+            return text
+        detail = node.get("detail") if isinstance(node, dict) else None
+        if isinstance(detail, dict):
+            text = first_str(detail, "message", "error", "detail")
+            if text:
+                return text
+    return ""
+
+
+def plain_text(text: str) -> str:
+    """A snippet as the model should read it: no markup, no entities.
+
+    Brave highlights matches with ``<strong>`` and escapes quotes as ``&#x27;``;
+    both used to reach the model verbatim.
+    """
+    return " ".join(html.unescape(_TAG.sub("", text or "")).split())
+
+
+def _tidy(results: list[SearchResult]) -> list[SearchResult]:
+    """Plain text, http(s) links only, each URL once, rank order kept."""
+    seen: set[str] = set()
+    out: list[SearchResult] = []
+    for result in results:
+        url = (result.url or "").strip()
+        if urlsplit(url).scheme.lower() not in ("http", "https") or url in seen:
+            continue
+        seen.add(url)
+        out.append(SearchResult(
+            title=plain_text(result.title),
+            url=url,
+            snippet=plain_text(result.snippet),
+            content=plain_text(result.content),
+        ))
+    return out
 
 
 # --------------------------------------------------------------------------

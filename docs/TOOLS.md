@@ -52,8 +52,11 @@ without the server sniffing for a `task_` name prefix.
 { "file_path": "string (absolute)", "offset": "number?", "limit": "number?" }
 ```
 
-- Lines longer than 2000 chars are cut with a marker; the whole result is capped at 40 000 chars with a `<truncated …/>` marker that says to page on with `offset`.
-- Records `{path, mtime}` in the session's read-registry — the `edit` staleness check depends on it.
+- Lines longer than 2000 chars are cut with a marker. Lines are numbered by LF only, as ripgrep numbers them — a form feed or U+2028 does not start a new line.
+- Whenever lines follow what was shown — the window ended, or the 40 000-character output cap dropped the rest of it — a `<truncated shown="N" total="T" hint="re-read with offset=K"/>` marker names the first line not shown.
+- Encoding is detected, not assumed: a BOM (UTF-8/16/32) wins, then strict UTF-8, then cp1252, then Latin-1. A non-UTF-8 file ends with `<file encoding="…"/>`. A NUL byte in the first 8 KB without a BOM means binary, and binary files are refused rather than dumped.
+- Files over 10 MB are streamed: the window is read line by line and the total is not counted.
+- Records `{path, mtime, sha256}` in the session's read-registry — the `edit`/`write` staleness check depends on it.
 - Re-reading a file supersedes the old copy in history (read-dedup, see ARCHITECTURE).
 
 ## write
@@ -68,7 +71,8 @@ without the server sniffing for a `task_` name prefix.
 { "file_path": "string (absolute)", "content": "string" }
 ```
 
-- Overwriting a file that was never `read` → error (forces the model to look before it leaps).
+- Overwriting a file that was never `read`, or that changed on disk since it was read → error (forces the model to look before it leaps).
+- An overwritten file keeps its encoding, BOM and line endings; a new file is written exactly as given (UTF-8, no newline translation on any platform).
 - Creates missing parent directories. The model gets a one-line confirmation (`Wrote N lines to <path>`); the UI shows the written content.
 
 ## edit
@@ -89,24 +93,27 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- Errors (all returned as `is_error` with an actionable message): file not read this session · file changed on disk since read · empty `old_string` · 0 matches · >1 match without `replace_all`.
+- Errors (all returned as `is_error` with an actionable message): file not read this session · file changed on disk since read · 0 matches · >1 match without `replace_all` (the error lists the matching line numbers) · `old_string == new_string` · a character the file's encoding cannot store.
+- "Changed on disk" compares content when the whole file was read (a `touch` is not a change; a rewrite inside one mtime tick is), and mtime otherwise.
+- The file keeps its encoding, BOM and line endings. In a CRLF file both strings are matched and written with CRLF, since read only ever shows `\n`.
 - The result is `Replaced N occurrence(s) in <path>` plus a unified diff of the change (2 lines of context, capped at 60 diff lines) — never the whole file. The UI renders the same diff.
 
 ## glob `[read-only]`
 
-> Finds files matching a glob pattern (supports ** for recursive matches). Use
-> this to locate files by name or extension when you know roughly what you're
-> looking for but not the exact path; for searching file contents use Grep
-> instead. Skips .git, node_modules, __pycache__, and .venv. Returns up to 200
-> matches, newest first, one path per line, after a marker declaring how many
-> came back.
+> Finds files matching a glob pattern (supports ** for recursive matches and
+> {a,b} alternatives, e.g. "src/**/*.{ts,tsx}"). Use this to locate files by
+> name or extension when you know roughly what you're looking for but not the
+> exact path; for searching file contents use Grep instead. Skips .git,
+> node_modules, __pycache__, .venv and whatever .gitignore excludes. Returns
+> up to 200 matches, newest first, one path per line, after a marker declaring
+> how many came back.
 
 ```json
 { "pattern": "string", "path": "string? (default cwd)" }
 ```
 
-- Skips `.git`, `node_modules`, `__pycache__`, `.venv`, `venv`, `.mypy_cache` and `.pytest_cache`; it does **not** read `.gitignore`. Caps at 200 results with a truncation marker.
-- Gated on where it actually looks — `path` joined with `pattern` — so `glob(pattern="../*/*.txt")` meets the outside-the-project prompt rather than presenting an empty target.
+- Respects `.gitignore` (inside a git repository, as ripgrep does), `.ignore`, `.rgignore` and `.git/info/exclude`, including the ignore files of directories above `path`; never enters `.git`, `node_modules`, `__pycache__`, `.venv`/`venv`, `.mypy_cache`, `.pytest_cache` below where it starts. Naming an ignored directory in the pattern (`dist/*.js`) still lists it. Caps at 200 results with truncation marker.
+- `{a,b}` alternatives are expanded; absolute patterns work; a pattern without `**` does not descend deeper than it has segments; symlinked directories are never entered. Equal mtimes are ordered by path, so the listing is stable.
 
 ## grep `[read-only]`
 
@@ -132,6 +139,8 @@ without the server sniffing for a `task_` name prefix.
 ```
 
 - `output_mode='content'` returns a TOON table, one row per match: `matches{path,line,text}`. The header declares the row count, and a value containing the delimiter is quoted — `path:line:text` could not be split back into fields once a Windows drive letter put a colon in the first one. The other two modes stay plain lines behind a `<files count="N"/>` or `<counts count="N"/>` marker: a bare path, and a count that is digits after the last colon, already survive a split, so a table there costs tokens (10–30%, measured with o200k_base) and fixes nothing. Both search backends (ripgrep and the pure-Python walk) emit the same records, so the format does not depend on what is installed.
+- Both backends also search the same files, in the same order: path order (ripgrep's parallel output is sorted afterwards); `.gitignore`, `.ignore`, `.rgignore` and `.git/info/exclude` honoured, git's global excludes file on neither; hidden files searched inside the project and skipped outside it (dot-directories in a home directory are where credentials live); `.git`, `.quickcode`, `.ssh`, `.env`, `.env.*` and the directories glob prunes are never walked into, though naming one as `path` searches it (with the permission prompt); binary files and files over 5 MB skipped. `glob` filters use ripgrep's rule — no slash matches the name at any depth, a slash anchors to `path` — on both backends.
+- A matched line over 500 characters is cut to a window around the first match. Overlapping `context` windows print each line once.
 
 ## bash
 
@@ -282,7 +291,7 @@ Not parameters, and not reachable from the model: request headers (there are non
 
 Only the second is worth re-fetching for. The first means the page is larger than the tool will ever download.
 
-**Content types.** `text/*` plus `application/json`, `ld+json`, `xml`, `xhtml+xml`, `rss+xml`, `atom+xml`, `javascript`, `x-ndjson`, `yaml` / `x-yaml`. A missing `Content-Type` is assumed textual and left to the decoder. Anything else is refused with its type named — more useful to a model than 400 KB of decoded PNG. HTML and XHTML go through `web/markdown.py` (stdlib `html.parser`, deliberately: this runs on attacker-supplied markup and the failure mode of a tolerant parser is a slightly wrong heading, while the failure mode of a dependency is a dependency); everything else is returned as-is.
+**Content types.** `text/*` plus `application/json`, `ld+json`, `xml`, `xhtml+xml`, `rss+xml`, `atom+xml`, `javascript`, `x-ndjson`, `yaml` / `x-yaml`. A missing `Content-Type` is assumed textual and left to the decoder — but any body with a NUL byte in its first 8 KB (and no UTF-16/32 BOM or charset) is refused as binary, whatever it was labelled. The charset comes from a BOM, then the header, then an HTML `<meta charset>`, then UTF-8. Anything else is refused with its type named — more useful to a model than 400 KB of decoded PNG. HTML and XHTML go through `web/markdown.py` (stdlib `html.parser`, deliberately: this runs on attacker-supplied markup and the failure mode of a tolerant parser is a slightly wrong heading, while the failure mode of a dependency is a dependency); everything else is returned as-is.
 
 **Other refusals before any parsing:** an HTTP status ≥ 400 (reported with the reason phrase), and a `Content-Length` header declaring more than the byte cap — refused with nothing downloaded.
 
@@ -291,13 +300,13 @@ Only the second is worth re-fetching for. The first means the page is larger tha
 The rules live in `quickcode/web/ssrf.py`, the per-hop enforcement in `quickcode/web/fetch.py`. The threat model is worth stating plainly: the URL is composed by the *model*, from text it read on a web page, in an issue comment, in a file somebody else wrote. So the URL is attacker-reachable input, and QuickCode's own API listens on 127.0.0.1 behind a token on a machine that is usually on a LAN with printers, routers, NAS boxes and a cloud metadata service.
 
 1. **Scheme.** `http` and `https` only. `file:`, `ftp:`, `data:`, `gopher:` and everything else are refused before anything else is parsed. A URL with no scheme is refused with a sentence saying so. Credentials in the URL (`user:password@host`) are refused outright — they would be sent, logged, and followed through redirects.
-2. **Hostname patterns.** Refused without asking DNS, because on many machines DNS would answer helpfully: `localhost`; any name ending in `.local`, `.localhost`, `.internal` (also GCP's metadata domain), `.intranet`, `.lan`, `.home.arpa`, `.corp`, `.private`; and **any bare hostname with no dot**, which would resolve through the machine's own search domains — which is exactly how an intranet host gets reached without ever looking private.
-3. **Address classes.** Every address the name resolves to is classified and refused if it is the unspecified address (`0.0.0.0` / `::`), loopback, link-local (`169.254/16`, `fe80::/10` — where cloud metadata lives), private (RFC 1918 and unique-local `fc00::/7`), multicast, reserved, or carrier-grade NAT (`100.64/10`). IPv6 addresses carrying an IPv4 one inside them — IPv4-mapped, 6to4, Teredo — are unwrapped and the embedded address classified too, because `::ffff:127.0.0.1` is loopback however it is spelled and some stacks will happily connect to it.
+2. **Hostname patterns.** Refused without asking DNS, because on many machines DNS would answer helpfully: `localhost`; any name ending in `.local`, `.localhost`, `.internal` (also GCP's metadata domain), `.intranet`, `.lan`, `.home.arpa`, `.corp`, `.private`; and **any bare hostname with no dot**, which would resolve through the machine's own search domains — which is exactly how an intranet host gets reached without ever looking private. An internationalised name is converted to its ASCII (punycode) form first, and the rules apply to that form; it is also what goes into DNS, the `Host` header and SNI.
+3. **Address classes.** Every address the name resolves to is classified and refused if it is the unspecified address (`0.0.0.0` / `::`), loopback, link-local (`169.254/16`, `fe80::/10` — where cloud metadata lives), private (RFC 1918, unique-local `fc00::/7` and the deprecated site-local `fec0::/10`), multicast, reserved, or carrier-grade NAT (`100.64/10`). IPv6 addresses carrying an IPv4 one inside them — IPv4-mapped, 6to4, Teredo, NAT64 (`64:ff9b::/96`) — are unwrapped and the embedded address classified too, because `::ffff:127.0.0.1` is loopback however it is spelled and some stacks will happily connect to it. A NAT64 address is judged by its embedded IPv4 alone: on an IPv6-only network with DNS64 every IPv4-only site resolves to one, so refusing the prefix as reserved would refuse the internet, while `64:ff9b::a00:1` is `10.0.0.1`.
    **One bad address refuses the whole name**, not "pick a good one". A host answering with both a public and a loopback address is not a host with a public address; it is an attack.
 4. **Per-hop re-validation.** `follow_redirects=True` would validate the URL it was handed and then follow a `302` anywhere it likes — so a public URL redirecting to `http://127.0.0.1:8765/api/sessions` would be a *validated* fetch of the agent's own control plane. Redirects are therefore stepped through by hand, at most 5 of them, running the whole validation again on every single hop. A refusal after a redirect says so (`… (after a redirect)`). Exhausting the budget is an error, never a silent stop.
 5. **Cookies cleared between hops.** Requests are built by hand and dispatched with `client.send`, which never attaches stored cookies — but the client does *collect* them from responses, so the jar is emptied after every hop rather than relying on that asymmetry. A `Set-Cookie` on a redirect cannot be replayed to whatever it redirected to. The general requirement to strip credentials before following a cross-host redirect is met by never having any to strip.
 6. **DNS rebinding defence.** The request is sent **to the address that was checked** — the URL handed to httpx carries the IP literal — while the original name travels in the `Host` header and in the TLS SNI extension (`sni_hostname`), so virtual hosting still works and the certificate is still verified against the hostname rather than against an address it would never match. Without this the name is resolved twice and the second answer, the one actually connected to, was never checked. That is DNS rebinding, and it is the standard way past a validator that only validates.
-7. **Size and time.** 4 000 000 bytes, capped **while streaming** rather than after — a tool that buffers whatever arrives and truncates at the end is a tool that can be handed a multi-gigabyte response. `Content-Length` is checked first when present and refuses before a byte is downloaded; the read aborts the moment the cap is crossed either way. Time: `timeout_s` (default 30, max 120) around the entire fetch including redirects, plus httpx's own 10 s connect / 20 s read per hop.
+7. **Size and time.** 4 000 000 bytes, capped **while streaming** rather than after — a tool that buffers whatever arrives and truncates at the end is a tool that can be handed a multi-gigabyte response. `Content-Length` is checked first when present and refuses before a byte is downloaded; the read aborts the moment the cap is crossed either way. The cap counts *inflated* bytes and holds while inflating: the body is read raw and inflated by `web/body.py` with an output limit, because httpx inflates each network chunk whole and 64 KB of gzip is 64 MB of zeros before any cap sees it. Only `gzip` and `deflate` are advertised or accepted; any other `Content-Encoding` is refused by name. Time: `timeout_s` (default 30, max 120) around the entire fetch including redirects, plus httpx's own 10 s connect / 20 s read per hop.
 
 The User-Agent is truthful — `QuickCode/<version> (+https://github.com/devincii-io/QuickCode; web_fetch tool; automated request on a user's behalf)` — so a site operator who wants to block it can.
 
@@ -308,7 +317,7 @@ A security note that lists only what it catches is a security note that misleads
 - **A public host that proxies inward is invisible here.** An open proxy, an SSRF-vulnerable service, a URL shortener that resolves server-side — each is indistinguishable from a legitimate public host at this layer, because the badness is on the far end of a connection that looks entirely normal from this end. Nothing on the client side can see it. If the model fetches `https://example.com/?url=http://169.254.169.254/`, this module sees `example.com` and a public address, and it is right about both.
 - **A configured `HTTP_PROXY` / `HTTPS_PROXY` means the proxy does the connecting.** httpx trusts the standard proxy environment variables, and when one is set the socket goes to the proxy, not to the pinned address — the validation still runs and still refuses names and address classes, but the *pin* stops being the thing that decides where the packets end up, because the proxy resolves the target itself. In a proxied environment the guarantee degrades from "connects only to the address that was checked" to "asks a proxy for a host that passed the name checks".
 - **HTTP/2 and connection reuse.** Not a live gap: a client is opened per fetch and httpx speaks HTTP/1.1 unless the `h2` extra is installed. But a pooled connection keyed by hostname rather than by the pinned address would reintroduce the rebinding window, so the pinning and the pooling have to stay the way they are. This is a constraint on future changes, not a current hole.
-- **Exotic IPv6 embeddings.** 6to4, Teredo and IPv4-mapped addresses are unwrapped and their embedded IPv4 checked; a future or unusual embedding would be classified on its outer form only.
+- **Exotic IPv6 embeddings.** 6to4, Teredo, NAT64 and IPv4-mapped addresses are unwrapped and their embedded IPv4 checked; a future or unusual embedding would be classified on its outer form only.
 - **The content is still untrusted.** Nothing above makes the returned text safe. It is markdown from a page somebody else wrote, and it may well have been written to be read by an agent. The tool description tells the model to treat it as text and not as instructions; that is a mitigation, not a boundary.
 
 ## web_search
@@ -329,20 +338,21 @@ A security note that lists only what it catches is a security note that misleads
 
 **There is deliberately no `provider` argument.** Which engine answers is a *setting*, resolved from `search.provider` in `~/.quickcode/config.json`, then `QUICKCODE_SEARCH_PROVIDER`, then Brave. The model cannot shop between engines: a model that can pick its search backend will pick the one that answered last time, or the one whose name it saw in an error, and the user finds out at the end of the month. It is also not a knob the model has any grounds to turn — the quota, the terms and the bill are all the user's.
 
-**What it returns.** A numbered plain-text list, with a footer pointing at the other tool:
+**What it returns.** One TOON table, with a footer pointing at the other tool:
 
+````
+Results for "python 3.13 free threading" via Brave Search:
+```toon
+results[5]{title,url,snippet}:
+  What's New In Python 3.13,https://docs.python.org/3/whatsnew/3.13.html,"The biggest changes include a new interactive interpreter, and experimental…"
+  …
 ```
-5 results for "python 3.13 free threading" via Brave Search:
-
-1. What's New In Python 3.13
-   https://docs.python.org/3/whatsnew/3.13.html
-   The biggest changes include a new interactive interpreter, and experimental…
-   extract: …
-
 Use web_fetch on a URL above to read the full page.
-```
+````
 
-Snippets are clipped to 400 characters. The `extract:` line only appears for the agent-oriented providers (Tavily, Exa) that return extracted page text, and is clipped to 1200; it is printed when present rather than the renderer asking which provider it came from. `ui_meta` carries the provider name and label, the query, the count and a `[{title, url}]` list. No results is a normal answer, not an error.
+Snippets are clipped to 400 characters. An `extract` column appears only when a provider returned extracted page text (Tavily, Exa) — on every row or on none, since a table's rows must agree — and is clipped to 1200. Before rendering, every result is reduced to plain text (Brave's `<strong>` highlighting and HTML entities are stripped), results whose URL is not http(s) are dropped, and a URL listed twice is kept once, in rank order. `ui_meta` carries the provider name and label, the query, the count and a `[{title, url}]` list. No results is a normal answer, not an error.
+
+**Errors.** A failed search names the provider, the host and the status with a hint on what to do (401/403 key, 402/432 credit or plan limit, 429 rate limit, 5xx "try again later"; a provider can override a hint where the shared one misleads — SearXNG's 403 means JSON output is switched off, not a bad key). When the provider explains itself in the body, that explanation is appended, clipped, with every configured credential and anything shaped like `key=…` blanked first. An unconfigured provider's error names **Settings → Web search** before the environment variable and the `set-key` command, because the installed app has no Python to run `python -m` with.
 
 ### Providers
 

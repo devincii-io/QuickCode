@@ -114,6 +114,8 @@ quickcode/
   tools/
     base.py registry.py command.py
     read.py write.py edit.py glob.py grep.py bash.py
+    bash_jobs.py bash_job_tools.py  # background shell jobs, bash_output / bash_kill
+    fs/                   # textfile.py (encodings, line endings, staleness), walk.py, patterns.py
     web_fetch.py web_search.py
     agent.py agent_jobs.py send_message.py task.py plan.py
   web/
