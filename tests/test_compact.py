@@ -185,6 +185,22 @@ async def test_the_summarization_request_is_counted_as_spend():
     assert agent.ledger.last_input_tokens == 0
 
 
+def test_reasoning_is_spend_but_not_context():
+    """A reasoning model's thinking is billed as output but never sent back,
+    so counting it as context tripped compaction long before the window was."""
+    agent = _agent(StubProvider("x"), context_length=100_000)
+    agent.ledger.add(Usage(input_tokens=60_000, output_tokens=30_000, reasoning_tokens=29_000))
+    assert agent.ledger.output_tokens == 30_000
+    assert agent.context_pct() == 61.0
+    assert should_compact(agent) is False
+
+    replayed = Ledger.from_events([
+        {"type": "usage", "input_tokens": 60_000, "output_tokens": 30_000,
+         "reasoning_tokens": 29_000},
+    ])
+    assert replayed.last_output_tokens == agent.ledger.last_output_tokens == 1_000
+
+
 def test_a_replayed_ledger_does_not_measure_context_from_before_a_compaction():
     events = [
         {"type": "usage", "input_tokens": 90_000, "output_tokens": 500},

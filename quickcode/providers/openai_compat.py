@@ -263,12 +263,14 @@ class OpenAICompatProvider:
                     details = getattr(usage, "prompt_tokens_details", None)
                     if details is not None:
                         cached = getattr(details, "cached_tokens", 0) or 0
+                    out_details = getattr(usage, "completion_tokens_details", None)
                     cost = getattr(usage, "cost", None)
                     usage_event = Usage(
                         input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                         output_tokens=getattr(usage, "completion_tokens", 0) or 0,
                         cached_tokens=cached,
                         cost_usd=cost,
+                        reasoning_tokens=getattr(out_details, "reasoning_tokens", 0) or 0,
                     )
 
                 choices = getattr(chunk, "choices", None)

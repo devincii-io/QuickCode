@@ -58,6 +58,9 @@ class Usage:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float | None = None
+    # The part of ``output_tokens`` spent thinking. Billed, but never sent
+    # back to the model, so it is spend without being context.
+    reasoning_tokens: int = 0
 
 
 @dataclass

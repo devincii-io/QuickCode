@@ -93,6 +93,7 @@ def _usage_from_json(d: dict) -> Usage:
         output_tokens=int(d.get("output_tokens") or 0),
         cached_tokens=int(d.get("cached_tokens") or 0),
         cost_usd=d.get("cost_usd"),
+        reasoning_tokens=int(d.get("reasoning_tokens") or 0),
     )
 
 
@@ -118,7 +119,9 @@ class Ledger:
         self.output_tokens += u.output_tokens
         self.cached_tokens += u.cached_tokens
         self.last_input_tokens = u.input_tokens
-        self.last_output_tokens = u.output_tokens
+        # Reasoning is not carried into the next request, so it is not part
+        # of the footprint; counted, it tripped compaction far too early.
+        self.last_output_tokens = max(0, u.output_tokens - u.reasoning_tokens)
         if u.cost_usd:
             self.cost_usd += u.cost_usd
 

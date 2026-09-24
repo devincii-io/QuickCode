@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
-from quickcode.core.events import ToolCallEnd, ToolCallStart, TurnDone
+from quickcode.core.events import ToolCallEnd, ToolCallStart, TurnDone, Usage
 from quickcode.providers.base import ChatMessage, ChatRequest
 from quickcode.providers.openai_compat import OpenAICompatProvider
 
@@ -111,6 +111,25 @@ async def test_calls_the_server_sent_no_id_for_get_ids_unique_to_the_session():
 
     assert first and second and all(first + second)
     assert set(first).isdisjoint(second)
+
+
+async def test_a_usage_only_final_chunk_reports_cache_and_reasoning():
+    usage = NS(
+        prompt_tokens=100, completion_tokens=40, cost=0.01,
+        prompt_tokens_details=NS(cached_tokens=30),
+        completion_tokens_details=NS(reasoning_tokens=25),
+    )
+    provider = _provider(_Stream([
+        _chunk(content="hi", finish="stop"),
+        NS(choices=[], usage=usage),
+    ]))
+
+    events = await _events(provider)
+
+    reported = [e for e in events if isinstance(e, Usage)]
+    assert reported == [Usage(input_tokens=100, output_tokens=40, cached_tokens=30,
+                              cost_usd=0.01, reasoning_tokens=25)]
+    assert isinstance(events[-1], TurnDone) and events[-1].finish_reason == "stop"
 
 
 async def test_the_http_stream_is_closed_when_the_reader_stops_early():
