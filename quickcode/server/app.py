@@ -627,9 +627,11 @@ def create_app(
         # Everything the session owned goes with it: the transcript, the task
         # board beside it, and any subagent artifact nothing else references.
         try:
-            purge_sessions(manager.cwd, [conv_id])
+            result = purge_sessions(manager.cwd, [conv_id])
         except OSError as e:
             raise HTTPException(500, f"could not delete session: {e}") from e
+        if conv_id in result.failed:
+            raise HTTPException(500, f"could not delete session: {result.failed[conv_id]}")
         return Response(status_code=204)
 
     async def _rename_session(
@@ -652,8 +654,13 @@ def create_app(
         """
         if not _valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
-        store = SessionStore(manager.cwd, conv_id)
-        if not store.path.exists():
+        # An open conversation is renamed through its own store. One nobody
+        # has spoken in yet has no log on disk -- its opening records are held
+        # -- and naming it is an act that writes them, where a second store
+        # would find no file and answer 404 for a pane the user can see.
+        conv = manager.get(conv_id)
+        store = conv.store if conv is not None else SessionStore(manager.cwd, conv_id)
+        if conv is None and not store.path.exists():
             raise HTTPException(404, "unknown conversation")
         body = await _read_json(request)
         title = body.get("title") if isinstance(body, dict) else None
@@ -707,16 +714,20 @@ def create_app(
             out.append(raw)
         return out
 
-    def _purge_many(manager: ConversationManager, conv_ids: list[str]) -> dict:
+    async def _purge_many(manager: ConversationManager, conv_ids: list[str]) -> dict:
         """Delete what can be deleted; report the rest instead of failing whole.
 
         A bulk delete that aborted on the first live session would leave the
         user guessing which of twenty rows went through.
+
+        "Live" is the same test the single delete applies: an idle conversation
+        opened earlier in this run is closed and deleted, not refused for the
+        rest of the process's life.
         """
         skipped: list[dict] = []
         targets: list[str] = []
         for conv_id in conv_ids:
-            if manager.get(conv_id) is not None:
+            if await manager.release(conv_id):
                 skipped.append({"conv_id": conv_id, "reason": "live"})
             elif not SessionStore(manager.cwd, conv_id).path.exists():
                 skipped.append({"conv_id": conv_id, "reason": "missing"})
@@ -725,6 +736,8 @@ def create_app(
         result = purge_sessions(manager.cwd, targets)
         for conv_id in result.missing:
             skipped.append({"conv_id": conv_id, "reason": "missing"})
+        for conv_id, why in result.failed.items():
+            skipped.append({"conv_id": conv_id, "reason": "failed", "detail": why})
         return {
             "deleted": result.sessions,
             "boards": result.boards,
@@ -734,7 +747,7 @@ def create_app(
 
     async def _bulk_delete(manager: ConversationManager, request: Request) -> dict:
         body = await _read_json(request)
-        return _purge_many(manager, _selection(body))
+        return await _purge_many(manager, _selection(body))
 
     async def _cleanup_empty(manager: ConversationManager, request: Request) -> dict:
         """Sweep abandoned sessions: no messages *and* no transcript events.
@@ -745,11 +758,11 @@ def create_app(
         """
         body = await _read_json(request)
         dry_run = bool(body.get("dry_run")) if isinstance(body, dict) else False
-        live = set(manager.conversations)
+        live = set(manager.live_conversations())
         candidates = [c for c in SessionStore.empty_sessions(manager.cwd) if c not in live]
         if dry_run:
             return {"candidates": candidates, "deleted": [], "skipped": []}
-        return {"candidates": candidates, **_purge_many(manager, candidates)}
+        return {"candidates": candidates, **await _purge_many(manager, candidates)}
 
     # ---- default-project routes (the original single-project API) ----
 

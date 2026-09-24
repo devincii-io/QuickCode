@@ -476,7 +476,8 @@ async def test_a_subagent_shares_the_conversation_s_job_table(tmp_path):
     child = deps.roster[agent_id]
     assert child.ctx.extra["bash_jobs"] is table
     assert {"bash", *SHELL_JOB_TOOLS} <= set(child.registry.tools)
-    assert deps.child(1, Mode.ask).bash_jobs is table
+    engine = PermissionEngine(Mode.ask, Rules(), tmp_path)
+    assert deps.child(1, engine, self_id=agent_id).bash_jobs is table
 
 
 # --------------------------------------------------------------------------

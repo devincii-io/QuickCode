@@ -23,10 +23,12 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
+import logging
 import os
 import re
 import shutil
 import stat
+import threading
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -34,28 +36,25 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.providers.base import ChatMessage
+from quickcode.session.index import SessionIndex
+from quickcode.session.records import parse
+from quickcode.session.redact import (
+    known_secrets,
+    scrub_error_fields,
+    scrub_event,
+    scrub_serialized,
+)
+from quickcode.session.repair import repair_history
+from quickcode.session.summary import ARTIFACT_REF_RE, TRANSCRIPT_EVENT_TYPES, Summary
 from quickcode.workspace import ensure_project_dir
+
+log = logging.getLogger("quickcode.session")
 
 PROJECT_DIRNAME = ".quickcode"
 SESSIONS_DIRNAME = Path(PROJECT_DIRNAME) / "sessions"
 ARCHIVE_DIRNAME = "archive"
 TASKS_DIRNAME = Path(PROJECT_DIRNAME) / "tasks"
 ARTIFACTS_DIRNAME = Path(PROJECT_DIRNAME) / "artifacts"
-
-# Subagent artifacts are named ``{agent-name}-{n}.md`` from a per-conversation
-# counter, so the filename alone says nothing about which session owns it —
-# two sessions can both have produced an ``explore-1.md``. The only record of
-# ownership is the offload marker the runner splices into the tool result
-# ("…written to <path>…"), which lands verbatim in the session log. Matching it
-# in the raw JSONL text handles both separators and the doubled backslashes
-# JSON escaping leaves behind on Windows.
-_ARTIFACT_REF_RE = re.compile(r"artifacts[\\/]+([A-Za-z0-9][A-Za-z0-9._-]*\.md)")
-
-# Event types that carry the transcript itself. Their presence is what tells a
-# session log apart from one written before the event log existed.
-TRANSCRIPT_EVENT_TYPES = frozenset(
-    {"user_message", "assistant_message", "tool_call", "tool_result"}
-)
 
 _REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTALL)
 
@@ -71,6 +70,10 @@ MAX_TITLE = 200
 # disk* -- `list_sessions` and `empty_sessions` derive them from filenames --
 # so the last line of defence belongs here, next to the code that deletes.
 _SAFE_CONV_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+
+# Serializes appends within this process, so the newline check before a write
+# and the write itself cannot be split by another thread's append.
+_WRITE_LOCK = threading.Lock()
 
 
 def safe_conv_id(conv_id: str) -> bool:
@@ -172,6 +175,10 @@ class SessionInfo:
     model: str
     message_count: int
     archived: bool = False
+    #: No message records and no transcript events: what the sweep removes.
+    empty: bool = False
+    #: Subagent artifacts this log points at. See ``purge_sessions``.
+    artifacts: tuple[str, ...] = ()
 
 
 @dataclass
@@ -182,6 +189,10 @@ class PurgeResult:
     boards: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    #: Logs that exist but could not be removed (another process holds them
+    #: open, say), with the reason. Kept apart from ``missing`` because the
+    #: session is still there.
+    failed: dict[str, str] = field(default_factory=dict)
 
 
 class SessionStore:
@@ -195,10 +206,18 @@ class SessionStore:
         self.active_path = self.sessions_dir / f"{self.conv_id}.jsonl"
         self.archived_path = self.archive_dir / f"{self.conv_id}.jsonl"
         self._next_seq: int | None = None
+        self._last_turn = 0
+        # (path, size) of the log as this store last read or wrote it. A size
+        # it did not produce means another writer appended, and the sequence
+        # counter has to be re-read before it hands out a number twice.
+        self._known_size: tuple[Path, int] | None = None
         # Set by ``hold`` for a conversation nobody has said anything in yet;
         # records pile up here until ``release``. See ``hold``.
         self._holding = False
         self._deferred: list[dict[str, Any]] = []
+        #: Line numbers the last read had to skip. See ``records.parse``.
+        self.damaged_lines: list[int] = []
+        self._reported_damage: list[int] = []
 
     @property
     def path(self) -> Path:
@@ -242,12 +261,41 @@ class SessionStore:
         self.archived_path.replace(self.active_path)
         return True
 
-    def _scan_last_seq(self) -> int:
-        last = 0
-        for rec in self._iter_records():
-            if rec.get("kind") == "event" and isinstance(rec.get("seq"), int):
-                last = max(last, rec["seq"])
-        return last
+    def _scan(self) -> None:
+        """Read the highest ``seq`` and ``turn`` the log already holds."""
+        last_seq = last_turn = 0
+        records, self._known_size = self._read()
+        for rec in records:
+            if rec.get("kind") != "event":
+                continue
+            if isinstance(rec.get("seq"), int):
+                last_seq = max(last_seq, rec["seq"])
+            ev = rec.get("ev")
+            if isinstance(ev, dict) and isinstance(ev.get("turn"), int):
+                last_turn = max(last_turn, ev["turn"])
+        self._next_seq = max(self._next_seq or 0, last_seq + 1)
+        self._last_turn = max(self._last_turn, last_turn)
+
+    def _current_size(self) -> tuple[Path, int]:
+        path = self.path
+        try:
+            return path, path.stat().st_size
+        except OSError:
+            return path, 0
+
+    def _allocate_seq(self) -> int:
+        if self._next_seq is None or self._current_size() != self._known_size:
+            self._scan()
+        assert self._next_seq is not None
+        seq = self._next_seq
+        self._next_seq += 1
+        return seq
+
+    def last_turn(self) -> int:
+        """The highest turn number already logged; 0 for a new session."""
+        if self._next_seq is None:
+            self._scan()
+        return self._last_turn
 
     # ---- writing ----
     def begin(self, **fields: Any) -> None:
@@ -292,15 +340,39 @@ class SessionStore:
         self._write_lines([obj])
 
     def _write_lines(self, objs: list[dict[str, Any]]) -> None:
+        """Append ``objs`` as one contiguous block of lines.
+
+        One write per batch, so another appender can never land between two
+        records of it. And a log that does not end in a newline -- a crash cut
+        the last record short, or left NUL padding -- gets one first: without
+        it the next record was glued onto the fragment and lost with it, so
+        the first thing said after a crash was the one thing resume never saw.
+        """
         target = self.path
         # The first line of the first session is what creates ``.quickcode/``
         # in a fresh project, so it is also where the directory gets the
         # ``.gitignore`` that stops this log from being committed.
         ensure_project_dir(self.root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as f:
-            for obj in objs:
-                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        # Every writer ends up here, which makes it the one place a credential
+        # can be stopped whichever path carried it in. See ``redact``.
+        secrets = known_secrets()
+        payload = "".join(
+            scrub_serialized(json.dumps(scrub_error_fields(obj), ensure_ascii=False), secrets)
+            + "\n"
+            for obj in objs
+        )
+        data = payload.encode("utf-8")
+        with _WRITE_LOCK, target.open("a+b", buffering=0) as f:
+            end = f.seek(0, os.SEEK_END)
+            if end:
+                f.seek(end - 1)
+                if f.read(1) != b"\n":
+                    data = b"\n" + data
+            view = memoryview(data)
+            while view:
+                view = view[f.write(view) or 0:]
+            self._known_size = (target, os.fstat(f.fileno()).st_size)
 
     def append_message(self, msg: ChatMessage) -> None:
         self.release()
@@ -370,37 +442,50 @@ class SessionStore:
         a reload (which replays from disk, where ``load_events`` folds the
         record's ``ts`` back in) put them where they actually happened.
         """
-        if self._next_seq is None:
-            self._next_seq = self._scan_last_seq() + 1
-        seq = self._next_seq
-        self._next_seq += 1
+        seq = self._allocate_seq()
         ts = ev["ts"] = datetime.datetime.now().isoformat()
+        # Redacted in the caller's dict too, for the same reason ``ts`` is: it
+        # is what gets broadcast, and the window must show what replay will.
+        cleaned = scrub_event(ev)
+        if cleaned is not ev:
+            ev.clear()
+            ev.update(cleaned)
         # The user saying something is what turns an open window into a
         # session. Everything before it was the app getting ready.
         if ev.get("type") == "user_message":
             self.release()
-        self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": ev})
+        # A copy: a held record is written later, and the caller goes on to
+        # stamp ``seq`` into its own dict, which must not reach the file.
+        self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": dict(ev)})
         return seq
 
     # ---- reading ----
     def _iter_records(self) -> list[dict[str, Any]]:
-        records: list[dict[str, Any]] = []
-        if self.path.exists():
-            with self.path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        records.append(json.loads(line))
-                    except (json.JSONDecodeError, ValueError):
-                        continue
+        return self._read()[0]
+
+    def _read(self) -> tuple[list[dict[str, Any]], tuple[Path, int]]:
+        """The log's records (held ones last) and the (path, size) read."""
+        path = self.path
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            data = b""
+        parsed = parse(data)
+        records = parsed.records
+        self.damaged_lines = parsed.damaged
+        if parsed.damaged and parsed.damaged != self._reported_damage:
+            self._reported_damage = list(parsed.damaged)
+            log.warning(
+                "session %s: skipped %d unreadable line(s) in %s (line %s)",
+                self.conv_id, len(parsed.damaged), path,
+                ", ".join(str(n) for n in parsed.damaged[:10]),
+            )
         # Held records are part of this session as far as every reader is
         # concerned. Only the *write* is deferred: a client that attaches to a
         # conversation before anything is said still replays its system prompt,
         # exactly as it did when opening the window created a file.
         records.extend(self._deferred)
-        return records
+        return records, (path, len(data))
 
     def load_messages(self) -> list[ChatMessage]:
         """The model context to resume with.
@@ -410,6 +495,9 @@ class SessionStore:
         compaction removed and must not come back. Messages appended after it
         are the turns that followed and are kept. The last such record wins,
         because a long session compacts more than once.
+
+        What comes back is repaired into a history a provider accepts (see
+        ``repair.repair_history``); the log itself is never rewritten.
         """
         messages: list[ChatMessage] = []
         for rec in self._iter_records():
@@ -427,7 +515,7 @@ class SessionStore:
                     messages.append(message_from_dict(rec["message"]))
                 except (KeyError, TypeError):
                     continue
-        return messages
+        return repair_history(messages)
 
     def load_events(self) -> list[dict[str, Any]]:
         """All trace events, oldest first, with ``seq``/``ts`` folded in."""
@@ -475,33 +563,15 @@ class SessionStore:
                     merged[key] = value
         return merged
 
+    def summary(self) -> Summary:
+        """What the session list says about this log, held records included."""
+        summary = Summary()
+        summary.fold(self._iter_records())
+        return summary
+
     def title(self) -> str:
-        # The *last* meta title wins, not the first. Renaming is an append —
-        # there is no other kind of write this format has — so a log that has
-        # been renamed twice carries two titles, and reading the first one back
-        # would show the name the user just replaced. Empty is not a title: a
-        # session is opened with ``title=""``, and a rename to nothing is a
-        # request to go back to the derived name below, not to display blank.
-        chosen = ""
-        for rec in self._iter_records():
-            if rec.get("kind") == "meta" and "title" in rec:
-                chosen = str(rec["title"] or "").strip()
-        if chosen:
-            return chosen
-        # The event before the message, because the event carries what the user
-        # typed and the persisted message carries what the model was sent —
-        # which has `<system-reminder>` blocks spliced into it. Titling a
-        # session with the runtime's own scaffolding, rather than the sentence
-        # the person wrote, puts internals in the session list.
-        for ev in self.load_events():
-            if ev.get("type") == "user_message" and ev.get("text"):
-                return str(ev["text"]).strip()[:60]
-        # A turn interrupted before messages were persisted, or a log old
-        # enough to predate user_message events, still has to produce a title.
-        for msg in self.load_messages():
-            if msg.role == "user" and msg.content:
-                return msg.content.strip()[:60]
-        return "(empty)"
+        """The name the session shows. See ``Summary.title`` for the order."""
+        return self.summary().title
 
     def is_empty(self) -> bool:
         """True only when this log holds no transcript whatsoever.
@@ -512,83 +582,57 @@ class SessionStore:
         the whole conversation. Both logs have to be silent before a session
         can be swept up as abandoned; anything less would be data loss.
         """
-        for rec in self._iter_records():
-            kind = rec.get("kind")
-            if kind == "message":
-                return False
-            if kind == "event":
-                ev = rec.get("ev")
-                if isinstance(ev, dict) and ev.get("type") in TRANSCRIPT_EVENT_TYPES:
-                    return False
-        return True
+        return self.summary().empty
 
     def artifact_refs(self) -> set[str]:
         """Names of subagent artifacts this session's log points at."""
-        path = self.path
-        if not path.exists():
-            return set()
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return set()
-        return set(_ARTIFACT_REF_RE.findall(text))
+        return _artifact_refs_in(self.path)
 
     # ---- listing ----
-    @classmethod
-    def _info(cls, root: Path, path: Path, *, archived: bool) -> SessionInfo | None:
-        conv_id = path.stem
-        try:
-            store = cls(root, conv_id=conv_id)
-            mtime = path.stat().st_mtime
-            model = ""
-            message_count = 0
-            for rec in store._iter_records():
-                kind = rec.get("kind")
-                if kind == "meta" and not model and rec.get("model"):
-                    model = str(rec["model"])
-                elif kind == "message":
-                    message_count += 1
-            if not message_count:
-                # Same fallback as title(): an event-only session (no
-                # persisted message log) still has a real transcript, so
-                # count that rather than showing "0 msgs" for it.
-                message_count = sum(
-                    1 for ev in store.load_events()
-                    if ev.get("type") in TRANSCRIPT_EVENT_TYPES
-                )
-            title = store.title()
-        except OSError:
-            return None
-        return SessionInfo(
-            conv_id=conv_id,
-            path=path,
-            mtime=mtime,
-            title=title,
-            model=model,
-            message_count=message_count,
-            archived=archived,
-        )
-
     @classmethod
     def list_sessions(
         cls, root: Path, *, include_archived: bool = False, archived_only: bool = False
     ) -> list[SessionInfo]:
         """Sessions newest first. Archived logs are excluded by default; the
-        glob is non-recursive, so the archive subdirectory costs nothing."""
+        glob is non-recursive, so the archive subdirectory costs nothing.
+
+        Summaries come from the index beside the logs (``index.py``), so a
+        refresh reads only what was appended since the last one.
+        """
         sessions_dir = Path(root) / SESSIONS_DIRNAME
-        infos: list[SessionInfo] = []
-        if not archived_only and sessions_dir.is_dir():
-            for path in sessions_dir.glob("*.jsonl"):
-                info = cls._info(root, path, archived=False)
-                if info is not None:
-                    infos.append(info)
+        if not sessions_dir.is_dir():
+            return []
+        index = SessionIndex(sessions_dir)
+        scopes = []
+        if not archived_only:
+            scopes.append((sessions_dir, "", False))
         if include_archived or archived_only:
-            archive_dir = sessions_dir / ARCHIVE_DIRNAME
-            if archive_dir.is_dir():
-                for path in archive_dir.glob("*.jsonl"):
-                    info = cls._info(root, path, archived=True)
-                    if info is not None:
-                        infos.append(info)
+            scopes.append((sessions_dir / ARCHIVE_DIRNAME, ARCHIVE_DIRNAME + "/", True))
+        infos: list[SessionInfo] = []
+        for directory, prefix, archived in scopes:
+            present: set[str] = set()
+            paths = directory.glob("*.jsonl") if directory.is_dir() else []
+            for path in paths:
+                key = prefix + path.stem
+                try:
+                    st = path.stat()
+                    summary = index.summary(key, path, st)
+                except OSError:
+                    continue
+                present.add(key)
+                infos.append(SessionInfo(
+                    conv_id=path.stem,
+                    path=path,
+                    mtime=st.st_mtime,
+                    title=summary.title,
+                    model=summary.model,
+                    message_count=summary.message_count,
+                    archived=archived,
+                    empty=summary.empty,
+                    artifacts=tuple(summary.artifacts),
+                ))
+            index.prune(prefix, present)
+        index.save()
         infos.sort(key=lambda s: s.mtime, reverse=True)
         return infos
 
@@ -607,7 +651,7 @@ class SessionStore:
             # it now also never gets that far.
             if not safe_conv_id(info.conv_id):
                 continue
-            if info.message_count == 0 and cls(root, info.conv_id).is_empty():
+            if info.empty and cls(root, info.conv_id).is_empty():
                 out.append(info.conv_id)
         return out
 
@@ -617,6 +661,14 @@ class SessionStore:
         if not sessions:
             return None
         return sessions[0].conv_id
+
+
+def _artifact_refs_in(path: Path) -> set[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return set(ARTIFACT_REF_RE.findall(text))
 
 
 def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
@@ -644,14 +696,19 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
             result.missing.append(conv_id)
             continue
         store = SessionStore(root, conv_id)
-        if not store.path.exists():
+        # Both copies: archive and unarchive refuse to make a second one, but a
+        # restored backup can, and removing only the active log let the
+        # archived one step in under the same id.
+        logs = [p for p in (store.active_path, store.archived_path) if p.exists()]
+        if not logs:
             result.missing.append(conv_id)
             continue
-        doomed_refs |= store.artifact_refs()
         try:
-            store.path.unlink()
-        except OSError:
-            result.missing.append(conv_id)
+            for log_path in logs:
+                doomed_refs |= _artifact_refs_in(log_path)
+                log_path.unlink()
+        except OSError as e:
+            result.failed[conv_id] = e.strerror or str(e)
             continue
         result.sessions.append(conv_id)
         board_dir = root / TASKS_DIRNAME / conv_id
@@ -666,7 +723,7 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
     if doomed_refs:
         keep: set[str] = set()
         for info in SessionStore.list_sessions(root, include_archived=True):
-            keep |= SessionStore(root, info.conv_id).artifact_refs()
+            keep |= set(info.artifacts)
         artifacts_dir = root / ARTIFACTS_DIRNAME
         for name in sorted(doomed_refs - keep):
             target = artifacts_dir / name
