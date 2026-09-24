@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="css/panels-git.css">
 <link rel="stylesheet" href="css/chat.css">
 <link rel="stylesheet" href="css/trajectory.css">
+<link rel="stylesheet" href="css/inspector.css">
 <link rel="stylesheet" href="css/settings.css">
 <link rel="stylesheet" href="css/config.css">
 <link rel="stylesheet" href="css/help.css">
@@ -172,19 +173,8 @@
                 <div id="tj-spacer" class="tj-spacer"></div>
                 <div id="tj-rows" class="tj-rows"></div>
               </div>
-              <aside id="traj-detail" class="traj-detail hidden">
-                <div class="traj-detail-head">
-                  <span id="traj-detail-title">—</span>
-                  <button id="traj-detail-close" class="ghost-btn">✕</button>
-                </div>
-                <nav class="detail-tabs" id="detail-tabs">
-                  <button data-tab="summary" class="active">Summary</button>
-                  <button data-tab="payload">Payload</button>
-                  <button data-tab="result">Result</button>
-                  <button data-tab="timing">Timing</button>
-                </nav>
-                <div id="detail-body" class="detail-body"></div>
-              </aside>
+              <!-- The shared inspector (js/inspector.js) builds itself in here. -->
+              <aside id="traj-detail" class="traj-detail hidden" aria-label="Event inspector"></aside>
             </div>
           </section>
 

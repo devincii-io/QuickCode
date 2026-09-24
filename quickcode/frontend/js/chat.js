@@ -1,5 +1,6 @@
 // Chat view: incremental transcript renderer over the event store.
 
+import { promptNote } from "./inspect.js";
 import { markdownStream, renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
 import { renderAnsiBlock } from "./terminal/emulator.js";
@@ -259,7 +260,9 @@ function renderEvent(ev) {
     // message, a hook that failed); the rest is trajectory detail.
     case "hook_run":
       return ev.notice ? addNode(el(`<div class="sys-note">⚑ ${esc(ev.notice)}</div>`)) : undefined;
-    // system_prompt / context_injection are trajectory-only by design.
+    // The prompt is one line that opens the inspector on its full text;
+    // context_injection stays trajectory-only.
+    case "system_prompt": return addNode(promptNote(ev));
   }
 }
 
