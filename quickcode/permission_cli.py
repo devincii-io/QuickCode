@@ -68,10 +68,10 @@ def explain_here(cwd: Path, tool_name: str, *, input_json: str | None, target: s
     from quickcode.core import permission_explain, permission_posture
     from quickcode.plugins import loader
     from quickcode.security import trust
-    from quickcode.tools.registry import default_registry
+    from quickcode.tools.registry import install_registry
 
     config = Config.load()
-    tools = [*default_registry().tools.values(), *loader.load_tool_plugins()]
+    tools = install_registry(loader.load_tool_plugins()).tools.values()
     posture = permission_posture.for_new_session(
         cwd, config=config, tools=tools, allow_yolo=bool(config.allow_yolo),
         project_rules=project_rules, use_profile=profile,

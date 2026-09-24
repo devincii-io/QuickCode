@@ -97,17 +97,17 @@ def for_new_session(
     """
     from quickcode.core.profiles import effective as effective_posture
     from quickcode.kernel import preset as preset_module
-    from quickcode.kernel.composition import ORCHESTRATOR_ID, narrower_mode
+    from quickcode.kernel.composition import narrower_mode
+    from quickcode.kernel.orchestrator import resolve_orchestrator
     from quickcode.kernel.resolve import default_mode as resolved_default_mode
-    from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
+    from quickcode.kernel.resolve import session_pool
     from quickcode.subagents.definitions import load_defs
     from quickcode.tools.registry import ToolRegistry
 
     pool = session_pool(cwd, list(tools))
     preset = preset_module.resolve(cwd)
-    resolved = resolve_composition(
-        ORCHESTRATOR_ID, pool=pool, preset=preset, defs=load_defs(cwd), cwd=cwd,
-        max_depth=runtime_limits(cwd).max_depth, resolve_model=resolve_model,
+    resolved = resolve_orchestrator(
+        pool=pool, preset=preset, defs=load_defs(cwd), cwd=cwd, resolve_model=resolve_model,
     )
     mode_str = (default_mode or preset.default_mode
                 or resolved_default_mode(cwd, config.default_mode))
