@@ -33,6 +33,14 @@ function apply() {
   root.dataset.motion = String(prefs.motion);
 }
 
+/** Whether something may move: the system's reduced-motion preference and the
+ *  Animate setting both have to allow it. CSS reads the same two (workspace.css);
+ *  this is for motion a script drives. */
+export function motionAllowed() {
+  if (document.documentElement.dataset.motion === "false") return false;
+  return !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+}
+
 export function saveAppearance(prefs) {
   localStorage.setItem(KEY, JSON.stringify(prefs));
   apply();

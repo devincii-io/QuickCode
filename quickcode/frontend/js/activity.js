@@ -22,6 +22,7 @@
 // the agent is idle.
 
 import { escInterrupts } from "./composer.js";
+import { motionAllowed } from "./appearance.js";
 import { store, subscribe } from "./store.js";
 import { fmtTokens } from "./util.js";
 import { VERBS } from "./verbs.js";
@@ -68,9 +69,9 @@ let streamChars = 0;       // assistant characters streamed since tokenAuth
 let streamLen = 0;         // last sampled size of the live stream buffers
 let lastSecs = -1;
 let frame = 0;
-let reducedMq = null;
 
-function reduced() { return !!reducedMq?.matches; }
+// The system preference or the Animate activity indicators setting.
+function reduced() { return !motionAllowed(); }
 
 // ---- formatting ----
 
@@ -354,7 +355,7 @@ export function initActivity() {
     live: $("activity-live"),
   };
   if (!els.root) return;
-  reducedMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const reducedMq = window.matchMedia("(prefers-reduced-motion: reduce)");
   // Flipping the OS setting mid-turn re-rates the timer instead of waiting for
   // the next one.
   reducedMq.addEventListener?.("change", () => {
