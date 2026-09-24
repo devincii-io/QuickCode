@@ -45,6 +45,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from quickcode import textio
 from quickcode.kernel.authoring import schema
 from quickcode.kernel.authoring.format import parse_document
 from quickcode.kernel.authoring.model import AuthoredPlugin
@@ -135,12 +136,13 @@ def _scan(directory: Path, scope: str) -> tuple[list[AuthoredPlugin], list[Probl
         if path.name.startswith("."):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = textio.read_text(path)
         except (OSError, UnicodeDecodeError) as exc:
             problems.append(Problem(
                 code="bad_json", severity="error",
                 message=f"{path.name} could not be read: {exc}",
-                fix="Check the file's encoding; authored plugins are UTF-8.",
+                fix=("Check the file's encoding; authored plugins are UTF-8, or "
+                     "UTF-16 with a byte-order mark."),
                 subject=path.stem,
                 provenance=Provenance(layer=_layer(scope), source=path.name,
                                       path=str(path)),

@@ -13,7 +13,7 @@ import platform
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from quickcode import gitcmd, jsonfile
+from quickcode import gitcmd, jsonfile, textio
 from quickcode.search import SearchSettings
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -313,7 +313,7 @@ def _load_project_instructions(root: Path) -> tuple[str, str]:
         p = root / name
         if p.exists():
             try:
-                return p.read_text(encoding="utf-8"), name
+                return textio.read_text(p), name
             except Exception:
                 continue
     return "", ""
