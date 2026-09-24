@@ -86,9 +86,15 @@ today.
 - **Protected paths prompt in every mode except `yolo`**, regardless of allow
   rules: `.git/`,
   `.quickcode/`, `.ssh/`, `.env` and `.env.*`, and anything outside the project
-  root. The test is on the *resolved* path's components, so `~/.quickcode/` is
-  caught twice over — once as a `.quickcode` component, once as outside the
-  root. Checked *before* allow-rule
+  root. The test runs on the path as *written* and on the path as *resolved*
+  (`security/protected.py`), and either is enough: a symlink named `.env` is
+  protected by its name, a harmless name that links into `.git` by its target.
+  Names are compared the way Windows compares them, on every platform — case
+  folded, trailing dots and spaces dropped, an NTFS stream suffix
+  (`.env::$DATA`) dropped, 8.3 short names (`GIT~1`) recognised, and `\` taken
+  as a separator. Only components *below* the project root count, so a project
+  kept under a directory named `.quickcode` is not protected wholesale.
+  Checked *before* allow-rule
   evaluation so no rule can accidentally unprotect them. In `dontask` the same
   check denies instead of prompting, because there is nobody to ask. In `yolo`
   it does neither: the mode exists to stop asking, and asking anyway made a

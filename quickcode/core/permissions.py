@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from quickcode.security.protected import is_protected, is_subagent_artifact
+
 log = logging.getLogger("quickcode.permissions")
 
 # Builtin read-only shell commands that auto-allow (first token).
@@ -214,59 +216,6 @@ def _glob_match(pattern: str, value: str) -> bool:
     return re.fullmatch("".join(parts), value) is not None
 
 
-# A shell word this side cannot resolve: a variable, a substitution, or a
-# Windows %VAR%. The expansion happens in the shell, long after this decision.
-_UNRESOLVABLE = re.compile(r"\$\w|\$\{|\$\(|`|%\w+%")
-
-
-def _protected(path: str, root: Path) -> bool:
-    # `cat $HOME/.aws/credentials` used to resolve as the *literal* string
-    # "$HOME/.aws/credentials" -- a relative path, therefore inside the project,
-    # therefore harmless -- and auto-allowed in every mode including dontask,
-    # while the same file named plainly prompted. Anything holding an unexpanded
-    # expansion is treated as protected: this side does not know where it
-    # points, and "unknown" is not "safe".
-    if _UNRESOLVABLE.search(path):
-        return True
-    try:
-        candidate = Path(path).expanduser()
-        rp = (candidate if candidate.is_absolute() else root / candidate).resolve()
-    except Exception:
-        return True
-    parts = set(rp.parts)
-    if ".git" in parts or ".quickcode" in parts:
-        return True
-    # Secret-bearing files warrant an explicit prompt even inside the project.
-    if any(part == ".ssh" or part == ".env" or part.startswith(".env.") for part in rp.parts):
-        return True
-    try:
-        rp.relative_to(root.resolve())
-    except ValueError:
-        return True  # outside project root
-    return False
-
-
-def _is_subagent_artifact(path: str, root: Path) -> bool:
-    """True for a path inside ``<root>/.quickcode/artifacts/``.
-
-    A subagent's large report is offloaded there and the parent is told, in the
-    tool result, to read that file for the rest — so the session prompts for a
-    file it wrote itself moments earlier, in every mode including yolo. There is
-    no decision behind that prompt: the content is already the agent's own.
-
-    Resolved exactly as ``_protected`` resolves, so a symlink or a ``..`` that
-    lands outside the directory does not qualify. Callers apply this to *reads*
-    only; writing here still goes through the ordinary ``.quickcode`` prompt.
-    """
-    try:
-        candidate = Path(path).expanduser()
-        rp = (candidate if candidate.is_absolute() else root / candidate).resolve()
-        artifacts = (root / ".quickcode" / "artifacts").resolve()
-    except Exception:
-        return False
-    return rp == artifacts or artifacts in rp.parents
-
-
 _SPEC_CACHE: dict[str, PermissionSpec] | None = None
 
 
@@ -341,8 +290,8 @@ class PermissionEngine:
         #    the mode named yolo, confirmed it, and watched it go red has
         #    already had that conversation. A deny rule still denies below;
         #    this only stops the asking.
-        if spec.path_target and _protected(arg, self.root):
-            if not (is_read and _is_subagent_artifact(arg, self.root)):
+        if spec.path_target and is_protected(arg, self.root):
+            if not (is_read and is_subagent_artifact(arg, self.root)):
                 if self.mode is Mode.dontask:
                     return Decision.deny
                 if self.mode is not Mode.yolo:
@@ -433,7 +382,7 @@ class PermissionEngine:
             # only the outside compared the wrong string and waved through the
             # very file it exists to protect.
             candidate = candidate.replace("'", "").replace('"', "").strip("{},()")
-            if candidate and _protected(candidate, self.root):
+            if candidate and is_protected(candidate, self.root):
                 if self.mode is Mode.dontask:
                     return Decision.deny
                 # Same exemption as the path tools above, and this is where it
