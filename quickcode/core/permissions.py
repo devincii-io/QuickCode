@@ -2,7 +2,11 @@
 
 Two principles from docs/PERMISSIONS.md:
   1. Parse, don't prefix-match — decompose compound bash commands.
-  2. Deny beats allow, everywhere — evaluate deny → ask → allow → mode default.
+  2. Deny beats allow, everywhere — evaluate deny → plan-mode refusal →
+     protected-path prompt → ask → allow → mode default.
+
+The shell reading, the command analysis, the recursive-read walk and the
+circuit breakers live in ``quickcode/security/``; this module decides.
 
 The engine returns a *decision* (allow / ask / deny). The UI turns an ``ask``
 into a modal via ``push_screen_wait``; headless turns it into an auto-deny.
@@ -53,24 +57,6 @@ _MAX_NESTING = 4
 # Whether deny and ask rules on paths ignore case: on these filesystems
 # `KEY.PEM` opens `key.pem`, so a rule against one must hold for the other.
 CASE_INSENSITIVE_PATHS = sys.platform in ("win32", "darwin")
-# Commands run by other commands (`bash -c`, `xargs`, `find -exec`, `$(...)`)
-# are evaluated as if typed, to this depth; anything nested deeper asks.
-_MAX_NESTING = 4
-# Whether deny and ask rules on paths ignore case: on these filesystems
-# `KEY.PEM` opens `key.pem`, so a rule against one must hold for the other.
-CASE_INSENSITIVE_PATHS = sys.platform in ("win32", "darwin")
-# Catastrophic patterns that prompt even in yolo.
-# The flag spelling was the whole of the check, so `rm -rf /` was caught while
-# `rm -fr /`, `rm -rf /*` and `rm --recursive --force /` -- the same command,
-# spelled the way a shell user is at least as likely to spell it -- went
-# straight through, as did `git push -f`. Written now as "the dangerous flags,
-# in any order or long form, then the dangerous target".
-_RM_FLAG = r"(?:--recursive|--force|-[a-zA-Z]*[rRf][a-zA-Z]*)"
-_CIRCUIT_BREAKERS = [
-    re.compile(rf"\brm\s+(?:{_RM_FLAG}\s+)*{_RM_FLAG}\s+[\"']?(?:/|~)(?:/?\*)?[\"']?(?:\s|$)"),
-    re.compile(r"git\s+push\s+(?:.*\s)?(?:--force\b|--force-with-lease\b|-f\b)"),
-    re.compile(r":\(\)\s*\{"),  # fork bomb
-]
 
 
 class Mode(str, Enum):
