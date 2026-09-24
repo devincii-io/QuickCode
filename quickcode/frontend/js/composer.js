@@ -861,7 +861,7 @@ export function initComposer(h) {
   });
 
   input.addEventListener("keydown", (e) => {
-    if (e.isComposing) return;
+    if (composing(e)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (slashOpen()) {
@@ -919,8 +919,18 @@ export function initComposer(h) {
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && escInterrupts()) actions.interrupt();
+    // Escape during an IME composition cancels the candidate; it is not
+    // addressed to the agent, and a CJK typist would stop every turn with it.
+    if (e.key === "Escape" && !composing(e) && escInterrupts()) actions.interrupt();
   });
+}
+
+// A keystroke that belongs to an input method rather than to the page. WebKit —
+// the engine behind the app window on macOS and Linux — fires the Enter that
+// commits a candidate with `isComposing` already false, and only keyCode 229
+// gives it away; without that check the half-typed message was sent.
+function composing(e) {
+  return e.isComposing || e.keyCode === 229;
 }
 
 // Escape interrupts the turn — but only when it is not already spoken for.
