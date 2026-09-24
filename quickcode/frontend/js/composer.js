@@ -137,6 +137,10 @@ function activate(preferComplete) {
 
 function autosize() {
   input.style.height = "auto";
+  // A hidden box measures 0 — a narrow pane whose side panel covers the chat
+  // restores its draft while hidden — and pinning that shut left no input to
+  // type into once the panel closed. The CSS height holds until it can measure.
+  if (!input.scrollHeight) { input.style.height = ""; return; }
   input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + "px";
 }
 

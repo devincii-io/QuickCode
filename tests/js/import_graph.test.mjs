@@ -37,6 +37,9 @@ test("the outer workspace window never loads the pane's socket", () => {
   assert.ok(!shell.has("ws.js"), "workspaces.js reaches ws.js");
   assert.ok(!shell.has("modals.js"), "workspaces.js reaches the modals.js compatibility re-export");
   assert.ok(!shell.has("reviews.js"), "workspaces.js reaches the review queue");
+  // The shell's palette and notifications are its own; the pane's reach ws.js.
+  assert.ok(shell.has("palette.js") && shell.has("notify.js"), "the shell lost its palette or notices");
+  assert.ok(!shell.has("palette_pane.js") && !shell.has("pane_notices.js"), "the shell loads a pane's palette or notices");
 });
 
 test("the outer workspace window never loads the configuration view", () => {
@@ -51,7 +54,8 @@ test("the outer workspace window never loads the configuration view", () => {
 test("an agent pane still loads everything it wires", () => {
   const pane = closure("main.js");
   for (const m of ["ws.js", "reviews.js", "menus.js", "composer/slash.js", "statusbar.js",
-    "connbanner.js", "sessionbar.js", "ui/modal.js", "ui/menu.js", "config/view.js"]) {
+    "connbanner.js", "sessionbar.js", "ui/modal.js", "ui/menu.js", "config/view.js",
+    "palette_pane.js", "pane_notices.js"]) {
     assert.ok(pane.has(m), `main.js no longer reaches ${m}`);
   }
 });

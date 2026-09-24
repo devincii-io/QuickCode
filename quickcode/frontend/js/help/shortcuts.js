@@ -5,12 +5,15 @@
 // read the same array, because a shortcut list that exists twice is a shortcut
 // list that is wrong in one of the two places.
 //
-// The slash commands are read from `COMMANDS` in js/composer/slash.js, which is
-// what actually runs when you type one.
+// The slash commands are read from js/composer/commands.js, the table the
+// composer runs them from.
 
-import { COMMANDS } from "../composer/slash.js";
+import { SLASH_COMMANDS } from "../composer/commands.js";
 
 export const KEYS = [
+  ["Ctrl + K (⌘K on a Mac)", "Open the command palette: slash commands, modes, the model, sessions, "
+    + "panes and every Settings and Help page, searchable. In an agent pane it also "
+    + "searches your past conversations"],
   ["Alt + N", "Open a new agent pane in this workspace"],
   ["Alt + Z", "Maximize the focused agent or restore the pane layout"],
   ["Alt + B", "Show or hide the workspace sidebar"],
@@ -28,12 +31,12 @@ export const KEYS = [
     + "in this project's directory, yours to type in"],
 ];
 
-/** `[command, argument, description]` per slash command. A function rather than
- *  a constant: slash.js reaches this module through help/quickref.js, so while
- *  the modules load, its table may not exist yet. */
+/** `[command, argument, description]` per slash command, from the one table
+ *  in js/composer/commands.js. */
 export function slashRows() {
-  return COMMANDS.map(({ name, arg, desc }) => [name, arg || "", desc]);
+  return SLASH_COMMANDS.map(({ name, arg, desc }) => [name, arg || "", desc]);
 }
+
 
 export const PANEL_NOTE =
   "The right-hand panel holds Trajectory, Agents, Tasks, Files, Checkpoints and Usage. Drag "
@@ -47,3 +50,4 @@ export const TERMINAL_NOTE =
   + "with its output as the terminal would have drawn it; ▸ run here puts one "
   + "at your own prompt without running it. The agent cannot type into your "
   + "shell and never sees what you do there — the two are separate sessions.";
+export const SLASH = slashRows();

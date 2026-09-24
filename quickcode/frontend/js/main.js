@@ -28,10 +28,12 @@ import {
 import {
   initHelp, isHelpRoute, lastHelpRoute, render as renderHelp,
 } from "./help/view.js";
+import { initPaneNotices } from "./pane_notices.js";
+import { initPanePalette } from "./palette_pane.js";
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { clearQueue, initStatusBar, shortModel } from "./statusbar.js";
 import { store, subscribe } from "./store.js";
-import { setInspector } from "./inspect.js";
+import { inspect, setInspector } from "./inspect.js";
 import { initTerminal, setTerminalProject } from "./terminal/panel.js";
 import { checkTrust, initTrust, resetTrust } from "./trust.js";
 import { initTrajectory, selectSeq } from "./trajectory.js";
@@ -196,7 +198,7 @@ async function refreshUpdateChip() {
 
 // ---- project + conversation lifecycle ----
 
-async function openProject(project, { resume = null } = {}) {
+async function openProject(project, { resume = null, seq = null } = {}) {
   setProject(project.id);
   setPanelProject(project.id);
   setTerminalProject(project.id);
@@ -224,7 +226,7 @@ async function openProject(project, { resume = null } = {}) {
   $("model-pill").textContent = shortModel(bs.default_model) + " ▾";
   document.title = `QuickCode — ${bs.project}`;
 
-  await openConversation(resume);
+  await openConversation(resume, { seq });
 
   // Opening a project can no longer start its MCP servers on its own. Ask what
   // was refused and put it in front of the user — a project that silently
@@ -232,15 +234,31 @@ async function openProject(project, { resume = null } = {}) {
   checkTrust(project.id);
 }
 
-async function openConversation(resume) {
+// An event to open the inspector on once its conversation has replayed: a
+// search hit names a session *and* the message in it that matched.
+let reveal = null;
+
+function revealSeq(seq) {
+  if (!Number.isSafeInteger(seq)) return;
+  if (store.replaying || store.connection !== "open") reveal = { convId: store.convId, seq };
+  else inspect(seq);
+}
+
+async function openConversation(resume, { seq = null } = {}) {
+  const at = Number.isSafeInteger(seq) ? seq : null;
+  if (resume && resume === store.convId) {
+    if (at !== null) revealSeq(at);
+    return;
+  }
   if (embedded && store.convId) {
-    tellWorkspace("open-session", { convId: resume || null });
+    tellWorkspace("open-session", { convId: resume || null, ...(at !== null ? { seq: at } : {}) });
     return;
   }
   const pid = currentProject();
   clearQueue();
   try {
     const { conv_id } = await api.openConversation(resume || undefined);
+    reveal = at !== null ? { convId: conv_id, seq: at } : null;
     connect(pid, conv_id);
   } catch (err) {
     $("transcript").innerHTML =
@@ -277,6 +295,7 @@ async function boot() {
       if (e.origin !== location.origin || e.source !== window.parent || e.data?.source !== "qc-workspace") return;
       if (e.data.action === "focus") $("input")?.focus();
       if (e.data.action === "renamed") refreshSessionBar();
+      if (e.data.action === "reveal") revealSeq(e.data.seq);
     });
   }
 
@@ -333,7 +352,7 @@ async function boot() {
   });
   initSessionBar({
     embedded,
-    onPick: (convId) => openConversation(convId),
+    onPick: (convId, { seq } = {}) => openConversation(convId, { seq }),
     onNew: () => openConversation(null),
     onTitle: (title) => reportPane(title),
   });
@@ -353,6 +372,11 @@ async function boot() {
     }
     // A replay reports once, at replay_done, not once per review it passes.
     if (["state", "connection", "review", "replay_done"].includes(kind)) reportPane();
+    if (kind === "replay_done" && reveal?.convId === store.convId) {
+      const { seq } = reveal;
+      reveal = null;
+      inspect(seq);
+    }
     // A switch changes what every configuration page would say about this
     // session, and the view caches the kernel for the life of a visit.
     if (kind === "event" && ev.type === "composition_changed") invalidateConfig();
@@ -362,6 +386,13 @@ async function boot() {
   });
   initStatusBar();
   initConnBanner({ newSession: () => openConversation(null) });
+  if (!utility) {
+    initPanePalette({ tell: embedded ? tellWorkspace : null, openConversation });
+    initPaneNotices({
+      tell: embedded ? (notice) => tellWorkspace("notice", notice) : null,
+      label: () => $("session-chip").textContent.replace(/\s*▾$/, ""),
+    });
+  }
 
   if (!token) {
     showHome();
@@ -379,7 +410,10 @@ async function boot() {
     setProject(project);
     try { store.bootstrap = await api.bootstrap(); applyTheme(store.bootstrap.theme); } catch { /* settings shows its own error */ }
   } else if (project) {
-    await openProject({ id: project }, { resume: resumeHint });
+    // A pane opened from a search hit carries the matching event's seq.
+    const at = new URLSearchParams(location.search).get("at") || "";
+    const seq = resumeHint && /^-?\d{1,15}$/.test(at) ? Number(at) : null;
+    await openProject({ id: project }, { resume: resumeHint, seq });
   } else {
     showHome();
   }

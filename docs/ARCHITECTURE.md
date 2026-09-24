@@ -119,7 +119,7 @@ quickcode/
     app.py                # create_app: loopback guard, security headers, route registration
     http.py               # bounded JSON bodies, id checks, `scoped` (one handler, both path shapes)
     ws.py                 # conversation WebSocket: attach, replay, heartbeat, client messages
-    sessions_api.py       # bootstrap, sessions (rename, archive, delete, sweep), models
+    sessions_api.py       # bootstrap, sessions (rename, archive, delete, sweep, search), models
     projects_api.py       # project registry, data purge, directory browser, trust gate
     kernel_api.py         # plugin registry and settings, presets
     profiles_api.py prompt_api.py config_api.py update_api.py
@@ -141,6 +141,7 @@ quickcode/
     recorder.py           # TranscriptRecorder: what a session log contains
     wire.py               # AgentEvent → wire JSON, LOGGED_TYPES, register_event
     assemble.py           # build_session / rebuild_session: how a session is put together, opened or switched
+    search.py             # searching a project's sessions: plain-text AND, bounded bytes and time
   subagents/
     definitions.py runner.py jobs.py artifacts.py
     worktree.py           # git-worktree isolation: a checkout per writer, its work as a branch

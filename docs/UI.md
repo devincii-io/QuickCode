@@ -28,6 +28,39 @@ restores the last one. Each pane's header and its sidebar entry show a status �
 `Ready`, `Working`, `Needs approval` or `Offline` — so an agent waiting on a
 permission prompt in a pane you are not looking at is still visible.
 
+### Notifications
+
+A pane you are not looking at tells you when its agent **finished a turn**,
+**needs approval** (a permission prompt or a plan review) or **stopped with an
+error**. The pane only reports what happened (`js/pane_notices.js`, over the
+same origin- and source-checked bridge as everything else); the shell decides
+whether you saw it, because only the shell knows which pane is focused and
+whether the window is in front (`js/notify.js`). A notice for the focused pane
+of the visible workspace, while the window has focus, is simply not raised.
+Anything else becomes:
+
+- a **count badge** on the pane header, on its agent row in the sidebar and,
+  summed, on its workspace row — amber for a waiting review, red for an error,
+  green for a finished turn, most urgent first;
+- a **title badge**, `(2) Website redesign | QuickCode`, the total unseen;
+- a **desktop notification**, only while the window is in the background and
+  only once *Desktop notifications* is switched on under Appearance (the
+  sidebar's *Appearance*, or Settings ▸ Appearance). It is off by default, and
+  the browser is asked for permission by that toggle and never otherwise.
+  Notifications are silent and carry the agent's name (the session title the
+  sidebar shows) and the kind of event — for a permission prompt, the tool's
+  name — but never a message, a command or an error text, which are not for
+  a lock screen. Clicking one brings the window forward on that pane. Where the window
+  has no Notification API — the native window's WebView may not — the toggle
+  is disabled with a note, and the badges carry on alone.
+
+Focusing a pane (clicking it, its sidebar row, `Alt+arrow`) marks it seen, and
+so does returning to the window on the pane you left. Replayed history never
+raises anything, and neither does the end of a turn you interrupted yourself.
+A pane opened on its own, outside the workspace, keeps its own title badge. The
+badges' entrance animation follows the *Animate activity indicators* setting
+and the system's reduced-motion preference; nothing makes a sound.
+
 Storage split: the auth token stays in the tab's `sessionStorage`; workspace
 `localStorage` holds only names, session ids and layout. Unsent drafts survive
 pane closure and a reload within the same tab. Appearance preferences
@@ -45,7 +78,9 @@ change reaches every open pane without a reload.
 
 ## Inside an agent pane
 
-- **Top bar** — project and session chips, session tabs (`js/sessionbar.js`),
+- **Top bar** — project and session chips (the session chip's list is also
+  where sessions are searched — see [Finding a conversation](#finding-a-conversation)),
+  session tabs (`js/sessionbar.js`),
   the update chip, new conversation, and toggles for the side panel, the
   terminal, Help and Settings.
 - **Transcript** (`js/chat.js`, `js/chat/`) — streaming markdown, reasoning,
@@ -107,6 +142,31 @@ to the matching event. It reads the same stream that resume and replay use, so
 what it shows is what the model saw — see docs/ARCHITECTURE.md for which event
 types are logged.
 
+## Finding a conversation
+
+The session chip's list (`js/sessions_menu.js`) opens with a search box.
+Typing filters the rows by title at once; after a short pause the server
+searches the messages too (`GET …/sessions/search?q=`,
+`session/search.py`) and lists the matches under *In messages*, each with a
+highlighted snippet. What is searched: titles, what you typed, what the agent
+answered, and the names of the tools it called — not tool output, and not the
+system prompt. Terms are case-insensitive and all of them must occur in the
+same message; `"a quoted phrase"` counts as one term. There are no regular
+expressions, by design: a pattern that backtracks for ever has no timeout.
+
+A search reads the newest sessions first and stops at 30 matching sessions,
+256 MiB of log or 1.5 s, whichever comes first, and says so under the results.
+It runs on the server's thread pool, so it never holds up a streaming turn.
+The archive is searched too; opening an archived session restores it to the
+list, as it always has.
+
+Clicking a match opens that conversation at the matching event, in the
+inspector (`js/inspect.js`) — the same view a ⌕ link opens. Inside the
+workspace a conversation that already has a pane is focused rather than opened
+twice; otherwise a new pane opens with the event's `seq` in its URL (`at=`),
+which is never saved in the layout. `↑`/`↓` walk the list, `Enter` opens the
+first entry, and `Esc` clears the search before it closes the list.
+
 ## The event protocol
 
 Each pane opens one WebSocket, `/ws/projects/{pid}/conversation/{conv_id}`,
@@ -155,14 +215,48 @@ a turn runs, a prompt waits or a background job works. The rules it follows
 live in `js/checkpoints/model.js`. The whole of it:
 docs/CHECKPOINTS.md §In the app.
 
+## Command palette
+
+`Ctrl+K` (`⌘K` on macOS — and only that there, since `Ctrl+K` in a macOS
+text field deletes to the end of the line) opens a searchable list of
+everything you can do from where you are (`js/palette.js`). Type to filter — every word must match, the
+start of a title ranks first, then the start of a word in it, then a word in
+its description — `↑`/`↓` (or `PgUp`/`PgDn`) choose, `Enter` runs, `Esc` or
+`Ctrl+K` again closes. It is a `role="dialog"` holding a combobox and a
+listbox, with the highlighted option tracked by `aria-activedescendant`.
+
+The key opens the palette of the document that has focus, so there are two:
+
+- **In an agent pane** (`js/palette_pane.js`): every slash command, read from
+  the same table the composer runs them from (`js/composer/commands.js`); each
+  permission mode; the model picker; *New conversation* and the recent
+  sessions; the pane commands (new pane, split right or below, maximize, the
+  sidebar, and *Go to another agent or workspace…*, which hands over to the
+  shell's palette); the side panel and the terminal; every Settings page; and
+  Help. Past conversations are searched too: after a pause, messages that
+  match are listed under *In past conversations* — the same search as
+  [Finding a conversation](#finding-a-conversation), opening the session at
+  the matching event.
+- **In the workspace shell** (`js/workspace_palette.js`), when focus is in the
+  sidebar or on Home: new pane, split, maximize, reopen closed pane, the
+  sidebar, every open agent and workspace, known projects not yet open, *Open
+  folder…*, Appearance, and the Settings and Help pages (in the utility
+  dialog).
+
+A command that moves focus keeps it; one that does not (a mode switch,
+*Show or hide the terminal*) gives it back to where it was, normally the
+composer. The palette does not open over a dialog, not in the Settings/Help
+dialog's own frame, and not in the terminal, whose shell keeps `Ctrl+K`.
+
 ## Keyboard
 
-The authoritative lists are `KEYS` in `js/help/shortcuts.js` and `COMMANDS` in
-`js/composer/slash.js` (which `slashRows()` in shortcuts.js reads), and both the
-`?` quick reference and Help ▸ Keyboard show them.
+The authoritative lists are `KEYS` in `js/help/shortcuts.js` and the slash
+commands in `js/composer/commands.js` (which `slashRows()` in shortcuts.js
+reads), and both the `?` quick reference and Help ▸ Keyboard show them.
 
 | Key | Action |
 |---|---|
+| `Ctrl+K` (`⌘K` on macOS) | Command palette |
 | `Alt+N` | New agent pane in this workspace |
 | `Alt+Z` | Maximise the focused pane, or restore the layout |
 | `Alt+B` | Show or hide the workspace sidebar |

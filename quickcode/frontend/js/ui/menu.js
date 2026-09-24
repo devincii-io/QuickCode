@@ -5,12 +5,17 @@ import { el } from "../util.js";
 
 const GAP = 8;
 
-/** `head` and `foot` are HTML placed above and below the scrolling list, and
- *  measured with it; `className` names the menu for its own styles. */
-export function menuAt(anchor, contentHtml,
-  { searchable = false, below = false, className = "", head = "", foot = "" } = {}) {
+// `head` and `foot` are HTML placed above and below the scrolling list, and
+// measured with it; `className` names the menu for its own styles. `center`
+// places the menu near the top of the window with no anchor (the command
+// palette). `onClose` runs when the menu is closed -- by Escape, a click
+// outside or `closeMenu()` -- but not when another menu replaces it.
+export function menuAt(anchor, contentHtml, {
+  searchable = false, below = false, center = false, onClose = null,
+  className = "", head = "", foot = "",
+} = {}) {
   document.querySelectorAll(".menu").forEach((m) => m.remove());
-  const m = el(`<div class="menu ${className}">
+  const m = el(`<div class="menu${className ? ` ${className}` : ""}">
     ${searchable ? '<input class="menu-search" placeholder="Search…">' : ""}
     ${head}<div class="menu-list">${contentHtml}</div>${foot}</div>`);
   document.body.appendChild(m);
@@ -19,6 +24,13 @@ export function menuAt(anchor, contentHtml,
   // once: filtering a 400-model list shrinks the menu, and a `top` computed for
   // the tall version would leave it floating far above its pill.
   const place = () => {
+    if (center) {
+      m.style.top = Math.round(window.innerHeight * 0.12) + "px";
+      m.style.bottom = "auto";
+      m.style.maxHeight = Math.round(window.innerHeight * 0.72) + "px";
+      m.style.left = Math.max(GAP, (window.innerWidth - m.offsetWidth) / 2) + "px";
+      return;
+    }
     const r = anchor.getBoundingClientRect();
     const room = below ? window.innerHeight - r.bottom - GAP * 2 : r.top - GAP * 2;
     m.style.maxHeight = Math.max(160, Math.min(window.innerHeight * 0.6, room)) + "px";
@@ -34,8 +46,9 @@ export function menuAt(anchor, contentHtml,
   };
   place();
   // Freeze the width the full list asked for: without it every keystroke in
-  // the search box resizes the card between the min and max width.
-  m.style.width = m.offsetWidth + "px";
+  // the search box resizes the card between the min and max width. (A centred
+  // menu has a width of its own in CSS.)
+  if (!center) m.style.width = m.offsetWidth + "px";
 
   // The handlers survive `m.remove()` calls made by the callers, so each one
   // unregisters itself the moment the menu is gone.
@@ -50,7 +63,12 @@ export function menuAt(anchor, contentHtml,
     cleanup();
     return true;
   };
-  const close = () => { m.remove(); cleanup(); };
+  const close = () => {
+    const was = m.isConnected;
+    m.remove();
+    cleanup();
+    if (was) onClose?.();
+  };
   const dismiss = (e) => { if (!gone() && !m.contains(e.target)) close(); };
   const onKey = (e) => {
     if (gone() || e.key !== "Escape") return;

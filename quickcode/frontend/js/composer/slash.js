@@ -4,9 +4,10 @@
 import { api } from "../api.js";
 import { openHelp } from "../help/quickref.js";
 import { openModeMenu, openModelMenu } from "../menus.js";
-import { MODE_IDS, MODES } from "../modes.js";
+import { MODES } from "../modes.js";
 import { toast } from "../toast.js";
 import { actions } from "../ws.js";
+import { SLASH_COMMANDS } from "./commands.js";
 import { openCompositionMenu, openProfileMenu } from "./pills.js";
 
 const $ = (id) => document.getElementById(id);
@@ -99,46 +100,22 @@ async function runInit() {
 }
 
 // ---- slash commands ----
-// Each entry: { label, arg, desc, complete, exec }. `exec` missing means the
-// entry only completes text (e.g. "/mode " opens the mode sub-entries).
+// Names, arguments and descriptions come from ./commands.js; this adds what
+// each one does. `exec` missing means the entry only completes text ("/mode "
+// opens the mode sub-entries), and `fallback` is what running it bare does.
 
-export const COMMANDS = [
-  {
-    name: "/compact", desc: "Compress the conversation into a summary",
-    exec: () => actions.compact(),
-  },
-  {
-    name: "/clear", desc: "Start a new conversation",
-    exec: () => hooks.onNewConversation(),
-  },
-  {
-    name: "/mode", arg: `<${MODE_IDS.join("|")}>`,
-    desc: "Switch the permission mode",
-    complete: "/mode ",
-    // no exec: Tab/Enter completes to "/mode " and lists the modes
-    fallback: () => openModeMenu($("mode-pill")),
-  },
-  {
-    name: "/model", desc: "Pick the model for this session",
-    exec: () => openModelMenu($("model-pill")),
-  },
-  {
-    name: "/composition", desc: "Switch this session's composition (at a turn boundary)",
-    exec: () => openCompositionMenu($("composition-pill") || $("model-pill")),
-  },
-  {
-    name: "/profile", desc: "Switch this session's permission profile (takes effect now)",
-    exec: () => openProfileMenu($("profile-pill") || $("mode-pill")),
-  },
-  {
-    name: "/init", desc: "Have the agent survey this project and write QUICKCODE.md",
-    exec: () => { runInit(); },
-  },
-  {
-    name: "/help", desc: "Keyboard shortcuts and slash commands",
-    exec: () => openHelp(),
-  },
-];
+const RUN = {
+  "/compact": { exec: () => actions.compact() },
+  "/clear": { exec: () => hooks.onNewConversation() },
+  "/mode": { complete: "/mode ", fallback: () => openModeMenu($("mode-pill")) },
+  "/model": { exec: () => openModelMenu($("model-pill")) },
+  "/composition": { exec: () => openCompositionMenu($("composition-pill") || $("model-pill")) },
+  "/profile": { exec: () => openProfileMenu($("profile-pill") || $("mode-pill")) },
+  "/init": { exec: () => { runInit(); } },
+  "/help": { exec: () => openHelp() },
+};
+
+const COMMANDS = SLASH_COMMANDS.map((c) => ({ ...c, ...RUN[c.name] }));
 
 // Entries the menu should show for the current input text, or null for
 // "no menu" (the text is not a bare slash command).
