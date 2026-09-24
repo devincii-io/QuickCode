@@ -36,8 +36,6 @@ from quickcode.kernel.spec import (
     UnknownPlugin,
     UnknownSetting,
 )
-from quickcode.kernel.state import prompt_overrides
-from quickcode.prompts.system import render_with_sections
 from quickcode.server import auth, provider_settings
 from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
@@ -45,6 +43,7 @@ from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectBusyError, ProjectHub, list_dirs
+from quickcode.server.prompt_api import prompt_payload
 from quickcode.server.terminal import register_terminal_routes
 from quickcode.session.store import (
     MAX_TITLE,
@@ -329,6 +328,8 @@ def create_app(
             tools=list(manager.registry_factory().tools.values()),
             env=manager.env,
             active_provider=manager.config.profile.provider,
+            active_endpoint=manager.config.profile.base_url,
+            model_count=manager.catalog_size(),
         )
 
     def _kernel_payload(manager: ConversationManager) -> dict:
@@ -591,23 +592,6 @@ def create_app(
         profiles_module.set_active(profile_id, cwd=cwd)
         applied = _apply_posture(manager)
         return {"applied_to": applied, **_profiles_payload(manager)}
-
-    def _prompt_payload(manager: ConversationManager) -> dict:
-        text, sections = render_with_sections(
-            manager.env,
-            model=manager.config.last_model or manager.config.profile.resolve("orchestrator"),
-            provider=manager.provider_name,
-            orchestration=True,
-            overrides=prompt_overrides(manager.cwd),
-        )
-        return {
-            "text": text,
-            "sections": [
-                {"id": s.id, "title": s.title, "tier": s.tier,
-                 "start": s.start, "end": s.end}
-                for s in sections
-            ],
-        }
 
     # ---- session management: delete, archive, sweep ----
 
@@ -1141,13 +1125,15 @@ def create_app(
     def project_delete_profile(pid: str, profile_id: str, scope: str = "user") -> dict:
         return _delete_profile(_project(pid), profile_id, scope)
 
+    # ``?conv=`` answers with the bytes that session is being sent; without it,
+    # the prompt the next session starts from. See ``server/prompt_api.py``.
     @app.get("/api/projects/{pid}/prompt")
-    def project_prompt(pid: str) -> dict:
-        return _prompt_payload(_project(pid))
+    def project_prompt(pid: str, conv: str = "") -> dict:
+        return prompt_payload(_project(pid), conv)
 
     @app.get("/api/prompt")
-    def prompt() -> dict:
-        return _prompt_payload(hub.default)
+    def prompt(conv: str = "") -> dict:
+        return prompt_payload(hub.default, conv)
 
     @app.get("/api/credits")
     async def credits() -> dict:

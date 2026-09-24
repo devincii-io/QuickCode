@@ -157,8 +157,9 @@ class Preset:
                 str(k): str(v) for k, v in raw["prompt_overrides"].items()
                 if isinstance(v, str)
             })
-        if not orch.explicit:
-            orch = src.orchestrator
+        # Field by field, not all or nothing: "like minimal, but it may edit
+        # without asking" states only a ceiling, and must keep minimal's tools.
+        orch = Composition.from_dict({**src.orchestrator.to_dict(), **orch.to_dict()})
 
         bindings: list[Binding] = []
         for item in raw.get("bindings") or []:

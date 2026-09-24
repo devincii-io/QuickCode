@@ -1036,6 +1036,10 @@ class ConversationManager:
             return None
         return any(m.id == model_id for m in self._models)
 
+    def catalog_size(self) -> int | None:
+        """How many models the catalog lists — None while no catalog is loaded."""
+        return len(self._models) if self._models else None
+
     # ---- conversations ----
     def get(self, conv_id: str) -> Conversation | None:
         return self.conversations.get(conv_id)

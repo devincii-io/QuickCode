@@ -70,10 +70,6 @@ def _matches(pattern: str, name: str) -> bool:
     return pattern == name or fnmatchcase(name, pattern)
 
 
-def _is_glob(text: str) -> bool:
-    return any(ch in text for ch in ("*", "?", "["))
-
-
 def _mcp_server(tool_name: str) -> str:
     """``mcp__files__read`` -> ``files``; "" for anything that is not MCP."""
     if not tool_name.startswith("mcp__"):
@@ -255,7 +251,7 @@ class PluginRegistry:
             ORCHESTRATOR_ID,
             SHELL_JOB_TOOLS,
         )
-        from quickcode.kernel.resolve import resolve_composition
+        from quickcode.kernel.resolve import expand_tool_pattern, resolve_composition
 
         index: dict[str, dict[tuple[str, str], Use]] = {}
 
@@ -335,11 +331,12 @@ class PluginRegistry:
                 continue
             servers = set()
             for pattern in comp.tools or ():
+                wanted = expand_tool_pattern(pattern)
                 for tool in tool_names:
-                    if not _matches(pattern, tool):
+                    if not _matches(wanted, tool):
                         continue
                     add(f"tool.{tool}", agent_use(name, (
-                        f"matched by `{pattern}` in its tools" if _is_glob(pattern)
+                        f"matched by `{pattern}` in its tools" if wanted != tool
                         else "listed in its tools")))
                     server = _mcp_server(tool)
                     if server:

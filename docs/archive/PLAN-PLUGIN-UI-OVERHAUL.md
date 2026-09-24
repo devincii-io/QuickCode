@@ -113,6 +113,11 @@ Each phase ends with something that runs. No tests until a phase works.
 windowed transcripts) · 9 pending (shared inspector, needs 10)
 · 13 ✅ (release tooling, version 2.0.0, not yet tagged).
 
+*Verified 2026-09-24:* Phase 8's settings and plugin UI shipped as the
+configuration view (`#view-config`, `frontend/js/config/`) rather than the
+modal sections listed below; see `PHASE3-HANDOFF.md` for its status table.
+Phases 9 and 10 were not re-checked in that pass.
+
 ### Phase 0 — make the current build honest *(in flight)*
 - Native app window actually appears under `python.exe` and `pythonw.exe`.
 - Reopening a session shows its history instead of an empty pane.

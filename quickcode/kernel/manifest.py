@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from quickcode.core.permissions import DEFAULT_SPEC, Mode
+from quickcode.kernel.facts import display_endpoint, tool_signature
 from quickcode.kernel.spec import (
     Audience,
     Effect,
@@ -1075,6 +1076,7 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
         read_only = bool(getattr(tool, "is_read_only", False))
         prose = _tool_prose(tool)
 
+        signature = ""
         try:
             schema = tool.schema()
             payload = json.dumps(
@@ -1082,6 +1084,7 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
                  "parameters": schema.parameters},
                 indent=2,
             )
+            signature = tool_signature(schema.name, schema.parameters)
         except Exception as exc:
             payload = f"schema unavailable: {exc}"
 
@@ -1121,7 +1124,8 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
             path=getattr(tool, "path", "") or "",
             metadata={"tool_name": name,
                       "read_only": read_only,
-                      "character": _tool_character(tool)},
+                      "character": _tool_character(tool),
+                      "signature": signature},
             view=_view("json", payload, f"{name} schema",
                        getattr(tool, "path", "") or ""),
         ))
@@ -1213,11 +1217,26 @@ _AGENT_LOCKED = (
 )
 
 
+SHIPPED_AGENTS = ("explore", "general")
+
+
+def is_shipped_agent(name: str, defn: Any) -> bool:
+    """The shipped definition, not a file that took its name.
+
+    ``.quickcode/agents/explore.md`` replaces the built-in at spawn, and the
+    loader stamps it with its path and an ``authored`` source. Deciding by name
+    presented a repository's file as QuickCode's own, locked and "fixed by
+    design".
+    """
+    return (name in SHIPPED_AGENTS and not getattr(defn, "path", "")
+            and getattr(defn, "source", "internal") == "internal")
+
+
 def agent_specs(defs: dict[str, Any]) -> list[PluginSpec]:
     """One plugin per subagent definition -- built-in and user-authored alike."""
     out: list[PluginSpec] = []
     for name, defn in sorted(defs.items()):
-        builtin = name in ("explore", "general")
+        builtin = is_shipped_agent(name, defn)
         tools = getattr(defn, "tools", None)
         prose = _agent_prose(defn)
         # Provenance is stamped by the loader, never declared by the file. A
@@ -1341,6 +1360,7 @@ _READ_ONLY_CLAIM_HELP = (
 
 
 def _authored_tool_spec(plugin: Any, tool: Any) -> PluginSpec:
+    signature = ""
     try:
         schema = tool.schema()
         payload = json.dumps(
@@ -1348,6 +1368,7 @@ def _authored_tool_spec(plugin: Any, tool: Any) -> PluginSpec:
              "parameters": schema.parameters},
             indent=2,
         )
+        signature = tool_signature(schema.name, schema.parameters)
     except Exception as exc:
         payload = f"schema unavailable: {exc}"
 
@@ -1399,6 +1420,7 @@ def _authored_tool_spec(plugin: Any, tool: Any) -> PluginSpec:
             "timeout_ms": plugin.timeout_ms,
             "output": plugin.output,
             "params": [p.name for p in plugin.params],
+            "signature": signature,
         },
         view=_view("json", payload, f"{plugin.name} schema", plugin.path),
     )
@@ -1487,7 +1509,14 @@ _PROVIDER_DESCRIPTIONS = {
 }
 
 
-def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[PluginSpec]:
+def provider_specs(factories: dict[str, Any], *, active: str = "", endpoint: str = "",
+                   model_count: int | None = None) -> list[PluginSpec]:
+    """One plugin per provider factory.
+
+    ``endpoint`` and ``model_count`` describe the *active* one only -- the base
+    URL it talks to and how many models its loaded catalog lists (None until a
+    catalog has been fetched). An inactive provider has neither yet.
+    """
     out: list[PluginSpec] = []
     for name in sorted(factories):
         is_active = name == active
@@ -1509,7 +1538,9 @@ def provider_specs(factories: dict[str, Any], *, active: str = "") -> list[Plugi
                 "exist and which key is used, for every project on this machine."
             ),
             docs_anchor="docs/ARCHITECTURE.md#provider-layer",
-            metadata={"provider": name, "active": is_active},
+            metadata={"provider": name, "active": is_active,
+                      "endpoint": display_endpoint(endpoint) if is_active else "",
+                      "model_count": model_count if is_active else None},
         ))
     return out
 

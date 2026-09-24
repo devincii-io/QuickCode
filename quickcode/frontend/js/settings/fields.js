@@ -27,6 +27,9 @@ function controlHtml(plugin, s) {
   const dis = locked ? " disabled" : "";
   const ro = locked ? " readonly" : "";
   const v = s.value;
+  // A good non-default value, from the manifest: what "something else" would
+  // look like, shown where the value goes rather than in a paragraph about it.
+  const eg = s.example && !locked ? ` placeholder="${esc(s.example)}"` : "";
   switch (s.type) {
     case "bool":
       return `<label class="f-switch${locked ? " is-locked" : ""}">
@@ -44,19 +47,19 @@ function controlHtml(plugin, s) {
         <input type="number" id="${id}" data-ctl value="${esc(toText(s, v))}"
                step="${s.type === "int" ? "1" : "0.01"}"
                ${s.minimum != null ? `min="${esc(s.minimum)}"` : ""}
-               ${s.maximum != null ? `max="${esc(s.maximum)}"` : ""}${dis}${ro}>
+               ${s.maximum != null ? `max="${esc(s.maximum)}"` : ""}${eg}${dis}${ro}>
         ${s.minimum != null || s.maximum != null
           ? `<span class="f-range">${s.minimum ?? "–"} … ${s.maximum ?? "–"}</span>` : ""}
       </div>`;
     case "text":
       return `<textarea id="${id}" data-ctl class="f-text" rows="10"
-        spellcheck="false"${dis}${ro}>${esc(toText(s, v))}</textarea>`;
+        spellcheck="false"${eg}${dis}${ro}>${esc(toText(s, v))}</textarea>`;
     case "list":
       return `<textarea id="${id}" data-ctl class="f-text f-list" rows="4"
-        spellcheck="false" placeholder="one per line"${dis}${ro}>${esc(toText(s, v))}</textarea>`;
+        spellcheck="false"${eg || ' placeholder="one per line"'}${dis}${ro}>${esc(toText(s, v))}</textarea>`;
     default:
       return `<input type="text" id="${id}" data-ctl spellcheck="false"
-        value="${esc(toText(s, v))}"${dis}${ro}>`;
+        value="${esc(toText(s, v))}"${eg}${dis}${ro}>`;
   }
 }
 
@@ -68,9 +71,12 @@ function fieldHtml(plugin, s) {
     <div class="f-head">
       <label class="f-label">${esc(s.title || s.key)}</label>
       ${tierBadge(s.tier)}
+      ${(s.affects || []).map((e) =>
+        `<span class="k-affect">${esc(String(e).replace("_", " "))}</span>`).join("")}
       <code class="f-key">${esc(s.key)}</code>
     </div>
     ${s.help ? `<div class="f-help">${esc(s.help)}</div>` : ""}
+    ${s.effect_detail ? `<div class="f-effect">${esc(s.effect_detail)}</div>` : ""}
     ${s.tier === "confirm" && s.risk ? `<div class="f-risk">${esc(s.risk)}</div>` : ""}
     <div class="f-ctl">${controlHtml(plugin, s)}</div>
     ${locked
