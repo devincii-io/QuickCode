@@ -28,6 +28,7 @@ import and one call.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -687,14 +688,26 @@ def _draft_preset(preset: Any, comp: dict[str, Any] | None) -> Any:
     return replace(preset, orchestrator=merged)
 
 
-async def _read_json(request: Request) -> Any:
-    raw = await request.body()
-    if len(raw) > JSON_BODY_CAP:
+async def _read_json(request: Request, maximum: int = JSON_BODY_CAP) -> Any:
+    """A JSON body, refused once it passes ``maximum`` bytes rather than after
+    the whole request has been buffered.
+
+    Local until ``server/http.py``'s shared reader is in this tree; the two
+    differ only in the wording of their 413 and 400 details.
+    """
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > maximum:
         raise HTTPException(413, "request body too large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > maximum:
+            raise HTTPException(413, "request body too large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
     if not raw:
         return {}
-    import json
-
     try:
         return json.loads(raw)
     except ValueError as exc:
