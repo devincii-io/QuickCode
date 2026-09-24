@@ -403,6 +403,7 @@ def _parse_params(doc: Document, add) -> tuple[list[Param], bool]:
             maximum=_opt_float(entry.get("maximum")),
             max_length=_opt_int(entry.get("max_length")),
             flag=str(entry.get("flag", "")),
+            allow_leading_dash=entry.get("allow_leading_dash") is True,
         ))
     return out, failed
 

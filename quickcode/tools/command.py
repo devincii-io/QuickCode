@@ -113,7 +113,7 @@ class CommandTool(Tool[BaseModel]):
         values = input.model_dump()
         root = Path(ctx.cwd).resolve()
 
-        refusal = _check_paths(plugin, values, root)
+        refusal = _check_paths(plugin, values, root) or _check_options(plugin, values)
         if refusal:
             return ToolResult(content=refusal, is_error=True)
 
@@ -277,6 +277,24 @@ def _check_paths(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> 
                     f"project root {root}. Command tools are confined to the "
                     "project.")
     return ""
+
+
+def _check_options(plugin: AuthoredPlugin, values: dict[str, Any]) -> str:
+    """"" unless a value would be parsed by the program as one of its options."""
+    params = plugin.params_by_name()
+    hit = argv_rules.leading_dash(plugin.argv, params, values)
+    if hit is None:
+        return ""
+    name, value = hit
+    param = params.get(name)
+    is_path = param is not None and "path" in (param.type, param.item_type)
+    spelling = (f" Pass it as {'./' + value!r} to name a file that really "
+                "starts with '-'." if is_path else "")
+    return (f"Error: {name}={value!r} starts with '-', so {plugin.argv[0]} would "
+            f"read it as an option rather than as a value.{spelling} If the "
+            "program should see it as a value, the tool's author can put a "
+            '"--" element before it or set "allow_leading_dash": true on the '
+            "parameter.")
 
 
 def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path:
