@@ -1,9 +1,7 @@
 """One agent's whole answer: values, provenance, prompt bytes, schemas.
 
-``/resolved`` and ``/preview`` both end here. A resolution against the current
-settings files says ``frozen: false``; one read out of a running session's
-record says ``frozen: true`` and carries the digest it was recorded with, and
-when the two disagree the payload says so rather than picking one.
+``/resolved`` and ``/preview`` both end in ``resolve_view``; this module also
+builds the ``/resolved`` request's inputs, live or out of a running session.
 """
 
 from __future__ import annotations
