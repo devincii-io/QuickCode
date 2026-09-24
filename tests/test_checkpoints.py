@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from quickcode.checkpoints import paths, rewind
 from quickcode.checkpoints.events import FileCheckpointed
 from quickcode.checkpoints.hook import CheckpointHook, file_targets
+from quickcode.checkpoints.recorder import Checkpointer
 from quickcode.checkpoints.store import CheckpointStore
 from quickcode.core.agent import AgentInstance, PermissionOutcome
 from quickcode.core.events import (
@@ -522,9 +523,23 @@ def test_a_damaged_blob_is_never_restored(tmp_path):
 
 
 @pytest.mark.parametrize("rel", ["../escape.txt", "/etc/passwd", "a/../../b", "", "a//b",
-                                 "a\\b", ".quickcode/checkpoints/x/index.json"])
+                                 "a\\b", ".quickcode/checkpoints/x/index.json",
+                                 ".quickcode/worktrees/worker-1-ab12/a.txt"])
 def test_a_path_that_is_not_plainly_inside_the_project_is_refused(tmp_path, rel):
     assert paths.target(paths.real_root(tmp_path), rel) is None
+
+
+def test_a_subagents_scratch_worktree_is_not_the_project(tmp_path):
+    # An isolated child edits its own checkout under .quickcode/worktrees, and
+    # that checkout is removed when its run ends -- the work comes back as a
+    # branch. Recorded, a rewind would recreate its files in a directory that
+    # no longer belongs to anything.
+    tree = tmp_path / ".quickcode" / "worktrees" / "worker-1-ab12"
+    tree.mkdir(parents=True)
+    (tree / "a.txt").write_text("child's\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("project's\n", encoding="utf-8")
+    cp = Checkpointer(tmp_path, CONV)
+    assert [c.rel for c in cp.capture([tree / "a.txt", tmp_path / "a.txt"])] == ["a.txt"]
 
 
 def _symlink(link: Path, to: Path) -> None:

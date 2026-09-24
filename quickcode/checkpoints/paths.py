@@ -12,9 +12,12 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
-# The store's own directory. A tool writing in here would be checkpointing the
-# checkpoints, and a rewind would be restoring blobs into the store it reads.
-_OWN = (".quickcode", "checkpoints")
+# Not the project's files. The store's own directory: a tool writing in here
+# would be checkpointing the checkpoints, and a rewind would be restoring blobs
+# into the store it reads. And the scratch checkouts isolated subagents edit
+# (subagents/worktree.py): each is removed when its run ends and its work comes
+# back as a branch, so a rewind would recreate files in a checkout that is gone.
+_NOT_PROJECT = ((".quickcode", "checkpoints"), (".quickcode", "worktrees"))
 
 
 def real_root(root: Path | str) -> Path:
@@ -25,7 +28,7 @@ def relative(root: Path, path: Path | str) -> str | None:
     """``path``'s real location relative to ``root`` (already real), or None.
 
     None for anything that resolves outside the project, onto the root itself,
-    or into the checkpoint store.
+    or into the checkpoint store or a subagent's worktree.
     """
     try:
         rel = os.path.relpath(os.path.realpath(path), root)
@@ -34,7 +37,7 @@ def relative(root: Path, path: Path | str) -> str | None:
     parts = Path(rel).parts
     if not parts or rel == os.curdir or parts[0] == os.pardir or os.path.isabs(rel):
         return None
-    if tuple(p.lower() for p in parts[:2]) == _OWN:
+    if tuple(p.lower() for p in parts[:2]) in _NOT_PROJECT:
         return None
     return PurePosixPath(*parts).as_posix()
 

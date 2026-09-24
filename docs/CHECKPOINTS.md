@@ -49,7 +49,10 @@ Rules the recording follows:
   number off the log and counts on.
 - **A subagent's edits land in the turn that is running.** The hook is carried
   into every child (`hooks/plugin.py::child_hooks`) sharing the conversation's
-  recorder; a delegation is not a user turn.
+  recorder; a delegation is not a user turn. An isolated child's edits are the
+  exception: they land in its own worktree under `.quickcode/worktrees/`,
+  which is removed when its run ends, and come back as a branch -- so they are
+  not recorded.
 - **Only real changes.** A file whose bytes are the same after the call as
   before it is not recorded. A tool that does not run a program is taken at its
   word that an error means it wrote nothing; one that runs a program
