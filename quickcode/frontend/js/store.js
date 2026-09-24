@@ -81,6 +81,12 @@ function endOfTurn(state) {
 // outlive the turn that spawned it, so one live event revives the row.
 function presumeSettled() {
   if (!store.state || store.state.busy) return;
+  // The same holds for the main agent's calls: one the log never answered
+  // was cut off, and would otherwise read as running until the end of the
+  // next turn — a bar growing to "now" in the trajectory, a name on the
+  // activity line.
+  store.runningTools.clear();
+  store.pendingCalls.clear();
   for (const a of store.agents.values()) {
     if (a.done) continue;
     a.done = true;
