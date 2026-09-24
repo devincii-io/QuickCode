@@ -118,8 +118,9 @@ class Problem:
         )
 
 
-# Resolution-half vocabulary. The authoring half (bad_kind, bad_slug, ...)
-# lands with the authoring validator in a later phase; the type is shared.
+# Resolution-half vocabulary. The authoring half (bad_kind, bad_slug, ...) is
+# declared beside its validator in ``kernel/authoring/schema.py``; the type is
+# shared.
 MODEL_NOT_SELECTABLE = "model_not_selectable"
 MODEL_OUTSIDE_SET = "model_outside_set"
 TOOL_WITHHELD_BY_PARENT = "tool_withheld_by_parent"
@@ -133,6 +134,7 @@ UNKNOWN_AGENT_REF = "unknown_agent_ref"
 BAD_COMPOSITION = "bad_composition"
 LOCAL_SETTINGS_IGNORED = "local_settings_ignored"
 ID_RESERVED = "id_reserved"
+BUILTIN_SHADOWED = "builtin_shadowed"
 
 
 def worst(problems: list[Problem]) -> Severity:

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.kernel import manifest
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import BUILTIN_SHADOWED, Problem, Provenance
 from quickcode.kernel.registry import PluginRegistry
 from quickcode.kernel.spec import PluginView
 
@@ -55,7 +55,7 @@ def _shadowed_builtin_problems(agent_defs: dict[str, Any],
         holds = ("every tool its spawner holds" if tools is None
                  else ", ".join(tools) or "no tools")
         out.append(Problem(
-            code="builtin_shadowed", severity="warning",
+            code=BUILTIN_SHADOWED, severity="warning",
             message=(f"{Path(path).name or 'a definition file'} replaces the built-in "
                      f"agent '{name}': spawning '{name}' runs this file, with "
                      f"{holds}, not the definition QuickCode ships"),
