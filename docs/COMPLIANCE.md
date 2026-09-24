@@ -1249,6 +1249,12 @@ stated "a project file cannot grant itself `yolo` as `defaultMode`".
 > changed is that the route which made that matter is closed. If a future change
 > reintroduces a way to set the starting mode from project data, the engine will
 > still not check whether the user ever saw the confirmation screen.
+>
+> **Since then, opening a session checks it instead.** A trusted project's
+> profile, a user-level setting or `--mode` could still start a session in
+> `yolo` while the app had never armed it. `session/assemble.py` — the one path
+> the app and `-p` open a session through — now starts such a session in `ask`
+> and says so, the rule `/mode` and a profile switch already applied.
 
 **(c) The trust hash itself can be evaded by a duplicate frontmatter key. OPEN.** The
 trust module classifies a plugin file's `kind:` with a `re.MULTILINE` search —

@@ -84,7 +84,10 @@ today.
   binding for mode cycling in the frontend.
 - **Yolo guardrails:** it has to be armed first — `--yolo` at launch, or the
   Settings → General checkbox, which asks for confirmation and persists as
-  `allow_yolo` — the mode pill turns red while it is on, and there is a hard
+  `allow_yolo`. Until it is, nothing reaches it: not `/mode`, not a profile
+  switch, and not a session opening under a profile, setting or `--mode` that
+  asks for it (that one starts in `ask` and says why). The mode pill turns red
+  while it is on, and there is a hard
   circuit breaker. Three kinds of command prompt **even
   in yolo**, and this is the whole list (`security/breakers.py`):
   1. a recursive or forced delete (`rm`, `Remove-Item`, `rd /s`, `del /s`) of
@@ -472,9 +475,15 @@ the engine's own.
 
 ## Headless mode
 
-`-p` does **not** imply `dontask`. It runs in whatever mode `--mode` or
-`default_mode` selects — `ask` unless you say otherwise — and gets its
-no-hang property from a different place: `cli.py` hands the agent a
+`-p` does **not** imply `dontask`. It starts in the mode an app session on the
+same project would — `--mode`, else the active permission profile's, else the
+composition's `default_mode`, else the `runtime.permissions` setting; `ask`
+unless something says otherwise — capped by the composition's ceiling, because
+both open their session through `session/assemble.py`. Yolo needs arming here
+too: `--mode yolo` without `--yolo` (or `allow_yolo`) is an argument error, and
+a profile or setting asking for it starts the run in `ask` with a note on
+stderr. The app opening a session holds the same line, with a transcript note.
+`-p` gets its no-hang property from a different place: `cli.py` hands the agent a
 `_headless_permission_cb` that answers every prompt with
 `allow=False, "headless: not permitted"`. The result the model sees is
 `Permission denied by user: headless: not permitted`, so the run never hangs on
@@ -489,4 +498,4 @@ records a `permission_request` in the session log — that event is emitted by t
 server's `Conversation`, which a `-p` run does not have. If you want the
 engine-level behaviour, pass it: `-p --mode dontask`.
 
-`--mode yolo -p` exists for sandboxed CI use, same circuit breakers.
+`-p --mode yolo --yolo` exists for sandboxed CI use, same circuit breakers.

@@ -8,7 +8,7 @@ import asyncio
 from quickcode.core.compact import COMPACTION_PROMPT
 from quickcode.core.events import TextDelta, TurnDone
 from quickcode.providers.base import ModelInfo
-from quickcode.server import manager as manager_module
+from quickcode.server import conversation as conversation_module
 from quickcode.session.store import SessionStore
 from tests.test_background_agents import _settle
 from tests.test_server import (
@@ -35,8 +35,8 @@ def test_a_client_that_falls_behind_is_told_to_resync_instead_of_skipping_events
     so the client reconnects and replays. It could never be enqueued -- the
     queue it was meant for was, by definition, full -- so the client went on
     receiving events after a silent gap."""
-    monkeypatch.setattr(manager_module, "CLIENT_QUEUE_MAX", 3)
-    client = manager_module.Client()
+    monkeypatch.setattr(conversation_module, "CLIENT_QUEUE_MAX", 3)
+    client = conversation_module.Client()
     for i in range(10):
         client.send(f"ev{i}")
 
@@ -47,8 +47,8 @@ def test_a_client_that_falls_behind_is_told_to_resync_instead_of_skipping_events
 
 
 def test_a_client_that_keeps_up_gets_every_event_and_no_sentinel(monkeypatch):
-    monkeypatch.setattr(manager_module, "CLIENT_QUEUE_MAX", 3)
-    client = manager_module.Client()
+    monkeypatch.setattr(conversation_module, "CLIENT_QUEUE_MAX", 3)
+    client = conversation_module.Client()
     seen = []
     for i in range(10):
         client.send(f"ev{i}")
@@ -147,7 +147,7 @@ async def test_the_state_that_follows_a_message_says_the_turn_is_running(tmp_pat
     provider = StallingProvider()
     manager = make_manager(tmp_path, provider)
     conv = manager.open()
-    client = manager_module.Client()
+    client = conversation_module.Client()
     conv.clients.add(client)
     try:
         conv.submit("think out loud")

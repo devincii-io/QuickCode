@@ -15,7 +15,7 @@ from typing import Any
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import ORCHESTRATOR_ID, Resolved
 from quickcode.kernel.orchestrator import resolve_orchestrator
-from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
+from quickcode.kernel.resolve import resolve_composition, runtime_limits
 from quickcode.server.manager import ConversationManager
 from quickcode.subagents.definitions import AgentDef
 
@@ -43,7 +43,7 @@ def live_inputs(
     cwd = Path(manager.cwd)
     return Inputs(
         preset=preset, defs=defs,
-        pool=session_pool(cwd, list(manager.registry_factory().tools.values())),
+        pool=manager.session_pool(),
         max_depth=runtime_limits(cwd).max_depth if max_depth is None else max_depth,
     )
 
