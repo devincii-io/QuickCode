@@ -16,6 +16,7 @@ objects, so drift fails the test suite.
 | [PERMISSIONS.md](PERMISSIONS.md) | Permission modes, rule syntax and precedence, protected paths, circuit breakers, the trust gate for project settings, plan mode, headless runs |
 | [HOOKS.md](HOOKS.md) | Command hooks: scripts run before/after tool calls, on each message, at turn end and session start; trust gating for project hooks |
 | [TOOLS.md](TOOLS.md) | Every built-in tool: its description as the model sees it, input schema, limits and safety rules; the web tools and search providers |
+| [CHECKPOINTS.md](CHECKPOINTS.md) | File checkpoints per turn and rewinding them: what is and is not recorded (bash), storage and limits, conflicts, the HTTP API, the session-log records |
 | [PROMPTS.md](PROMPTS.md) | The system prompt section by section, `<system-reminder>` injection, the compaction prompt |
 | [UI.md](UI.md) | The web UI: workspace shell and agent panes, views, trajectory, the WebSocket event protocol, dialogs, keyboard |
 | [AGENTS.md](AGENTS.md) | Subagents, background jobs and the task board as a product feature, plus the teammate-mode design that is not built yet (not to be confused with the root `AGENTS.md`) |

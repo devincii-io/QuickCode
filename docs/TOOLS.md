@@ -74,6 +74,7 @@ without the server sniffing for a `task_` name prefix.
 - Overwriting a file that was never `read`, or that changed on disk since it was read → error (forces the model to look before it leaps).
 - An overwritten file keeps its encoding, BOM and line endings; a new file is written exactly as given (UTF-8, no newline translation on any platform).
 - Creates missing parent directories. The model gets a one-line confirmation (`Wrote N lines to <path>`); the UI shows the written content.
+- **Checkpointed.** Before the first change a turn makes to a file inside the project, its previous bytes (or the fact that it did not exist) are saved, and the user can rewind it to before that turn. `edit` and every other tool declaring a path target are recorded the same way, by a loop hook rather than by the tool. See docs/CHECKPOINTS.md.
 
 ## edit
 
@@ -97,6 +98,7 @@ without the server sniffing for a `task_` name prefix.
 - "Changed on disk" compares content when the whole file was read (a `touch` is not a change; a rewrite inside one mtime tick is), and mtime otherwise.
 - The file keeps its encoding, BOM and line endings. In a CRLF file both strings are matched and written with CRLF, since read only ever shows `\n`.
 - The result is `Replaced N occurrence(s) in <path>` plus a unified diff of the change (2 lines of context, capped at 60 diff lines) — never the whole file. The UI renders the same diff.
+- Checkpointed like `write`: several edits to one file in a turn still rewind to the bytes from before the first (docs/CHECKPOINTS.md).
 
 ## glob `[read-only]`
 
@@ -168,6 +170,7 @@ without the server sniffing for a `task_` name prefix.
 - One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
 - There is no persistent shell. A bare `cd <dir>` is handled without spawning anything and moves a tracked working directory that later calls start in; `cd` inside a longer command line affects that command only.
 - Output is decoded (UTF-8, then the system code page), stripped of ANSI escapes, and capped at 30 000 chars to the model (head and tail kept, middle elided with a marker). Every command and its output is listed in the terminal drawer's *Agent* tab.
+- **Not checkpointed.** A command line names no files anyone can check, so what `bash` changes cannot be rewound; a rewind reports a tracked file that `bash` changed as a conflict rather than overwriting it (docs/CHECKPOINTS.md).
 - **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree.
 
 **Background jobs (`run_in_background: true`).** The command starts detached and the call returns at once with a job id (`bash_1`, `bash_2`, …); the model keeps its turn and the command keeps running past it. `bash_output` reads it and `bash_kill` stops it (below). What differs from a foreground call, and what does not:

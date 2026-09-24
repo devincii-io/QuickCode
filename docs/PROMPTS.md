@@ -211,7 +211,10 @@ Only these three sources exist today:
 Anything else goes through `AgentInstance.queue_reminder`, which delivers each
 queued string once, in order, on the next turn. It carries the background-job
 nudges: a detached subagent that finished (`subagents/runner.py`), and jobs
-still running or uncollected when a turn ends (`server/manager.py`).
+still running or uncollected when a turn ends (`server/manager.py`). It also
+carries the one about files the user rewound since the model's last turn,
+naming them and asking for a re-read before the next edit
+(`quickcode/checkpoints/recorder.py`, docs/CHECKPOINTS.md).
 
 **Not implemented**, though earlier versions of this table listed them: there is
 no todo/task-state reminder — the task board reaches the *UI* through

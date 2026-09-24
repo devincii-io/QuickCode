@@ -86,7 +86,7 @@ quickcode/
     tasks.py              # task board
   hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
     config.py protocol.py runner.py plugin.py events.py specs.py
-  checkpoints/            # file checkpoints per turn, and rewinding them
+  checkpoints/            # file checkpoints per turn, and rewinding them (docs/CHECKPOINTS.md)
     store.py snapshot.py recorder.py hook.py rewind.py diff.py paths.py events.py
   kernel/                 # the plugin kernel (below)
     spec.py registry.py bootstrap.py state.py
