@@ -69,6 +69,7 @@ function entriesOf(status, specs) {
   for (const t of status.tool_detail || []) {
     out[t.name || t.file] = (t.argv || []).join(" ");
   }
+  for (const h of status.hooks || []) out[hookName(h)] = h.command;
   // Settings gate under the same grant, so a re-prompt caused by one of them
   // has to be able to say so. The report carries the keys and not the values,
   // so this notices one appearing or disappearing but not one being edited --
@@ -194,7 +195,7 @@ function ensureMounts() {
 
 const NOTE_BOUND =
   "Trust is recorded for this folder and for the configuration shown here. If " +
-  "the mcpServers block, a command tool or one of these settings is edited " +
+  "the mcpServers block, a hook, a command tool or one of these settings is edited " +
   "later, QuickCode asks again before acting on it.";
 
 const NOTE_SESSION =
@@ -209,6 +210,8 @@ const NOTE_REVOKE =
 
 function serverWord(n) { return n === 1 ? "server" : "servers"; }
 function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }
+function hookWord(n) { return n === 1 ? "hook" : "hooks"; }
+function hookName(h) { return `${h.event}${h.matcher ? ` [${h.matcher}]` : ""}`; }
 
 // A project may declare MCP servers, authored command tools, or both, and the
 // two gate together under one grant. Every sentence that counts what is being
@@ -216,10 +219,14 @@ function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }
 function declared(status) {
   const servers = (status.servers || []).length;
   const tools = (status.tools || []).length;
+  // Hooks are commands too (docs/HOOKS.md), and gate under the same grant.
+  const hooks = (status.hooks || []).length;
   const parts = [];
   if (servers) parts.push(`${servers} MCP ${serverWord(servers)}`);
   if (tools) parts.push(`${tools} ${toolWord(tools)}`);
-  return { servers, tools, total: servers + tools, phrase: parts.join(" and ") };
+  if (hooks) parts.push(`${hooks} ${hookWord(hooks)}`);
+  return { servers, tools, hooks, total: servers + tools + hooks,
+           phrase: parts.join(" and ") };
 }
 
 // The other half of the gate, which runs nothing. A committed
@@ -261,6 +268,18 @@ function toolList(status) {
       ${t.file ? `<span class="ts-env">.quickcode/plugins/${esc(t.file)}</span>` : ""}
     </li>`).join("");
   return `<ul class="trust-srvs">${rows}</ul>`;
+}
+
+// A hook runs its command on an event of the agent's, so the event and the
+// tool matcher are part of what is being approved, not only the command.
+function hookList(status) {
+  const hooks = status.hooks || [];
+  if (!hooks.length) return "";
+  return `<ul class="trust-srvs">${hooks.map((h) => `<li class="trust-srv">
+      <span class="ts-name">${esc(hookName(h))}</span>
+      <code class="ts-cmd">${esc(h.command)}</code>
+      <span class="ts-env">${esc(h.file || ".quickcode/settings.json")}</span>
+    </li>`).join("")}</ul>`;
 }
 
 // ---- rendering ----
@@ -354,6 +373,9 @@ function card() {
   : ""} ${d.tools
   ? "A command tool is a program this project lets the agent run, defined in a "
         + "file the project itself commits."
+  : ""} ${d.hooks
+  ? "A hook is a command QuickCode runs by itself when the agent does something "
+        + "— before a tool call, after one, when you send a message."
   : ""}</p>
        <p>Read the commands before you decide. If this project came from
         somewhere you do not control, judge them the way you would judge any
@@ -377,6 +399,7 @@ function card() {
       ${d.servers ? serverList(status, specs) : ""}
       ${d.servers ? rawDetails(status, specs) : ""}
       ${toolList(status)}
+      ${hookList(status)}
       ${policyList(status)}
       <p class="trust-note">${esc(NOTE_BOUND)}</p>
       <p class="trust-err hidden"></p>
