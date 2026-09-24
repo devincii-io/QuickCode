@@ -57,7 +57,21 @@ from quickcode.kernel.composition import (
     selector_matches,
 )
 from quickcode.kernel.core_settings import core_setting
-from quickcode.kernel.problems import Layer, Problem, Provenance
+from quickcode.kernel.problems import (
+    CEILING_CAPPED,
+    MODEL_NOT_SELECTABLE,
+    MODEL_OUTSIDE_SET,
+    MODELS_DISJOINT,
+    PATTERN_MATCHED_NOTHING,
+    SPAWN_WITHHELD_BY_PARENT,
+    TOOL_NOT_INSTALLED,
+    TOOL_WITHHELD_BY_PARENT,
+    UNKNOWN_AGENT,
+    UNKNOWN_AGENT_REF,
+    Layer,
+    Problem,
+    Provenance,
+)
 
 # The fallback for callers that resolve without a session -- the runtime passes
 # the resolved ``RuntimeLimits.max_depth`` instead, which is where
@@ -352,7 +366,7 @@ def resolve_composition(
             id=agent_id,
             role="subagent",
             problems=(Problem(
-                code="unknown_agent",
+                code=UNKNOWN_AGENT,
                 severity="error",
                 message=(f"unknown agent_type '{agent_id}'. Available: "
                          f"{available or 'none in this preset'}"),
@@ -469,7 +483,7 @@ def resolve_composition(
         )
         if name in literals:
             problems.append(Problem(
-                code="tool_withheld_by_parent",
+                code=TOOL_WITHHELD_BY_PARENT,
                 severity="error",
                 message=(f"'{agent_id}' asks for the tool '{name}', which the "
                          f"spawning agent was not granted."),
@@ -482,7 +496,7 @@ def resolve_composition(
     for layer, pattern in empty_patterns:
         installed = pattern in pool_names
         problems.append(Problem(
-            code="tool_not_installed" if not installed else "pattern_matched_nothing",
+            code=TOOL_NOT_INSTALLED if not installed else PATTERN_MATCHED_NOTHING,
             severity="warning",
             message=(f"'{pattern}' matches no tool in this session."
                      if not installed else
@@ -506,7 +520,7 @@ def resolve_composition(
             )
             if name in spawn_literals:
                 problems.append(Problem(
-                    code="spawn_withheld_by_parent",
+                    code=SPAWN_WITHHELD_BY_PARENT,
                     severity="error",
                     message=(f"'{agent_id}' may not be given '{name}' to spawn: "
                              f"'{parent.id}' may not spawn it either."),
@@ -539,7 +553,7 @@ def resolve_composition(
 
     for layer, pattern in spawn_empty:
         problems.append(Problem(
-            code="unknown_agent_ref", severity="warning",
+            code=UNKNOWN_AGENT_REF, severity="warning",
             message=f"'{pattern}' names no agent definition on this machine.",
             fix="Check the name, or ignore this if the preset is shared.",
             subject=agent_id, field="spawns", provenance=layer.prov(rule=pattern),
@@ -575,7 +589,7 @@ def resolve_composition(
             # nothing must not collapse into one: that dropped both.
             if not narrowed:
                 problems.append(Problem(
-                    code="models_disjoint", severity="error",
+                    code=MODELS_DISJOINT, severity="error",
                     message=(f"agent '{agent_id}' may only run on {', '.join(models)} "
                              f"and '{parent.id}' only on {', '.join(parent.models)}: "
                              "no model satisfies both"),
@@ -600,7 +614,7 @@ def resolve_composition(
         capped = narrower_mode(ceiling, parent.ceiling)
         if capped != ceiling:
             problems.append(Problem(
-                code="ceiling_capped", severity="warning",
+                code=CEILING_CAPPED, severity="warning",
                 message=(f"'{agent_id}' asks for a ceiling of {ceiling.value} but "
                          f"'{parent.id}' is capped at {parent.ceiling.value}."),
                 fix="Nothing to do: the narrower of the two applies.",
@@ -636,7 +650,7 @@ def resolve_composition(
 
     if overrides.get("model") and not selectable_model:
         problems.append(Problem(
-            code="model_not_selectable", severity="error",
+            code=MODEL_NOT_SELECTABLE, severity="error",
             message=(f"agent '{agent_id}' is pinned to {model} and does not "
                      "accept a model override"),
             fix="Spawn it without a model, or make the definition selectable.",
@@ -649,7 +663,7 @@ def resolve_composition(
             slug = model
         if not (_admits(models, model) or _admits(models, slug)):
             problems.append(Problem(
-                code="model_outside_set", severity="error",
+                code=MODEL_OUTSIDE_SET, severity="error",
                 message=(f"agent '{agent_id}' may only run on: "
                          f"{', '.join(models)} (asked for {model})"),
                 fix="Pick a model the agent's policy admits.",

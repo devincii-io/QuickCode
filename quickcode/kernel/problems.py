@@ -123,6 +123,7 @@ class Problem:
 # shared.
 MODEL_NOT_SELECTABLE = "model_not_selectable"
 MODEL_OUTSIDE_SET = "model_outside_set"
+MODELS_DISJOINT = "models_disjoint"
 TOOL_WITHHELD_BY_PARENT = "tool_withheld_by_parent"
 SPAWN_WITHHELD_BY_PARENT = "spawn_withheld_by_parent"
 UNKNOWN_AGENT = "unknown_agent"
@@ -133,6 +134,7 @@ CEILING_CAPPED = "ceiling_capped"
 UNKNOWN_AGENT_REF = "unknown_agent_ref"
 BAD_COMPOSITION = "bad_composition"
 LOCAL_SETTINGS_IGNORED = "local_settings_ignored"
+PROJECT_SETTINGS_IGNORED = "project_settings_ignored"
 ID_RESERVED = "id_reserved"
 BUILTIN_SHADOWED = "builtin_shadowed"
 

@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.config import CONFIG_DIR
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import (
+    LOCAL_SETTINGS_IGNORED,
+    PROJECT_SETTINGS_IGNORED,
+    Problem,
+    Provenance,
+)
 
 log = logging.getLogger("quickcode.kernel.state")
 
@@ -208,7 +213,7 @@ def local_settings_problems(cwd: Path | None) -> list[Problem]:
         return []
     return [
         Problem(
-            code="local_settings_ignored",
+            code=LOCAL_SETTINGS_IGNORED,
             severity="info",
             message=(
                 f"{path.name} contains {' and '.join(found)}, which is not read "
@@ -242,7 +247,7 @@ def untrusted_project_problems(
         return []
     return [
         Problem(
-            code="project_settings_ignored",
+            code=PROJECT_SETTINGS_IGNORED,
             severity="warning",
             message=(
                 f"this project sets {len(keys)} permission "
