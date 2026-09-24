@@ -186,6 +186,10 @@ class PurgeResult:
     boards: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    #: Logs that exist but could not be removed (another process holds them
+    #: open, say), with the reason. Kept apart from ``missing`` because the
+    #: session is still there.
+    failed: dict[str, str] = field(default_factory=dict)
 
 
 class SessionStore:
@@ -592,14 +596,7 @@ class SessionStore:
 
     def artifact_refs(self) -> set[str]:
         """Names of subagent artifacts this session's log points at."""
-        path = self.path
-        if not path.exists():
-            return set()
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return set()
-        return set(_ARTIFACT_REF_RE.findall(text))
+        return _artifact_refs_in(self.path)
 
     # ---- listing ----
     @classmethod
@@ -687,6 +684,14 @@ class SessionStore:
         return sessions[0].conv_id
 
 
+def _artifact_refs_in(path: Path) -> set[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return set(_ARTIFACT_REF_RE.findall(text))
+
+
 def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
     """Delete sessions and everything on disk that belonged only to them.
 
@@ -712,14 +717,19 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
             result.missing.append(conv_id)
             continue
         store = SessionStore(root, conv_id)
-        if not store.path.exists():
+        # Both copies: archive and unarchive refuse to make a second one, but a
+        # restored backup can, and removing only the active log let the
+        # archived one step in under the same id.
+        logs = [p for p in (store.active_path, store.archived_path) if p.exists()]
+        if not logs:
             result.missing.append(conv_id)
             continue
-        doomed_refs |= store.artifact_refs()
         try:
-            store.path.unlink()
-        except OSError:
-            result.missing.append(conv_id)
+            for log_path in logs:
+                doomed_refs |= _artifact_refs_in(log_path)
+                log_path.unlink()
+        except OSError as e:
+            result.failed[conv_id] = e.strerror or str(e)
             continue
         result.sessions.append(conv_id)
         board_dir = root / TASKS_DIRNAME / conv_id
