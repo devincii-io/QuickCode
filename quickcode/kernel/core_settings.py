@@ -55,11 +55,14 @@ CORE_SETTINGS: dict[str, tuple[SettingSpec, ...]] = {
         SettingSpec(
             key="enabled", type="bool", default=True, tier="free",
             title="Compact automatically",
-            help="Off means long sessions end in a context-length error instead.",
+            help="Off means no summaries: only oversized tool results are cut "
+                 "when a request is refused for length.",
             affects=("loop",),
-            effect_detail="Off means nothing intervenes: a session that outgrows "
-                          "the window ends in a provider length error rather "
-                          "than in a summary.",
+            effect_detail="Off means no summary is ever taken. A request the "
+                          "provider refuses for length still gets one retry with "
+                          "its largest tool results cut to head and tail; a "
+                          "session that outgrows the window after that ends in "
+                          "the provider's length error.",
         ),
         SettingSpec(
             key="threshold", type="float", default=0.8, tier="confirm",
@@ -69,7 +72,8 @@ CORE_SETTINGS: dict[str, tuple[SettingSpec, ...]] = {
             affects=("loop",),
             effect_detail="The fraction of the model's context window the "
                           "running token ledger has to cross before a summary "
-                          "is taken, checked between turns.",
+                          "is taken, checked between turns and before each request "
+                          "inside a turn.",
             example="0.7",
         ),
         SettingSpec(
