@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import { store } from "../store.js";
 import { toastError } from "../toast.js";
+import { menuAt } from "../ui/menu.js";
 import { esc } from "../util.js";
 
 const $ = (id) => document.getElementById(id);
@@ -20,10 +21,7 @@ const $ = (id) => document.getElementById(id);
 // taken at a turn boundary or not at all. A switch that lands invisibly three
 // seconds later is worse than one that does not happen.
 
-const GAP = 6;
-
 let compositionPill = null;
-let compMenuEl = null;
 
 function compositionState() {
   return store.state?.composition || null;
@@ -62,20 +60,6 @@ export function refreshCompositionPill() {
       + "\nSwitching applies at a turn boundary.";
 }
 
-function closeCompMenu() {
-  if (compMenuEl) { compMenuEl.remove(); compMenuEl = null; }
-}
-
-function placeMenu(m, anchor) {
-  const r = anchor.getBoundingClientRect();
-  m.style.maxHeight = Math.max(160, Math.min(window.innerHeight * 0.6,
-    r.top - GAP * 2)) + "px";
-  m.style.bottom = window.innerHeight - r.top + GAP + "px";
-  m.style.top = "auto";
-  m.style.left = Math.max(GAP,
-    Math.min(r.left, window.innerWidth - m.offsetWidth - 12)) + "px";
-}
-
 export async function openCompositionMenu(anchor) {
   document.querySelectorAll(".menu").forEach((m) => m.remove());
   const current = compositionState();
@@ -91,36 +75,26 @@ export async function openCompositionMenu(anchor) {
     </button>`).join("");
 
   const blocked = blockedReason();
-  const m = document.createElement("div");
-  m.className = "menu comp-menu";
-  m.innerHTML = `
-    <div class="menu-head">Composition for this session</div>
-    ${blocked ? `<div class="menu-blocked">Refused right now — ${esc(blocked)}.
-      It is not queued: the model has already been told what tools it has, so a
-      switch is taken between turns or not at all.</div>` : ""}
-    <div class="menu-list">${rows}</div>
-    <button class="menu-item comp-custom" data-customise>
-      <div class="mi-title">Customise this…</div>
-      <div class="mi-desc">Duplicate the active composition into one you own and
-        open it in the workbench.</div>
-    </button>
-    <div class="comp-note" data-comp-note>Switching re-resolves the tools, the
-      prompt and the ceiling, records it in the session log and marks the
-      transcript. The next turn pays one uncached input.</div>`;
-  document.body.appendChild(m);
-  compMenuEl = m;
-  placeMenu(m, anchor);
-
-  const dismiss = (e) => {
-    if (!m.isConnected) { document.removeEventListener("mousedown", dismiss, true); return; }
-    if (!m.contains(e.target)) { closeCompMenu(); document.removeEventListener("mousedown", dismiss, true); }
-  };
-  setTimeout(() => document.addEventListener("mousedown", dismiss, true), 0);
+  const m = menuAt(anchor, rows, {
+    className: "comp-menu",
+    head: `<div class="menu-head">Composition for this session</div>
+      ${blocked ? `<div class="menu-blocked">Refused right now — ${esc(blocked)}.
+        It is not queued: the model has already been told what tools it has, so a
+        switch is taken between turns or not at all.</div>` : ""}`,
+    foot: `<button class="menu-item comp-custom" data-customise>
+        <div class="mi-title">Customise this…</div>
+        <div class="mi-desc">Duplicate the active composition into one you own and
+          open it in the workbench.</div>
+      </button>
+      <div class="comp-note" data-comp-note>Switching re-resolves the tools, the
+        prompt and the ceiling, records it in the session log and marks the
+        transcript. The next turn pays one uncached input.</div>`,
+  });
 
   m.addEventListener("click", async (e) => {
     const note = m.querySelector("[data-comp-note]");
     if (e.target.closest("[data-customise]")) {
-      closeCompMenu();
+      m.closeMenu();
       try {
         const made = await api.deriveComposition(current?.id || "standard");
         location.hash = `#/config/agents/%40orchestrator?preset=${
@@ -137,7 +111,7 @@ export async function openCompositionMenu(anchor) {
     note.textContent = "Switching…";
     try {
       await api.switchComposition(store.convId, btn.dataset.preset);
-      closeCompMenu();
+      m.closeMenu();
     } catch (err) {
       // The server's own words. A 409 here is the reason, and it is the most
       // useful sentence on the screen.
@@ -177,7 +151,6 @@ function mountCompositionPill() {
 // file with a nicer font.
 
 let profilePill = null;
-let profMenuEl = null;
 // `undefined` = never read, `null` = read and failed. The distinction is what
 // stops a failed fetch from being retried on every repaint.
 let profileList;
@@ -218,10 +191,6 @@ export function refreshProfilePill() {
   }
 }
 
-function closeProfMenu() {
-  if (profMenuEl) { profMenuEl.remove(); profMenuEl = null; }
-}
-
 function profileRowHtml(id, title, desc, layer, active) {
   return `<button class="menu-item" data-profile="${esc(id)}">
       <div class="mi-title">${esc(title)}${
@@ -240,44 +209,33 @@ export async function openProfileMenu(anchor) {
   const list = data?.profiles || [];
   const active = data?.active ?? (store.state?.profile || "");
 
-  const m = document.createElement("div");
-  m.className = "menu prof-menu";
-  m.innerHTML = `
-    <div class="menu-head">Permission profile for this session</div>
-    <div class="menu-list">
-      ${profileRowHtml("", "No profile",
-        "This project's own rules, on their own.", "", active)}
-      ${list.map((p) => profileRowHtml(p.id, p.title,
-        // A profile the trust gate reduced says so here too. The list is where
-        // it is picked, so it is where "this does less than it says" belongs.
-        ((p.refused || []).length
-          ? `Reduced — this project is not trusted, so its ${
-              p.refused.join(" and ")} was ignored. ` : "")
-        + (p.description || ""),
-        p.layer, active)).join("")}
-    </div>
-    <a class="menu-item prof-manage" href="#/config/profiles">
-      <div class="mi-title">Manage profiles…</div>
-      <div class="mi-desc">Write one of your own — allow <code>bash(git **)</code>,
-        deny <code>read(**)</code>, whatever this piece of work needs.</div>
-    </a>
-    <div class="prof-note" data-prof-note>A profile's rules are added to this
-      project's own rather than replacing them, so it narrows by denying; its
-      mode is where a session starts, and the mode pill or /mode still changes
-      it afterwards.
-      Switching applies straight away, to every session open on this project.</div>`;
-  document.body.appendChild(m);
-  profMenuEl = m;
-  placeMenu(m, anchor);
-
-  const dismiss = (e) => {
-    if (!m.isConnected) { document.removeEventListener("mousedown", dismiss, true); return; }
-    if (!m.contains(e.target)) { closeProfMenu(); document.removeEventListener("mousedown", dismiss, true); }
-  };
-  setTimeout(() => document.addEventListener("mousedown", dismiss, true), 0);
+  const rows = profileRowHtml("", "No profile",
+    "This project's own rules, on their own.", "", active)
+    + list.map((p) => profileRowHtml(p.id, p.title,
+      // A profile the trust gate reduced says so here too. The list is where
+      // it is picked, so it is where "this does less than it says" belongs.
+      ((p.refused || []).length
+        ? `Reduced — this project is not trusted, so its ${
+            p.refused.join(" and ")} was ignored. ` : "")
+      + (p.description || ""),
+      p.layer, active)).join("");
+  const m = menuAt(anchor, rows, {
+    className: "prof-menu",
+    head: `<div class="menu-head">Permission profile for this session</div>`,
+    foot: `<a class="menu-item prof-manage" href="#/config/profiles">
+        <div class="mi-title">Manage profiles…</div>
+        <div class="mi-desc">Write one of your own — allow <code>bash(git **)</code>,
+          deny <code>read(**)</code>, whatever this piece of work needs.</div>
+      </a>
+      <div class="prof-note" data-prof-note>A profile's rules are added to this
+        project's own rather than replacing them, so it narrows by denying; its
+        mode is where a session starts, and the mode pill or /mode still changes
+        it afterwards.
+        Switching applies straight away, to every session open on this project.</div>`,
+  });
 
   m.addEventListener("click", async (e) => {
-    if (e.target.closest(".prof-manage")) { closeProfMenu(); return; }
+    if (e.target.closest(".prof-manage")) { m.closeMenu(); return; }
     const btn = e.target.closest("[data-profile]");
     if (!btn) return;
     const note = m.querySelector("[data-prof-note]");
@@ -285,7 +243,7 @@ export async function openProfileMenu(anchor) {
     try {
       const res = await api.setActiveProfile(btn.dataset.profile);
       profileList = res;              // the write answers with the whole list
-      closeProfMenu();
+      m.closeMenu();
       refreshProfilePill();
     } catch (err) {
       note.textContent = String(err.message).replace(/^\d+:\s*/, "");
@@ -309,10 +267,4 @@ function mountProfilePill() {
 export function mountPills() {
   mountCompositionPill();
   mountProfilePill();
-}
-
-/** Keep an open pill menu attached to its pill when the window resizes. */
-export function placePillMenus() {
-  if (compMenuEl && compositionPill) placeMenu(compMenuEl, compositionPill);
-  if (profMenuEl && profilePill) placeMenu(profMenuEl, profilePill);
 }

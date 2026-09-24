@@ -8,7 +8,7 @@
 import { currentProject } from "./api.js";
 import { historyBack, historyForward, remember, resetWalk } from "./composer/history.js";
 import { atToken, initPaths, insertPath, pathEntries } from "./composer/paths.js";
-import { mountPills, placePillMenus } from "./composer/pills.js";
+import { mountPills } from "./composer/pills.js";
 import { entriesFor, initSlash, runSlash } from "./composer/slash.js";
 import { openHelp } from "./help/quickref.js";
 import { openModeMenu, openModelMenu } from "./menus.js";
@@ -268,10 +268,7 @@ export function initComposer(h) {
   $("model-pill").addEventListener("click", (e) => openModelMenu(e.currentTarget));
   $("btn-help")?.addEventListener("click", () => openHelp());
 
-  window.addEventListener("resize", () => {
-    if (slashOpen()) position();
-    placePillMenus();
-  });
+  window.addEventListener("resize", () => { if (slashOpen()) position(); });
 
   document.addEventListener("keydown", (e) => {
     // Escape during an IME composition cancels the candidate; it is not
