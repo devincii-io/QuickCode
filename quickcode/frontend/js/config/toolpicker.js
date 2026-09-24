@@ -21,7 +21,7 @@
 // the rows and the preview can never disagree.
 
 import { esc } from "../util.js";
-import { sheet, splitError } from "../settings/ui.js";
+import { confirmSheet, sheet, splitError } from "../settings/ui.js";
 
 const STATE_MARK = {
   "matched": "✓",
@@ -215,7 +215,7 @@ export function openToolPicker({ agent, data, onChange, onApply }) {
     changed();
   }
 
-  listEl.addEventListener("click", (e) => {
+  listEl.addEventListener("click", async (e) => {
     const family = e.target.closest("[data-grant-family]");
     if (family) {
       e.preventDefault();
@@ -236,13 +236,15 @@ export function openToolPicker({ agent, data, onChange, onApply }) {
     if (state === "matched-by-glob") {
       // Expanding the glob here is the one thing the picker must not do
       // silently, so the choice is stated in full and the glob is named.
-      const ok = window.confirm(
-        `“${name}” is granted by the pattern “${pattern}”.\n\n`
-        + `Removing that pattern removes every tool it matches. Negative `
-        + `patterns (excluding one tool from a glob) are not supported yet, and `
-        + `expanding the glob into names would freeze the set — a tool the `
-        + `server adds later would never reach this agent.\n\n`
-        + `Remove “${pattern}”?`);
+      const ok = await confirmSheet({
+        title: `Remove “${pattern}”?`,
+        body: `<p>“${esc(name)}” is granted by the pattern “${esc(pattern)}”.</p>
+          <p>Removing that pattern removes every tool it matches. Negative patterns
+          (excluding one tool from a glob) are not supported yet, and expanding the
+          glob into names would freeze the set — a tool the server adds later would
+          never reach this agent.</p>`,
+        confirm: "Remove the pattern",
+      });
       if (!ok) return;
       patterns = patterns.filter((p) => p !== pattern);
       changed();

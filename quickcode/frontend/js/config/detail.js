@@ -11,18 +11,17 @@
 // all because it is not rendered as a control. That machinery lives in
 // settings/fields.js and settings/ui.js and is reused verbatim.
 
-import { esc } from "../util.js";
+import { jsonHtml } from "../json_view.js";
+import { esc, fmtCount as num } from "../util.js";
 import { renderSettingsForm } from "../settings/fields.js";
-import {
-  chip, flash, highlightJson, openPluginView, splitError, tierBadge,
-} from "../settings/ui.js";
+import { chip, flash, openPluginView, splitError, tierBadge } from "../settings/ui.js";
 import { explainHtml, fixedBlockHtml, recourseHtml } from "./explain.js";
-import { bodyHtml, duplicateRefusal, kindLabel, sigilHtml, signatureOf } from "./kinds.js";
+import {
+  bodyHtml, duplicateRefusal, kindLabel, recourseHref, sigilHtml, signatureOf,
+} from "./kinds.js";
 import { duplicatePlugin } from "./create/scaffold.js";
 import { dryRunHtml, wireDryRun } from "./create/tool.js";
 import { usedByHtml } from "./usedby.js";
-
-function num(n) { return Number(n || 0).toLocaleString(); }
 
 /** The declared JSON schema, read back as the parameter list the dry run needs.
  *  The schema is what the model is handed, so deriving the dry run from it
@@ -210,7 +209,9 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
     const rec = e.target.closest("[data-recourse]");
     if (rec) {
       const action = rec.dataset.recourse;
-      if (action === "settings" && rec.dataset.target) ctx.go(`#/config/parts/${rec.dataset.target}`);
+      const href = recourseHref({ action, target: rec.dataset.target }, plugin,
+        ctx.kernel.plugins);
+      if (href) ctx.go(href);
       else if (action === "duplicate" || action === "author") {
         duplicatePlugin(ctx, plugin.id, rec);
       } else openPluginView(ctx.api, plugin);
@@ -239,7 +240,7 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
       const detail = await ctx.api.plugin(plugin.id);
       const content = detail.view?.content || "";
       ctx.facts.schemas[plugin.id] = signatureOf(content, plugin.title) || ctx.facts.schemas[plugin.id];
-      schemaSlot.innerHTML = `<pre class="raw json">${highlightJson(content)}</pre>
+      schemaSlot.innerHTML = `<pre class="raw json">${jsonHtml(content)}</pre>
         <div class="cfg-note">${num([...content].length)} characters of schema —
           this is what the model is told, verbatim.</div>`;
       const sig = ctx.facts.schemas[plugin.id];

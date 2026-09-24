@@ -24,15 +24,18 @@ from typing import TYPE_CHECKING, Any
 from quickcode.core.compact import run_compaction, should_compact
 from quickcode.core.events import (
     AgentStatus,
+    Compacted,
     ReasoningDelta,
+    SystemNote,
     TextDelta,
     ToolCallEnd,
     ToolResultEvent,
     TurnDone,
     Usage,
+    WorktreeEvent,
 )
 from quickcode.providers.base import ProviderError
-from quickcode.server.serialization import event_to_json, loggable
+from quickcode.session.wire import event_to_json, loggable, plugin_logged
 
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance, EventBus, Ledger
@@ -72,6 +75,10 @@ class TranscriptRecorder:
         # How many of the agent's history messages are already on disk.
         self.persisted = persisted
         self.turn = 0
+        # A resumed session carries on from the turns already in its log. Read
+        # lazily, on the first emit, because the store scans the log for its
+        # sequence counter at that same moment.
+        self._turn_restored = False
         # Streaming accumulators for the main agent (assembled on flush).
         self.acc_text: list[str] = []
         self.acc_reasoning: list[str] = []
@@ -84,6 +91,11 @@ class TranscriptRecorder:
     # ---- the log ----
     def emit(self, ev: dict[str, Any], *, log_it: bool | None = None) -> dict[str, Any]:
         """Persist an event when it is loggable, then hand it to the fan-out."""
+        if not self._turn_restored:
+            # Numbering restarting at 1 after a reopen folded the new turn's
+            # spend into the old turn 1 in the Usage panel, which groups by it.
+            self._turn_restored = True
+            self.turn = max(self.turn, self.store.last_turn())
         if ev.get("type") == "user_message":
             self.turn += 1
         if log_it if log_it is not None else loggable(ev):
@@ -146,6 +158,13 @@ class TranscriptRecorder:
             self.flush_assistant(finish=ev.finish_reason)
             if ev.error:
                 self.emit({"type": "error", "message": ev.error})
+            return
+        elif isinstance(ev, Compacted):
+            # The context guard compacted inside a turn: the same record the
+            # between-turn path writes, from the history as the guard left it.
+            self.record_compaction(ev.messages, wire)
+            if self.on_usage is not None:
+                self.on_usage()
             return
         elif isinstance(ev, AgentStatus):
             if ev.state == "interrupted":
@@ -252,8 +271,11 @@ class TranscriptRecorder:
                 acc_text.append(ev.text)
             # A child's usage is logged like its calls and results: a subagent
             # owns its own ``Ledger``, so its tokens reach this session only
-            # here, and a fan-out that is not written down replays as free.
-            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent, Usage))
+            # here, and a fan-out that is not written down replays as free. Its
+            # worktree events are what say where an isolated child's work went.
+            logged = isinstance(
+                ev, (ToolCallEnd, ToolResultEvent, Usage, Compacted, SystemNote, WorktreeEvent)
+            ) or plugin_logged(ev)
             if isinstance(ev, TurnDone) and acc_text:
                 self.emit(
                     {
@@ -285,7 +307,22 @@ class TranscriptRecorder:
 
         return handle_child
 
-    # ---- compaction (the headless driver's half of it) ----
+    # ---- compaction ----
+    def record_compaction(self, messages: list, event: dict[str, Any]) -> None:
+        """Write a compaction down: the rebuilt history, then ``event``.
+
+        The rebuilt history goes into the log as well, or the work is undone
+        by the next resume: ``load_messages`` would replay every original
+        message and hand the model exactly the context compaction existed to
+        remove. ``persisted`` moves to its end, or the summary seed and the
+        kept tail would be appended a second time on the next persist.
+        """
+        self.store.append_compaction(messages)
+        self.persisted = len(messages)
+        self.emit(event)
+        what = "earlier rounds" if event.get("mid_turn") else "earlier turns"
+        self.emit({"type": "system_note", "text": f"(conversation compacted — {what} summarized)"})
+
     async def maybe_compact(self, agent: AgentInstance) -> bool:
         """Compact when the turn just ended above the declared threshold.
 
@@ -308,17 +345,13 @@ class TranscriptRecorder:
         except ProviderError as e:
             self.emit({"type": "error", "message": f"compaction failed: {e}"})
             return False
-        # History was rebuilt wholesale; without this the summary seed and the
-        # kept tail would be appended a second time on the next persist.
-        # The rebuilt history goes into the log as well, or the work is
-        # undone by the next resume: `load_messages` would replay every
-        # original message and hand the model exactly the context compaction
-        # existed to remove.
-        self.store.append_compaction(agent.history.messages)
-        self.persisted = len(agent.history.messages)
-        self.emit({"type": "compacted", "summary_chars": len(summary), "manual": False})
-        self.emit(
-            {"type": "system_note", "text": "(conversation compacted — earlier turns summarized)"}
+        finally:
+            # The pump is already cancelled here; the summary request's usage
+            # is on the bus and reaches the log only through this.
+            self.drain()
+        self.record_compaction(
+            agent.history.messages,
+            {"type": "compacted", "summary_chars": len(summary), "manual": False},
         )
         return True
 
@@ -344,6 +377,16 @@ class TranscriptRecorder:
         if self.ledger is None:
             self.ledger = agent.ledger
         q = self.subscribe(agent.bus, self.handle)
+        try:
+            return await self._record(agent, text, q)
+        finally:
+            # Held through the compaction, whose usage reaches the log only by
+            # the drain. Left on the bus after that, the queue would hear the
+            # next turn too, and that turn's drain would log every event twice.
+            agent.bus.unsubscribe(q)
+            self._queues.remove((q, self.handle))
+
+    async def _record(self, agent: AgentInstance, text: str, q: asyncio.Queue) -> str:
         pump = asyncio.create_task(self._consume(q, self.handle))
         self.emit({"type": "user_message", "text": text})
         note: dict[str, Any] | None = None

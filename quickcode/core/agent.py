@@ -9,8 +9,11 @@ modal; headless supplies an auto-deny).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from quickcode.config import DEFAULT_MAX_TOKENS
 from quickcode.core.events import AgentEvent, Usage
@@ -33,6 +36,27 @@ class PermissionRequest:
     # card, and parallel read-only calls mean several requests can be open at
     # once — "the most recent card" would attach the wrong one.
     call_id: str = ""
+    # What "Always allow" saves: one exact rule per part of the call that asked
+    # (``PermissionEngine.suggest_rules``), and the parts that would ask again
+    # whatever is saved, as ``{"part", "reason"}``. ``rule_suggestion`` is the
+    # same rules on one line, for readers that predate the list.
+    rules: list[str] = field(default_factory=list)
+    kept: list[dict[str, str]] = field(default_factory=list)
+    # What an edit or a write would change, as a unified diff (Tool.render_diff).
+    diff: str = ""
+    # Why a PreToolUse hook asked, when a hook is what raised the prompt.
+    hook_reason: str = ""
+    # The call as the gate saw it, so "Why?" asks the same gate about the same
+    # call. Kept on the server: never sent to a client, never logged.
+    gated: GatedCall | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class GatedCall:
+    tool: Any
+    args: dict[str, Any]
+    engine: PermissionEngine
+    cwd: Path | None = None
 
 
 @dataclass
@@ -58,9 +82,6 @@ class PlanOutcome:
     feedback: str = ""
 
 
-PlanCallback = Callable[[str], Awaitable[PlanOutcome]]
-
-
 class EventBus:
     """Fan-out with bounded per-subscriber queues (drop-to-resync on overflow)."""
 
@@ -78,6 +99,11 @@ class EventBus:
         self._subs.append(q)
         return q
 
+    def unsubscribe(self, q: asyncio.Queue[AgentEvent]) -> None:
+        with contextlib.suppress(ValueError):
+            self._subs.remove(q)
+        self.overflowed.discard(id(q))
+
     def emit(self, ev: AgentEvent) -> None:
         for q in self._subs:
             try:
@@ -93,6 +119,8 @@ def _usage_from_json(d: dict) -> Usage:
         output_tokens=int(d.get("output_tokens") or 0),
         cached_tokens=int(d.get("cached_tokens") or 0),
         cost_usd=d.get("cost_usd"),
+        cache_write_tokens=int(d.get("cache_write_tokens") or 0),
+        reasoning_tokens=int(d.get("reasoning_tokens") or 0),
     )
 
 
@@ -102,6 +130,7 @@ class Ledger:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float = 0.0
+    cache_write_tokens: int = 0
     # The most recent request's footprint — this is the live context size
     # (the cumulative fields above measure session spend, not context).
     last_input_tokens: int = 0
@@ -117,8 +146,11 @@ class Ledger:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cached_tokens += u.cached_tokens
+        self.cache_write_tokens += u.cache_write_tokens
         self.last_input_tokens = u.input_tokens
-        self.last_output_tokens = u.output_tokens
+        # Reasoning is not carried into the next request, so it is not part
+        # of the footprint; counted, it tripped compaction far too early.
+        self.last_output_tokens = max(0, u.output_tokens - u.reasoning_tokens)
         if u.cost_usd:
             self.cost_usd += u.cost_usd
 
@@ -135,6 +167,7 @@ class Ledger:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cached_tokens += u.cached_tokens
+        self.cache_write_tokens += u.cache_write_tokens
         self.subagent_input_tokens += u.input_tokens
         self.subagent_output_tokens += u.output_tokens
         if u.cost_usd:
@@ -159,6 +192,12 @@ class Ledger:
             kind = ev.get("type")
             if kind == "usage":
                 ledger.add(_usage_from_json(ev))
+            elif kind == "compacted":
+                # As ``run_compaction`` does live: the last request measured a
+                # transcript that no longer exists, and a resumed session
+                # showed its meter pinned at the threshold that compacted it.
+                ledger.last_input_tokens = 0
+                ledger.last_output_tokens = 0
             elif kind == "agent_event":
                 inner = ev.get("ev") or {}
                 if inner.get("type") == "usage":
@@ -225,9 +264,6 @@ class AgentInstance:
         # The mode the model has actually been told about. None until the first
         # turn announces it.
         self._announced_mode: str | None = None
-        # Optional hooks set by the app: called with a ChatMessage after each
-        # message is appended (session persistence).
-        self.on_message = None
         # Set by the app to review plans via the PlanReviewModal; None -> the
         # loop treats a plan call as recorded-without-review (headless).
         self.plan_cb = None

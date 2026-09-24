@@ -15,6 +15,7 @@ developer's real configuration would pass or fail depending on it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -118,6 +119,31 @@ def test_is_newer_orders_releases_above_their_prereleases():
     assert update.is_newer("2.1.0-rc1", "2.0.0") is True
     # Incomparable is None, never a guess.
     assert update.is_newer("2.1.0", "whatever") is None
+
+
+@pytest.mark.parametrize(
+    "latest,installed,expected",
+    [
+        ("2.10.0", "2.9.0", True),                 # numbers, not strings
+        ("v2.9.0", "2.10.0", False),
+        # A post-release or a local build of 2.7.0 is not older than 2.7.0:
+        # offering 2.7.0 to it would be a downgrade.
+        ("2.7.0", "2.7.0.post1", False),
+        ("2.7.0", "2.7.0+local.3", False),
+        ("2.7.0.post1", "2.7.0", True),
+        ("2.7.0.1", "2.7.0", True),                # a fourth component is a hotfix
+        ("v2.7.0+build.9", "2.7.0", False),        # build metadata never orders
+        # Pre-release numbers are numbers, and PEP 440's phases have an order.
+        ("2.1.0-rc10", "2.1.0-rc2", True),
+        ("2.1.0a1", "2.1.0.dev3", True),
+        ("2.1.0rc1", "2.1.0b2", True),
+        # Tag spelling and metadata spelling of the same pre-release.
+        ("2.1.0rc1", "2.1.0-rc.1", False),
+        ("2.1.0-rc.1", "2.1.0rc1", False),
+    ],
+)
+def test_is_newer_compares_like_a_version(latest, installed, expected):
+    assert update.is_newer(latest, installed) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +365,7 @@ def test_the_default_is_on(home):
 def frozen_app(tmp_path, monkeypatch, *, uninstaller: bool) -> Path:
     """A stand-in for the shipping layout: the frozen application folder, with
     or without the Inno Setup uninstaller that proves it was installed."""
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     app = tmp_path / "Programs" / "QuickCode"
     (app / "_internal").mkdir(parents=True)
     exe = app / "QuickCodeApp.exe"
@@ -363,6 +389,24 @@ def test_the_frozen_installer_layout_is_recognised(tmp_path, monkeypatch):
     assert Path(info.app_dir) == app
 
 
+def test_the_uninstaller_is_found_whatever_its_case(tmp_path, monkeypatch):
+    """Windows file names are case-insensitive, so the evidence is too -- on
+    whichever host this logic happens to be exercised."""
+    app = frozen_app(tmp_path, monkeypatch, uninstaller=False)
+    (app / "UNINS000.EXE").write_bytes(b"")
+    assert update.detect_install(app / "_internal").method == "installer"
+
+
+def test_the_installer_layout_is_never_claimed_off_windows(tmp_path, monkeypatch):
+    """The same folder on another OS is not something a Windows installer can
+    update, so nothing is offered for it."""
+    app = frozen_app(tmp_path, monkeypatch, uninstaller=True)
+    monkeypatch.setattr(update, "IS_WINDOWS", False)
+    info = update.detect_install(app / "_internal")
+    assert info.method == "unknown"
+    assert info.can_self_update is False
+
+
 def test_an_uninstalled_frozen_copy_offers_nothing(tmp_path, monkeypatch):
     """dist/QuickCode, or an unzipped release folder. There is no install to
     replace, and claiming "pip" would print a command that does nothing."""
@@ -376,7 +420,7 @@ def test_the_older_venv_installer_layout_is_still_recognised(tmp_path, monkeypat
     """Pre-frozen installs put a private venv under the app directory. Nothing
     ships that shape any more, but a wheel installed into one of those venvs
     still lands beside a real uninstaller."""
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     app = tmp_path / "Programs" / "QuickCode"
     (app / "venv").mkdir(parents=True)
     (app / "unins000.exe").write_bytes(b"")
@@ -387,7 +431,7 @@ def test_the_older_venv_installer_layout_is_still_recognised(tmp_path, monkeypat
 
 
 def test_a_venv_without_the_uninstaller_is_not_the_installer(tmp_path, monkeypatch):
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     monkeypatch.setattr(update, "installed_version", lambda: "2.0.0")
     # The suite itself runs from an editable install of this repo, which is a
     # genuine "source" answer; this test is about the other branch.
@@ -460,8 +504,10 @@ async def test_a_matching_checksum_earns_the_real_filename(home, monkeypatch):
     assert saved.read_bytes() == INSTALLER_BYTES
     assert result.sha256 == hashlib.sha256(INSTALLER_BYTES).hexdigest()
     assert result.size == len(INSTALLER_BYTES)
-    # No .part survives, and the verification record sits beside the file.
-    assert not (home / "updates" / (INSTALLER_NAME + ".part")).exists()
+    # No partial file survives, and the verification record sits beside the file.
+    assert sorted(p.name for p in (home / "updates").iterdir()) == [
+        INSTALLER_NAME, INSTALLER_NAME + ".sha256",
+    ]
     assert saved.with_suffix(saved.suffix + ".sha256").read_text() == result.sha256
     # The checksums are fetched before the executable, always.
     assert rec.requests[0].endswith(update.CHECKSUMS_NAME)
@@ -521,6 +567,45 @@ async def test_a_pip_install_refuses_to_download_an_installer(home, monkeypatch)
     assert rec.requests == []
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"tag": "v2.0.0"},                       # the version already running
+        {"tag": "v1.9.0"},                       # older: a downgrade
+        {"tag": "v3.0.0", "prerelease": True},   # newer, but not a release
+    ],
+    ids=["same", "older", "prerelease"],
+)
+async def test_only_a_newer_stable_release_is_ever_downloaded(home, monkeypatch, kwargs):
+    """/api/update/download used to fetch whatever release the last check
+    returned, whatever the check had concluded about it -- so the button's
+    route would hand over the running version, an older one, or a pre-release
+    the check had just declined to offer."""
+    status = await available_status(home, monkeypatch, **kwargs)
+    assert status.state == "current"
+    rec = download_transport()
+    with pytest.raises(update.UpdateError, match="not newer|pre-release"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert rec.requests == []
+
+
+async def test_a_status_that_claims_an_upgrade_is_checked_again(home, monkeypatch):
+    """The status may be cached or hand-built; the version decides, not the label."""
+    status = update.UpdateStatus(
+        state="available", installed="2.0.0",
+        release=update.Release.from_payload(release_payload(tag="v1.9.0")),
+        install=update.InstallInfo("installer", "fake", app_dir="C:/x"),
+    )
+    rec = download_transport()
+    with pytest.raises(update.UpdateError, match="not newer"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert rec.requests == []
+
+
 async def test_a_plaintext_asset_url_is_refused_before_anything_is_fetched(
     home, monkeypatch,
 ):
@@ -546,6 +631,104 @@ async def test_a_plaintext_asset_url_is_refused_before_anything_is_fetched(
             status, transport=rec.transport, dest_dir=home / "updates",
         )
     assert rec.requests == []
+
+
+def _rename_installer(payload, new_name):
+    for asset in payload["assets"]:
+        if asset["name"] == INSTALLER_NAME:
+            asset["name"] = new_name
+            asset["browser_download_url"] = asset["browser_download_url"].replace(
+                INSTALLER_NAME, new_name,
+            )
+    return payload
+
+
+@pytest.mark.parametrize(
+    "asset_name",
+    [
+        # Another version's installer attached to this release: installing it
+        # would be a downgrade wearing the new release's name.
+        "QuickCode-Setup-2.0.0.exe",
+        # The name becomes a file name on disk. Windows normalises ".."
+        # lexically, so this would have been written two levels up.
+        "QuickCode-Setup-2.1.0\\..\\..\\escaped.exe",
+        "QuickCode-Setup-2.1.0/../../escaped.exe",
+    ],
+    ids=["other-version", "backslash-path", "slash-path"],
+)
+async def test_only_this_releases_installer_by_its_exact_name_is_fetched(
+    home, monkeypatch, asset_name,
+):
+    payload = _rename_installer(release_payload(), asset_name)
+    monkeypatch.setattr(
+        update, "detect_install",
+        lambda *a, **k: update.InstallInfo("installer", "fake", app_dir="C:/x"),
+    )
+    status = await update.check(transport=json_ok(payload).transport)
+    assert status.to_json()["downloadable"] is False
+    digest = hashlib.sha256(INSTALLER_BYTES).hexdigest()
+    rec = download_transport(sums_body=f"{digest}  {asset_name}\n")
+    with pytest.raises(update.UpdateError, match="no Windows installer"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert rec.requests == []
+    assert not (home / "escaped.exe").exists()
+
+
+async def test_a_redirect_to_plaintext_is_never_followed(home, monkeypatch):
+    """The addresses in the payload are checked before anything is fetched, and
+    every hop after them is checked too: a redirect is just another address."""
+    status = await available_status(home, monkeypatch)
+    inner = download_transport()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(INSTALLER_NAME) and request.url.host == "github.com":
+            return httpx.Response(302, headers={"location": "http://cdn.example/installer.exe"})
+        return inner._handler(request)
+
+    rec = Recorder(handler)
+    with pytest.raises(update.UpdateError, match="non-https"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert not any(r.startswith("http://") for r in rec.requests)
+    assert list((home / "updates").iterdir()) == []
+
+
+async def test_a_dead_network_while_fetching_the_checksums_is_a_refusal(home, monkeypatch):
+    """Not an httpx exception escaping into the route as a 500."""
+    status = await available_status(home, monkeypatch)
+
+    def boom(_request):
+        raise httpx.ConnectError("no route to host")
+
+    with pytest.raises(update.UpdateError, match="SHA256SUMS"):
+        await update.download_installer(
+            status, transport=httpx.MockTransport(boom), dest_dir=home / "updates",
+        )
+
+
+async def test_an_interrupted_download_leaves_nothing_behind(home, monkeypatch):
+    """A cancelled request (the page closed mid-download) is not an HTTP error,
+    and used to skip the cleanup that only ran for those."""
+    status = await available_status(home, monkeypatch)
+    inner = download_transport()
+
+    async def stalls():
+        yield INSTALLER_BYTES[:100]
+        raise asyncio.CancelledError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(INSTALLER_NAME):
+            return httpx.Response(200, content=stalls())
+        return inner._handler(request)
+
+    with pytest.raises(asyncio.CancelledError):
+        await update.download_installer(
+            status, transport=Recorder(handler).transport, dest_dir=home / "updates",
+        )
+    assert list((home / "updates").iterdir()) == []
 
 
 def test_parse_checksums_skips_anything_it_does_not_fully_understand():
@@ -627,14 +810,16 @@ def test_the_installer_is_started_outside_this_process_tree(home, monkeypatch):
         seen["flags"] = kwargs.get("creationflags", 0)
         return object()
 
-    monkeypatch.setattr(update.os, "name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     out = update.launch_installer(target, expected=digest, dest_dir=home / "updates")
 
     assert out["launched"] is True
     assert seen["argv"] == [str(target)]
-    assert seen["flags"] & subprocess.DETACHED_PROCESS
-    assert seen["flags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    # The Win32 values themselves, so this holds off Windows too, where
+    # subprocess does not export the names.
+    assert seen["flags"] & 0x00000008       # DETACHED_PROCESS
+    assert seen["flags"] & 0x00000200       # CREATE_NEW_PROCESS_GROUP
 
 
 def test_the_installer_never_kills_a_process_tree():
@@ -729,6 +914,25 @@ def test_put_update_settings_rejects_a_body_that_is_not_a_boolean(home, tmp_path
     assert client.put(
         "/api/update/settings", json={"check_automatically": "maybe"}
     ).status_code == 400
+
+
+def test_download_route_refuses_when_nothing_newer_is_out(home, tmp_path, monkeypatch):
+    async def fake_fetch(**_kwargs):
+        return update.Release.from_payload(release_payload(tag="v2.0.0")), "", "", 0.0
+
+    def no_network(*_args, **_kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("the download route went to the network")
+
+    monkeypatch.setattr(update, "fetch_latest_release", fake_fetch)
+    monkeypatch.setattr(update, "_client", no_network)
+    monkeypatch.setattr(
+        update, "detect_install",
+        lambda *a, **k: update.InstallInfo("installer", "fake", app_dir="C:/x"),
+    )
+    response = make_client(tmp_path).post("/api/update/download")
+    assert response.status_code == 400
+    assert "not newer" in response.json()["detail"]
+    assert not (home / "updates").exists()
 
 
 def test_install_requires_an_explicit_confirmation_and_a_digest(home, tmp_path):

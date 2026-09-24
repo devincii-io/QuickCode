@@ -59,7 +59,13 @@ async function req(method, path, body) {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* keep */ }
-    throw new Error(`${res.status}: ${detail}`);
+    // Some refusals are structured ({message, conflicts, …}); the message still
+    // reads as text, and the caller that needs the rest finds it on `detail`.
+    const text = detail && typeof detail === "object" ? detail.message || res.statusText : detail;
+    const err = new Error(`${res.status}: ${text}`);
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
@@ -83,7 +89,20 @@ export const api = {
   // Bulk paths answer per row: {deleted, skipped:[{conv_id, reason}], …}.
   removeSessions: (convIds) => req("POST", P("/sessions/delete"), { conv_ids: convIds }),
   cleanupSessions: (dryRun = false) => req("POST", P("/sessions/cleanup"), { dry_run: dryRun }),
+  // Titles, messages and tool names across the project's sessions, newest
+  // first; each hit carries the `seq` of the event it came from. `stopped`
+  // names the limit that ended the scan early ("results", "bytes", "time").
+  searchSessions: (q, { archived = true, limit = 30 } = {}) =>
+    req("GET", P(`/sessions/search?q=${encodeURIComponent(q)}&archived=${archived}&limit=${limit}`)),
   openConversation: (resume) => req("POST", P("/conversations"), resume ? { resume } : {}),
+  // File checkpoints (docs/CHECKPOINTS.md). A preview writes nothing; a
+  // rewind is refused (409) while the conversation works, or when a file
+  // changed since its checkpoint and `force` is not set — `err.detail.conflicts`.
+  checkpoints: (convId) => req("GET", P(`/sessions/${encodeURIComponent(convId)}/checkpoints`)),
+  previewRewind: (convId, body) =>
+    req("POST", P(`/sessions/${encodeURIComponent(convId)}/checkpoints/preview`), body),
+  rewindFiles: (convId, body) =>
+    req("POST", P(`/sessions/${encodeURIComponent(convId)}/checkpoints/rewind`), body),
   models: (refresh = false) => req("GET", P(`/models?refresh=${refresh}`)),
   // Install-wide, like the endpoint it asks about — never project-scoped.
   credits: () => req("GET", "/api/credits"),
@@ -108,8 +127,11 @@ export const api = {
   updatePlugin: (id, patch) => req("PUT", P(`/kernel/plugins/${encodeURIComponent(id)}`), patch),
   presets: () => req("GET", P("/presets")),
   setPreset: (preset) => req("PUT", P("/presets/active"), { preset }),
-  // The composed system prompt with each section's byte range.
-  prompt: () => req("GET", P("/prompt")),
+  // The composed system prompt with each section's range. Without `conv`, the
+  // prompt the next session starts from; with it, the bytes that session is
+  // being sent (`frozen: true`).
+  prompt: (conv = "") =>
+    req("GET", P(`/prompt${conv ? `?conv=${encodeURIComponent(conv)}` : ""}`)),
 
   // ---- permission profiles ----
   // A named permission posture: a starting mode plus allow/ask/deny lists.
@@ -126,6 +148,10 @@ export const api = {
   // one refusal is 409: selecting a profile that lets the agent act without
   // asking is gated on the project having been trusted.
   setActiveProfile: (id) => req("POST", P("/profiles/active"), { id }),
+  // "Why would this be allowed?" — a dry run of the real permission engine.
+  // {tool, input | command | target, mode?, conv?, rules?, project_rules?,
+  // profile?}; see server/permissions_api.py. Runs nothing, writes nothing.
+  explainPermission: (body) => req("POST", P("/permissions/explain"), body),
 
   // ---- the agent workbench ----
   // Every agent identity, `@orchestrator` first and first-class: an inventory
@@ -190,12 +216,42 @@ export const api = {
   // The same array `GET /kernel` carries, alone, for polling after a write.
   kernelProblems: () => req("GET", P("/kernel/problems")),
 
+  // ---- command hooks (docs/HOOKS.md) ----
+  // The list carries each hook's status (active / disabled / refused) and the
+  // project's trust. Every write answers with the whole list again, plus the
+  // `hook` it wrote. A project write never grants trust: in an untrusted
+  // project the saved hook comes back `refused`.
+  hooks: () => req("GET", P("/hooks")),
+  // {event, matcher, command, timeout?, scope, file?}
+  addHook: (body) => req("POST", P("/hooks"), body),
+  updateHook: (id, body) => req("PUT", P(`/hooks/${encodeURIComponent(id)}`), body),
+  deleteHook: (id, file = "") =>
+    req("DELETE", P(`/hooks/${encodeURIComponent(id)}?file=${encodeURIComponent(file)}`)),
+  // Runs the saved hook once with a sample payload; no session is touched.
+  // 409 = a project hook in an untrusted project, which does not run.
+  testHook: (id, body) => req("POST", P(`/hooks/${encodeURIComponent(id)}/test`), body),
+
+  // ---- background shell jobs (the terminal drawer's Jobs tab) ----
+  // An open conversation's jobs; 404 = it is not open. The output read takes
+  // absolute byte offsets, answers with the newest bytes after `since` (at
+  // most `limit`) and never moves the model's bash_output cursor. A kill is
+  // recorded as the user's; killing a job that already ended is a 200 no-op.
+  jobs: (convId) => req("GET", P(`/conversations/${encodeURIComponent(convId)}/jobs`)),
+  jobOutput: (convId, jobId, since = 0, limit = 65536) =>
+    req("GET", P(`/conversations/${encodeURIComponent(convId)}/jobs/${
+      encodeURIComponent(jobId)}/output?since=${since}&limit=${limit}`)),
+  killJob: (convId, jobId) =>
+    req("POST", P(`/conversations/${encodeURIComponent(convId)}/jobs/${
+      encodeURIComponent(jobId)}/kill`)),
+
   // ---- project trust (the MCP gate) ----
   // A project's own mcpServers are inert until the project is trusted once,
   // because starting one runs its command on this machine. GET reports what was
   // refused, POST grants and connects, DELETE revokes future connects.
   trust: () => req("GET", P("/trust")),
-  grantTrust: () => req("POST", P("/trust")),
+  // `hash` is the configuration the prompt showed; the server refuses (409)
+  // when the files changed after it was read.
+  grantTrust: (hash) => req("POST", P("/trust"), hash ? { hash } : undefined),
   revokeTrust: () => req("DELETE", P("/trust")),
   trustOf: (pid) => req("GET", `/api/projects/${encodeURIComponent(pid)}/trust`),
   revokeTrustOf: (pid) =>
@@ -246,7 +302,9 @@ export const api = {
 
   // ---- per install ----
   putConfig: (cfg) => req("PUT", "/api/config", cfg),
-  putApiKey: (key) => req("POST", "/api/apikey", { key }),
+  // Stored against the named model provider, or the active one when omitted.
+  putApiKey: (key, provider) =>
+    req("POST", "/api/apikey", provider ? { key, provider } : { key }),
   // A search provider's key. Its own route because /api/config writes plain
   // text to config.json and this goes to the encrypted store; write-only, like
   // the model key — nothing ever reads one back out to the browser.

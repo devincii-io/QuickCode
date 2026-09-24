@@ -11,7 +11,7 @@
 // css/app.css:133 already records that ▸ collapses to a dot in several of the
 // mono stacks we fall back to; nothing here can suffer that.
 
-import { esc } from "../util.js";
+import { esc, fmtCount as num } from "../util.js";
 
 export const KINDS = {
   tool:           { label: "tool",     sigil: "fn", part: "tools" },
@@ -81,6 +81,39 @@ const RECOURSE = {
   panel: ["A panel is frontend code.", "", ""],
 };
 
+const AUTHOR_SLUG = { tool: "tool", agent: "agent", prompt_section: "prompt" };
+
+/** Whether the editor can open the file behind a plugin: `plugins/*.md`, at
+ *  either scope. An agent in the older `agents/` directory is loaded but not
+ *  editable here — Duplicate turns it into a plugin file that is. */
+export function editableFile(path) {
+  return /[\\/]plugins[\\/][^\\/]+\.md$/i.test(String(path || ""));
+}
+
+/** Where a recourse button goes, or "" when pressing it is not a navigation.
+ *
+ *  `target` means different things per action (kernel/spec.py): a plugin id
+ *  for `settings`, a kind for `author`. A plugin id is not a Parts slug, so it
+ *  is resolved to that plugin's one canonical page — sending it to
+ *  `#/config/parts/<id>` landed on the Tools list. `author` on a file you own
+ *  opens that file; on a built-in prompt section it is a Duplicate (the copy is
+ *  a sibling that runs after the original), so it has no href here. */
+export function recourseHref(recourse, plugin, plugins = []) {
+  const { action = "", target = "" } = recourse || {};
+  if (action === "settings") {
+    const dest = plugins.find((p) => p.id === target);
+    return dest ? canonicalHref(dest) : "";
+  }
+  if (action === "author") {
+    if (plugin?.source === "authored") {
+      return `#/config/edit/${encodeURIComponent(plugin.id)}`;
+    }
+    if (plugin?.kind === "prompt_section") return "";
+    return AUTHOR_SLUG[target] ? `#/config/new/${AUTHOR_SLUG[target]}` : "";
+  }
+  return "";
+}
+
 /** `null` when this plugin can be duplicated, else `{why, label, href}`. */
 export function duplicateRefusal(plugin) {
   if (!plugin) return null;
@@ -103,8 +136,6 @@ function setting(plugin, key) {
   return (plugin.settings || []).find((s) => s.key === key);
 }
 
-function num(n) { return Number(n || 0).toLocaleString(); }
-
 function flagsHtml(plugin) {
   const ro = plugin.metadata?.read_only;
   return ro
@@ -115,7 +146,7 @@ function flagsHtml(plugin) {
 }
 
 function toolBody(plugin, facts) {
-  const sig = facts.schemas?.[plugin.id];
+  const sig = facts.schemas?.[plugin.id] || plugin.metadata?.signature;
   return `<div class="k-body mono">${
     sig ? esc(sig) : `<span class="k-dim">${esc(plugin.title)}(…)</span>`}</div>
     <div class="k-facts">${flagsHtml(plugin)}
@@ -167,13 +198,17 @@ function mcpBody(plugin, facts) {
     </div>`;
 }
 
-function providerBody(plugin, facts) {
+// The endpoint arrives with its credentials already stripped, and the model
+// count stays absent until a catalog has been fetched — "0 models" would claim
+// an empty catalog that nobody has asked for yet.
+function providerBody(plugin) {
   const md = plugin.metadata || {};
   return `<div class="k-facts">
     ${md.active ? `<span class="k-fact">active</span>` : `<span class="k-fact k-dim">available</span>`}
-    ${facts.endpoint && md.active ? `<span class="k-fact mono">${esc(facts.endpoint)}</span>` : ""}
-    ${facts.modelCount != null && md.active
-      ? `<span class="k-fact">${num(facts.modelCount)} models</span>` : ""}
+    ${md.endpoint ? `<span class="k-fact mono">${esc(md.endpoint)}</span>` : ""}
+    ${md.model_count != null
+      ? `<span class="k-fact">${num(md.model_count)} model${
+          md.model_count === 1 ? "" : "s"}</span>` : ""}
   </div>`;
 }
 
@@ -197,7 +232,7 @@ export function bodyHtml(plugin, facts = {}) {
     case "prompt_section": return promptBody(plugin, facts);
     case "agent": return agentBody(plugin);
     case "mcp_server": return mcpBody(plugin, facts);
-    case "provider": return providerBody(plugin, facts);
+    case "provider": return providerBody(plugin);
     default: return valuesBody(plugin);
   }
 }

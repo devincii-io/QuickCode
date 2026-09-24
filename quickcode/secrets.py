@@ -11,7 +11,8 @@ POSIX equivalent without extra deps; the file-permission is the real control).
 
 The OpenRouter key was the first tenant and keeps its own four functions and
 its historical path, ``~/.quickcode/openrouter.key``. Everything else — the
-web-search provider keys — goes through the named API below, into
+web-search provider keys, and the key of a model provider with its own account
+(Anthropic) — goes through the named API below, into
 ``~/.quickcode/<name>.key`` beside it. One store, one encryption path, one
 place to look when revoking: a second secret mechanism is how a key ends up
 somewhere nobody remembers to clear.
@@ -23,7 +24,10 @@ import base64
 import os
 import platform
 import re
+from collections.abc import Collection, Mapping
 from pathlib import Path
+
+from quickcode.fsutil import atomic_write_bytes
 
 API_KEY_ENV = "QUICKCODE_OPENROUTER_API_KEY"
 
@@ -71,11 +75,7 @@ def _write_secret(path: Path, value: str) -> None:
     else:
         # Not real encryption — the 0600 file permission is the control.
         payload = b"B64:" + base64.b64encode(raw)
-    path.write_bytes(payload)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    atomic_write_bytes(path, payload, mode=0o600)
 
 
 def _read_secret(path: Path) -> str | None:
@@ -153,5 +153,88 @@ def has_saved_key() -> bool:
     return _SECRET_PATH.exists()
 
 
-def clear_saved_key() -> None:
-    _SECRET_PATH.unlink(missing_ok=True)
+# --------------------------------------------------------------------------- #
+# Model-provider keys
+# --------------------------------------------------------------------------- #
+# A provider that bills a different account than OpenRouter needs its own key,
+# or switching providers would mean pasting keys back and forth. Keyed by the
+# provider plugin name; anything not listed shares the OpenRouter key above,
+# which is what every OpenAI-compatible endpoint has always used.
+PROVIDER_KEY_ENV: dict[str, str] = {
+    "anthropic": "QUICKCODE_ANTHROPIC_API_KEY",
+}
+
+
+def provider_key_env(provider: str) -> str:
+    return PROVIDER_KEY_ENV.get(provider, API_KEY_ENV)
+
+
+def load_provider_key(provider: str) -> str | None:
+    """The key the named model provider sends: env var first, then saved."""
+    if provider not in PROVIDER_KEY_ENV:
+        return load_api_key()
+    env = os.environ.get(PROVIDER_KEY_ENV[provider])
+    if env:
+        return env
+    return load_secret(provider)
+
+
+def save_provider_key(provider: str, key: str) -> None:
+    if provider in PROVIDER_KEY_ENV:
+        save_secret(provider, key)
+    else:
+        save_api_key(key)
+
+
+def has_saved_provider_key(provider: str) -> bool:
+    return has_secret(provider) if provider in PROVIDER_KEY_ENV else has_saved_key()
+
+
+def has_provider_key(provider: str) -> bool:
+    """Whether a key is available, without decrypting it."""
+    return bool(os.environ.get(provider_key_env(provider))) or has_saved_provider_key(provider)
+
+
+# --------------------------------------------------------------------------- #
+# Credential environment variables
+# --------------------------------------------------------------------------- #
+# A credential by the shape of its name: ``credential_env_names`` lists the ones
+# QuickCode reads today, this catches the next one before anybody lists it.
+_CREDENTIAL_SHAPE = re.compile(r"^QUICKCODE_\w*(KEY|TOKEN|SECRET|PASSWORD)$")
+
+
+def credential_env_names() -> tuple[str, ...]:
+    """Every environment variable QuickCode reads a credential from.
+
+    The one list: ``subproc.child_env`` withholds these from what QuickCode
+    starts, ``session.redact`` blanks their values out of the session log, and
+    ``doctor`` names the ones that are set. Three lists is how the Anthropic
+    key came to be withheld from children and still written to the log.
+    """
+    names = [API_KEY_ENV, *PROVIDER_KEY_ENV.values()]
+    try:
+        from quickcode.search.resolve import provider_infos
+    except Exception:  # noqa: BLE001 - the shape below still catches their keys
+        pass
+    else:
+        names += [info.api_key_env for info in provider_infos() if info.api_key_env]
+    return tuple(dict.fromkeys(names))
+
+
+def is_credential_env(name: str, known: Collection[str] | None = None) -> bool:
+    """Whether ``name`` holds a credential: one listed, or one shaped like one.
+
+    ``known`` is ``credential_env_names()``, passed in by a caller testing a
+    whole environment so the list is built once rather than per variable.
+    """
+    upper = name.upper()
+    listed = credential_env_names() if known is None else known
+    return upper in listed or bool(_CREDENTIAL_SHAPE.match(upper))
+
+
+def credential_envs_set(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The credential variables ``environ`` (default: this process's) holds."""
+    environ = os.environ if environ is None else environ
+    known = credential_env_names()
+    return {name: value for name, value in environ.items()
+            if value and is_credential_env(name, known)}

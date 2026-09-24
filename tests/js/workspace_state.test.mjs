@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { insertBeside, removeLeaf, leaves, layoutRects, dwindleDir } from "../../quickcode/frontend/js/split_tree.js";
-import { readLayout, restoreWorkspace, MAX_PANES } from "../../quickcode/frontend/js/workspace_state.js";
+import { clampRatio, readLayout, resizeKey, restoreWorkspace, MAX_PANES, MAX_RATIO, MIN_RATIO } from "../../quickcode/frontend/js/workspace_state.js";
 
 test("nested split, move and close preserve each independent pane exactly once", () => {
   let tree = insertBeside(null, null, "agent-a");
@@ -52,4 +52,44 @@ test("restore binds conversations to their project and repairs stale focus", () 
   assert.equal(ws.panes["pane-a"].convId, "conversation-a");
   assert.equal(ws.panes.orphan, undefined);
   assert.equal(restoreWorkspace({ project: { id: "missing-path" } }), null);
+});
+
+test("stored ids that name Object.prototype members cannot pose as panes", () => {
+  const ws = restoreWorkspace({ project: { id: "p", path: "/p" }, focused: "toString",
+    tree: { type: "split", dir: "h", ratio: .5,
+      children: [{ type: "pane", pane: "__proto__" }, { type: "pane", pane: "constructor" }] },
+    panes: JSON.parse('{"__proto__": {"convId": "kept-1", "title": "Kept"}}') });
+  assert.deepEqual(Object.keys(ws.panes), ["__proto__", "constructor"]);
+  assert.equal(ws.panes.__proto__.convId, "kept-1");
+  assert.equal(ws.panes.constructor.convId, null);
+  assert.equal(ws.focused, "__proto__");
+  assert.equal(JSON.parse(JSON.stringify(ws.panes)).__proto__.title, "Kept");
+});
+
+test("a conversation id the server would refuse restores as a fresh conversation", () => {
+  const ws = restoreWorkspace({ project: { id: "p", path: "/p", name: { not: "text" }, extra: "dropped" },
+    tree: { type: "split", children: [{ type: "pane", pane: "a" }, { type: "pane", pane: "b" }] },
+    panes: { a: { convId: "bad id/.." }, b: { convId: "20260906-abc_DEF" } } });
+  assert.deepEqual({ ...ws.panes.a }, { id: "a", convId: null, persisted: false, title: "New agent" });
+  assert.equal(ws.panes.b.convId, "20260906-abc_DEF");
+  assert.equal(ws.panes.b.persisted, true);
+  assert.deepEqual(ws.project, { id: "p", path: "/p", name: "" });
+  assert.equal(readLayout({ type: "split", children: [
+    { type: "pane", pane: "../x" }, { type: "pane", pane: "x".repeat(65) }] }), null);
+  assert.equal(readLayout({ type: "pane", pane: 7 }), null);
+  assert.equal(restoreWorkspace({ project: { id: "p", path: "/p" }, panes: null, tree: null }).focused, null);
+});
+
+test("divider keys step within bounds and leave modified arrows to the pane shortcuts", () => {
+  assert.equal(resizeKey(.5, { key: "ArrowRight" }), .55);
+  assert.equal(resizeKey(.5, { key: "ArrowUp" }), .45);
+  assert.equal(resizeKey(.84, { key: "ArrowDown" }), MAX_RATIO);
+  assert.equal(resizeKey(.16, { key: "ArrowLeft" }), MIN_RATIO);
+  assert.equal(resizeKey(.5, { key: "Home" }), MIN_RATIO);
+  assert.equal(resizeKey(.5, { key: "End" }), MAX_RATIO);
+  assert.equal(resizeKey(NaN, { key: "ArrowRight" }), .55);
+  assert.equal(resizeKey(.5, { key: "ArrowRight", altKey: true }), null);
+  assert.equal(resizeKey(.5, { key: "ArrowLeft", ctrlKey: true }), null);
+  assert.equal(resizeKey(.5, { key: "Enter" }), null);
+  assert.equal(clampRatio(.01), MIN_RATIO);
 });

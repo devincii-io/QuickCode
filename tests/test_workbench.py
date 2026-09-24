@@ -196,6 +196,23 @@ def test_the_footer_counts_what_a_person_actually_asks(tmp_path):
     assert payload["footer"].startswith("7 tools · 7 read-only")
 
 
+def test_the_picker_files_tools_under_the_same_groups_as_the_plugin_cards(tmp_path):
+    """The picker kept a grouping table of its own, and the two drifted: the
+    shell-job tools and the web tools were "Other" there and "Shell"/"Web" on
+    the cards, and ``plan`` was "Planning" there and "Tools" on the cards."""
+    from quickcode.kernel.manifest import tool_group
+
+    with make_client(make_manager(tmp_path)) as client:
+        payload = client.get("/api/kernel/agents/%40orchestrator/resolved").json()
+    groups = {row["name"]: row["group"] for row in payload["pool"]}
+    assert groups["plan"] == "Planning"
+    assert groups["bash_output"] == groups["bash_kill"] == groups["bash"] == "Shell"
+    assert groups["web_fetch"] == groups["web_search"] == "Web"
+    assert "Other" not in groups.values()
+    for name, group in groups.items():
+        assert group == tool_group(name, by_server=True), name
+
+
 # --------------------------------------------------------------------------
 # /preview
 # --------------------------------------------------------------------------
@@ -243,6 +260,28 @@ def test_a_draft_tool_pattern_changes_the_grant_and_the_schemas(tmp_path):
     assert rows["read"]["pattern"] == "read"
     assert rows["glob"]["state"] == "unmatched"
     assert rows["glob"]["reason"]
+
+
+def test_a_draft_body_is_bounded_whether_or_not_it_declares_its_length(tmp_path):
+    too_big = b" " * (1024 * 1024 + 1)
+
+    def chunked():
+        for start in range(0, len(too_big), 64 * 1024):
+            yield too_big[start:start + 64 * 1024]
+
+    with make_client(make_manager(tmp_path)) as client:
+        url = "/api/kernel/agents/explore/preview"
+        declared = client.post(url, content=too_big)
+        streamed = client.post(url, content=chunked())
+        malformed = client.post(url, content=b"{nope")
+        empty = client.post(url, content=b"")
+
+    assert declared.status_code == 413
+    assert streamed.status_code == 413
+    assert malformed.status_code == 400
+    assert malformed.json()["detail"] == "request body must be valid JSON"
+    # An empty body is an empty draft, which is the saved agent.
+    assert empty.status_code == 200 and empty.json()["draft"] is True
 
 
 def test_a_glob_pattern_is_reported_as_glob_matched_not_frozen(tmp_path):
@@ -323,6 +362,41 @@ def test_a_switch_records_the_composition_and_resume_restores_it(tmp_path):
     assert "write" not in reopened.agent.registry.tools
 
 
+def test_a_switched_session_is_the_session_that_composition_would_open(tmp_path):
+    """Switching re-runs the steps opening does (session/assemble.py), so the
+    session a switch leaves behind -- tools, gating specs, mode under the new
+    ceiling, prompt, what a later spawn resolves against -- is the one a new
+    session on that composition would have been."""
+    readonly = {"presets": {"readonly": {
+        "title": "Read only",
+        "orchestrator": {"tools": ["read", "glob", "grep"], "ceiling": "plan"},
+    }}}
+    write_settings(tmp_path, readonly)
+    manager = make_manager(tmp_path)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        conv = manager.get(conv_id)
+        assert conv.agent.mode.value == "ask"
+        res = client.post(f"/api/kernel/conversations/{conv_id}/composition",
+                          json={"preset": "readonly"})
+        assert res.status_code == 200, res.text
+
+        write_settings(tmp_path, {**readonly, "active_preset": "readonly"})
+        fresh = manager.get(client.post("/api/conversations", json={}).json()["conv_id"])
+
+    switched = conv.agent
+    assert switched.mode.value == "plan"
+    assert "mode_changed" in [e.get("type") for e in conv.store.replay_events()]
+    assert list(switched.registry.tools) == list(fresh.agent.registry.tools)
+    assert switched.permissions.specs == fresh.agent.permissions.specs
+    assert switched.limits == fresh.agent.limits
+    assert switched.history.system_prompt == fresh.agent.history.system_prompt
+    deps, fresh_deps = switched.ctx.extra["subagent"], fresh.agent.ctx.extra["subagent"]
+    assert deps.parent.digest() == fresh_deps.parent.digest() == conv.resolved.digest()
+    assert deps.preset.id == "readonly"
+    assert [t.name for t in deps.pool] == [t.name for t in fresh_deps.pool]
+
+
 def test_switching_to_the_composition_already_running_is_refused(tmp_path):
     manager = make_manager(tmp_path)
     with make_client(manager) as client:
@@ -331,6 +405,23 @@ def test_switching_to_the_composition_already_running_is_refused(tmp_path):
                           json={"preset": "standard"})
     assert res.status_code == 409
     assert "already runs" in res.json()["detail"]
+
+
+def test_a_preset_id_is_trimmed_before_it_is_looked_up(tmp_path):
+    """The id was checked as sent and only trimmed on the way to the switch,
+    so an id with a stray space -- pasted, or typed after a completion -- was a
+    404 for a composition that exists. Both routes that take one."""
+    manager = make_manager(tmp_path)
+    write_settings(tmp_path, DELEGATOR)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        switched = client.post(f"/api/kernel/conversations/{conv_id}/composition",
+                               json={"preset": " delegator "})
+        active = client.put("/api/presets/active", json={"preset": " delegator"})
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["preset"] == "delegator"
+    assert active.status_code == 200, active.text
+    assert active.json()["active"] == "delegator"
 
 
 # --------------------------------------------------------------------------

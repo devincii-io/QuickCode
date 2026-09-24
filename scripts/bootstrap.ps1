@@ -5,8 +5,9 @@
     then installs the QuickCode package from a bundled source directory.
 
 .DESCRIPTION
-    Run by the Inno Setup installer (packaging/quickcode.iss) after files are copied,
-    but it is also safe to run standalone, e.g.:
+    Called by scripts\install.ps1 (with -SkipQuickCodeInstall) for a source
+    install. The .exe installer no longer runs it: it ships a frozen build that
+    needs neither Git nor Python. It is also safe to run standalone, e.g.:
 
         powershell -ExecutionPolicy Bypass -File bootstrap.ps1 -SourceDir "C:\path\to\quickcode"
 

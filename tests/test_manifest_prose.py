@@ -92,3 +92,25 @@ def test_a_server_without_env_renders_unchanged():
     content = manifest.mcp_specs(cfg)[0].view().content
     assert "env" not in content
     assert "server.js" in content
+
+
+def test_mcp_tools_share_one_card_group_and_split_by_server_only_when_asked():
+    assert manifest.tool_group("mcp__docs__search") == "MCP"
+    assert manifest.tool_group("mcp__docs__search", by_server=True) == "MCP · docs"
+    assert manifest.tool_group("bash_output", by_server=True) == "Shell"
+
+
+def test_every_shipped_tool_has_a_named_group_and_only_a_stranger_is_other():
+    from quickcode.tools.registry import default_registry
+
+    groups = {name: manifest.tool_group(name) for name in default_registry().tools}
+    assert "Other" not in groups.values(), groups
+    assert groups["plan"] == "Planning"
+    assert groups["web_fetch"] == groups["web_search"] == "Web"
+    assert groups["bash_kill"] == "Shell"
+    assert groups["task_list"] == "Tasks"
+    assert groups["agent_status"] == "Subagents"
+    # A tool from an entry point or an authored file belongs to no family.
+    assert manifest.tool_group("lint_repo") == "Other"
+    # ``task_`` is the family, not every name that starts with "task".
+    assert manifest.tool_group("taskmaster") == "Other"

@@ -27,6 +27,16 @@ PROVIDERS_GROUP = "quickcode.providers"
 
 
 def load_tool_plugins() -> list[Tool]:
+    """Tools from installed packages. They add to QuickCode's tools and never
+    replace one: a project's tool list is the built-ins with these written over
+    them by name, so a plugin tool called ``bash`` would *be* the shell tool --
+    the collision the authored-plugin loader refuses, refused here too."""
+    from quickcode.kernel.authoring.reserved import (
+        RESERVED_WIRE_PREFIXES,
+        builtin_wire_names,
+    )
+
+    taken = set(builtin_wire_names())
     tools: list[Tool] = []
     for ep in entry_points(group=TOOLS_GROUP):
         try:
@@ -36,13 +46,18 @@ def load_tool_plugins() -> list[Tool]:
             continue
         found = made if isinstance(made, list) else [made]
         for t in found:
-            if isinstance(t, Tool) and t.name:
-                # Stamped here, not guessed later: provenance is the one thing
-                # a plugin cannot be trusted to declare about itself.
-                t.source = "entrypoint"
-                tools.append(t)
-            else:
+            if not (isinstance(t, Tool) and t.name):
                 log.warning("tool plugin %s returned a non-Tool: %r", ep.name, t)
+                continue
+            if t.name in taken or t.name.startswith(RESERVED_WIRE_PREFIXES):
+                log.warning("tool plugin %s: %r is a built-in or reserved tool name, "
+                            "or another plugin's; skipped", ep.name, t.name)
+                continue
+            taken.add(t.name)
+            # Stamped here, not guessed later: provenance is the one thing
+            # a plugin cannot be trusted to declare about itself.
+            t.source = "entrypoint"
+            tools.append(t)
     return tools
 
 
@@ -52,6 +67,7 @@ def provider_factories() -> dict[str, Callable[[str, str | None], Provider]]:
 
     factories: dict[str, Callable[[str, str | None], Provider]] = {
         "openai-compat": lambda base_url, api_key: OpenAICompatProvider(base_url, api_key),
+        "anthropic": _anthropic,
     }
     for ep in entry_points(group=PROVIDERS_GROUP):
         try:
@@ -59,6 +75,13 @@ def provider_factories() -> dict[str, Callable[[str, str | None], Provider]]:
         except Exception as e:
             log.warning("provider plugin %s failed to load: %s", ep.name, e)
     return factories
+
+
+def _anthropic(base_url: str, api_key: str | None) -> Provider:
+    # Imported on use: listing the factories for Settings must not load it.
+    from quickcode.providers.anthropic import AnthropicProvider
+
+    return AnthropicProvider(base_url, api_key)
 
 
 def make_provider(name: str, base_url: str, api_key: str | None) -> Provider:

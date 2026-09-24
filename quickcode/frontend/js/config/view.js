@@ -14,10 +14,10 @@
 // composer, for the three install-level things people change mid-conversation.
 
 import { esc } from "../util.js";
-import { store } from "../store.js";
 import { renderAgent, renderAgentsIndex } from "./agents.js";
 import { renderCompositions } from "./compositions.js";
 import { renderDetail } from "./detail.js";
+import { renderHooks } from "./hooks.js";
 import { renderInstall } from "./install.js";
 import { renderMachineRoom } from "./machineroom.js";
 import { renderParts } from "./parts.js";
@@ -105,8 +105,6 @@ async function load(api) {
     facts: {
       schemas: {}, ranges, mcpTools,
       connected: kernel.mcp_servers || [],
-      endpoint: store.bootstrap?.base_url || "",
-      modelCount: null,
     },
     go,
     touched: () => {},        // a plugin changed; the cached kernel copy is live
@@ -180,6 +178,9 @@ export async function render() {
     // `a` is a profile id, `new` for a blank one; `?from=` prefills from another
     // and `?scope=` says which file the editor writes to.
     else if (head === "profiles") await renderProfiles(page, ctx, a || "", route.query);
+    // `a` is a hook id, `new` for a blank form; `?file=` names the settings
+    // file an id sits in, since one command may be declared in two.
+    else if (head === "hooks") await renderHooks(page, ctx, a || "", route.query);
     else if (head === "parts" && b) {
       const part = PARTS.find((p) => p.slug === a);
       const plugin = ctx.kernel.plugins.find((p) => p.id === b);
@@ -200,7 +201,7 @@ export async function render() {
       return;
     } else if (head === "machine-room") renderMachineRoom(page, ctx);
     else if (head === "install") await renderInstall(page, ctx, a || "general");
-    else if (head === "new") renderNew(page, ctx, a || "agent");
+    else if (head === "new") renderNew(page, ctx, a || "agent", route.query);
     // The raw source editor. It has a URL because it is a page you link people
     // to — "the file that does this is here" — not a dialog over a list.
     else if (head === "edit" && a) await renderEditor(page, ctx, a, route.query);

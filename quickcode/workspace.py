@@ -38,6 +38,8 @@ GITIGNORE_TEXT = """\
 #                        into the chat
 #   tasks/               per-conversation task boards, written from those turns
 #   artifacts/           subagent reports offloaded to disk: more transcript
+#   checkpoints/         copies of project files from before each agent turn,
+#                        kept so an edit can be rewound -- secrets included
 #   plugins/.trash/      deleted plugin drafts, a local undo buffer
 #   settings.local.json  this machine's permission grants, not the project's
 #
@@ -49,6 +51,7 @@ GITIGNORE_TEXT = """\
 sessions/
 tasks/
 artifacts/
+checkpoints/
 plugins/.trash/
 settings.local.json
 """

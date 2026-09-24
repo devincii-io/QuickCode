@@ -6,7 +6,8 @@
 // catalog read-only (the session model is switched from the composer pill),
 // Appearance applies a preset live and persists it.
 
-import { confirmModal, creditLine } from "../modals.js";
+import { creditLine } from "../quick_settings.js";
+import { confirmModal } from "../ui/modal.js";
 import { store } from "../store.js";
 import { applyTheme, esc, fmtTokens } from "../util.js";
 import { flash } from "./ui.js";
@@ -23,24 +24,43 @@ async function bootstrap(api) {
   return store.bootstrap;
 }
 
+/** A provider's key state, in the words the key field uses. */
+function keyState(p) {
+  return p?.has_api_key
+    ? '<span class="ok-note">· saved</span>'
+    : `<span class="warn-note">· not set (or $${esc(p?.api_key_env || "")})</span>`;
+}
+
 export async function renderGeneralPage(c, { api, modes }) {
   c.innerHTML = `<div class="set-loading">Loading…</div>`;
   const bs = await bootstrap(api);
+  // Older servers send no list; the active backend is then the only choice.
+  const providers = bs.model_providers?.length ? [...bs.model_providers] : [{
+    name: bs.model_provider || "openai-compat", label: bs.provider || "Current provider",
+    base_url: "", has_api_key: bs.has_api_key, api_key_env: bs.api_key_env,
+  }];
+  let current = bs.model_provider || providers[0].name;
+  const byName = (name) => providers.find((p) => p.name === name);
   c.innerHTML = `
     <div class="set-page">
       <div class="set-lede">Where the models come from and how much the agent
         may do before it asks. These are per install and apply to new sessions.</div>
       <div class="set-field"><label>Project</label>
         <input value="${esc(bs.cwd || "")}" disabled></div>
+      <div class="set-field"><label for="set-provider">Model provider
+        <span class="qs-hint">— each keeps its own API key; switching applies to
+        new sessions.</span></label>
+        <select id="set-provider">${providers.map((p) =>
+          `<option value="${esc(p.name)}"${p.name === current ? " selected" : ""}>${
+            esc(p.label)}</option>`).join("")}
+        </select></div>
       <div class="set-field"><label for="set-baseurl">Provider endpoint (base URL)</label>
         <input id="set-baseurl" type="url" required spellcheck="false" value="${esc(bs.base_url || "")}"></div>
-      <div class="set-field"><label>API key ${bs.has_api_key
-        ? '<span class="ok-note">· saved</span>'
-        : `<span class="warn-note">· not set (or $${esc(bs.api_key_env || "")})</span>`}</label>
+      <div class="set-field"><label>API key <span id="set-key-state"></span></label>
         <input id="set-apikey" type="password" placeholder="sk-… (stored encrypted at rest)"></div>
       <div class="set-field"><label>Default permission mode (new sessions)</label>
-        <select id="set-mode">${modes.map(([id, t]) =>
-          `<option value="${id}"${bs.default_mode === id ? " selected" : ""}>${t}</option>`).join("")}
+        <select id="set-mode">${modes.map(({ id, title }) =>
+          `<option value="${id}"${bs.default_mode === id ? " selected" : ""}>${title}</option>`).join("")}
         </select></div>
       <div class="set-field"><label>Yolo mode
         <span class="qs-hint">— yolo runs every tool without asking, including
@@ -73,6 +93,21 @@ export async function renderGeneralPage(c, { api, modes }) {
         <span class="set-flash" id="set-msg"></span>
       </div>
     </div>`;
+  const keyLabel = c.querySelector("#set-key-state");
+  keyLabel.innerHTML = keyState(byName(current));
+  c.querySelector("#set-provider").addEventListener("change", (e) => {
+    const was = byName(current);
+    const next = byName(e.target.value);
+    const url = c.querySelector("#set-baseurl");
+    // Only a URL that was the old provider's own default moves with the
+    // switch; one the user typed is theirs to keep or change.
+    if (next?.base_url && (!url.value.trim() || url.value.trim() === was?.base_url)) {
+      url.value = next.base_url;
+    }
+    current = e.target.value;
+    keyLabel.innerHTML = keyState(next);
+  });
+
   // Fills in on its own: a provider round trip must not hold the page.
   (async () => {
     const box = c.querySelector("#set-credits");
@@ -98,6 +133,7 @@ export async function renderGeneralPage(c, { api, modes }) {
       const rawMax = c.querySelector("#set-maxtok").value.trim();
       const rawTemp = c.querySelector("#set-temp").value.trim();
       const patch = {
+        provider: current,
         base_url: c.querySelector("#set-baseurl").value.trim(),
         default_mode: c.querySelector("#set-mode").value,
         // Blank means "leave it as it is"; 0 means "send no cap at all".
@@ -123,10 +159,15 @@ export async function renderGeneralPage(c, { api, modes }) {
       patch.allow_yolo = yolo.checked;
 
       await api.putConfig(patch);
-      store.bootstrap = { ...(store.bootstrap || {}), ...patch };
       const key = c.querySelector("#set-apikey").value.trim();
-      if (key) await api.putApiKey(key);
-      Object.assign(bs, patch);
+      if (key) await api.putApiKey(key, current);
+      // A switch applies the new provider's defaults (endpoint, models) on
+      // the server, so the page redraws from what it now says.
+      Object.assign(bs, await api.bootstrap());
+      store.bootstrap = bs;
+      c.querySelector("#set-baseurl").value = bs.base_url || "";
+      if (bs.model_providers?.length) providers.splice(0, providers.length, ...bs.model_providers);
+      keyLabel.innerHTML = keyState(byName(current));
       c.querySelector("#set-apikey").value = "";
       flash(msg, "Saved. New sessions pick this up.");
     } catch (err) {

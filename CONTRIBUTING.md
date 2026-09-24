@@ -8,10 +8,15 @@ frontend is plain JavaScript and CSS served straight from
 uv sync --all-extras --dev
 uv run --no-sync pytest -q
 uv run --no-sync ruff check quickcode tests scripts
+node --test tests/js/*.test.mjs        # when you changed frontend JavaScript
 ```
 
-There is no hosted CI yet; run both commands above before opening a pull
-request (`scripts/release.py --check` runs them together, see below).
+`uv run --no-sync python scripts/release.py --check` runs all of that plus a
+byte-compile, `node --check` over every frontend module and `git diff --check`
+— the local release gate. CI (`.github/workflows/ci.yml`) runs ruff, pytest and
+the frontend syntax check on Windows with Python 3.12, 3.13 and 3.14 for every
+push and pull request. The suite also runs on Linux and macOS; see `AGENTS.md`
+for the handful of Windows-shaped tests that do not pass there.
 
 ## Ground rules
 
@@ -29,8 +34,9 @@ request (`scripts/release.py --check` runs them together, see below).
 - Match the existing code's style before introducing a new one — the
   codebase favors small, focused modules (see `quickcode/kernel/`,
   `quickcode/tools/`) over growing an existing file into a monolith.
-- Keep terminal I/O as raw bytes on the PTY hot path (`quickcode/pty/`) —
-  no decoding until the frontend boundary.
+- Keep command output as raw bytes on the PTY hot path
+  (`quickcode/pty/session.py`) — decode once, at the boundary
+  (`tools/base.py::decode_output`).
 
 ## Tests
 

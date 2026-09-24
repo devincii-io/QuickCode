@@ -41,6 +41,8 @@ PROVIDER_CHOICE_ENV = "QUICKCODE_SEARCH_PROVIDER"
 # Prefix under ~/.quickcode/, so a search key can never collide with the
 # OpenRouter one and both are visible as files for whoever wants to revoke them.
 SECRET_PREFIX = "search-"
+# Where the app itself takes a search key (frontend/js/config/websearch.js).
+SETTINGS_PAGE = "Settings → Web search"
 
 PROVIDERS: dict[str, type] = {
     BraveProvider.info.name: BraveProvider,
@@ -293,9 +295,11 @@ def _unconfigured_message(
     lines.append(f"Get it at {info.signup_url}{tier}.")
 
     if info.needs_key:
+        # Settings first: the installed app has no Python to run `-m` with.
         lines.append(
-            f"Then set {info.api_key_env}, or store it encrypted with:  "
-            f"python -m quickcode.search set-key {info.name}"
+            f"Then paste it into {SETTINGS_PAGE} (stored encrypted), or set "
+            f"{info.api_key_env}; from a source checkout, "
+            f"python -m quickcode.search set-key {info.name} does the same."
         )
     if info.needs_base_url:
         lines.append(

@@ -120,7 +120,7 @@ export async function renderPlugins(host) {
     <dl class="hp-defs">
       <dt class="hp-dt">internal</dt>
       <dd class="hp-dd">Shipped with QuickCode, declared in
-        <code>kernel/manifest.py</code>. Same shape as any other — there is no
+        <code>kernel/manifest/</code>. Same shape as any other — there is no
         privileged side door for the built-ins.</dd>
       <dt class="hp-dt">entrypoint</dt>
       <dd class="hp-dd">Third-party, discovered through Python entry points.</dd>

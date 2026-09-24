@@ -1,9 +1,14 @@
 # Binding: one model for attaching plugins to agents
 
-Status: design. Nothing here is implemented yet. This document owns the
+> **Design rationale.** Implemented in 2.0.0 as compositions
+> (`kernel/composition.py`, `kernel/resolve.py`); the introspection endpoints
+> proposed in §8 shipped as `/api/kernel/agents/...` (`server/agents_api.py`).
+> Where this document and the code disagree, the code wins.
+
+This document owns the
 *attachment* problem only — how a plugin becomes part of a particular agent.
 Discovery (what exists), mutability tiers, and the settings UI are already
-specced in `PLAN-PLUGIN-UI-OVERHAUL.md` and `ARCHITECTURE.md#the-plugin-kernel`
+specced in `../archive/PLAN-PLUGIN-UI-OVERHAUL.md` and `../ARCHITECTURE.md#the-plugin-kernel`
 and are assumed here.
 
 ## 1. What is broken

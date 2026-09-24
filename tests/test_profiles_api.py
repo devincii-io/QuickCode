@@ -350,6 +350,46 @@ async def test_a_profile_may_ask_for_yolo_once_the_app_has_armed_it(project):
     await manager.close()
 
 
+async def test_a_new_session_does_not_open_in_yolo_the_app_has_not_armed(project):
+    """``set_mode`` and a profile switch both refuse unarmed yolo; opening a
+    session under a yolo profile walked straight into it, silently."""
+    _grant(project)
+    _project_settings(project, {
+        "profiles": {"reckless": {"title": "Reckless", "mode": "yolo",
+                                  "allow": ["bash(**)"]}},
+        "active_profile": "reckless",
+    })
+    _grant(project)
+    manager = make_manager(project, FakeProvider([]))
+    conv = manager.open()
+    try:
+        assert conv.profile_id == "reckless"
+        assert conv.agent.mode == Mode.ask
+        said = [e["text"] for e in conv.store.load_events()
+                if e.get("type") == "system_note"]
+        assert any("yolo" in t and "Settings" in t for t in said), said
+        # Said, and still held: a note is not the user saying anything.
+        assert not conv.store.path.exists()
+    finally:
+        await manager.close()
+
+
+async def test_an_armed_app_opens_a_yolo_profile_in_yolo(project):
+    _grant(project)
+    _project_settings(project, {
+        "profiles": {"reckless": {"title": "Reckless", "mode": "yolo"}},
+        "active_profile": "reckless",
+    })
+    _grant(project)
+    manager = make_manager(project, FakeProvider([]))
+    manager.config.allow_yolo = True
+    conv = manager.open()
+    try:
+        assert conv.agent.mode == Mode.yolo
+    finally:
+        await manager.close()
+
+
 async def test_a_new_session_starts_in_the_profiles_mode_with_its_rules(project):
     _project_settings(project, {"active_profile": "readonly"})
     manager = make_manager(project, FakeProvider([]))

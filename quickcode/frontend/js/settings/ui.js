@@ -1,11 +1,12 @@
-// Shared Settings primitives: badges, the stacked sheet, the confirm dialog,
-// the raw-view inspector and the JSON highlighter.
+// Shared Settings primitives: badges, the stacked sheet, the confirm dialog
+// and the raw-view inspector.
 //
 // Settings itself lives in a modal, and several of its affordances (confirm a
 // risky change, read a plugin's raw definition) have to appear *over* it
-// without destroying it — modals.js `modal()` clears the whole modal root, so
+// without destroying it — ui/modal.js `modal()` clears the whole modal root, so
 // these open as their own layer inside it instead.
 
+import { jsonHtml } from "../json_view.js";
 import { el, esc } from "../util.js";
 
 // ---- tier / kind / source badges -----------------------------------------
@@ -23,10 +24,6 @@ export function tierBadge(tier, { label = tier } = {}) {
 
 export function chip(text, cls = "") {
   return `<span class="set-chip ${esc(cls)}">${esc(text)}</span>`;
-}
-
-export function tierNote(tier) {
-  return TIER_TEXT[tier] || "";
 }
 
 // ---- stacked sheet --------------------------------------------------------
@@ -75,28 +72,21 @@ export function sheet(title, bodyHtml, footHtml = "", { wide = false } = {}) {
   return node;
 }
 
-/** True when a sheet is open — modals.js consults this so Escape peels the
+/** True when a sheet is open — ui/modal.js consults this so Escape peels the
  *  layers off one at a time instead of closing Settings from underneath. */
 export function sheetOpen() { return stack.length > 0; }
 
 // ---- confirm dialog -------------------------------------------------------
 
-/** The `confirm` tier. `reason` is the server's own words about what breaks —
- *  never a bare "are you sure?". Resolves true when the user goes ahead. */
-export function confirmRisk({ title, what, reason, applyLabel = "Change it anyway" }) {
+// A sheet with a no and a yes; resolves true only for the yes. Every other way
+// out (the no, ✕, Escape, the backdrop) closes the sheet, which answers false.
+function ask(titleHtml, bodyHtml, { no, yes, yesClass }) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
-    const s = sheet(
-      `<span class="tier tier-confirm">confirm</span> ${esc(title || "Confirm change")}`,
-      `<div class="cf-what">${what || ""}</div>
-       <div class="cf-reason"><span class="cf-reason-mark">!</span><div>${
-         esc(reason || "This changes how the agent behaves.")}</div></div>
-       <div class="cf-tail">Nothing has been saved yet. Going ahead applies the
-         change now and it takes effect for new turns.</div>`,
-      `<button class="btn" data-cancel>Keep it as it is</button>
-       <button class="btn primary" data-apply>${esc(applyLabel)}</button>`,
-    );
+    const s = sheet(titleHtml, bodyHtml,
+      `<button class="btn" data-cancel>${esc(no)}</button>
+       <button class="btn ${yesClass}" data-apply>${esc(yes)}</button>`);
     s.onSheetClose(() => finish(false));
     s.querySelector("[data-cancel]").addEventListener("click", () => { finish(false); s.closeSheet(); });
     s.querySelector("[data-apply]").addEventListener("click", () => { finish(true); s.closeSheet(); });
@@ -104,40 +94,34 @@ export function confirmRisk({ title, what, reason, applyLabel = "Change it anywa
   });
 }
 
-// ---- the raw view ---------------------------------------------------------
-
-const JSON_RE = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
-
-/** Minimal JSON tokenizer → spans. Deliberately dependency-free: the payloads
- *  here are tool schemas and MCP definitions, not arbitrary source. */
-export function highlightJson(src) {
-  const out = [];
-  let last = 0;
-  let m;
-  JSON_RE.lastIndex = 0;
-  while ((m = JSON_RE.exec(src)) !== null) {
-    out.push(esc(src.slice(last, m.index)));
-    if (m[1] !== undefined) {
-      out.push(`<span class="${m[2] ? "j-key" : "j-str"}">${esc(m[1])}</span>`);
-      if (m[2]) out.push(esc(m[2]));
-    } else if (m[3] !== undefined) {
-      out.push(`<span class="j-lit">${esc(m[3])}</span>`);
-    } else {
-      out.push(`<span class="j-num">${esc(m[4])}</span>`);
-    }
-    last = JSON_RE.lastIndex;
-  }
-  out.push(esc(src.slice(last)));
-  return out.join("");
+/** The `confirm` tier. `reason` is the server's own words about what breaks —
+ *  never a bare "are you sure?". Resolves true when the user goes ahead. */
+export function confirmRisk({ title, what, reason, applyLabel = "Change it anyway" }) {
+  return ask(
+    `<span class="tier tier-confirm">confirm</span> ${esc(title || "Confirm change")}`,
+    `<div class="cf-what">${what || ""}</div>
+     <div class="cf-reason"><span class="cf-reason-mark">!</span><div>${
+       esc(reason || "This changes how the agent behaves.")}</div></div>
+     <div class="cf-tail">Nothing has been saved yet. Going ahead applies the
+       change now and it takes effect for new turns.</div>`,
+    { no: "Keep it as it is", yes: applyLabel, yesClass: "primary" });
 }
 
-export function viewBodyHtml(view) {
+/** ui/modal.js confirmModal for a question asked from inside a sheet, which a
+ *  modal would wipe away with the rest of the modal root. `body` is HTML. */
+export function confirmSheet({ title, body, confirm = "Confirm", danger = true }) {
+  return ask(esc(title), body, { no: "Cancel", yes: confirm, yesClass: danger ? "danger" : "primary" });
+}
+
+// ---- the raw view ---------------------------------------------------------
+
+function viewBodyHtml(view) {
   if (!view) {
     return `<div class="set-empty">This plugin does not publish a definition of
       its own — everything it is, is in its settings above.</div>`;
   }
   const body = view.format === "json" || view.format === "schema"
-    ? `<pre class="raw json">${highlightJson(view.content || "")}</pre>`
+    ? `<pre class="raw json">${jsonHtml(view.content || "")}</pre>`
     : `<pre class="raw">${esc(view.content || "")}</pre>`;
   const path = view.path
     ? `<div class="raw-path" title="${esc(view.path)}">on disk: <code>${esc(view.path)}</code></div>`

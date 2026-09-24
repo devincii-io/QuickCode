@@ -32,7 +32,9 @@ _live: dict[str, set[Closable]] = {}
 
 
 def _key(path: str | os.PathLike[str]) -> str:
-    return str(Path(path).resolve()).casefold()
+    # Folded where ``project_id`` folds, and nowhere else: on Linux ~/Proj and
+    # ~/proj are two projects, and closing one must not end the other's shells.
+    return os.path.normcase(str(Path(path).resolve()))
 
 
 def add(project_path: str | os.PathLike[str], session: Closable) -> None:

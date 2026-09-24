@@ -2,7 +2,7 @@
 
 All prompts are XML-sectioned. XML tags give the model unambiguous section boundaries, make individual sections greppable/testable, and let us splice dynamic content into fixed scaffolding without disturbing the cacheable prefix.
 
-**Prime directive:** everything in the system prompt must be *stable for the whole session*. Dynamic state (todo list, external file changes, mode switches) is injected as `<system-reminder>` blocks inside user messages instead — they land at the end of the prompt prefix, so they never invalidate the cache.
+**Prime directive:** everything in the system prompt must be *stable for the whole session*. Dynamic state (a mode switch, a finished compaction, a background job that needs collecting) is injected as `<system-reminder>` blocks inside user messages instead — they land at the end of the prompt prefix, so they never invalidate the cache. The one deliberate exception is a composition switch (`/composition`), which re-renders the system prompt and pays one uncached turn for it.
 
 ---
 
@@ -42,7 +42,9 @@ on the system message, so the same inputs must produce the same bytes.
 
 Sections in composition order. `<orchestration>`, `<send_message_hint>`,
 `<plan_mode>` and `<headless_mode>` render empty — and so are dropped — unless
-the session is orchestrating, in plan mode, or headless.
+the session is orchestrating, opened in plan mode, or headless. A later mode
+switch does not re-render the prompt (the mode reminder carries it), which is
+why `<plan_mode>` is worded to stay true after its plan is approved.
 
 ```xml
 <identity>
@@ -152,7 +154,7 @@ results are plain lines behind a marker with the same count: <files count="6"/>.
 
 <orchestration>
   ... the delegation playbook: when to spawn, cost/latency reality, the
-  <task><objective>/<context>/<boundaries>/<report> delegation shape.
+  <task><objective>/<context>/<boundaries>/<output_format> delegation shape.
   Abridged here on purpose — it is long, and it lives in
   quickcode/prompts/subagent.py as ORCHESTRATION.
 </orchestration>
@@ -164,9 +166,11 @@ fresh subagent.
 </send_message_hint>
 
 <plan_mode>
-You are in PLAN MODE. Investigate and design; do not mutate anything. The
-editing and mutating tools are withheld. When you have a complete plan, call
-the plan tool with the plan as markdown. Do not attempt to implement yet.
+This session opened in PLAN MODE. While the mode is PLAN, investigate and
+design; do not mutate anything — the editing and mutating tools are
+withheld. When you have a complete plan, call the plan tool with the plan as
+markdown. Once a plan is approved the mode changes and you are told so; from
+then on, implement it.
 </plan_mode>
 
 <headless_mode>
@@ -179,7 +183,7 @@ the program's entire output: lead with the result.
 Notes:
 
 - `<environment>` is safe in the system prompt because caching only needs *within-session* stability — cwd/OS/branch don't change mid-session, and `{session_date}` is a date, not a timestamp.
-- `<project_instructions>` is the spliced content of `QUICKCODE.md`/`AGENTS.md`/`CLAUDE.md`. Empty tag if none — the tag itself stays so the template shape is constant.
+- `<project_instructions>` is the spliced content of `QUICKCODE.md`/`AGENTS.md`/`CLAUDE.md` (the first that exists and decodes: UTF-8, or UTF-8/16/32 with a byte-order mark, which is dropped; line endings read as `\n`). Empty tag if none — the tag itself stays so the template shape is constant.
 - Order within the prompt is *not* fully stability-sorted, and it was documented as if it were. `<environment>` and `<project_instructions>` carry per-session values and sit at orders 80 and 90, but `<orchestration>`, `<send_message_hint>`, `<plan_mode>` and `<headless_mode>` follow them at 100–130. Those four are static text switched on by a session-long flag, so the prefix is still byte-stable for the session; what it costs is that a hypothetical mid-session instruction reload would re-render more than the tail.
 - A section can be authored from `.quickcode/plugins/*.md` and takes its own slot in this order. Ties on `order` break by `id`, deterministically, because the composed prompt is a cache breakpoint.
 
@@ -200,13 +204,17 @@ Only these three sources exist today:
 
 | Trigger | Reminder content |
 |---|---|
-| Post-compaction first turn | `Earlier conversation was summarized above. Trust the summary; re-read files before editing them.` (`prompts/compact.POST_COMPACTION_REMINDER`) |
+| Post-compaction first turn — or, after a compaction *inside* a turn, straight away, as a reminder-only user message with the mode note beside it (docs/ARCHITECTURE.md §Context guard) | `Earlier conversation was summarized above. Trust the summary; re-read files before editing them.` (`prompts/compact.POST_COMPACTION_REMINDER`) |
 | Permission mode changed since the last turn | One line per mode, from `prompts/system._MODE_REMINDERS`. Sent **only when it is news** — restating the mode every turn was a fixed per-request cost for a sentence the model already had. |
 | Turn iteration guard reached (`runtime.agent_loop.max_rounds`, 50 by default) | `You are over the iteration budget. Wrap up: report state and next steps.` |
 
 Anything else goes through `AgentInstance.queue_reminder`, which delivers each
-queued string once, in order, on the next turn. The server uses it for
-composition changes.
+queued string once, in order, on the next turn. It carries the background-job
+nudges: a detached subagent that finished (`subagents/runner.py`), and jobs
+still running or uncollected when a turn ends (`server/conversation.py`). It also
+carries the one about files the user rewound since the model's last turn,
+naming them and asking for a re-read before the next edit
+(`quickcode/checkpoints/recorder.py`, docs/CHECKPOINTS.md).
 
 **Not implemented**, though earlier versions of this table listed them: there is
 no todo/task-state reminder — the task board reaches the *UI* through
@@ -230,7 +238,9 @@ Tool descriptions are prompts too — the highest-leverage ones. House rules (fu
 
 ## 4. Compaction prompt
 
-Run as a one-off request (same model, no tools) when the token ledger crosses ~80% of the context window, or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history.
+Run as a one-off request (same model) when the token ledger crosses ~80% of the context window after a turn, when the context guard estimates that the next request *inside* a turn would cross it (docs/ARCHITECTURE.md §Context guard), or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history. It declares the conversation's tools but tells the model not to call them: tools lead the cached prefix, so a request with none would re-send nearly a full window uncached. A reply with no summary text is refused and history is left alone.
+
+The request is fitted to the window before it is sent, since the history it summarizes is nearly a window by definition and more than one when a turn overflowed: the oldest tool results in it lose their middle first, then all of them down to one cap, and only if that is not enough are the oldest rounds left out (never the seed of an earlier compaction). The history itself is not cut. A summary request refused for length anyway is fitted once more, with a wider margin, and resent.
 
 ```xml
 <task>
@@ -267,6 +277,7 @@ continuation, not narration.
 </required_sections>
 
 <rules>
+- Do not call any tools. Answer with the summary text alone.
 - Facts only; no praise, no meta-commentary.
 - Prefer paths, symbols, and commands over prose descriptions of them.
 </rules>
@@ -276,12 +287,25 @@ Rebuilt history after compaction:
 
 ```
 [user: <compaction-summary>…model output…</compaction-summary> + post-compaction reminder]
-[last 2–4 turns verbatim, cut at a user-message boundary]
+[the last runtime.compaction.keep_turns user turns verbatim (default 2), cut at a user-message boundary]
 ```
+
+The cut never lands in front of a tool result, so no call loses its answer.
+When the whole transcript is "the last few turns" — one request worked for
+many rounds — the tail is its last `keep_turns` rounds instead, and the tail
+is capped at a quarter of the context window (`core/compact.TAIL_SHARE`), so a
+compaction cannot rebuild a history already over the threshold that
+triggered it. The summarization request's own usage is logged and counted.
+A compaction inside a turn is cut the same way, between two rounds; the
+post-compaction reminder then follows the tail as a user message of its own,
+because there is no next user message to carry it before the model's next
+request.
 
 ## 5. Headless / print mode (`-p`)
 
-Same system prompt plus one appended section:
+The same system prompt the app would render for the session — the same
+composition's section bodies, and the delegation playbook only when that
+composition can spawn (`session/assemble.py`) — plus one appended section:
 
 ```xml
 <headless_mode>
@@ -293,5 +317,5 @@ the program's entire output: lead with the result.
 
 ## 6. Testing prompts
 
-- Prompt templates are pure functions (`render_system_prompt(env) -> str`) → snapshot-tested; any diff to the stable prefix shows up in review, since prefix bytes are the cache key.
-- Keep an `evals/` folder of scenario transcripts (task + expected tool behavior) to smoke-test prompt changes against a live model before shipping them.
+- `render_system_prompt(env, ...)` is a pure function of its inputs. `tests/test_history_prompt.py` asserts that two renders are byte-identical — the prefix bytes are the cache key — and `tests/test_docs_accuracy.py` compares every section quoted in §1 with `prompts/sections.py`, so a prompt change arrives in review as a change to this document too.
+- There is no eval harness: no `evals/` folder of scenario transcripts, and nothing that runs a prompt change against a live model before it ships. Worth building; not built.

@@ -10,7 +10,7 @@
 // disagree about what a key does.
 
 import { esc } from "../util.js";
-import { KEYS, PANEL_NOTE, SLASH, TERMINAL_NOTE } from "./shortcuts.js";
+import { KEYS, PANEL_NOTE, slashRows, TERMINAL_NOTE } from "./shortcuts.js";
 import { MODES } from "./modes.js";
 import { link, note, pageHtml, sub } from "./ui.js";
 
@@ -25,7 +25,7 @@ export async function renderKeyboard(host) {
     <p class="hp-p">Type <code>/</code> in the composer to open the menu.
       <kbd>Tab</kbd> completes, <kbd>Enter</kbd> runs, <kbd>Esc</kbd> closes.</p>
     <dl class="hp-keys">
-      ${SLASH.map(([cmd, arg, d]) => `
+      ${slashRows().map(([cmd, arg, d]) => `
         <dt>${esc(cmd)}${arg ? ` <span class="hp-dim-inline">${esc(arg)}</span>` : ""}</dt>
         <dd>${esc(d)}</dd>`).join("")}
     </dl>

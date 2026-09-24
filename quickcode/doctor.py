@@ -1,24 +1,25 @@
 """``quickcode doctor`` diagnostics.
 
 Self-contained health checks for the current environment: interpreter
-version, external tool availability (ripgrep, git), PTY backend
-importability, API key resolution, user config loadability, and whether
-``web_search`` has a provider it can actually reach.
+version, external tool availability (ripgrep, git), whether a pseudo-terminal
+can be opened, the shells the agent and the terminal panel will run, API key
+resolution, which key variables are set (by name), user config loadability, and
+whether ``web_search`` has a provider it can actually reach.
 
 Each check is a small pure function returning a :class:`Check` — no
 printing, no side effects — so they're easy to unit test individually.
 :func:`run_checks` runs them all in a sensible order and :func:`format_report`
-renders the results as a plain-text checklist. :func:`main` is the CLI entry
-point; this module is intentionally NOT wired into ``quickcode/cli.py`` here
-(that wiring is left to a follow-up change) but can be invoked directly via
-``python -m quickcode.doctor``.
+renders the results as a plain-text checklist. :func:`main` is the entry
+point behind ``quickcode doctor`` (and ``python -m quickcode.doctor``).
 """
 
 from __future__ import annotations
 
-import shutil
+import os
 import sys
 from dataclasses import dataclass
+
+from quickcode import subproc
 
 Level = str  # "ok" | "warn" | "fail"
 
@@ -46,7 +47,7 @@ def check_python() -> Check:
 
 def check_ripgrep() -> Check:
     """ripgrep (rg) is optional: QuickCode has a pure-Python fallback."""
-    path = shutil.which("rg")
+    path = subproc.find_program("rg")
     if path:
         return Check("ripgrep (rg)", True, "ok", f"found at {path}")
     return Check(
@@ -60,7 +61,7 @@ def check_ripgrep() -> Check:
 
 def check_git() -> Check:
     """git is optional but recommended for repo-aware features."""
-    path = shutil.which("git")
+    path = subproc.find_program("git")
     if path:
         return Check("git", True, "ok", f"found at {path}")
     return Check(
@@ -71,7 +72,19 @@ def check_git() -> Check:
 def check_pty() -> Check:
     """PTY backend: winpty (ConPTY) on Windows, stdlib pty on POSIX."""
     if not sys.platform.startswith("win"):
-        return Check("PTY backend", True, "ok", "n/a on this platform (uses stdlib pty)")
+        # Opened rather than assumed: a container without /dev/pts has the
+        # module and no terminals to hand out.
+        try:
+            master, slave = os.openpty()
+        except OSError as exc:
+            return Check(
+                "PTY backend", False, "warn",
+                f"cannot open a pseudo-terminal ({exc}) — the terminal panel "
+                "cannot start, and commands run on plain pipes",
+            )
+        os.close(master)
+        os.close(slave)
+        return Check("PTY backend", True, "ok", "stdlib pty (a pseudo-terminal opens)")
     try:
         import winpty  # noqa: F401
     except ImportError:
@@ -85,22 +98,87 @@ def check_pty() -> Check:
     return Check("PTY backend", True, "ok", "winpty importable (ConPTY available)")
 
 
-def check_api_key() -> Check:
-    """API key: env var first, then a saved (DPAPI-encrypted) key."""
-    import os
+def check_agent_shell() -> Check:
+    """The shell the agent's ``bash`` tool runs commands in."""
+    if sys.platform.startswith("win"):
+        from quickcode.tools.bash import _find_git_bash
 
-    from quickcode.secrets import API_KEY_ENV, has_saved_key
+        found = _find_git_bash()
+        if found:
+            return Check("Agent shell", True, "ok", f"Git Bash at {found}")
+        return Check(
+            "Agent shell", False, "warn",
+            "Git Bash not found — commands run in PowerShell, and the model "
+            "writes bash more reliably than PowerShell",
+        )
+    if os.path.exists("/bin/bash"):
+        return Check("Agent shell", True, "ok", "/bin/bash")
+    return Check(
+        "Agent shell", False, "fail",
+        "/bin/bash does not exist — every bash tool call will fail",
+    )
 
-    if os.environ.get(API_KEY_ENV):
-        return Check("API key", True, "ok", f"resolved from {API_KEY_ENV}")
-    if has_saved_key():
+
+def check_terminal_shell() -> Check:
+    """The shell the terminal panel opens (``pty.shells``)."""
+    from quickcode.pty.shells import interactive_shell_argv
+
+    argv = interactive_shell_argv()
+    shell = argv[0]
+    if os.path.isabs(shell) and os.access(shell, os.X_OK) or subproc.find_program(shell):
+        return Check("Terminal shell", True, "ok", " ".join(argv))
+    return Check(
+        "Terminal shell", False, "warn",
+        f"{shell} not found — the terminal panel cannot start a shell",
+    )
+
+
+def check_api_key(provider: str | None = None) -> Check:
+    """The active model provider's API key: env var first, then a saved
+    (DPAPI-encrypted) key."""
+    from quickcode.secrets import has_saved_provider_key, provider_key_env
+
+    if provider is None:
+        provider = _active_provider()
+    env = provider_key_env(provider)
+    if os.environ.get(env):
+        return Check("API key", True, "ok", f"resolved from {env}")
+    if has_saved_provider_key(provider):
         return Check("API key", True, "ok", "resolved from saved (encrypted) key")
     return Check(
         "API key",
         False,
         "fail",
-        f"not set — set {API_KEY_ENV} or save a key in Settings",
+        f"not set — set {env} or save a key in Settings",
     )
+
+
+def check_credential_env() -> Check:
+    """The credential variables set in this environment, by name only.
+
+    Named from ``secrets.credential_envs_set``, the list ``subproc.child_env``
+    withholds and the session log redacts, so what this reports as protected
+    is what is.
+    """
+    from quickcode.secrets import credential_envs_set
+
+    found = sorted(credential_envs_set())
+    if not found:
+        return Check("Key variables", True, "ok", "none set")
+    return Check(
+        "Key variables", True, "ok",
+        f"{', '.join(found)} — withheld from every program QuickCode starts, "
+        "and redacted from session logs",
+    )
+
+
+def _active_provider() -> str:
+    try:
+        from quickcode import config
+
+        return config.Config.load(config.CONFIG_PATH).profile.provider
+    except Exception:  # noqa: BLE001 - a broken config is check_config's problem
+        return "openai-compat"
 
 
 def _search_settings():
@@ -225,8 +303,11 @@ def run_checks() -> list[Check]:
         check_git(),
         check_ripgrep(),
         check_pty(),
+        check_agent_shell(),
+        check_terminal_shell(),
         check_config(),
         check_api_key(),
+        check_credential_env(),
         check_search(),
     ]
 

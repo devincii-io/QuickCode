@@ -9,8 +9,9 @@ import { esc } from "../util.js";
 import { chip, openPluginView, tierBadge } from "../settings/ui.js";
 import { summaryOf } from "./explain.js";
 import { renderWorkbench } from "./agent.js";
-import { bodyHtml, sigilHtml } from "./kinds.js";
+import { bodyHtml, editableFile, sigilHtml } from "./kinds.js";
 import { duplicatePlugin } from "./create/scaffold.js";
+import { store } from "../store.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
@@ -54,6 +55,11 @@ export function renderAgentsIndex(host, ctx) {
               : "prompt unavailable"}</span>
           </div>
         </a>
+        ${store.convId ? `<div class="k-card-side">
+          <a class="ghost-btn" href="#/config/agents/${encodeURIComponent(ORCHESTRATOR)}?conv=${
+            encodeURIComponent(store.convId)}" title="What the open session runs —
+            frozen when it opened, whatever the files say now">This session</a>
+        </div>` : ""}
       </article>
       ${agents.map((p) => `
         <article class="k-card" data-kind="agent" data-tier="${esc(p.tier)}"
@@ -73,7 +79,7 @@ export function renderAgentsIndex(host, ctx) {
           </a>
           <div class="k-card-side">
             <button class="ghost-btn" data-raw title="Read its instructions">Raw</button>
-            ${p.metadata?.builtin
+            ${p.metadata?.builtin || !editableFile(p.path)
               ? `<button class="ghost-btn" data-dup title="Write an editable
                    markdown copy of this agent under .quickcode/plugins/ with
                    derived_from set. Every line that is fixed here becomes plain

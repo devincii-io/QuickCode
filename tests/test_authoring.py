@@ -23,6 +23,18 @@ from quickcode.kernel import build_registry
 from quickcode.kernel.authoring import argv as argv_rules
 from quickcode.kernel.authoring import discovery, schema, store
 from quickcode.kernel.authoring.format import parse_document
+from quickcode.kernel.problems import (
+    BAD_ENUM_CHOICE,
+    BAD_KIND,
+    ID_DUPLICATE,
+    ID_RESERVED,
+    LIST_PLACEHOLDER_NOT_ALONE,
+    NEEDS_TRUST,
+    READ_ONLY_UNVERIFIED,
+    SHELL_NOT_SUPPORTED,
+    SUBAGENT_SECTION_UNSUPPORTED,
+    UNKNOWN_PLACEHOLDER,
+)
 from quickcode.tools.base import ReadRegistry, ToolCtx
 
 # --------------------------------------------------------------------------
@@ -180,7 +192,7 @@ def test_list_inside_an_element_is_refused(sandbox):
     ))
     found = discovery.discover(sandbox)
     assert found.plugins == []
-    assert [p.code for p in found.problems] == [schema.LIST_PLACEHOLDER_NOT_ALONE]
+    assert [p.code for p in found.problems] == [LIST_PLACEHOLDER_NOT_ALONE]
 
 
 def test_empty_whole_element_is_dropped_but_a_mixed_one_is_kept(sandbox):
@@ -220,7 +232,7 @@ def test_unknown_placeholder_is_refused_not_substituted_empty(sandbox):
     ))
     found = discovery.discover(sandbox)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.UNKNOWN_PLACEHOLDER)
+    problem = next(p for p in found.problems if p.code == UNKNOWN_PLACEHOLDER)
     assert problem.severity == "error"
     assert "target" in problem.message  # names what *was* declared
     assert problem.fix
@@ -235,7 +247,7 @@ def test_shell_true_is_refused_with_a_reason(sandbox):
     write(sandbox, "echo-args", echo_tool(ECHO, [], shell="true"))
     found = discovery.discover(sandbox)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.SHELL_NOT_SUPPORTED)
+    problem = next(p for p in found.problems if p.code == SHELL_NOT_SUPPORTED)
     assert "not supported in this version" in problem.message
 
 
@@ -268,8 +280,8 @@ def test_read_only_claim_is_reported_not_silently_ignored(sandbox):
     found = discovery.discover(sandbox)
     assert found.plugins  # it loads: the claim is not an error
     codes = [(p.code, p.severity) for p in found.problems]
-    assert (schema.READ_ONLY_UNVERIFIED, "info") in codes
-    assert (schema.READ_ONLY_UNVERIFIED, "warning") in codes  # "push" contradicts it
+    assert (READ_ONLY_UNVERIFIED, "info") in codes
+    assert (READ_ONLY_UNVERIFIED, "warning") in codes  # "push" contradicts it
 
 
 def test_a_path_parameter_leaving_the_project_is_refused_by_the_tool(sandbox):
@@ -305,7 +317,7 @@ def test_an_internal_id_is_refused(sandbox, kind, name):
                          f"description: pretending to be the real one\n---\n\nbody\n")
     found = discovery.discover(sandbox)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.ID_RESERVED)
+    problem = next(p for p in found.problems if p.code == ID_RESERVED)
     assert problem.severity == "error"
     assert "Duplicate" in problem.fix
 
@@ -315,7 +327,7 @@ def test_a_reserved_prefix_is_refused(sandbox):
                              "description: x\n---\n")
     found = discovery.discover(sandbox)
     assert found.plugins == []
-    assert any(p.code == schema.ID_RESERVED for p in found.problems)
+    assert any(p.code == ID_RESERVED for p in found.problems)
 
 
 def test_two_files_claiming_one_id_at_one_scope_skip_both(sandbox):
@@ -325,7 +337,19 @@ def test_two_files_claiming_one_id_at_one_scope_skip_both(sandbox):
     write(sandbox, "house-again", body)
     found = discovery.discover(sandbox)
     assert found.plugins == []
-    assert any(p.code == schema.ID_DUPLICATE for p in found.problems)
+    assert any(p.code == ID_DUPLICATE for p in found.problems)
+
+
+def test_the_registry_names_a_second_claim_on_an_id_with_the_same_code(sandbox):
+    from quickcode.kernel.registry import PluginRegistry
+    from quickcode.kernel.spec import PluginSpec
+
+    registry = PluginRegistry(sandbox)
+    registry.register(PluginSpec(id="prompt.house", kind="prompt_section", title="House"))
+    registry.register(PluginSpec(id="prompt.house", kind="prompt_section", title="Again",
+                                 source="entrypoint"))
+
+    assert [p.code for p in registry.problems] == [ID_DUPLICATE]
 
 
 def test_project_shadows_user_for_an_authored_id(sandbox):
@@ -357,7 +381,7 @@ def test_a_malformed_file_is_skipped_without_breaking_the_registry(sandbox):
     assert len(ids) > 30
 
     codes = {p.code for p in registry.problems}
-    assert schema.BAD_KIND in codes
+    assert BAD_KIND in codes
 
 
 def test_unreadable_directory_is_not_an_error(tmp_path, monkeypatch):
@@ -392,7 +416,7 @@ def test_an_untrusted_projects_tool_does_not_load_or_run(untrusted):
 
     found = discovery.discover(untrusted)
     assert found.plugins == []
-    problem = next(p for p in found.problems if p.code == schema.NEEDS_TRUST)
+    problem = next(p for p in found.problems if p.code == NEEDS_TRUST)
     assert problem.severity == "error"
     assert "echo-args" in problem.message
 
@@ -615,7 +639,7 @@ def test_the_template_a_new_plugin_starts_from_actually_loads(sandbox):
 def test_create_refuses_a_reserved_name_before_writing_anything(sandbox):
     with pytest.raises(store.AuthoringError) as excinfo:
         store.create(sandbox, kind="tool", name="bash", scope="project")
-    assert excinfo.value.code == schema.ID_RESERVED
+    assert excinfo.value.code == ID_RESERVED
     assert not (sandbox / ".quickcode" / "plugins" / "bash.md").exists()
 
 
@@ -626,7 +650,7 @@ def test_save_writes_regardless_and_reports_the_problem(sandbox):
     _p, plugin, problems = store.save_source(sandbox, "prompt.house", broken)
     assert path.read_text(encoding="utf-8") == broken  # written anyway
     assert plugin is None
-    assert any(p.code == schema.BAD_ENUM_CHOICE for p in problems)
+    assert any(p.code == BAD_ENUM_CHOICE for p in problems)
 
 
 def test_delete_moves_to_trash_and_leaves_it_unscanned(sandbox):
@@ -780,7 +804,7 @@ def test_the_worked_examples_load_exactly_as_documented(sandbox):
     assert section.order == 41  # prompt.conventions is 40
     assert section.applies_to == ("main", "subagents")
     # applies_to naming subagents is honest about what it does today.
-    assert any(p.code == schema.SUBAGENT_SECTION_UNSUPPORTED
+    assert any(p.code == SUBAGENT_SECTION_UNSUPPORTED
                for p in found.problems)
 
     registry = build_registry(sandbox)
@@ -868,7 +892,7 @@ def test_saving_a_broken_draft_writes_it_and_returns_the_problems(client, sandbo
     saved = client.put("/api/kernel/authored/tool.demo/source", json={"text": broken})
     assert saved.status_code == 200
     codes = [p["code"] for p in saved.json()["problems"]]
-    assert schema.UNKNOWN_PLACEHOLDER in codes
+    assert UNKNOWN_PLACEHOLDER in codes
     assert saved.json()["plugin"] is None
     # Written regardless: the filesystem is the source of truth.
     assert (sandbox / ".quickcode" / "plugins" / "demo.md").read_text(
@@ -906,7 +930,7 @@ def test_the_duplicate_route_and_its_refusal(client):
 def test_the_problems_route_reports_a_broken_file(client, sandbox):
     write(sandbox, "x", "---\nkind: nonsense\n---\nbroken\n")
     codes = [p["code"] for p in client.get("/api/kernel/problems").json()["problems"]]
-    assert schema.BAD_KIND in codes
+    assert BAD_KIND in codes
 
 
 def test_every_authoring_route_has_a_project_scoped_twin(client, sandbox):
@@ -1057,7 +1081,7 @@ def test_a_draft_the_validator_rejects_resolves_to_nothing(client):
     # preview that substituted the value anyway would show an array no tool will
     # ever run.
     assert body["argv"] == []
-    assert schema.UNKNOWN_PLACEHOLDER in [p["code"] for p in body["problems"]]
+    assert UNKNOWN_PLACEHOLDER in [p["code"] for p in body["problems"]]
 
 
 def test_the_dry_run_also_resolves_a_template_given_inline(client):

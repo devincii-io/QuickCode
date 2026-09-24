@@ -278,12 +278,22 @@ def test_a_rule_whose_pattern_spans_a_pipeline_can_never_fire():
     assert engine(deny=["bash(curl *)"]).evaluate("bash", piped) != Decision.deny
 
 
-def test_always_allow_offers_the_rule_the_docs_print():
-    """'approving `npm test && git push` writes `bash(npm *)`, which covers the
-    first subcommand and leaves `git push` prompting next time.'"""
-    assert engine().suggest_rule("bash", "npm test && git push") == "bash(npm *)"
-    assert engine(allow=["bash(npm *)"]).evaluate("bash", "npm test") == Decision.allow
-    assert engine(allow=["bash(npm *)"]).evaluate("bash", "git push") == Decision.ask
+def test_always_allow_offers_the_rules_the_docs_print(tmp_path):
+    """'approving `npm test && git push` writes `bash(npm test)` and
+    `bash(git push)` [...] approving `FOO=1 make` writes `bash(FOO=1 make)`,
+    which does not cover `FOO=1 rm -rf build`.'"""
+    from quickcode.tools.registry import default_registry
+
+    bash = default_registry().get("bash")
+    offer = engine(root=tmp_path).suggest_rules(bash, {"command": "npm test && git push"})
+    assert offer.rules == ("bash(npm test)", "bash(git push)")
+    saved = engine(root=tmp_path, allow=list(offer.rules))
+    assert saved.evaluate("bash", "npm test && git push") == Decision.allow
+    assert saved.evaluate("bash", "npm publish") == Decision.ask
+    offer = engine(root=tmp_path).suggest_rules(bash, {"command": "FOO=1 make"})
+    assert offer.rules == ("bash(FOO=1 make)",)
+    saved = engine(root=tmp_path, allow=list(offer.rules))
+    assert saved.evaluate("bash", "FOO=1 rm -rf build") == Decision.ask
 
 
 # ------------------------------------------------------------ where rules live
@@ -382,20 +392,24 @@ def test_read_only_tools_respect_the_protected_path_boundary(tmp_path):
         assert engine(root=tmp_path).evaluate(tool, ".ssh") == Decision.ask
 
 
-def test_substitution_and_outside_deletes_are_not_caught_in_yolo(tmp_path):
-    """docs/PERMISSIONS.md is explicit that these two are *not* circuit breakers.
-    They used to prompt in yolo anyway, through the bash pipeline's
-    protected-path scan; that scan no longer runs in yolo, so in that mode the
-    four breakers are the whole of what stops. The paragraph says so, and this
-    is the test that makes it stay true — in every *other* mode they still ask.
+def test_outside_deletes_are_not_caught_in_yolo_but_substituted_breakers_are(tmp_path):
+    """docs/PERMISSIONS.md is explicit that a recursive delete outside the
+    project is *not* a circuit breaker. It used to prompt in yolo anyway,
+    through the bash pipeline's protected-path scan; that scan no longer runs
+    in yolo, so there the breakers are the whole of what stops -- and in every
+    *other* mode it still asks.
+
+    The same paragraph used to say a breaker inside `$(...)` went unmatched.
+    Commands run by other commands are now evaluated as if typed, so it is
+    caught; the paragraph says that instead, and so does this test.
     """
     yolo = engine(Mode.yolo, root=tmp_path)
-    assert yolo.evaluate("bash", "echo $(rm -rf /)") == Decision.allow
     assert yolo.evaluate("bash", "rm -rf ../outside") == Decision.allow
+    assert yolo.evaluate("bash", "echo $(rm -rf /)") == Decision.ask
     asking = engine(root=tmp_path)
     assert asking.evaluate("bash", "echo $(rm -rf /)") == Decision.ask
     assert asking.evaluate("bash", "rm -rf ../outside") == Decision.ask
-    # The four that stop even there.
+    # The ones that stop even there.
     assert yolo.evaluate("bash", "rm -rf /") == Decision.ask
     assert yolo.evaluate("bash", "rm -rf ~") == Decision.ask
 
@@ -570,16 +584,18 @@ def test_render_with_sections_offsets_index_the_string_the_docs_say_they_do():
 
 
 def test_every_doc_anchor_the_manifest_points_at_resolves():
-    """`kernel/manifest.py` sends the UI's 'read more' links into these files.
+    """`kernel/manifest/` sends the UI's 'read more' links into these files.
     A renamed heading turns one of them into a dead end nobody notices."""
     root = DOCS.parent
-    source = (root / "quickcode" / "kernel" / "manifest.py").read_text(encoding="utf-8")
+    kernel = root / "quickcode" / "kernel"
+    files = [*sorted((kernel / "manifest").glob("*.py")), kernel / "core_settings.py"]
+    source = "\n".join(path.read_text(encoding="utf-8") for path in files)
     refs = sorted(set(re.findall(r"docs/[\w./-]+\.md(?:#[\w-]+)?", source)))
-    assert len(refs) > 10, "the anchors stopped being extractable from manifest.py"
+    assert len(refs) > 10, "the anchors stopped being extractable from kernel/manifest/"
     for ref in refs:
         rel, _, anchor = ref.partition("#")
         target = root / rel
-        assert target.exists(), f"manifest.py points at {rel}, which does not exist"
+        assert target.exists(), f"kernel/manifest/ points at {rel}, which does not exist"
         if anchor:
             assert anchor in heading_slugs(target), f"{rel} has no heading for #{anchor}"
 
@@ -600,10 +616,56 @@ def heading_slugs(path: Path) -> set[str]:
     return slugs
 
 
+# ------------------------------------------------------ paths, links, index
+
+ROOT = DOCS.parent
+# The documents that describe the code as it is. docs/design/ is rationale
+# written before the code and docs/archive/ is history; both name files that
+# were proposed and never created, on purpose.
+REFERENCE_DOCS = [ROOT / n for n in ("README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md")]
+REFERENCE_DOCS += sorted(DOCS.glob("*.md"))
+ALL_DOCS = REFERENCE_DOCS + sorted((DOCS / "design").glob("*.md"))
+ALL_DOCS += sorted((DOCS / "archive").glob("*.md"))
+
+# A backticked token that is a repository path: no spaces, a known root or a
+# package-relative prefix, a source extension, and optionally `::symbol`.
+_PATH_TOKEN = re.compile(
+    r"`((?:quickcode|tests|scripts|packaging|docs|\.github|core|kernel|server|tools|"
+    r"providers|prompts|session|subagents|pty|plugins|security|web|search|ui|context|"
+    r"frontend|js|css)/[\w./-]*\.(?:py|js|mjs|css|html|md|iss|ps1|yml|toml))"
+    r"(?:::(\w+))?`"
+)
+_SEARCH_ROOTS = ("", "quickcode/", "quickcode/frontend/")
+# Paths a reference doc names *because* they do not exist. Each must stay
+# absent: the day one appears, the sentence that says it is missing is wrong.
+KNOWN_ABSENT = {
+    "packaging/setup-quickcode.ps1": "deleted in 2.3.0; COMPLIANCE.md §6.1 keeps the audit of it",
+    "tools/ask_user.py": "TOOLS.md: `ask_user` is worth building and not built",
+}
+
+
+def _resolve_repo_path(rel: str) -> Path | None:
+    for base in _SEARCH_ROOTS:
+        candidate = ROOT / (base + rel)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _defines(source: str, symbol: str) -> bool:
+    return re.search(
+        rf"(?:\b(?:def|class|function|const|let|var)\s+{symbol}\b|^{symbol}\s*[:=])",
+        source,
+        re.M,
+    ) is not None
+
+
 def test_cross_document_references_point_at_real_files_and_headings():
-    """`docs/X.md §Section` references between the four documents."""
+    """`docs/X.md` and `docs/X.md#anchor` references, from every reference
+    document and the root documents. Moving a file into `docs/archive/` is the
+    change this catches: the old path keeps reading as a real one in prose."""
     root = DOCS.parent
-    for path in (PERMISSIONS, ARCHITECTURE, PROMPTS, TOOLS):
+    for path in REFERENCE_DOCS:
         for ref in set(re.findall(r"docs/[\w./-]+\.md(?:#[\w-]+)?", read(path))):
             rel, _, anchor = ref.partition("#")
             assert (root / rel).exists(), f"{path.name} points at {rel}, which does not exist"
@@ -611,3 +673,211 @@ def test_cross_document_references_point_at_real_files_and_headings():
                 assert anchor in heading_slugs(root / rel), (
                     f"{path.name} points at {rel}#{anchor}, which is not a heading"
                 )
+
+
+@pytest.mark.parametrize("doc", REFERENCE_DOCS, ids=lambda p: p.name)
+def test_every_file_a_reference_doc_names_exists(doc):
+    """`core/permissions.py`, `quickcode/tools/bash.py`, `js/ws.js`: a path in
+    backticks is a claim that the file is there, and `file.py::name` that it
+    defines `name`. The repo layout in ARCHITECTURE.md listed forty of a
+    hundred-odd modules and named a `docs/UI.md` that described a retired TUI;
+    nothing compared either with the tree."""
+    for rel, symbol in set(_PATH_TOKEN.findall(read(doc))):
+        target = _resolve_repo_path(rel)
+        if rel in KNOWN_ABSENT:
+            assert target is None, f"{rel} exists now; {KNOWN_ABSENT[rel]} -- update the doc"
+            continue
+        assert target is not None, f"{doc.name} names `{rel}`, which does not exist"
+        if symbol:
+            assert _defines(target.read_text(encoding="utf-8"), symbol), (
+                f"{doc.name} names `{rel}::{symbol}`, which {rel} does not define"
+            )
+
+
+_LINK = re.compile(r"\]\(([^)\s]+)\)")
+
+
+@pytest.mark.parametrize("doc", ALL_DOCS, ids=lambda p: str(p.relative_to(ROOT)))
+def test_every_relative_link_resolves(doc):
+    """A markdown link to a file in this repository, and to a heading in it."""
+    for target in _LINK.findall(read(doc)):
+        if re.match(r"[a-z]+:", target):
+            continue  # http(s), mailto
+        rel, _, anchor = target.partition("#")
+        dest = (doc.parent / rel).resolve() if rel else doc
+        assert dest.exists(), f"{doc.name} links to {target}, which does not exist"
+        if anchor and dest.suffix == ".md":
+            assert anchor in heading_slugs(dest), (
+                f"{doc.name} links to {target}, which is not a heading"
+            )
+
+
+_SECTION_REF = re.compile(r"docs/([\w./-]+\.md) §([^.,;:()\n—]+)")
+
+
+def _headings(path: Path) -> list[str]:
+    out, fenced = [], False
+    for line in read(path).splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced and (m := re.match(r"^#{1,6}\s+(.*?)\s*$", line)):
+            out.append(m.group(1).replace("`", "").lower())
+    return out
+
+
+@pytest.mark.parametrize("doc", REFERENCE_DOCS, ids=lambda p: p.name)
+def test_every_section_reference_names_a_heading(doc):
+    """`docs/PERMISSIONS.md §Plan mode` is a pointer as much as a link is, and
+    it goes stale the same way: a heading is renamed and the sentence keeps
+    sending readers to it."""
+    for rel, section in _SECTION_REF.findall(read(doc)):
+        target = ROOT / "docs" / rel
+        assert target.exists(), f"{doc.name} refers to docs/{rel}, which does not exist"
+        wanted = section.strip().replace("`", "").lower()
+        assert any(h.startswith(wanted) for h in _headings(target)), (
+            f"{doc.name} refers to docs/{rel} §{section.strip()}, which is not a heading there"
+        )
+
+
+def test_the_docs_index_links_every_document():
+    """docs/README.md is the way in. A document it does not link is one a
+    reader only finds by listing the directory."""
+    index = read(DOCS / "README.md")
+    linked = {(DOCS / t.partition("#")[0]).resolve() for t in _LINK.findall(index)}
+    for path in DOCS.rglob("*.md"):
+        if path.name == "README.md" and path.parent == DOCS:
+            continue
+        assert path.resolve() in linked, (
+            f"docs/README.md does not link {path.relative_to(DOCS)}"
+        )
+
+
+def test_archived_documents_say_so_on_their_first_line():
+    """A handoff read out of context looks like a description of the code. The
+    status line is what stops it being mistaken for one."""
+    archived = sorted((DOCS / "archive").glob("*.md"))
+    assert archived, "docs/archive/ is empty; this test lost its subject"
+    for path in archived:
+        first = read(path).splitlines()[0]
+        assert first.startswith("> **Archived.**"), (
+            f"docs/archive/{path.name} does not open with its status line"
+        )
+
+
+# ----------------------------------------------------------- the repo layout
+
+
+def documented_layout() -> tuple[set[Path], set[Path]]:
+    """``(files, dirs)`` named by the fenced tree under ARCHITECTURE.md's
+    ``## Repo layout``. Indentation is two spaces per level; a line may list
+    several names; ``#`` starts a comment."""
+    fence = fence_after(read(ARCHITECTURE), "## Repo layout")
+    files: set[Path] = set()
+    dirs: set[Path] = set()
+    stack: list[str] = []
+    for raw in fence.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        depth = (len(line) - len(line.lstrip(" "))) // 2
+        del stack[depth:]
+        for token in line.split():
+            path = Path(*stack, token.rstrip("/"))
+            if token.endswith("/"):
+                dirs.add(path)
+                if len(line.split()) == 1:
+                    stack.append(token.rstrip("/"))
+            else:
+                files.add(path)
+    return files, dirs
+
+
+def test_every_path_in_the_repo_layout_exists():
+    files, dirs = documented_layout()
+    assert len(files) > 50, "the repo layout stopped being extractable"
+    for path in sorted(files):
+        assert (ROOT / path).is_file(), f"ARCHITECTURE.md's repo layout lists {path}"
+    for path in sorted(dirs):
+        assert (ROOT / path).is_dir(), f"ARCHITECTURE.md's repo layout lists {path}/"
+
+
+def test_the_repo_layout_lists_every_package_and_top_level_module():
+    """Packages and top-level modules, not every file: a module added inside a
+    listed package is worth a line, but its absence does not mislead the way
+    a missing package does."""
+    files, dirs = documented_layout()
+    covered = {p for f in files for p in (f, *f.parents)} | dirs
+    package = ROOT / "quickcode"
+    expected = {p.parent for p in package.rglob("__init__.py")} - {package}
+    expected |= {p for p in package.glob("*.py") if p.name != "__init__.py"}
+    expected.add(package / "frontend")
+    for path in sorted(expected):
+        rel = path.relative_to(ROOT)
+        assert rel in covered, f"ARCHITECTURE.md's repo layout does not list {rel}"
+
+
+# ------------------------------------------------------------ quoted surfaces
+
+
+def documented_tool_descriptions() -> dict[str, str]:
+    """``tool -> quoted description``: the blockquote opening each ``## tool``
+    section of docs/TOOLS.md."""
+    out = {}
+    for m in re.finditer(r"^## `?([a-z_]+)`?[^\n]*\n\n((?:> [^\n]*\n)+)", read(TOOLS), re.M):
+        out[m.group(1)] = " ".join(line[2:].strip() for line in m.group(2).splitlines())
+    return out
+
+
+def test_each_tool_description_is_quoted_verbatim():
+    """The model reads `Tool.description`, not this document. The quotes under
+    `read`, `write`, `edit`, `glob`, `grep` and `bash` were design-era copy the
+    tools had never carried -- `glob` was said to respect `.gitignore`, and
+    `bash` to run in a persistent shell."""
+    quoted = documented_tool_descriptions()
+    registry = default_registry().tools
+    assert {"read", "bash", "web_fetch"} <= set(quoted), "the quotes stopped being extractable"
+    for name, text in quoted.items():
+        assert name in registry, f"docs/TOOLS.md quotes a description for `{name}`"
+        assert text == " ".join(registry[name].description.split()), (
+            f"docs/TOOLS.md quotes `{name}`'s description differently from the tool"
+        )
+
+
+def test_the_documented_logged_event_types_are_the_logged_set():
+    """ARCHITECTURE.md lists what `loggable()` admits. The session log's
+    schema is `locked`, so the list a reader trusts has to be the set."""
+    import quickcode.hooks  # noqa: F401 -- registers `hook_run`, as the running app always has
+    from quickcode.session.wire import LOGGED_TYPES
+
+    doc = read(ARCHITECTURE)
+    start = doc.index("`loggable()` admits only the assembled shapes (")
+    listed = set(re.findall(r"`([a-z_]+)`", doc[start : doc.index(")", start + 50)]))
+    listed.discard("loggable")
+    assert listed == LOGGED_TYPES, (
+        f"doc-only {listed - LOGGED_TYPES}, code-only {LOGGED_TYPES - listed}"
+    )
+
+
+def test_the_documented_slash_commands_are_the_composer_s():
+    """docs/UI.md's keyboard table lists the slash commands; the composer
+    runs them from ``SLASH_COMMANDS``."""
+    composer = (ROOT / "quickcode/frontend/js/composer/commands.js").read_text(encoding="utf-8")
+    block = composer[composer.index("const SLASH_COMMANDS = [") :]
+    real = set(re.findall(r'name: "(/[a-z]+)"', block[: block.index("\n];")]))
+    row = next(line for line in read(DOCS / "UI.md").splitlines() if line.startswith("| `/` |"))
+    assert set(re.findall(r"`(/[a-z]+)`", row)) == real
+
+
+def test_the_roadmap_is_dated_to_this_minor_version():
+    """The roadmap called the app `0.1.0` for as long as it was `2.x`. It
+    states the version it describes; a minor release that moves pyproject.toml
+    has to move that line too, which is the moment to re-read the rest."""
+    import tomllib
+
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = declared["project"]["version"]
+    stated = re.search(r"Status as of \*\*(\d+\.\d+)\.\d+\*\*", read(DOCS / "ROADMAP.md"))
+    assert stated, "docs/ROADMAP.md stopped stating the version it describes"
+    assert stated.group(1) == ".".join(version.split(".")[:2]), (
+        f"docs/ROADMAP.md describes {stated.group(1)}.x; pyproject.toml is {version}"
+    )

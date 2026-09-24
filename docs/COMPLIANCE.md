@@ -7,6 +7,15 @@ organisation — legal, security, or procurement.
 tree. Where the audit found something in flight and not yet released, it says
 so.
 
+> **Read this first (2.7.0).** This is a point-in-time audit, and "on `main`,
+> unreleased" below means *as of 2026-08-18*: every fix it records as
+> unreleased shipped in **2.1.0** (`CHANGELOG.md`, 2.1.0 → Security). Releases
+> 2.1.0–2.7.0 then added surface this audit did not review end to end —
+> permission profiles, a frozen installer that downloads nothing (§6.1 notes
+> it), an interactive terminal panel (2.6.0) and project workspaces (2.7.0).
+> The network, storage and licence answers in §1–§5 were not re-derived for
+> 2.7.0. `SECURITY.md` lists the known-open issues as they stand in 2.7.0.
+
 **Revised 2026-08-18**, the same day, after fixes for most of the audit's
 findings landed on `main`. **Those fixes are on `main` and are not in any
 published release.** The newest tag is `v2.0.0`; the fixes are recorded in
@@ -60,7 +69,7 @@ unchanged since the audit.
 |---|---|---|---|---|
 | B1 | **The permission engine can be bypassed into unprompted code execution**, in `plan` mode, by prefixing any read-only command with an environment assignment: `PATH=. ls` (§7.2, W1). Reproduced. | **Fixed** — `ee1461e` | Everyone. This is the safety boundary the whole product rests on. | An environment assignment now disqualifies the read-only auto-allow, and the env-stripped form is no longer offered to *allow* rules — approving `git status` is not approving `LD_PRELOAD=./x.so git status`. Deny rules still see the stripped form, so `FOO=1 rm -rf y` still hits an `rm` deny. Any assignment disqualifies, deliberately, rather than a blocklist of dangerous names; §7.2 W1 says why. Re-measured: `PATH=. ls` is `deny` in `plan` and `dontask`, `ask` in `ask` and `auto-edit`. |
 | B2 | **`grep` and `glob` read any file on the machine with no prompt, in every mode** — `~/.ssh/id_rsa`, `~/.aws/credentials`, any `.env` (§7.2, W2). Reproduced. | **Fixed** — `ee1461e` | Everyone; acute for anyone with credentials on developer machines. | Both now declare `path_target=True`, as `read` already did, and a test asserts no built-in tool targets a path-shaped field without it. A second fix the audit had not named: gating the path a call *names* did not stop a project-wide `grep` returning `.env` contents, so `grep` now also skips `.ssh` and `.env*` **while walking**. |
-| B3 | A **cloned repository's own committed `.quickcode/settings.json` grants itself shell permissions and can start the session in `yolo`** — neither passes the trust gate (§7.4). Reproduced end to end. | **Fixed** — `ee1461e` | Anyone who will open third-party, customer or untrusted code. | `permissions.allow`, `runtime.permissions.*` settings and a project preset's `default_mode` now route through the existing trust gate. The dividing line is *direction*: rules that only narrow (`deny`, `ask`, disabling a plugin, lowering the starting mode) load from any project; anything that widens needs the grant. A project may **lower** the starting mode without asking and never raise it. Policy config joins the trust hash under its own key and only when non-empty, so grants already on disk stay valid while a project that later adds policy config re-prompts. Every drop is logged and surfaced in the UI. Two related findings, §7.4(c) and (d), are **not** covered by this fix and remain open. |
+| B3 | A **cloned repository's own committed `.quickcode/settings.json` grants itself shell permissions and can start the session in `yolo`** — neither passes the trust gate (§7.4). Reproduced end to end. | **Fixed** — `ee1461e` | Anyone who will open third-party, customer or untrusted code. | `permissions.allow`, `runtime.permissions.*` settings and a project preset's `default_mode` now route through the existing trust gate. The dividing line is *direction*: rules that only narrow (`deny`, `ask`, disabling a plugin, lowering the starting mode) load from any project; anything that widens needs the grant. A project may **lower** the starting mode without asking and never raise it. Policy config joins the trust hash under its own key and only when non-empty, so grants already on disk stay valid while a project that later adds policy config re-prompts. Every drop is logged and surfaced in the UI. Two related findings, §7.4(c) and (d), are **not** covered by this fix; (c) remains open, and (d) is fixed after 2.7.0 on its own. |
 | B4 | Windows installer is **not code-signed**; it downloads and silently executes Git and Python installers **without verifying any hash or signature** (§6). | **Partly fixed** — `36fd777` | Any organisation with an unsigned-binary or verified-download policy — the standard procurement stop. | The *download* half is closed: `scripts/bootstrap.ps1` now Authenticode-verifies both the Git and the Python installer — signature status **and** signer subject — before executing either, failing closed and deleting the file, with TLS 1.2 forced. A pinned SHA-256 was deliberately not used; §6.1 records the reasoning and what it does not catch. **The QuickCode installer itself is still unsigned** (§6.3), and that is the half a procurement process usually stops on. It is a purchasing decision, not a code change: a certificate costs money. |
 | B5 | Session transcripts containing **full source code, prompts and shell output** are written into the project tree, and QuickCode **does not add `.quickcode/` to the project's `.gitignore`** (§4.4). Routine `git add -A` publishes them. | **Fixed** — `dc27c2b` | Anyone with a data-classification policy. | A `.gitignore` is written *inside* `.quickcode/` when that directory is created — never the user's own `.gitignore`, and never over an existing file. It excludes `sessions/`, `tasks/`, `artifacts/`, `plugins/.trash/` and `settings.local.json`, and deliberately does **not** exclude `settings.json`, `agents/` or `plugins/`, which are project config meant to be shared. A test runs a real `git init` and `git add -A` and asserts the transcript is unstaged while `settings.json` is staged. |
 | B6 | **No redaction anywhere.** A secret pasted into chat, printed by a command, or living in `AGENTS.md` is copied verbatim into the session log and sent to the model provider (§4.2). | **Open** | Anyone handling regulated data or customer secrets. | Nothing has changed. Treat session logs as classified at the level of the code being worked on. There is still no in-product control. B5's fix keeps them out of *git*; it does nothing about what is in them. |
@@ -86,17 +95,18 @@ not a code change; and **session logs** (§4.2) — now git-ignored, still
 unredacted, unrotated and unbounded, and still re-sent to the provider whenever
 a session is resumed.
 
-Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) are also
-untouched, and two of them — §7.4(c) and (d) — are still routes by which a
-repository's own files reach past the trust gate. Individually none is a bypass
+Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) followed. W3–W7
+have since been fixed (each is marked below with the test that pins it), and
+§7.4(d) after 2.7.0; §7.4(c) is open, and is still a route by
+which a repository's own files reach past the trust gate. Individually none is a bypass
 of the reach B1–B3 had; collectively they mean the engine has had one round of
 review and not yet a second.
 
 So: **a pilot on first-party code, on machines without production credentials,
 is now a defensible decision where before it was not.** Handing QuickCode an
 untrusted third-party repository is not, and neither is putting regulated data
-through it — §7.4(c) and (d) are still ways a repository reaches past the trust
-gate, and B6 means everything the agent touches lands unredacted on disk and at
+through it — §7.4(c) is still a way a repository reaches past the trust gate
+(and §7.4(d) is, in any released build), and B6 means everything the agent touches lands unredacted on disk and at
 the model provider. §9 sets out the controls that make the pilot version of that
 hold.
 
@@ -140,6 +150,7 @@ others.
 |---|---|
 | Default endpoint | `https://openrouter.ai/api/v1` (`quickcode/config.py`) |
 | Overridable | Yes — any OpenAI-compatible endpoint, including `http://localhost:…` for a self-hosted vLLM / LM Studio / Ollama-compatible server. An air-gapped deployment is possible. |
+| Native Anthropic | When the user selects the `anthropic` provider: `https://api.anthropic.com/v1/messages` and `/v1/models` (`quickcode/providers/anthropic/`), or the gateway host the profile names. A profile still pointing at openrouter.ai falls back to the first-party host, so that key is never sent to OpenRouter. |
 | Trigger | A user sends a chat message. The agent's own turn loop continues from there. |
 | Automatic? | No. Nothing calls the provider at startup. |
 
@@ -207,7 +218,7 @@ file — it cannot be set by the model or by a repository.
 ### 3.3 MCP servers — local subprocesses only
 
 MCP servers are spawned as **local child processes over stdio**
-(`asyncio.create_subprocess_exec`, `quickcode/plugins/mcp.py`). There is **no
+(`subproc.spawn_async`, `quickcode/plugins/mcp_process.py`). There is **no
 remote MCP transport in the codebase** — no HTTP, no SSE, no URL field in the
 server specification.
 
@@ -273,7 +284,7 @@ Answering the questions a reviewer would otherwise have to establish:
   answers HTTP 200; an unreachable host is a *state* (`unknown`) carrying a
   reason, never an error. Nothing is surfaced in the UI unless a newer release
   exists, so a blocked network produces no banner, no retry storm and no
-  nagging. The reason is visible on Install → Updates for anyone who looks.
+  nagging. The reason is visible on Settings → Updates for anyone who looks.
 - **It never executes anything on its own.** Only the Windows installer layout
   is offered a download, and only after the release's own `SHA256SUMS.txt`
   — fetched *before* any executable byte is written — vouches for the bytes.
@@ -295,8 +306,9 @@ server:
 - **No web fonts.** The CSS uses system font stacks.
 - No `@import` of any remote stylesheet, no remote images, no source-map URLs.
 - **No vendored third-party JavaScript at all.** The markdown renderer and the
-  JSON tokenizer are hand-written in-house. (`js/highlight.js` is *not* the
-  `highlight.js` library, despite the name.)
+  JSON and TOON highlighters are hand-written in-house (`js/markdown.js`,
+  `js/json_view.js::jsonTokens`, `js/toon.js::highlightToon`); the
+  terminal panel's emulator (`js/terminal/`) is in-house too.
 - Runtime network primitives are `fetch()` with relative paths and
   `new WebSocket("ws://" + location.host + …)` — same-origin, loopback.
 
@@ -326,10 +338,10 @@ list, the tools return readable errors, and the app starts normally.
 
 | | |
 |---|---|
-| Location | `~/.quickcode/openrouter.key`; search keys in `~/.quickcode/search-<provider>.key` |
+| Location | `~/.quickcode/openrouter.key`; the native Anthropic provider's key in `~/.quickcode/anthropic.key`; search keys in `~/.quickcode/search-<provider>.key` |
 | Windows | `b"DPAPI:"` + a `CryptProtectData` blob, `CRYPTPROTECT_UI_FORBIDDEN`, no additional entropy |
 | macOS / Linux | `b"B64:"` + **base64 of the raw key** |
-| Alternative | `QUICKCODE_OPENROUTER_API_KEY` and `QUICKCODE_<VENDOR>_API_KEY` environment variables, checked **first** |
+| Alternative | `QUICKCODE_OPENROUTER_API_KEY`, `QUICKCODE_ANTHROPIC_API_KEY` and `QUICKCODE_<VENDOR>_API_KEY` environment variables, checked **first** |
 
 **What DPAPI actually protects against, honestly.** The DPAPI master key derives
 from the user's logon credential. So the file is useless to another *local user
@@ -356,19 +368,27 @@ in the repository hardens the ACL. `quickcode/server/auth.py`'s docstring
 asserts the directory "is restricted to the current user" — that is an
 assumption about the environment, not something the code enforces.
 
-**Environment-variable caveat.** Three subprocess paths spawn with the **full
-inherited environment**: the built-in `bash` tool, the PTY session, and MCP
-server processes (`quickcode/plugins/mcp.py` passes `env = dict(os.environ)`).
-If you supply the key via environment variable, any agent-run command — and any
-trusted project-declared MCP server — can read it with
-`echo $QUICKCODE_OPENROUTER_API_KEY`. The *authored command tool* path
-(`quickcode/tools/command.py`) does scrub the environment to a fixed allowlist
-and reasons about exactly this in its comments; the other three do not get the
-same treatment. The inconsistency looks unintentional.
+**Environment-variable caveat — FIXED after 2.7.0 (unreleased).** The audit
+found three subprocess paths spawning with the **full inherited environment**:
+the built-in `bash` tool, the PTY session, and MCP server processes
+(`quickcode/plugins/mcp.py` passed `env = dict(os.environ)`). A key supplied by
+environment variable was readable by any agent-run command, and by any trusted
+project-declared MCP server, with `echo $QUICKCODE_OPENROUTER_API_KEY`. Every
+child process is now started through `quickcode/subproc.py`, whose
+`child_env()` removes the model and search API keys (`QUICKCODE_*_KEY`,
+`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, and every key name a provider declares)
+before anything is added: the `bash` tool on both its paths, background jobs,
+hooks, the terminal panel, the git panel and ripgrep, and MCP servers, which
+get their configured `env` on top of that base. Authored command tools keep
+their allowlist, and `env_from` can no longer name one of those keys. A
+source-level test (`tests/test_no_console_window.py`) fails on any spawn
+outside that module.
 
-**Practical consequence:** prefer the encrypted store over the environment
-variable. It does not stop a determined local attacker (see above), but it does
-stop a casual `env` dump in a tool result from landing in the session log.
+**Practical consequence:** the environment variable is no longer handed to
+what the agent runs, but the encrypted store is still the better home for a
+key: the variable is visible to everything else started from the same shell,
+and a command the agent runs can read the store as easily as QuickCode can
+(see above).
 
 **Search keys may also sit in plaintext** in `~/.quickcode/config.json` under
 `search.providers.<name>.api_key`. The code refuses to *write* one there but
@@ -377,7 +397,9 @@ reads and preserves one that is present. `config.json` is written with no
 
 **Leakage to the UI and logs:** clean. The web API returns only
 `"has_api_key": true|false` and the environment variable's *name*; no endpoint
-returns the key; it reaches only the OpenAI client constructor. `doctor` and
+returns the key; it reaches only the provider it belongs to (the OpenAI client
+constructor, or the `x-api-key` header of the native Anthropic adapter, whose
+error messages carry the API's own message and request id but no header). `doctor` and
 the CLI report presence only.
 
 ### 4.2 Session logs — the largest sensitive sink
@@ -401,8 +423,15 @@ unredacted:**
   team's agent instructions is duplicated into every session log.
 - The absolute working directory.
 
-There is **no redaction, no filtering and no field-level suppression anywhere
-in the write path.**
+There is **no general redaction, filtering or field-level suppression in the
+write path.** Since after 2.7.0 (unreleased) exactly two things are scrubbed
+(`quickcode/session/redact.py`): the values of the keys QuickCode itself holds
+— every key saved from Settings, and every credential environment variable
+`child_env()` withholds (§4.1; one list, `secrets.credential_env_names()`) —
+wherever they appear, and credential shapes (`Bearer …`, `Authorization:`,
+`user:password@`, `?api_key=`) in error text only. A secret pasted into chat,
+printed by a command, or living in `AGENTS.md` that is not one of those keys is
+still written verbatim.
 
 | | |
 |---|---|
@@ -877,7 +906,7 @@ default**.
 
 **Then the holes.** All of the following were reproduced by executing the
 permission module against throwaway fixtures. **W1 and W2 have since been fixed
-(`ee1461e`); W3 to W7 are open.** Each finding keeps its original text, with the
+(`ee1461e`), W3 to W6 in the later permission hardening, and W7 with the permission-prompt rework.** Each finding keeps its original text, with the
 fix and the re-verification stated after it.
 
 **W1 — critical, FIXED: environment-variable prefixes defeat the read-only
@@ -966,7 +995,7 @@ file to fix.
 > check covers it outside the project root; the disclosure inside is filenames
 > only, and was judged not worth the false positives.
 
-**W3 — high, OPEN: `yolo` circuit breakers are evadable.** Only four patterns exist.
+**W3 — high, FIXED: `yolo` circuit breakers are evadable.** Only four patterns exist.
 Measured `allow` in `yolo`: `rm -rf "$HOME"` and `rm -rf $HOME` (the pattern
 matches the literal `~` only, while the docs promise `rm -rf ~` coverage);
 `git push -f origin main` (the pattern requires a literal `--force`). Flag
@@ -978,7 +1007,15 @@ reordering — `rm -fr /`, `rm -r -f /` — does not match either. The documente
 > `rm -r -f /` and `rm -rf ~` return `ask` (the last because the literal-`~`
 > pattern does match, which is the one the docs promise).
 
-**W4 — high, OPEN: subagents run with an empty rule set.**
+> **Fixed.** The breakers moved to `security/breakers.py` and match the
+> command's words rather than one spelling: `rm -rf "$HOME"`, `rm -rf $HOME`,
+> `git push -f origin main`, `rm -rf --no-preserve-root /`, `rm -rf build /`,
+> `git -C . push -f`, `git push origin +main` and a fork bomb under any name
+> all return `ask` in `yolo`, and a breaker inside `$()`, backticks or
+> `bash -c` is caught because those commands are now evaluated as if typed.
+> Pinned by `tests/test_permission_breakers.py`.
+
+**W4 — high, FIXED after 2.7.0 (unreleased): subagents ran with an empty rule set.** Children now inherit the spawner's `deny` and `ask` rules at every depth, read live (`subagents/capping.py`).
 `quickcode/subagents/runner.py` constructs `PermissionEngine(effective_mode,
 Rules(), deps.cwd)`. Every `deny` and `ask` rule from project settings is
 **dropped for child agents**, so the documented "a deny rule from any scope
@@ -991,7 +1028,12 @@ either.) Mode capping and the auto-deny callback remain.
 > purely a loss of `deny` and `ask` coverage in child agents. The construction
 > at `subagents/runner.py:287` is unchanged.
 
-**W5 — medium, OPEN: `cd` escapes the project root and later checks do not
+> **Fixed.** A child's engine now starts with the session's `deny` and `ask`
+> rules (read live through `SubagentDeps.rules_getter`, handed down every
+> level) and none of its `allow` rules. Pinned by
+> `tests/test_permission_subagents.py`.
+
+**W5 — medium, FIXED: `cd` escapes the project root and later checks do not
 follow.**
 The bash tool records a new working directory with **no containment check**,
 while the engine keeps evaluating path arguments against the *original* root.
@@ -1000,17 +1042,39 @@ following `cat Documents\taxes.pdf` is evaluated as inside the project,
 auto-allowed as a read-only builtin, and executes in the escaped directory. The
 escaped directory persists for the conversation.
 
-**W6 — medium, OPEN: the protected-path check outranks `deny`, downgrading it to
+> **Fixed.** The loop passes the shell's persisted directory to the engine,
+> which resolves relative arguments from it and treats a shell standing outside
+> the project (or in a protected directory) as touching a protected path. A
+> bare `cd` or `cd -` inside one line counts the same way. Pinned by
+> `tests/test_permission_cwd.py`.
+
+**W6 — medium, FIXED: the protected-path check outranks `deny`, downgrading it to
 `ask`.** The protected-path branch returns before the deny loop, so
 `deny: ["read(**)"]` against `<root>/.env` yields `ask`, not `deny` — a user
 can click through a rule written to be absolute. Re-measured for this revision:
 still `ask`.
 
-**W7 — medium, OPEN: "always allow" persists a broader rule than was
+> **Fixed.** Deny rules are consulted first, then plan mode's refusal, then the
+> protected-path prompt, then `ask` and `allow`. Pinned by
+> `tests/test_permission_order.py`.
+
+**W7 — medium, FIXED: "always allow" persists a broader rule than was
 approved.**
 Approving `git status && rm -rf x` persists `bash(git *)`; because `*` spans
 spaces, that rule subsequently allow-matches `git push --force` outright. The
 documentation promises "one rule per subcommand"; that is not implemented.
+
+> **Fixed.** `PermissionEngine.suggest_rules` reads the rules off the engine's
+> own trace of the call: one exact rule per subcommand (and per command another
+> command runs) that asked only because nothing allowed it, spelled as the
+> allow rules match it. Approving `git status && rm -rf x` now writes
+> `bash(git status)` and `bash(rm -rf x)`; approving `FOO=1 make` writes
+> `bash(FOO=1 make)`, which no longer covers `FOO=1 rm -rf build`. No rule is
+> written for a part that would ask again anyway (a protected path, an ask
+> rule, a substitution, a literal `*`), nor for any line that trips a circuit
+> breaker, and the dialog lists the exact rules before the button is pressed.
+> Pinned by `tests/test_always_allow_rules.py` and
+> `tests/test_permission_prompt.py`.
 
 **Documentation drift — partly corrected.** Several statements in
 `docs/PERMISSIONS.md` were not supported by the code, which matters because a
@@ -1027,18 +1091,20 @@ in the same pass.
 
 The rest stands, re-checked against `docs/PERMISSIONS.md` as it is now: the
 auto-edit "small allowlist of file-op commands" does not exist (and auto-edit
-in fact auto-allows *every* mutating non-shell tool, including `web_fetch` and
-MCP write tools); "read-only git forms" are still listed as auto-allowing when
+auto-allowed *every* mutating non-shell tool, including `web_fetch` and MCP
+write tools — since fixed: it now allows only tools that declare a path
+target); "read-only git forms" are still listed as auto-allowing when
 `git` is not in `READONLY_BUILTINS` at all, while `echo`, `grep`, `tree`,
 `file`, `basename` and `dirname` silently are; user-scope
 `~/.quickcode/config.json` is still named in the precedence chain but
 contributes **no** rules, so user-scope deny rules do nothing; a bare tool name
 as a `deny` does not remove the tool from the model's tool list; the promised
-"one rule per subcommand" for "always allow" is still not implemented (W7);
+"one rule per subcommand" for "always allow" was not implemented (W7, since
+fixed);
 PowerShell alias canonicalisation does not exist, so on the PowerShell fallback
 the engine still applies POSIX splitting and a POSIX allowlist; and the
-documented `$()`/backtick variant of the catastrophic-command breaker is still
-absent (W3).
+documented `$()`/backtick variant of the catastrophic-command breaker was
+absent (W3, since fixed).
 
 **What still holds.** Protected paths prompt even in `yolo` — the check runs
 before the mode default, which is stronger than documented. Substitution
@@ -1203,6 +1269,12 @@ stated "a project file cannot grant itself `yolo` as `defaultMode`".
 > changed is that the route which made that matter is closed. If a future change
 > reintroduces a way to set the starting mode from project data, the engine will
 > still not check whether the user ever saw the confirmation screen.
+>
+> **Since then, opening a session checks it instead.** A trusted project's
+> profile, a user-level setting or `--mode` could still start a session in
+> `yolo` while the app had never armed it. `session/assemble.py` — the one path
+> the app and `-p` open a session through — now starts such a session in `ask`
+> and says so, the rule `/mode` and a profile switch already applied.
 
 **(c) The trust hash itself can be evaded by a duplicate frontmatter key. OPEN.** The
 trust module classifies a plugin file's `kind:` with a `re.MULTILINE` search —
@@ -1223,7 +1295,7 @@ repository can add a new executable command tool with no re-prompt.**
 > the last match, or to include any file with more than one `kind:` line.
 
 **(d) `git` runs inside the untrusted repository before the trust prompt.
-OPEN.**
+FIXED after 2.7.0 (unreleased).**
 Environment detection and the git status/diff panel invoke `git -C <untrusted
 repo>` with only `-c core.quotepath=off` — no `GIT_CONFIG_NOSYSTEM`, no
 `protocol.ext.allow=never`, no `core.fsmonitor=`. A repository delivered **as
@@ -1232,11 +1304,62 @@ not copy that config) can set `core.fsmonitor`, `diff.external` or a
 `textconv` filter, which git itself executes. That is code execution from
 project-tree data, outside the trust gate.
 
-> **Open.** Unchanged by `ee1461e`, and not addressable by the trust gate at
+> **Was open.** Unchanged by `ee1461e`, and not addressable by the trust gate at
 > all: this vector runs *before* any settings file is consulted, so gating
 > configuration cannot reach it. It needs `GIT_CONFIG_NOSYSTEM`,
 > `protocol.ext.allow=never` and an empty `core.fsmonitor` on the `git`
 > invocations themselves.
+
+> **Fixed.** Every git call QuickCode makes -- the git panel, environment
+> detection, subagent worktree isolation -- goes through `quickcode/gitcmd.py`:
+> `core.fsmonitor=false`, `protocol.ext.allow=never`, `submodule.recurse=false`;
+> `--no-ext-diff --no-textconv` on every diff; `core.hooksPath` at the null
+> device and no signing on writes; `--ignore-submodules=dirty` on status and
+> diff, so git never runs itself inside a submodule, where the submodule's own
+> config would apply (as a flag, which a `.gitmodules` `ignore = none` cannot
+> override). Before any call that can touch file content, every content filter
+> the repository's own config (`local` and `worktree` scope, includes and all)
+> defines is switched off by name (`-c filter.<name>.clean=` and its `smudge`,
+> `process` and `required`); a name no `-c` option can spell refuses the call.
+> Git's environment is `child_env()`'s, so it holds no API key. Pinned by
+> `tests/test_gitcmd.py` and `tests/test_gitinfo.py`, which plant each program
+> as a tripwire.
+>
+> **What remains.** `GIT_CONFIG_NOSYSTEM` is deliberately *not* set: the system
+> config is written by an administrator or Git's installer, not by a
+> repository, and Git for Windows keeps `core.autocrlf=true` and the Git LFS
+> filter there -- without it every CRLF file diffs as wholly changed. The
+> command-line options above outrank the system config exactly as they do the
+> repository's. A filter defined in the user's or the system's config (Git LFS)
+> still runs over the repository's content: that is the user's own program. Git
+> older than 2.26 cannot say which config defined a filter, so there every
+> filter is switched off, LFS included. The panel does not show changes inside a
+> submodule, only a submodule moved to another commit.
+
+**(e) A program the repository holds runs in place of the system one
+(Windows). Found and FIXED after 2.7.0 (unreleased).** QuickCode started `git`,
+`rg`, `bash`, `powershell` and `taskkill` by bare name, through `CreateProcess`
+or `shutil.which` — and on Windows both look in the current directory before
+`PATH`. QuickCode's current directory is wherever it was started: the
+repository, for `qc` run in a terminal there or for `-p`. A `git.exe` committed
+to the repository therefore ran as soon as the project opened, and an `rg.exe`
+the first time the model used the auto-allowed `grep` — code execution from
+project-tree data, before the trust prompt, which (d)'s fix does not reach
+because it is about what git runs, not which git.
+
+> **Fixed.** Every spawn goes through `quickcode/subproc.py`, which now resolves
+> a bare program name to an absolute path before the process starts
+> (`subproc.resolve_program`) and fails with a clear "not found on PATH" error
+> when it cannot: only a `.exe` or `.com` (never a `.bat`/`.cmd`, which runs
+> under `cmd.exe`), and never from a relative `PATH` entry or one that is the
+> current directory or the project. The ConPTY spawns resolve first as well,
+> since `pywinpty` looks names up with `shutil.which`. On POSIX the lookup is
+> unchanged except that relative and empty `PATH` entries, which a shell reads
+> as the current directory, are skipped. Authored command tools and MCP servers
+> keep `security/launch.py`, the same lookup with `.cmd` shims allowed. Pinned
+> by `tests/test_program_lookup.py`, which simulates Windows' search with a
+> planted `git.exe`, `rg.exe` and `git.bat` and checks, at the source level,
+> that no spawn and no `shutil.which` goes around the resolver.
 
 **The self-grant chain the audit described is broken.** Taken together, (a) and
 (b) formed a complete one: a repository committed `allow: ["bash(**)"]`, the
@@ -1271,13 +1394,13 @@ The three dimensions `SECURITY.md` names — tools, permission mode, model — a
 - A child cannot prompt the user (auto-deny), and child output is stripped of
   `system-reminder`-shaped text before it enters the parent's context.
 
-Two gaps, both **open**:
+Two gaps; the first has since been fixed, the second is **open**:
 
-- **The child is constructed with an empty rule set** (`Rules()`), so the
-  parent's `deny` and `ask` rules do not propagate. Under an `auto-edit` or
-  `yolo` effective mode a child can therefore perform an operation the parent
+- **The child was constructed with an empty rule set** (`Rules()`), so the
+  parent's `deny` and `ask` rules did not propagate. Under an `auto-edit` or
+  `yolo` effective mode a child could therefore perform an operation the parent
   was explicitly denied. Not a widening in `SECURITY.md`'s literal wording, but
-  a widening in substance. Unchanged; see W4.
+  a widening in substance. Since fixed; see W4.
 - **Model bounding is opt-in, not default.** An unconstrained composition means
   "any model", and the `agent` tool exposes a free-text model override to the
   model itself. The parent nominally has the same freedom, so this is not
@@ -1318,10 +1441,10 @@ should be able to line them up item for item. Each item keeps the severity it
 was found at and carries its status.
 
 **Fixed since the audit, all on `main` and none in a published release:** 1, 2,
-3, 4, 10, 11, 32.
+3, 4, 10, 11, 19, 32.
 
 **Still open, and this is the list that matters for a decision:** 5, 6, 7, 8, 9,
-12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31.
+12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31.
 
 **Critical — the permission and trust boundary (all reproduced)**
 
@@ -1350,9 +1473,9 @@ was found at and carries its status.
    categories (§7.4). It now covers a third — the policy config that steers the
    permission engine. `active_preset`, prompt overrides and agent definitions
    remain outside it.
-7. **[OPEN]** `yolo` circuit breakers evaded by `$HOME`, `-f`, and flag
+7. **[FIXED]** `yolo` circuit breakers evaded by `$HOME`, `-f`, and flag
    reordering; the documented substitution breaker does not exist (§7.2, W3).
-8. **[OPEN]** Subagents run with an empty rule set — parent `deny`/`ask` rules
+8. **[FIXED]** Subagents run with an empty rule set — parent `deny`/`ask` rules
    do not propagate (§7.2 W4, §7.5).
 9. **[OPEN]** Windows installer is unsigned (§6.3). A purchasing decision.
 10. **[FIXED — `36fd777`]** Installer downloads and silently executes Git and
@@ -1372,23 +1495,25 @@ was found at and carries its status.
 
 **Medium**
 
-13. **[OPEN]** `git` runs inside an untrusted repository before the trust
-    prompt, giving a `.git/config` `core.fsmonitor` / `diff.external` execution
-    vector (§7.4d).
-14. **[OPEN]** `cd` escapes the project root; later commands are still checked
+13. **[FIXED — after 2.7.0, unreleased]** `git` runs inside an untrusted
+    repository before the trust prompt, giving a `.git/config` `core.fsmonitor`
+    / `diff.external` / filter-driver execution vector (§7.4d). Every git call
+    now switches those off (`quickcode/gitcmd.py`).
+14. **[FIXED]** `cd` escapes the project root; later commands are still checked
     against the original root (§7.2, W5).
-15. **[OPEN]** The protected-path check outranks `deny`, downgrading an
+15. **[FIXED]** The protected-path check outranks `deny`, downgrading an
     absolute rule to a click-through prompt (§7.2, W6).
-16. **[OPEN]** "Always allow" persists a rule broader than what was approved
+16. **[FIXED]** "Always allow" persists a rule broader than what was approved
     (§7.2, W7).
 17. **[OPEN]** No retention, rotation or size limit on session logs; "archive"
     hides rather than deletes (§4.2).
 18. **[OPEN]** `os.chmod(0o600)` is a no-op for ACLs on Windows; the key file
     and the plaintext loopback token rely on inherited profile permissions
     (§4.1).
-19. **[OPEN]** The built-in `bash` and PTY tools — and MCP server subprocesses —
-    inherit the full environment, exposing `QUICKCODE_*_API_KEY` to them, while
-    the authored-command path correctly scrubs it (§4.1).
+19. **[FIXED — after 2.7.0, unreleased]** The built-in `bash` and PTY tools —
+    and MCP server subprocesses — inherited the full environment, exposing
+    `QUICKCODE_*_API_KEY` to them. Every child now starts from
+    `subproc.child_env()`, which removes them (§4.1).
 20. **[OPEN]** Install-time dependency resolution is unpinned and unhashed; the
     committed `uv.lock` is not used by the installer (§6.1).
 21. **[OPEN]** The `quickcode-app` shortcut opens `$HOME` as a project,
@@ -1475,8 +1600,8 @@ Both are real for a coding agent; neither is a drive-by. Findings 5 and 13
    only thing standing there.
 5. **Assume anything readable by the user account is readable by the agent.**
    Gap 2 is fixed and `grep`/`glob` now prompt outside the project root, but
-   the shell tool is still a shell: it inherits the full environment (gap 19)
-   and a user who approves a command approves what it can reach. If developer
+   the shell tool is still a shell: it no longer inherits QuickCode's own keys
+   (gap 19), but a user who approves a command approves what it can reach. If developer
    machines hold cloud credentials or SSH keys that would matter, that is still
    the exposure to reason about — not the project directory.
 6. **Classify `~/.quickcode` and `<project>/.quickcode` at the level of your
@@ -1491,7 +1616,7 @@ Both are real for a coding agent; neither is a drive-by. Findings 5 and 13
    comply — and it is the only way, because sending code to the model is the
    product.
 8. **Configure API keys in the encrypted store, not environment variables**
-   (gap 19), and treat `yolo` mode as prohibited by policy.
+   (§4.1), and treat `yolo` mode as prohibited by policy.
 
 **A reasonable position** for most organisations: pilot it on internal
 first-party repositories, on machines without production credentials, with

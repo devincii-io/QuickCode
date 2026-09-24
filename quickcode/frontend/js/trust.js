@@ -1,4 +1,4 @@
-// Project trust — the visible half of the gate (docs/TRUST-HANDOFF.md).
+// Project trust — the visible half of the gate (docs/archive/TRUST-HANDOFF.md).
 //
 // A project can name programs for QuickCode to run in two places: `mcpServers`
 // in its `.quickcode/settings.json`, and `kind: tool` files in
@@ -21,9 +21,14 @@
 // carries that server's raw JSON block.
 
 import { api } from "./api.js";
-import { refreshIfOpen } from "./config/view.js";
 import { store } from "./store.js";
 import { el, esc } from "./util.js";
+
+// Loaded on demand: home.js brings this module into the workspace shell, which
+// never shows the configuration view and should not load the config/* tree.
+function refreshConfigIfOpen() {
+  import("./config/view.js").then((view) => view.refreshIfOpen());
+}
 
 /** Arm-then-act on the same button: the first click only changes the label and
  *  disarms itself after a moment, the second one is the decision. The idiom
@@ -69,6 +74,7 @@ function entriesOf(status, specs) {
   for (const t of status.tool_detail || []) {
     out[t.name || t.file] = (t.argv || []).join(" ");
   }
+  for (const h of status.hooks || []) out[hookName(h)] = h.command;
   // Settings gate under the same grant, so a re-prompt caused by one of them
   // has to be able to say so. The report carries the keys and not the values,
   // so this notices one appearing or disappearing but not one being edited --
@@ -194,7 +200,7 @@ function ensureMounts() {
 
 const NOTE_BOUND =
   "Trust is recorded for this folder and for the configuration shown here. If " +
-  "the mcpServers block, a command tool or one of these settings is edited " +
+  "the mcpServers block, a hook, a command tool or one of these settings is edited " +
   "later, QuickCode asks again before acting on it.";
 
 const NOTE_SESSION =
@@ -202,13 +208,14 @@ const NOTE_SESSION =
   "chat to use these tools.";
 
 const NOTE_REVOKE =
-  "Revoking stops QuickCode from starting these again — on the next open, and " +
-  "for anything that would start one after that. A server process that is " +
-  "already running keeps running until this project is closed; a command tool " +
-  "stops being offered to the agent in new chats.";
+  "Revoking takes effect now: this project's MCP servers are stopped and are " +
+  "not started again, and its command tools refuse to run — in the chat that " +
+  "is open as well as in new ones.";
 
 function serverWord(n) { return n === 1 ? "server" : "servers"; }
 function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }
+function hookWord(n) { return n === 1 ? "hook" : "hooks"; }
+function hookName(h) { return `${h.event}${h.matcher ? ` [${h.matcher}]` : ""}`; }
 
 // A project may declare MCP servers, authored command tools, or both, and the
 // two gate together under one grant. Every sentence that counts what is being
@@ -216,10 +223,14 @@ function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }
 function declared(status) {
   const servers = (status.servers || []).length;
   const tools = (status.tools || []).length;
+  // Hooks are commands too (docs/HOOKS.md), and gate under the same grant.
+  const hooks = (status.hooks || []).length;
   const parts = [];
   if (servers) parts.push(`${servers} MCP ${serverWord(servers)}`);
   if (tools) parts.push(`${tools} ${toolWord(tools)}`);
-  return { servers, tools, total: servers + tools, phrase: parts.join(" and ") };
+  if (hooks) parts.push(`${hooks} ${hookWord(hooks)}`);
+  return { servers, tools, hooks, total: servers + tools + hooks,
+           phrase: parts.join(" and ") };
 }
 
 // The other half of the gate, which runs nothing. A committed
@@ -261,6 +272,18 @@ function toolList(status) {
       ${t.file ? `<span class="ts-env">.quickcode/plugins/${esc(t.file)}</span>` : ""}
     </li>`).join("");
   return `<ul class="trust-srvs">${rows}</ul>`;
+}
+
+// A hook runs its command on an event of the agent's, so the event and the
+// tool matcher are part of what is being approved, not only the command.
+function hookList(status) {
+  const hooks = status.hooks || [];
+  if (!hooks.length) return "";
+  return `<ul class="trust-srvs">${hooks.map((h) => `<li class="trust-srv">
+      <span class="ts-name">${esc(hookName(h))}</span>
+      <code class="ts-cmd">${esc(h.command)}</code>
+      <span class="ts-env">${esc(h.file || ".quickcode/settings.json")}</span>
+    </li>`).join("")}</ul>`;
 }
 
 // ---- rendering ----
@@ -354,6 +377,9 @@ function card() {
   : ""} ${d.tools
   ? "A command tool is a program this project lets the agent run, defined in a "
         + "file the project itself commits."
+  : ""} ${d.hooks
+  ? "A hook is a command QuickCode runs by itself when the agent does something "
+        + "— before a tool call, after one, when you send a message."
   : ""}</p>
        <p>Read the commands before you decide. If this project came from
         somewhere you do not control, judge them the way you would judge any
@@ -377,6 +403,7 @@ function card() {
       ${d.servers ? serverList(status, specs) : ""}
       ${d.servers ? rawDetails(status, specs) : ""}
       ${toolList(status)}
+      ${hookList(status)}
       ${policyList(status)}
       <p class="trust-note">${esc(NOTE_BOUND)}</p>
       <p class="trust-err hidden"></p>
@@ -401,13 +428,22 @@ function card() {
     grant.textContent = "…";
     grant.disabled = true;
     try {
-      const next = await api.grantTrust();
+      const next = await api.grantTrust(current.status && current.status.hash);
       writeApproved(pid, next, specs);
       current = { ...current, status: next, granted: next.connected || [] };
       collapsed = false;
       render();
-      refreshIfOpen();   // the tool list just changed underneath it
+      refreshConfigIfOpen();   // the tool list just changed underneath it
     } catch (err) {
+      if (err.message.startsWith("409")) {
+        // The files changed after this card was drawn: show what is there now
+        // rather than approving what was.
+        await checkTrust(pid);
+        const fresh = host && host.querySelector(".trust-err");
+        if (fresh) fail(fresh.parentElement, "The configuration changed while you " +
+          "were reading it. This is the current version — review it again.");
+        return;
+      }
       grant.disabled = false;
       disarm(grant, resting);
       fail(el_, `Could not record trust: ${err.message}`);
@@ -489,7 +525,7 @@ function trustedCard() {
       current = { ...current, status: next, granted: null, revoked: true };
       collapsed = false;
       render();
-      refreshIfOpen();   // revoking removes tools just as granting adds them
+      refreshConfigIfOpen();   // revoking removes tools just as granting adds them
     } catch (err) {
       revoke.disabled = false;
       disarm(revoke, "Revoke trust");

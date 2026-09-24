@@ -1,14 +1,19 @@
 // The keyboard and slash-command reference, in one place.
 //
-// Two surfaces show this list: the `?` modal (js/modals.js), which has to be
-// fast, and Help ▸ Keyboard & commands, which has room to explain. They read
-// the same array, because a shortcut list that exists twice is a shortcut list
-// that is wrong in one of the two places.
+// Two surfaces show this list: the `?` modal (js/help/quickref.js), which has
+// to be fast, and Help ▸ Keyboard & commands, which has room to explain. They
+// read the same array, because a shortcut list that exists twice is a shortcut
+// list that is wrong in one of the two places.
 //
-// The slash commands mirror `COMMANDS` in js/composer.js, which is what
-// actually runs when you type one.
+// The slash commands are read from js/composer/commands.js, the table the
+// composer runs them from.
+
+import { SLASH_COMMANDS } from "../composer/commands.js";
 
 export const KEYS = [
+  ["Ctrl + K (⌘K on a Mac)", "Open the command palette: slash commands, modes, the model, sessions, "
+    + "panes and every Settings and Help page, searchable. In an agent pane it also "
+    + "searches your past conversations"],
   ["Alt + N", "Open a new agent pane in this workspace"],
   ["Alt + Z", "Maximize the focused agent or restore the pane layout"],
   ["Alt + B", "Show or hide the workspace sidebar"],
@@ -26,19 +31,15 @@ export const KEYS = [
     + "in this project's directory, yours to type in"],
 ];
 
-export const SLASH = [
-  ["/compact", "", "Compress the conversation into a summary"],
-  ["/clear", "", "Start a new conversation"],
-  ["/mode", "<plan|ask|auto-edit|dontask|yolo>", "Switch the permission mode"],
-  ["/model", "", "Pick the model for this session"],
-  ["/composition", "", "Switch this session's composition (at a turn boundary)"],
-  ["/profile", "", "Switch this session's permission profile (takes effect now)"],
-  ["/init", "", "Have the agent survey this project and write QUICKCODE.md"],
-  ["/help", "", "The quick reference"],
-];
+/** `[command, argument, description]` per slash command, from the one table
+ *  in js/composer/commands.js. */
+export function slashRows() {
+  return SLASH_COMMANDS.map(({ name, arg, desc }) => [name, arg || "", desc]);
+}
+
 
 export const PANEL_NOTE =
-  "The right-hand panel holds Trajectory, Agents, Tasks, Files and Usage. Drag "
+  "The right-hand panel holds Trajectory, Agents, Tasks, Files, Checkpoints and Usage. Drag "
   + "its left edge to resize, press ⛶ to give it the whole window (Esc brings "
   + "the chat back), and use the ⌕ trace links in the transcript to jump "
   + "straight to an event.";
@@ -47,5 +48,8 @@ export const TERMINAL_NOTE =
   "The bottom drawer (Ctrl + `) is a real terminal in this project's "
   + "directory. Its second tab, Agent, lists every command the agent ran, "
   + "with its output as the terminal would have drawn it; ▸ run here puts one "
-  + "at your own prompt without running it. The agent cannot type into your "
-  + "shell and never sees what you do there — the two are separate sessions.";
+  + "at your own prompt without running it. The third, Jobs, lists the commands "
+  + "it left running in the background, with their live output and a Kill "
+  + "button. The agent cannot type into your shell and never sees what you do "
+  + "there — the two are separate sessions.";
+export const SLASH = slashRows();

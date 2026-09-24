@@ -24,9 +24,10 @@ Design constraints (all enforced here):
 * Trust can be **revoked**.
 
 The gate covers two kinds of project-scope config. **Executable config** names a
-program to run: ``mcpServers`` blocks and ``kind: tool`` plugin files. **Policy
-config** widens what the agent may do without being asked: a ``permissions``
-allowlist, a ``default_mode``. Neither spawns anything by itself, but a
+program to run: ``mcpServers`` blocks, ``kind: tool`` plugin files and ``hooks``
+blocks. **Policy config** widens what the agent may do without being asked: a
+``permissions`` allowlist, a ``default_mode``, switching off one of the user's
+own hooks. Neither spawns anything by itself, but a
 committed ``default_mode: "yolo"`` hands a cloned repository the same thing a
 committed MCP server does, one step later, so both gate under the one grant.
 
@@ -44,12 +45,13 @@ import hashlib
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quickcode import frontmatter, jsonfile, textio
 from quickcode.config import CONFIG_DIR
+from quickcode.fsutil import atomic_write_text
 
 log = logging.getLogger("quickcode.security.trust")
 
@@ -68,8 +70,6 @@ PROJECT_SETTINGS_FILES = (
 # so it is executable config in exactly the way an mcpServers block is.
 PROJECT_PLUGINS_DIR = Path(".quickcode") / "plugins"
 
-_KIND_RE = re.compile(r"^kind\s*:\s*[\"']?([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
-
 # The policy half of what this gate governs, named once so the hash, the report
 # and the three loaders that drop it can never disagree about the list.
 #
@@ -83,6 +83,16 @@ GATED_RULE_KINDS = ("allow",)
 GATED_PLUGIN_IDS = ("runtime.permissions",)
 GATED_PRESET_FIELDS = ("default_mode",)
 
+# Plugins a project may not switch *off* on its own. Everywhere else ``enabled:
+# false`` narrows, which is why the loaders let it through; a user's command
+# hook is the exception, because the hook may be the user's own guard (a
+# PreToolUse that refuses a command), and a cloned repository that could turn
+# it off would be widening by subtraction. The prefix is the id scheme of
+# ``quickcode.hooks.config.HookCommand.id``.
+GATED_DISABLE_PREFIXES = ("hook.cmd.user.",)
+
+HOOKS_KEY = "hooks"
+
 # The starting modes an untrusted project may still ask for. Listed as what is
 # permitted rather than what is refused so that a mode added later is refused
 # until somebody decides otherwise, which is the direction to be wrong in.
@@ -92,6 +102,11 @@ GATED_PRESET_FIELDS = ("default_mode",)
 # careful. Everything above ``ask`` -- ``auto-edit``, ``dontask``, ``yolo`` --
 # is the boundary moving outward, and that is the grant this gate exists for.
 GRANTABLE_MODES = frozenset({"plan", "ask"})
+
+
+def project_may_disable(plugin_id: str) -> bool:
+    """Whether an untrusted project may switch this plugin off by itself."""
+    return not plugin_id.startswith(GATED_DISABLE_PREFIXES)
 
 
 def project_may_state(key: str, value: Any) -> bool:
@@ -124,22 +139,47 @@ def _norm(path: str | os.PathLike[str]) -> str:
     return norm
 
 
-def _project_settings(cwd: str | os.PathLike[str]) -> list[dict[str, Any]]:
-    """Both project settings files, parsed, unreadable ones skipped.
+def _project_settings_by_file(
+    cwd: str | os.PathLike[str],
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Both project settings files, parsed, with the relative path each came
+    from; unreadable ones skipped.
 
     One reader for both of them, so nothing that gates on their contents can
-    end up looking at a different pair of files than the hash does.
+    end up looking at a different pair of files than the hash does -- and the
+    decoder every runtime reader uses (``quickcode.jsonfile``), so none of them
+    can read those files differently either.
     """
-    out: list[dict[str, Any]] = []
+    out: list[tuple[Path, dict[str, Any]]] = []
     root = Path(cwd)
     for rel in PROJECT_SETTINGS_FILES:
         try:
-            data = json.loads((root / rel).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            data = jsonfile.load(root / rel)
+        except (OSError, ValueError):
             continue
         if isinstance(data, dict):
-            out.append(data)
+            out.append((rel, data))
     return out
+
+
+def _project_settings(cwd: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    return [data for _rel, data in _project_settings_by_file(cwd)]
+
+
+def project_hooks(cwd: str | os.PathLike[str]) -> dict[str, Any]:
+    """Each project settings file's ``hooks`` block, keyed by that file.
+
+    Raw, whatever shape it has: parsing belongs to ``quickcode.hooks.config``,
+    and the hash must move when *anything* in the block does -- a malformed
+    entry today can be a well-formed command after the next edit. Keyed by the
+    POSIX spelling of the relative path so one project hashes the same on every
+    OS, and so the loader can say which file an entry came from.
+    """
+    return {
+        rel.as_posix(): data[HOOKS_KEY]
+        for rel, data in _project_settings_by_file(cwd)
+        if data.get(HOOKS_KEY) not in (None, {}, [])
+    }
 
 
 def project_mcp_servers(cwd: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
@@ -159,22 +199,33 @@ def project_mcp_servers(cwd: str | os.PathLike[str]) -> dict[str, dict[str, Any]
     return merged
 
 
-def _declared_kind(text: str) -> str | None:
-    """The ``kind:`` an authored plugin file declares, or ``None`` if unreadable.
+def project_hook_rows(cwd: str | os.PathLike[str]) -> list[dict[str, str]]:
+    """The project's hook commands as rows a reviewer can read.
 
-    This reads the frontmatter directly instead of calling the real parser
-    because ``kernel.authoring.discovery`` imports *this* module: security sits
-    below the kernel and cannot import it back. Only enough is read to answer
-    one question — is this a command tool — and ``None`` means "could not tell",
-    which the caller resolves the safe way.
+    Parsed by the hooks package, imported here rather than at the top for the
+    reason ``_declared_kind`` gives: security sits below everything that
+    imports it. A block that does not parse still counts toward the hash; it
+    simply has no row to show.
     """
-    if not text.startswith("---"):
+    from quickcode.hooks.config import review_rows
+
+    return review_rows(project_hooks(cwd))
+
+
+def _declared_kind(text: str) -> str | None:
+    """The ``kind:`` an authored plugin file declares, or ``None`` if unclear.
+
+    Read with ``quickcode.frontmatter`` -- the parser the plugin loader itself
+    uses -- so this gate and the loader cannot reach different answers about
+    the same bytes. ``None`` means "could not tell" (no kind, no frontmatter,
+    or a key written twice, which the loader refuses), and the caller resolves
+    it the safe way.
+    """
+    head = frontmatter.parse(text)
+    if head.duplicates:
         return None
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None
-    match = _KIND_RE.search(text[:end])
-    return match.group(1).lower() if match else None
+    kind = head.meta.get("kind", "").strip().lower()
+    return kind or None
 
 
 def project_command_tools(cwd: str | os.PathLike[str]) -> dict[str, str]:
@@ -204,7 +255,12 @@ def project_command_tools(cwd: str | os.PathLike[str]) -> dict[str, str]:
             raw = path.read_bytes()
         except OSError:
             continue
-        kind = _declared_kind(raw.decode("utf-8", errors="replace"))
+        try:
+            # The loader's decoder, so a UTF-16 agent file is read as one here too.
+            text = textio.decode(raw)
+        except UnicodeDecodeError:
+            text = ""  # the loader refuses it; an unreadable kind is hashed
+        kind = _declared_kind(text)
         if kind is not None and kind != "tool":
             continue  # agents and prompt sections are text; they are not gated
         out[path.name] = hashlib.sha256(raw).hexdigest()
@@ -244,6 +300,10 @@ def project_policy_config(cwd: str | os.PathLike[str]) -> dict[str, Any]:
                     for key, value in settings.items():
                         if not project_may_state(key, value):
                             out[f"plugins.{plugin_id}.{key}"] = value
+            for plugin_id, entry in plugins.items():
+                if (isinstance(entry, dict) and entry.get("enabled") is False
+                        and not project_may_disable(str(plugin_id))):
+                    out[f"plugins.{plugin_id}.enabled"] = False
         presets = data.get("presets")
         if isinstance(presets, dict):
             for name, body in presets.items():
@@ -287,8 +347,17 @@ def config_hash(cwd: str | os.PathLike[str]) -> str:
     policy = project_policy_config(cwd)
     if policy:
         payload["policy"] = policy
+    # The same rule for the same reason: a project with no hooks keeps the hash
+    # it had before hooks existed, and one that gains a hook re-prompts.
+    hooks = project_hooks(cwd)
+    if hooks:
+        payload["hooks"] = hooks
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class ConfigChanged(ValueError):
+    """The project's gated config is not the configuration the grant named."""
 
 
 @dataclass
@@ -311,10 +380,17 @@ class TrustStatus:
     # Nothing here runs a program; it is the half that widens what may run
     # without asking, and it gates under the same grant.
     policy_keys: list[str] = field(default_factory=list)
+    # Command hooks the project declares, one row per command: event, matcher,
+    # command and the file it is in -- what the reviewer is consenting to run.
+    hooks: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def has_tools(self) -> bool:
         return bool(self.tool_files)
+
+    @property
+    def has_hooks(self) -> bool:
+        return bool(self.hooks)
 
     @property
     def has_policy(self) -> bool:
@@ -329,6 +405,8 @@ class TrustStatus:
             "tools": list(self.tool_files),
             "has_policy": self.has_policy,
             "policy": list(self.policy_keys),
+            "has_hooks": self.has_hooks,
+            "hooks": [dict(row) for row in self.hooks],
             "hash": self.config_hash,
             "inert": self.inert,
             "reason": self.reason,
@@ -358,9 +436,7 @@ class TrustStore:
     def _save(self, data: dict[str, Any]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            atomic_write_text(self.path, json.dumps(data, indent=2))
         except OSError as e:
             log.warning("could not save trust store: %s", e)
 
@@ -385,9 +461,10 @@ class TrustStore:
         names = sorted(servers)
         tool_files = sorted(project_command_tools(cwd))
         policy_keys = sorted(project_policy_config(cwd))
+        hook_rows = project_hook_rows(cwd)
         trusted = self.is_trusted(cwd)
         has_servers = bool(servers)
-        has_gated = has_servers or bool(tool_files) or bool(policy_keys)
+        has_gated = has_servers or bool(tool_files) or bool(policy_keys) or bool(hook_rows)
         inert = has_gated and not trusted
         # One noun for whatever this project actually declares, so the sentence
         # is true for a project with only tools, or only settings, as well as
@@ -395,11 +472,12 @@ class TrustStore:
         what = " and ".join(part for part, present in (
             ("MCP servers", has_servers),
             ("command tools", bool(tool_files)),
+            ("hooks", bool(hook_rows)),
             ("permission settings", bool(policy_keys)),
         ) if present)
         if not has_gated:
-            reason = ("no project-scope MCP servers, command tools or permission "
-                      "settings declared")
+            reason = ("no project-scope MCP servers, command tools, hooks or "
+                      "permission settings declared")
         elif trusted:
             reason = "project trusted for this configuration"
         elif self.recorded_hash(cwd) is not None:
@@ -416,12 +494,23 @@ class TrustStore:
             reason=reason,
             tool_files=tool_files,
             policy_keys=policy_keys,
+            hooks=hook_rows,
         )
 
     # ---- mutations ----
-    def grant(self, cwd: str | os.PathLike[str]) -> str:
-        """Trust this project for its current config. Returns the bound hash."""
+    def grant(self, cwd: str | os.PathLike[str], *, expected: str | None = None) -> str:
+        """Trust this project for its current config. Returns the bound hash.
+
+        ``expected`` is the hash the person reviewed; when the config no longer
+        hashes to it, nothing is recorded and ``ConfigChanged`` is raised, so an
+        edit that lands between reading the prompt and clicking it is not
+        approved unseen.
+        """
         h = config_hash(cwd)
+        if expected is not None and expected != h:
+            raise ConfigChanged(
+                "the project's configuration changed since it was reviewed; "
+                "review it again before trusting it")
         data = self._load()
         data.setdefault("version", STORE_VERSION)
         data["projects"][_norm(cwd)] = {

@@ -8,6 +8,7 @@
 // dirty. Writes arrive in bursts, so painting is deferred to the next animation
 // frame: a hundred WebSocket frames in one tick cost one layout, not a hundred.
 
+import { perFrame } from "../frame.js";
 import { Emulator, lineHtml } from "./emulator.js";
 
 export class TerminalView {
@@ -19,7 +20,7 @@ export class TerminalView {
     this.viewEl = host.querySelector(".qt-viewport");
     this.emu = new Emulator(24, 80);
     this.rendered = 0;      // scrollback lines already in the DOM
-    this.frame = 0;
+    this.paintSoon = perFrame(() => this.paint());
     this.rows = [];
     this.syncRows();
     // "Stick to the bottom" is a decision about intent, not position: someone
@@ -53,8 +54,13 @@ export class TerminalView {
     this.schedule();
   }
 
-  clear() {
+  /** Empty the screen. `keepModes` for the Clear button: the shell behind it
+   *  is the same one, and it will not repeat that it asked for bracketed
+   *  paste or application cursor keys just because the pixels went away. */
+  clear({ keepModes = false } = {}) {
+    const { bracketedPaste, appCursor } = this.emu;
     this.emu.reset();
+    if (keepModes) Object.assign(this.emu, { bracketedPaste, appCursor });
     this.scrollEl.innerHTML = "";
     this.rendered = 0;
     this.syncRows();
@@ -62,8 +68,7 @@ export class TerminalView {
   }
 
   schedule() {
-    if (this.frame) return;
-    this.frame = requestAnimationFrame(() => { this.frame = 0; this.paint(); });
+    this.paintSoon();
   }
 
   paint() {

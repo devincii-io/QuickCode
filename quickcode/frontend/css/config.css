@@ -148,7 +148,7 @@
 }
 .cfg-lede.small { font-size: 12px; margin-bottom: 10px; }
 .cfg-lede em { color: var(--fg); font-style: normal; }
-.cfg-lede code, .cfg-note code, .cfg-soon code {
+.cfg-lede code, .cfg-note code {
   font-family: var(--mono); font-size: 11.5px; background: var(--panel);
   padding: 1px 5px; border-radius: 4px;
 }
@@ -289,6 +289,7 @@ a.k-fact { color: var(--accent); text-decoration: none; }
 }
 .k-explain dd { margin: 0; color: var(--fg); }
 .k-explain dd.detail { color: var(--fg-dim); font-size: 12px; }
+.k-explain .k-docs { font-family: var(--mono); font-size: 11.5px; }
 .inferred-text { border-bottom: 1px dotted var(--line-strong); cursor: help; }
 .k-affect {
   display: inline-block; font-size: 10.5px; font-family: var(--mono);
@@ -338,19 +339,6 @@ a.k-fact { color: var(--accent); text-decoration: none; }
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 50%, transparent);
   border-radius: 8px;
 }
-
-/* ---------- placeholders for the next passes ---------- */
-
-.cfg-soon {
-  border: 1px dashed var(--line-strong); border-radius: var(--radius);
-  padding: 12px 14px; margin: 22px 0; max-width: 86ch; background: var(--panel);
-}
-.cfg-soon h4 {
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--fg-faint); margin-bottom: 8px;
-}
-.cfg-soon p { font-size: 12.5px; line-height: 1.6; color: var(--fg-dim); margin-bottom: 8px; }
-.cfg-soon p:last-child { margin-bottom: 0; }
 
 /* ---------- machine-room index ---------- */
 
@@ -853,7 +841,7 @@ textarea.tp-input { min-height: 0; }
   color: var(--fg-dim); background: var(--panel); border: 1px solid var(--line);
 }
 
-/* ---------- the modelled preview ---------- */
+/* ---------- the live preview (verdict and trace: help.css, js/help/explain.js) ---------- */
 
 .pf-preview { max-width: 90ch; }
 .pf-try {
@@ -861,38 +849,6 @@ textarea.tp-input { min-height: 0; }
   gap: 12px; align-items: end;
 }
 .pf-verdict { margin-top: 14px; }
-.pf-outcome { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.pf-outcome-word {
-  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
-  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--line-strong); color: var(--fg-dim);
-}
-.pf-outcome[data-outcome="allow"] .pf-outcome-word {
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 45%, transparent);
-}
-.pf-outcome[data-outcome="ask"] .pf-outcome-word {
-  color: var(--warning);
-  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
-}
-.pf-outcome[data-outcome="deny"] .pf-outcome-word {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 45%, transparent);
-}
-.pf-outcome-say { font-size: 12.5px; color: var(--fg-dim); }
-.pf-outcome-say code { font-family: var(--mono); overflow-wrap: anywhere; }
-
-/* The trace is the point: not the verdict but which check produced it, and
-   which checks never got to run. */
-.pf-trace { list-style: none; margin-top: 10px; max-width: 78ch; }
-.pf-trace li {
-  font-size: 11.5px; line-height: 1.6; color: var(--fg-faint);
-  padding: 4px 0; border-top: 1px solid var(--line);
-}
-.pf-trace li:first-child { border-top: 0; }
-.pf-trace li b { font-family: var(--mono); font-weight: 400; }
-.pf-trace li[data-hit="true"] { color: var(--fg-dim); }
-.pf-trace li[data-hit="true"] b { color: var(--primary); }
 
 @media (max-width: 900px) {
   .pf-try { grid-template-columns: 1fr; }
@@ -990,6 +946,7 @@ textarea.tp-input { min-height: 0; }
 }
 .cfg-fchip:hover:not(:disabled) { background: var(--panel); color: var(--fg); }
 .cfg-fchip.on { background: var(--boost); color: var(--fg); border-color: var(--line-strong); }
+a.cfg-fchip { text-decoration: none; display: inline-block; }
 .cfg-fchip:disabled { cursor: default; }
 .cfg-fcount { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
 .cfg-filter-note-inline {

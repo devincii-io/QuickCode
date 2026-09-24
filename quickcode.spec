@@ -75,6 +75,7 @@ hiddenimports += [
     # importlib.metadata, so the built-in provider factory it falls back to is
     # only ever named as a string in the factory table.
     "quickcode.providers.openai_compat",
+    "quickcode.providers.anthropic",
     # Reached only via winpty below, and only on the ConPTY path.
     "quickcode.pty.session",
     "winpty",

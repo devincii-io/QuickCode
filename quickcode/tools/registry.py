@@ -19,6 +19,7 @@ from quickcode.tools.agent import AgentTool
 from quickcode.tools.agent_jobs import AgentResultTool, AgentStatusTool
 from quickcode.tools.base import Tool
 from quickcode.tools.bash import BashTool
+from quickcode.tools.bash_job_tools import BashKillTool, BashOutputTool
 from quickcode.tools.edit import EditTool
 from quickcode.tools.glob import GlobTool
 from quickcode.tools.grep import GrepTool
@@ -68,6 +69,10 @@ def core_tools(*, include_plan: bool = True, include_agent: bool = True) -> list
         GlobTool(),
         GrepTool(),
         BashTool(),
+        # The readers of bash(run_in_background=true). They ride with bash in
+        # every composition (kernel/composition.py::SHELL_JOB_TOOLS).
+        BashOutputTool(),
+        BashKillTool(),
         # Registered whether or not a search key is configured: an unconfigured
         # web_search fails with the signup page in the message, which is more
         # use to everyone than a tool that silently does not exist. Same
@@ -112,6 +117,17 @@ def select(pool: Iterable[Tool], patterns: Iterable[str]) -> list[Tool]:
 def default_registry(*, include_agent: bool = True) -> ToolRegistry:
     """The standard toolset for a main agent."""
     return ToolRegistry(core_tools(include_plan=True, include_agent=include_agent))
+
+
+def install_registry(extra: Iterable[Tool]) -> ToolRegistry:
+    """The tools this install has: the built-ins, then entry-point plugin and
+    MCP tools added by name. What the app builds a project's sessions from and
+    what ``-p`` builds its one session from, so the two pools cannot differ in
+    how they are made -- only in what was started."""
+    registry = default_registry()
+    for tool in extra:
+        registry.tools[tool.name] = tool
+    return registry
 
 
 def build_registry(

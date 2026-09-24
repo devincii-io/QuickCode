@@ -97,6 +97,50 @@ def test_a_turn_still_running_reports_itself_busy_to_a_socket_that_just_attached
             assert ws.receive_json()["busy"] is True
 
 
+class _DiesMidSentence(FakeProvider):
+    """Streams part of an answer, then the provider client blows up."""
+
+    async def stream_chat(self, req):
+        if not self.requests:
+            self.requests.append(req)
+            yield TextDelta("partial answer")
+            raise RuntimeError("connection reset by peer")
+        async for ev in super().stream_chat(req):
+            yield ev
+
+
+def _logged(tmp_path, conv_id):
+    from quickcode.session.store import SessionStore
+
+    return [(e["type"], e.get("text") or e.get("message") or "")
+            for e in SessionStore(tmp_path, conv_id).load_events()
+            if e["type"] in ("user_message", "assistant_message", "error")]
+
+
+def test_a_turn_that_raises_is_replayed_in_the_order_it_happened(tmp_path):
+    """The worker logged its ``error`` the moment ``run_turn`` raised, while the
+    events the turn had already emitted were still queued for the pump. The
+    streamed text was never flushed at all: it sat in the accumulator and was
+    glued onto the front of the *next* turn's answer."""
+    provider = _DiesMidSentence([[TextDelta("fresh"), TurnDone("stop")]])
+    with make_client(make_manager(tmp_path, provider)) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_text(json.dumps({"type": "user_message", "text": "one"}))
+            recv_until(ws, "error")
+            ws.send_text(json.dumps({"type": "user_message", "text": "two"}))
+            recv_until(ws, "assistant_message")
+
+    assert _logged(tmp_path, conv_id) == [
+        ("user_message", "one"),
+        ("assistant_message", "partial answer"),
+        ("error", "RuntimeError: connection reset by peer"),
+        ("user_message", "two"),
+        ("assistant_message", "fresh"),
+    ]
+
+
 def test_attaching_to_a_conversation_the_server_does_not_have_closes_with_4404(tmp_path):
     """The one close the client must *not* retry.
 

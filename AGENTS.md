@@ -21,10 +21,18 @@ env unless you actually changed `pyproject.toml`.
 ```powershell
 uv sync --all-extras --dev                          # once, or after pyproject.toml changes
 uv run --no-sync quickcode                           # run the app (native window; qc also works)
-uv run --no-sync pytest -q                           # tests (~10 s)
+uv run --no-sync pytest -q                           # tests (~2,650, ~2 min)
 uv run --no-sync ruff check quickcode tests scripts
-.venv\Scripts\python.exe scripts\release.py --check  # tests + ruff, the local release gate
+node --test tests/js/*.test.mjs                      # frontend unit tests
+.venv\Scripts\python.exe scripts\release.py --check  # the local release gate: tests, ruff,
+                                                     # byte-compile, JS checks, git diff --check
 ```
+
+The commands are the same on Linux and macOS (`python scripts/release.py`
+instead of the `.venv\Scripts` path). The suite runs there too; CI
+(`.github/workflows/ci.yml`) covers Windows only, and a handful of tests are
+known to fail off it (symlink and junction handling, `WindowsPath`, the
+installer layout).
 
 ## Architecture (the load-bearing pieces)
 
@@ -48,8 +56,9 @@ uv run --no-sync ruff check quickcode tests scripts
   — composed from an ordered list of `PromptSection`s rather than one
   conditional template. Each section has an id, an order, a mutability
   tier, and a renderer; `compose()` joins the non-empty ones and reports the
-  byte range each contributed, which is what lets the UI attribute a run of
-  prompt text to a specific section. Two invariants any change here must
+  range each contributed (character offsets into the `str`, not bytes —
+  docs/PROMPTS.md §1), which is what lets the UI attribute a run of prompt
+  text to a specific section. Two invariants any change here must
   keep: **byte-stability within a session** (the prompt-cache breakpoint
   sits on the system message — same inputs, same bytes) and **the tool-use
   policy section stays `locked`** (it's the contract the loop and the
@@ -58,9 +67,10 @@ uv run --no-sync ruff check quickcode tests scripts
   ask → auto-edit → dontask → yolo`; evaluation order is deny → ask → allow
   → mode default; bash commands are decomposed per subcommand, never
   prefix-matched; protected paths (`.git`, `.quickcode`, `.env*`, `.ssh`,
-  anything outside the project root) always prompt before any allow rule
-  applies; circuit breakers (`rm -rf /`, forced push, fork bombs) prompt
-  even in `yolo`. Full rule syntax and scope precedence: `docs/PERMISSIONS.md`.
+  anything outside the project root) prompt before any allow rule applies,
+  in every mode but `yolo` (`dontask` denies instead); circuit breakers
+  (`rm -rf /`, forced push, fork bombs) prompt even in `yolo`. Full rule
+  syntax and scope precedence: `docs/PERMISSIONS.md`.
 - **Session event log** (`quickcode/session/store.py`) — append-only JSONL;
   the system prompt, every tool call/result, subagent activity, and
   permission decisions all land here. The **Trajectory** view, resume, and
@@ -68,12 +78,34 @@ uv run --no-sync ruff check quickcode tests scripts
   widen additively, never repurpose an existing field.
 - **Native app window** (`quickcode/ui/window.py`) — thin wrapper around
   `pywebview.create_window`/`.start()`; `available()` gates on pywebview
-  being importable, and `quickcode/webapp.py` falls back to the system
+  being importable (and, on Windows, the WebView2 runtime being
+  present), and `quickcode/webapp.py` falls back to the system
   browser when it isn't. Must be started on the main thread — the server
   runs in a background thread instead when the window is used.
-- **PTY** (`quickcode/pty/session.py`) — `pywinpty` (ConPTY) on Windows, the
-  POSIX `pty` module elsewhere; patterns carried over from QuickTerm (bytes
-  in/bytes out on the hot path, no decoding).
+- **Session assembly** (`quickcode/session/assemble.py`) — `build_session`
+  is the only place a session is put together, for the app
+  (`ConversationManager.open`) and for headless `-p` alike: pool, preset,
+  composition, limits, mode, permissions, prompt, hooks. Don't build an
+  `AgentInstance` for a session anywhere else.
+- **Child processes** (`quickcode/subproc.py`) — every process QuickCode
+  starts goes through `spawn`/`spawn_async`/`run`: no console window,
+  `child_env()` (QuickCode's API keys removed), its own process group, and
+  `kill_tree`. A bare program name is resolved from absolute `PATH` entries
+  only (`find_program`) -- never the current or project directory, which
+  Windows would otherwise search first. `tests/test_no_console_window.py`
+  fails on a spawn anywhere else. Git goes through `quickcode/gitcmd.py`, which also switches off the
+  repository's hooks, fsmonitor, textconv and filter drivers.
+- **Settings files** (`quickcode/kernel/settings_file.py`, `jsonfile.py`,
+  `textio.py`) — one BOM-aware reader for every settings/config JSON and
+  every hand-edited text file, and one writer; a project write goes through
+  `write_project_settings`, which keeps the project's trust.
+- **PTY** (`quickcode/pty/`) — `session.py` runs one `bash` command per
+  pseudo-terminal on POSIX; on Windows `bash` uses plain pipes by default,
+  because under a tty a command that reads stdin waits for nobody.
+  `interactive.py` is the terminal panel's long-lived shell (ConPTY via
+  `pywinpty` on Windows). Patterns carried over from QuickTerm: bytes on the
+  hot path, decoded once at the boundary (`tools/base.py::decode_output`),
+  never with `surrogateescape`.
 
 ## Conventions
 
@@ -95,7 +127,9 @@ uv run --no-sync ruff check quickcode tests scripts
 - Server handlers that need to be stubbable in tests import via
   `importlib.import_module("quickcode.X")`, same convention as QuickTerm —
   don't switch these to a plain `import` without checking why they were
-  importlib-loaded in the first place.
+  importlib-loaded in the first place. (As of 2.7.0 no handler needs it —
+  the suite stubs with `monkeypatch.setattr("quickcode.x.y", ...)` — so this
+  is the pattern to reach for when one does.)
 - Ruff config: `line-length = 100`, target `py312`, `select = ["E", "F",
   "I", "UP", "B"]`. `E501` (line length) is deliberately ignored — don't
   fight the formatter over wrapping; `UP042/046/047` are ignored because
@@ -104,7 +138,8 @@ uv run --no-sync ruff check quickcode tests scripts
 - Tests: pytest, `asyncio_mode = auto`. Prefer exercising the real
   `PermissionEngine` and FastAPI `TestClient` over deep mocking — most of
   the existing suite does this and it catches wiring bugs a mock would
-  hide. Keep the suite fast (currently ~10 s for 139 tests).
+  hide. Keep the suite fast (currently ~2 min for about 2,650 tests on
+  Linux).
 - No secrets in the session event log or diagnostics — API keys live in
   `secrets.py`-managed storage, never in a tool call's recorded arguments
   if the tool can avoid it.

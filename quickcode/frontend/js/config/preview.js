@@ -13,10 +13,8 @@
 // caused it. So every section that did *not* render is listed with the reason,
 // struck through, under the prompt it is missing from.
 
-import { esc } from "../util.js";
-import { highlightJson } from "../settings/ui.js";
-
-const num = (n) => Number(n || 0).toLocaleString();
+import { esc, fmtCount as num } from "../util.js";
+import { jsonHtml } from "../json_view.js";
 
 // Python's offsets count code points; a JS string counts UTF-16 units. Slicing
 // the raw string would drift by one per astral character — and the prompt does
@@ -80,7 +78,7 @@ function toolsHtml(data) {
         <span class="pv-tool-by">${esc(by)}</span>
         <span class="pv-tool-size">${num(new Blob([body]).size)} B</span>
       </summary>
-      <pre class="pv-json">${highlightJson(body)}</pre>
+      <pre class="pv-json">${jsonHtml(body)}</pre>
     </details>`;
   }).join("")}</div>`;
 }

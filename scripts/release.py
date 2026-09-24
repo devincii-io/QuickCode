@@ -17,8 +17,10 @@ drifting apart.
 Usage (from the repo root, PowerShell):
 
     .venv\\Scripts\\python.exe scripts\\release.py --check
-        # pytest + ruff + byte-compile + JS syntax check + clean-diff check.
-        # What CONTRIBUTING.md asks you to run before a PR.
+        # pytest + ruff + byte-compile + JS syntax check and node tests +
+        # whitespace check. What CONTRIBUTING.md asks you to run before a PR,
+        # and exactly what CI runs. Works on any OS; elsewhere:
+        #   uv run --no-sync python scripts/release.py --check
 
     .venv\\Scripts\\python.exe scripts\\release.py --version 2.0.0
         # Bump pyproject.toml's version, re-lock (`uv lock`), run --check,
@@ -33,6 +35,10 @@ Usage (from the repo root, PowerShell):
     .venv\\Scripts\\python.exe scripts\\release.py --verify-artifacts
         # Re-verify dist/ against SHA256SUMS.txt (e.g. right before
         # `gh release create`).
+
+--version and --build are Windows-only: quickcode.spec bundles pywinpty's
+ConPTY helpers and the installer is compiled by ISCC.exe. They refuse to start
+anywhere else rather than bump the version and then fail halfway.
 """
 
 from __future__ import annotations
@@ -107,6 +113,10 @@ def check_javascript() -> None:
     """Syntax-check ES modules and exercise the workspace split/persistence logic."""
     node = shutil.which("node")
     if node is None:
+        # CI must not pass a gate it did not run; locally a missing Node is a
+        # skip, said out loud.
+        if os.environ.get("CI"):
+            raise RuntimeError("node not found on PATH; the JavaScript checks cannot run")
         print("node not found on PATH; skipping JavaScript syntax check", flush=True)
         return
     js_files = sorted((ROOT / "quickcode" / "frontend" / "js").rglob("*.js"))
@@ -171,7 +181,8 @@ def check() -> None:
     if not compileall.compile_dir(ROOT / "quickcode", quiet=1):
         raise RuntimeError("Python byte compilation failed")
     check_javascript()
-    run("git", "diff", "--check")
+    # Against HEAD, so staged changes are checked too, not only unstaged ones.
+    run("git", "diff", "--check", "HEAD")
     print("Local release gate passed.", flush=True)
 
 
@@ -241,7 +252,7 @@ def build(iscc_path: str | None) -> None:
     # pyproject.toml (packaging/quickcode.iss falls back to its own literal
     # only when compiled directly from the Inno Setup IDE).
     iscc = Path(iscc_path) if iscc_path else find_iscc()
-    run(str(iscc), "/Q", f"/DMyAppVersion={version}", "packaging\\quickcode.iss")
+    run(str(iscc), "/Q", f"/DMyAppVersion={version}", str(ISS.relative_to(ROOT)))
 
     artifacts = [
         INSTALLER_DIST / f"QuickCode-Setup-{version}.exe",
@@ -300,6 +311,11 @@ def main() -> int:
 
     if not any([args.version, args.check, args.build, args.verify_artifacts]):
         parser.error("pass one of --version, --check, --build, --verify-artifacts")
+    if (args.version or args.build) and sys.platform != "win32":
+        parser.error(
+            "--version and --build need Windows (pywinpty for quickcode.spec, "
+            "ISCC.exe for the installer); --check and --verify-artifacts run anywhere"
+        )
 
     if args.version:
         set_version(args.version)

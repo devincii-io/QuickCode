@@ -38,7 +38,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +46,7 @@ from quickcode.kernel import state as state_store
 from quickcode.kernel.composition import (
     DELEGATION_TOOLS,
     ORCHESTRATOR_ID,
+    SHELL_JOB_TOOLS,
     Binding,
     Composition,
     Resolved,
@@ -55,27 +55,45 @@ from quickcode.kernel.composition import (
     narrower_mode,
     selector_matches,
 )
-from quickcode.kernel.manifest import core_setting
-from quickcode.kernel.problems import Layer, Problem, Provenance
+from quickcode.kernel.core_settings import core_setting
+from quickcode.kernel.patterns import is_glob, pattern_matches
+from quickcode.kernel.problems import (
+    CEILING_CAPPED,
+    MODEL_NOT_SELECTABLE,
+    MODEL_OUTSIDE_SET,
+    MODELS_DISJOINT,
+    PATTERN_MATCHED_NOTHING,
+    SPAWN_WITHHELD_BY_PARENT,
+    TOOL_NOT_INSTALLED,
+    TOOL_WITHHELD_BY_PARENT,
+    UNKNOWN_AGENT,
+    UNKNOWN_AGENT_REF,
+    Layer,
+    Problem,
+    Provenance,
+)
 
 # The fallback for callers that resolve without a session -- the runtime passes
 # the resolved ``RuntimeLimits.max_depth`` instead, which is where
 # ``runtime.subagents.max_depth`` reaches the resolver.
 DEFAULT_MAX_DEPTH = RuntimeLimits().max_depth
 
-_GLOB_CHARS = ("*", "?", "[")
-
-
-def _is_pattern(text: str) -> bool:
-    return any(ch in text for ch in _GLOB_CHARS)
-
-
-def _matches(pattern: str, name: str) -> bool:
-    return pattern == name or fnmatchcase(name, pattern)
-
-
 def _admits(patterns: Iterable[str], candidate: str) -> bool:
-    return any(_matches(p, candidate) for p in patterns)
+    return any(pattern_matches(p, candidate) for p in patterns)
+
+
+def expand_tool_pattern(pattern: str) -> str:
+    """A ``tools:`` entry the way ``tools/registry.select`` reads it.
+
+    ``task`` is documented shorthand for ``task_*`` there. Matched literally
+    here, it became an empty grant plus a "matches no tool" warning for a word
+    the selector itself defines.
+    """
+    # Imported late: the tool registry imports the runner, which imports us.
+    from quickcode.tools.registry import ALIASES
+
+    text = (pattern or "").strip()
+    return ALIASES.get(text, text)
 
 
 # --------------------------------------------------------------------------
@@ -142,7 +160,7 @@ def _expand_bases(comp: Composition, defs: dict[str, Any]) -> list[Composition]:
 
 def _binding_contributions(
     bindings: Iterable[Binding], agent_id: str, role: Role, comp: Composition,
-) -> tuple[Composition, list[str], list[Binding]]:
+) -> tuple[Composition, dict[str, list[str]], list[Binding]]:
     """Desugar bindings that reach this agent into composition edits.
 
     A binding is a statement about a *relationship* and neither end owns it,
@@ -150,13 +168,14 @@ def _binding_contributions(
     a cloned repository must not ship a tool that attaches itself to your
     orchestrator. Here it stops being a separate concept: grants extend the
     preset layer's pattern lists, sets write bodies and settings, and revokes
-    are collected for subtraction after the intersection.
+    are collected per field -- tool patterns and agent ids -- for subtraction
+    after the intersection.
 
     A grant against a field the layer does not state is a no-op, and correctly
     so: "inherit everything" already includes it, and turning inheritance into
     a one-item allowlist is the opposite of what a grant means.
     """
-    revoked: list[str] = []
+    revoked: dict[str, list[str]] = {"tools": [], "spawns": []}
     unreached: list[Binding] = []
     tools = list(comp.tools) if comp.tools is not None else None
     spawns = list(comp.spawns) if comp.spawns is not None else None
@@ -175,16 +194,17 @@ def _binding_contributions(
         if plugin.startswith("tool."):
             pattern, target = plugin[len("tool."):], "tools"
         elif plugin.startswith("mcp."):
-            pattern, target = f"mcp__{plugin[len('mcp.'):]}__*", "tools"
+            from quickcode.plugins.mcp_wire import server_prefix
+
+            pattern, target = f"{server_prefix(plugin[len('mcp.'):])}*", "tools"
         elif plugin.startswith("agent."):
             pattern, target = plugin[len("agent."):], "spawns"
         elif plugin.startswith("prompt."):
             pattern, target = plugin, "sections"
 
         if binding.effect == "revoke":
-            if target == "tools" and pattern:
-                revoked.append(pattern)
-                touched = True
+            if target in revoked and pattern:
+                revoked[target].append(pattern)
             continue
 
         if binding.effect == "set":
@@ -234,6 +254,7 @@ def _intersect_named(
     layers: list[_Layer],
     field: str,
     candidates: list[str],
+    expand: Callable[[str], str] | None = None,
 ) -> tuple[set[str], dict[str, list[Provenance]], list[tuple[_Layer, str]], set[str]]:
     """Intersect one pattern-valued capability field across every layer.
 
@@ -241,6 +262,9 @@ def _intersect_named(
     pattern) pairs that matched nothing, and the set of literal names any layer
     asked for by name. Layers that state nothing contribute the identity, which
     is what makes the result independent of the order they are visited in.
+
+    ``expand`` turns a written pattern into the one that is matched; the chain
+    keeps what was written, because that is the word the author will look for.
     """
     survivors = set(candidates)
     chains: dict[str, list[Provenance]] = {name: [] for name in candidates}
@@ -253,9 +277,10 @@ def _intersect_named(
             continue
         matched: set[str] = set()
         for pattern in patterns:
-            hits = [name for name in candidates if _matches(pattern, name)]
-            if not _is_pattern(pattern):
-                literals.add(pattern)
+            wanted = expand(pattern) if expand else pattern
+            hits = [name for name in candidates if pattern_matches(wanted, name)]
+            if not is_glob(wanted):
+                literals.add(wanted)
             if not hits:
                 empty_patterns.append((layer, pattern))
                 continue
@@ -330,7 +355,7 @@ def resolve_composition(
             id=agent_id,
             role="subagent",
             problems=(Problem(
-                code="unknown_agent",
+                code=UNKNOWN_AGENT,
                 severity="error",
                 message=(f"unknown agent_type '{agent_id}'. Available: "
                          f"{available or 'none in this preset'}"),
@@ -408,10 +433,10 @@ def resolve_composition(
 
     # -- tools ------------------------------------------------------------
     asked, tool_chains, empty_patterns, literals = _intersect_named(
-        layers, "tools", selectable
+        layers, "tools", selectable, expand=expand_tool_pattern
     )
-    for pattern in revoked:
-        for name in [n for n in asked if _matches(pattern, n)]:
+    for pattern in revoked["tools"]:
+        for name in [n for n in asked if pattern_matches(pattern, n)]:
             asked.discard(name)
             tool_chains[name].append(
                 preset_layer.prov(rule=pattern, note="revoked by a binding")
@@ -431,6 +456,15 @@ def resolve_composition(
         parent_note = f"parent {parent.id}"
 
     granted = {n for n in asked if n in parent_tools}
+    if "bash" in granted:
+        for name in SHELL_JOB_TOOLS:
+            if name in parent_tools and name not in granted and not _admits(revoked, name):
+                granted.add(name)
+                tool_chains.setdefault(name, []).append(
+                    Provenance(layer="runtime", source="tools/registry.py", rule="with bash",
+                               note="granted with bash, whose background jobs only it "
+                                    "can read or stop")
+                )
     for name in sorted(asked - granted):
         tool_chains[name].append(
             Provenance(layer="parent", source=parent_note, rule=name,
@@ -438,7 +472,7 @@ def resolve_composition(
         )
         if name in literals:
             problems.append(Problem(
-                code="tool_withheld_by_parent",
+                code=TOOL_WITHHELD_BY_PARENT,
                 severity="error",
                 message=(f"'{agent_id}' asks for the tool '{name}', which the "
                          f"spawning agent was not granted."),
@@ -451,7 +485,7 @@ def resolve_composition(
     for layer, pattern in empty_patterns:
         installed = pattern in pool_names
         problems.append(Problem(
-            code="tool_not_installed" if not installed else "pattern_matched_nothing",
+            code=TOOL_NOT_INSTALLED if not installed else PATTERN_MATCHED_NOTHING,
             severity="warning",
             message=(f"'{pattern}' matches no tool in this session."
                      if not installed else
@@ -475,7 +509,7 @@ def resolve_composition(
             )
             if name in spawn_literals:
                 problems.append(Problem(
-                    code="spawn_withheld_by_parent",
+                    code=SPAWN_WITHHELD_BY_PARENT,
                     severity="error",
                     message=(f"'{agent_id}' may not be given '{name}' to spawn: "
                              f"'{parent.id}' may not spawn it either."),
@@ -484,6 +518,13 @@ def resolve_composition(
                     provenance=Provenance(layer="parent", source=parent.id, rule=name),
                 ))
         spawn_asked &= allowed_by_parent
+
+    for pattern in revoked["spawns"]:
+        for name in [n for n in spawn_asked if pattern_matches(pattern, n)]:
+            spawn_asked.discard(name)
+            spawn_chains[name].append(
+                preset_layer.prov(rule=pattern, note="revoked by a binding")
+            )
 
     # The orchestrator is included in this check deliberately. ``max_depth``
     # counts levels of subagent *below* the agent you talk to, so 0 has to mean
@@ -501,7 +542,7 @@ def resolve_composition(
 
     for layer, pattern in spawn_empty:
         problems.append(Problem(
-            code="unknown_agent_ref", severity="warning",
+            code=UNKNOWN_AGENT_REF, severity="warning",
             message=f"'{pattern}' names no agent definition on this machine.",
             fix="Check the name, or ignore this if the preset is shared.",
             subject=agent_id, field="spawns", provenance=layer.prov(rule=pattern),
@@ -530,9 +571,21 @@ def resolve_composition(
         if not models:
             models = tuple(parent.models)
         else:
-            models = tuple(p for p in models if _admits(parent.models, p)) or tuple(
+            narrowed = tuple(p for p in models if _admits(parent.models, p)) or tuple(
                 p for p in parent.models if _admits(models, p)
             )
+            # An empty tuple means "unrestricted", so two lists that share
+            # nothing must not collapse into one: that dropped both.
+            if not narrowed:
+                problems.append(Problem(
+                    code=MODELS_DISJOINT, severity="error",
+                    message=(f"agent '{agent_id}' may only run on {', '.join(models)} "
+                             f"and '{parent.id}' only on {', '.join(parent.models)}: "
+                             "no model satisfies both"),
+                    fix="Give the two allow-lists a model in common.",
+                    subject=agent_id, field="models",
+                ))
+            models = narrowed or models
         model_chain.append(Provenance(layer="parent", source=parent.id,
                                       rule=", ".join(parent.models)))
     if model_chain:
@@ -550,7 +603,7 @@ def resolve_composition(
         capped = narrower_mode(ceiling, parent.ceiling)
         if capped != ceiling:
             problems.append(Problem(
-                code="ceiling_capped", severity="warning",
+                code=CEILING_CAPPED, severity="warning",
                 message=(f"'{agent_id}' asks for a ceiling of {ceiling.value} but "
                          f"'{parent.id}' is capped at {parent.ceiling.value}."),
                 fix="Nothing to do: the narrower of the two applies.",
@@ -586,7 +639,7 @@ def resolve_composition(
 
     if overrides.get("model") and not selectable_model:
         problems.append(Problem(
-            code="model_not_selectable", severity="error",
+            code=MODEL_NOT_SELECTABLE, severity="error",
             message=(f"agent '{agent_id}' is pinned to {model} and does not "
                      "accept a model override"),
             fix="Spawn it without a model, or make the definition selectable.",
@@ -599,7 +652,7 @@ def resolve_composition(
             slug = model
         if not (_admits(models, model) or _admits(models, slug)):
             problems.append(Problem(
-                code="model_outside_set", severity="error",
+                code=MODEL_OUTSIDE_SET, severity="error",
                 message=(f"agent '{agent_id}' may only run on: "
                          f"{', '.join(models)} (asked for {model})"),
                 fix="Pick a model the agent's policy admits.",

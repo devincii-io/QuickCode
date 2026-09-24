@@ -13,14 +13,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from quickcode import subproc
+from quickcode import gitcmd
 from quickcode.server.manager import ConversationManager
 
 log = logging.getLogger("quickcode.server.gitinfo")
@@ -29,21 +28,15 @@ GIT_TIMEOUT = 5.0
 DIFF_CAP = 200_000
 
 
+# The panel runs the moment a project opens, before anyone has trusted it, so
+# nothing the repository's own config names may run: every call goes through
+# ``quickcode/gitcmd.py``, as the subagent worktree code's do.
 def _run(cwd: Path, *args: str) -> tuple[bool, str]:
     """Run one git command; return (ok, stdout). Never raises."""
-    try:
-        proc = subproc.run(
-            ["git", "-C", str(cwd), "-c", "core.quotepath=off", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=GIT_TIMEOUT,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.debug("git %s failed: %s", args[:1], exc)
-        return False, ""
-    return proc.returncode == 0, proc.stdout or ""
+    result = gitcmd.run(cwd, *args, timeout=GIT_TIMEOUT)
+    if result.code < 0:
+        log.debug("git %s failed: %s", args[:1], result.stderr)
+    return result.ok, result.stdout
 
 
 def _unquote(path: str) -> str:
@@ -64,7 +57,7 @@ def _parse_status(out: str) -> list[dict[str, str]]:
 
 
 def _status(cwd: Path) -> dict[str, Any]:
-    ok, out = _run(cwd, "status", "--porcelain")
+    ok, out = _run(cwd, "status", "--porcelain", *gitcmd.STATUS_SAFE)
     if not ok:
         return {"is_repo": False, "branch": "", "files": []}
     branch_ok, branch = _run(cwd, "rev-parse", "--abbrev-ref", "HEAD")
@@ -79,7 +72,7 @@ def _status(cwd: Path) -> dict[str, Any]:
 
 
 def _diff(cwd: Path, rel: str) -> str:
-    ok, out = _run(cwd, "diff", "HEAD", "--", rel)
+    ok, out = _run(cwd, "diff", *gitcmd.DIFF_SAFE, "HEAD", "--", rel)
     if ok and out.strip():
         return out
     tracked_ok, tracked = _run(cwd, "ls-files", "--", rel)
@@ -88,7 +81,7 @@ def _diff(cwd: Path, rel: str) -> str:
     # Untracked file: synthesize an all-added diff against the null device.
     for null in (os.devnull, "/dev/null"):
         # --no-index exits 1 when the files differ, which is the success case.
-        _, out = _run(cwd, "diff", "--no-index", "--", null, rel)
+        _, out = _run(cwd, "diff", *gitcmd.DIFF_SAFE, "--no-index", "--", null, rel)
         if out.strip():
             return out
     return ""
@@ -99,6 +92,10 @@ def _safe_rel(root: Path, raw: str) -> str:
     candidate = (raw or "").strip().replace("\\", "/")
     if not candidate:
         raise HTTPException(400, "path is required")
+    # Refused before anything touches the filesystem: on Windows, resolving a
+    # UNC path is a connection to that host, credentials and all.
+    if os.path.isabs(candidate) or PureWindowsPath(candidate).anchor:
+        raise HTTPException(400, "path must be relative to the project root")
     base = os.path.realpath(root)
     target = os.path.realpath(os.path.join(base, candidate))
     if target != base and not target.startswith(base + os.sep):

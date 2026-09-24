@@ -25,11 +25,12 @@ RESERVED_ID_PREFIXES = (
     "mcp.", "preset.",
 )
 
-# Wire names the model already knows. An authored tool taking one of these
-# would be called in place of the real one.
+# The floor under ``builtin_wire_names()``: what is reserved even if the live
+# registry cannot be read. It is not the list -- the registry is -- so a tool
+# missing here is still reserved the moment it ships.
 RESERVED_WIRE_NAMES = frozenset({
-    "read", "write", "edit", "glob", "grep", "bash", "plan",
-    "agent", "send_message", "agent_status", "agent_result",
+    "read", "write", "edit", "glob", "grep", "bash", "bash_output", "bash_kill", "plan",
+    "web_fetch", "web_search", "agent", "send_message", "agent_status", "agent_result",
 })
 
 RESERVED_WIRE_PREFIXES = ("mcp__", "task_")
@@ -67,18 +68,34 @@ def internal_ids() -> set[str]:
     return ids
 
 
+def builtin_wire_names() -> frozenset[str]:
+    """The names the model calls built-in tools by, read off the live registry.
+
+    An authored tool taking one would stand in for the real one. Read rather
+    than listed, so a builtin added later is reserved without anyone
+    remembering this file; the floor holds if the registry cannot be built.
+    """
+    try:
+        from quickcode.tools.registry import core_tools
+
+        live = {t.name for t in core_tools()}
+    except Exception:  # discovery must never take the app down
+        live = set()
+    return RESERVED_WIRE_NAMES | live
+
+
 def reserved_reason(plugin_id: str, kind: str, name: str) -> str:
     """Why this id is refused, in the user's vocabulary. "" means it is free."""
     for prefix in RESERVED_ID_PREFIXES:
         if plugin_id.startswith(prefix):
             return (f"ids starting with '{prefix}' belong to QuickCode's internals "
                     f"and cannot be authored")
-    if plugin_id in internal_ids():
-        return f"'{plugin_id}' is the id of a plugin QuickCode ships"
     if kind == "tool":
-        if name in RESERVED_WIRE_NAMES:
+        if name in builtin_wire_names():
             return f"'{name}' is the name of a built-in tool the model already calls"
         for prefix in RESERVED_WIRE_PREFIXES:
             if name.startswith(prefix):
                 return f"tool names starting with '{prefix}' are reserved"
+    if plugin_id in internal_ids():
+        return f"'{plugin_id}' is the id of a plugin QuickCode ships"
     return ""

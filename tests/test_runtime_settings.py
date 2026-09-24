@@ -267,6 +267,14 @@ def test_a_setting_cannot_raise_a_backstop_above_its_declared_maximum(tmp_path):
     assert (limits.max_depth, limits.max_agents) == (4, 500)
 
 
+def test_the_runtime_reads_the_same_declaration_the_card_shows():
+    """The bounds live in ``kernel/core_settings.py`` and the card prose in
+    ``kernel/manifest/``: a copy on either side would let the two drift."""
+    for spec in manifest.core_specs():
+        for setting in spec.settings:
+            assert manifest.core_setting(spec.id, setting.key) is setting
+
+
 def test_a_setting_may_still_lower_a_backstop(tmp_path):
     _write(tmp_path, "runtime.subagents", max_depth=1, max_agents=3)
     limits = runtime_limits(tmp_path)

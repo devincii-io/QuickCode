@@ -1,0 +1,286 @@
+/* Overlays: the modal shell (js/ui/modal.js), the dialogs drawn in it, the
+ * dropdown menus (js/ui/menu.js, the composer's completion menu) and the
+ * toasts. Loaded right after app.css, which is where these rules used to
+ * live, so every later sheet still overrides them as it did. */
+
+/* ---------- the modal shell ---------- */
+.modal-backdrop {
+  position: fixed; inset: 0; background: var(--scrim); display: grid;
+  place-items: center; z-index: var(--z-modal); animation: fadein .12s ease-out;
+}
+@keyframes fadein { from { opacity: 0; } }
+.modal {
+  background: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: 14px; width: min(720px, 92vw); max-height: 84vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: var(--shadow-2);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 18px; border-bottom: 1px solid var(--line); font-weight: 600;
+}
+.modal-body { padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain; }
+.modal-foot {
+  display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+
+/* permission modal specifics */
+.perm-preview {
+  font-family: var(--mono); font-size: 12.5px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow-y: auto;
+  margin: 10px 0;
+}
+.perm-tool { font-family: var(--mono); color: var(--primary); font-weight: 700; }
+/* A hook, not the rules, raised this prompt: say so above the call. */
+.perm-hook {
+  font-size: 12.5px; margin: 10px 0 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+.perm-hook-reason { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Diff lines keep their columns: scrolled sideways, never wrapped. */
+.perm-diff .diff {
+  font-family: var(--mono); font-size: 12px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+  margin: 0 0 10px; white-space: pre; overflow: auto; max-height: 36vh;
+}
+.perm-offer { font-size: 12px; color: var(--fg-dim); }
+.perm-offer code { color: var(--fg); overflow-wrap: anywhere; }
+.perm-rules, .perm-kept { margin: 4px 0 6px; padding-left: 18px; }
+.perm-kept-head { margin-top: 8px; color: var(--warning); }
+.perm-why-toggle { font-size: 12px; margin: 4px 0 0 -8px; padding: 3px 8px; }
+.perm-why { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.deny-input {
+  width: 100%; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; margin-top: 8px;
+}
+/* A rename that was refused says so under the field it was typed in — the form
+   is still on screen, so the message has a home and does not need a toast. */
+.rn-err:not(:empty) { margin-top: 8px; font-size: 12px; color: var(--error); }
+
+/* dropdown menus (mode / model) */
+.menu {
+  position: fixed; z-index: var(--z-menu); background: var(--surface);
+  border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
+  box-shadow: var(--shadow-2);
+  min-width: min(300px, calc(100vw - 24px)); max-width: min(420px, calc(100vw - 24px));
+  max-height: 60vh; display: flex; flex-direction: column;
+}
+/* The search box is a fixed header over the scrolling list, so a 400-model
+   catalog scrolls inside the card and never carries the box out of sight. */
+.menu-search {
+  flex: none; margin: 8px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; font-size: 13px; outline: none;
+}
+.menu-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px;
+  overscroll-behavior: contain;   /* reaching the end must not scroll the chat */
+}
+.menu-foot { flex: none; border-top: 1px solid var(--line); padding: 4px; }
+.menu-item {
+  display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 8px;
+}
+.menu-item:hover, .menu-item.hover { background: var(--panel); }
+.menu-item .mi-title { font-weight: 600; font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
+/* Long ids ellipsize instead of pushing the checkmark out of the card. */
+.menu-item .mi-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu-item .mi-title .check { margin-left: auto; flex: none; color: var(--success); }
+.menu-item .mi-desc { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
+.menu-item .mi-meta {
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* slash-command menu (anchored above the composer) */
+.slash-menu { max-width: none; min-width: 240px; }
+.slash-menu .menu-item { padding: 7px 12px; }
+.slash-menu .sm-line { display: flex; gap: 8px; align-items: baseline; }
+.slash-menu .sm-cmd { font-family: var(--mono); font-size: 13px; color: var(--primary); font-weight: 600; }
+.slash-menu .sm-arg { font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint); }
+.slash-menu .sm-desc { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
+.slash-hint {
+  border-top: 1px solid var(--line); padding: 5px 12px; flex: none;
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+}
+
+/* help modal */
+.help-sec { margin-bottom: 18px; }
+.help-sec:last-child { margin-bottom: 0; }
+.help-sec h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--fg-faint); margin-bottom: 6px; font-weight: 600;
+}
+.help-row { display: flex; gap: 14px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+.help-key { flex: 0 0 210px; font-family: var(--mono); font-size: 12px; color: var(--primary); }
+.help-desc { color: var(--fg-dim); }
+.help-note { font-size: 12.5px; color: var(--fg-dim); }
+
+/* menus: separator and inert note rows */
+.menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.menu-note { padding: 9px 12px; font-size: 12.5px; color: var(--fg-dim); }
+
+/* A menu entry that carries its own actions: the label still fills the row,
+   the buttons sit beside it (nesting them inside would be invalid markup). */
+.menu-row { display: flex; align-items: stretch; border-radius: 8px; }
+.menu-row:hover { background: var(--panel); }
+.menu-row .menu-item { flex: 1; min-width: 0; }
+.menu-row.archived .mi-name, .menu-row.archived .mi-meta { opacity: .62; }
+.mi-tag {
+  flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: .4px;
+  color: var(--fg-faint); border: 1px solid var(--line); border-radius: 9px;
+  padding: 0 6px; font-weight: 400;
+}
+.mi-act {
+  flex: none; padding: 0 9px; color: var(--fg-faint); font-size: 12px;
+  border-radius: 8px; opacity: 0; transition: opacity .1s;
+}
+.menu-row:hover .mi-act, .mi-act:focus-visible, .mi-act.armed { opacity: 1; }
+.mi-act:hover { color: var(--fg); background: var(--surface); }
+.mi-del:hover { color: var(--error); }
+.mi-act.armed {
+  color: var(--error); font-family: var(--mono); font-size: 11px;
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+
+/* Footer tools: sweeping abandoned sessions and revealing the archive. */
+.menu-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 8px; }
+.menu-tool {
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+  padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line);
+}
+.menu-tool:hover { color: var(--fg-dim); border-color: var(--line-strong); }
+.menu-tool[aria-pressed="true"] { color: var(--fg-dim); background: var(--panel); }
+.menu-tool.armed {
+  color: var(--error); border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+.menu-err { flex: 1 0 100%; font-size: 11px; color: var(--error); }
+
+/* Multi-select in the session switcher. The box is always there — a checkbox
+   that appears on hover is a control you have to find twice — but it stays
+   quiet until it is ticked. */
+.mi-pick {
+  flex: none; display: grid; place-items: center; padding: 0 4px 0 8px;
+  opacity: .35; transition: opacity .1s;
+}
+.menu-row:hover .mi-pick, .menu-row.picked .mi-pick, .mi-pick:focus-within { opacity: 1; }
+.mi-pick input { accent-color: var(--primary); cursor: pointer; }
+.menu-row.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.menu-selbar {
+  flex: 1 0 100%; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 2px 0 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.msb-count {
+  font-family: var(--mono); font-size: 10.5px; color: var(--primary); font-weight: 600;
+}
+.msb-hint { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+.msb-del:hover {
+  color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+/* Session search: message hits under the filtered rows (js/sessions_menu.js),
+   and the group headings the command palette shares. */
+.menu-hits { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 2px; }
+.menu-head {
+  padding: 8px 12px 3px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--fg-faint);
+}
+.mi-hit .mi-desc {
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.mi-who { font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); margin-right: 3px; }
+.menu mark {
+  color: inherit; border-radius: 2px; padding: 0 1px;
+  background: color-mix(in srgb, var(--warning) 32%, transparent);
+}
+
+/* The command palette (js/palette.js): a menu with no anchor, near the top. */
+.menu.palette { width: min(640px, calc(100vw - 24px)); min-width: 0; max-width: none; }
+.palette .menu-search { font-size: 14px; padding: 9px 12px; }
+.palette .pal-item { cursor: pointer; padding: 7px 12px; }
+.palette .pal-item .mi-title { font-weight: 500; }
+.palette .pal-item[aria-selected="true"] {
+  background: var(--panel); box-shadow: inset 2px 0 var(--primary);
+}
+.pal-keys {
+  flex: none; font-family: var(--mono); font-size: 10.5px; font-weight: 400;
+  color: var(--fg-faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
+}
+.palette-foot {
+  flex: none; border-top: 1px solid var(--line); padding: 5px 12px;
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+}
+
+/* ---------- deleting a project's QuickCode data (js/purge.js) ---------- */
+/* The one destructive action that gets a dialog. It has to answer two
+   questions before the button is pressed: exactly which directory, and what is
+   in it — and it has to say what is *not* going, because "delete the project"
+   is the thing the user is afraid this means. */
+.purge { display: flex; flex-direction: column; gap: 12px; }
+.purge-lead { font-size: 13px; color: var(--fg); }
+.purge-list {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px;
+  background: var(--panel);
+}
+.purge-item { display: flex; flex-direction: column; gap: 2px; }
+.purge-name { font-size: 13px; font-weight: 600; }
+.purge-path { font-size: 11.5px; word-break: break-all; }
+.purge-path code { font-family: var(--mono); color: var(--fg-dim); }
+.purge-what { font-size: 11.5px; color: var(--fg-faint); font-family: var(--mono); }
+.purge-safe {
+  font-size: 12px; color: var(--fg-dim); border-left: 3px solid var(--success);
+  padding: 6px 10px; background: color-mix(in srgb, var(--success) 6%, transparent);
+  border-radius: 0 8px 8px 0;
+}
+.purge-safe code { font-family: var(--mono); }
+
+/* ---------- toasts (js/toast.js) ---------- */
+/* Bottom-right, above the composer's menus in z-order but out of the click
+   path: the host itself never takes a pointer event, only the cards do. */
+.toast-host {
+  position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  max-width: min(420px, calc(100vw - 32px)); pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px 9px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line-strong); background: var(--panel);
+  box-shadow: var(--shadow-1);
+  font-size: 12.5px; line-height: 1.45;
+  animation: toast-in .16s ease-out;
+}
+.toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-x {
+  flex: none; color: var(--fg-faint); font-size: 12px; line-height: 1;
+  padding: 2px 3px; border-radius: 5px;
+}
+.toast-x:hover { color: var(--fg); background: var(--boost); }
+.toast-ok {
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, var(--panel));
+}
+.toast-info { border-color: var(--line-strong); }
+.toast-err {
+  border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  background: color-mix(in srgb, var(--error) 14%, var(--panel));
+  color: var(--fg);
+}
+.toast-out { opacity: 0; transition: opacity .15s ease-in; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* @path rows reuse the slash menu, but a path is long where a command is
+   short, so its label wraps instead of stretching the popover. */
+.slash-menu .sm-cmd { overflow-wrap: anywhere; }
+
+/* The dialog itself is focused on open so Escape works wherever you clicked;
+   it is a programmatic target, not a tab stop, so it draws no ring. */
+.modal:focus { outline: none; }

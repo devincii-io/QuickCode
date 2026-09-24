@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.config import CONFIG_DIR, Config, Environment
+from quickcode.fsutil import atomic_write_text
 from quickcode.providers.base import ModelInfo, Provider
 from quickcode.pty import registry as terminal_registry
 from quickcode.server.manager import ConversationManager
@@ -37,7 +38,7 @@ from quickcode.session.store import (
     purge_project_data,
 )
 from quickcode.tools.base import Tool
-from quickcode.tools.registry import ToolRegistry, default_registry
+from quickcode.tools.registry import ToolRegistry, install_registry
 
 log = logging.getLogger("quickcode.server")
 
@@ -152,9 +153,7 @@ class ProjectRegistry:
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            atomic_write_text(self.path, json.dumps(payload, indent=2))
         except OSError as e:
             log.warning("could not save project registry: %s", e)
 
@@ -250,6 +249,9 @@ class ProjectHub:
         self._mcp_connect = mcp_connect
         self.managers: dict[str, ConversationManager] = {}
         self._servers: list[Any] = []
+        # The same servers by project, so revoking one project's trust can stop
+        # exactly the processes that trust started.
+        self._project_servers: dict[str, list[Any]] = {}
         # Per-project mutable tool list that each manager's registry_factory
         # closes over, so trust granted after open can inject MCP tools live.
         self._project_extra: dict[str, list[Tool]] = {}
@@ -332,16 +334,14 @@ class ProjectHub:
         servers, mcp_tools = await self._mcp_connect(path)
         self._servers.extend(servers)
         pid = project_id(path)
+        self._project_servers[pid] = list(servers)
         # Held by reference: registry_factory reads this list every time it runs,
         # so appending to it (grant_trust) makes new conversations see new tools.
         extra = [*self.plugin_tools, *mcp_tools]
         self._project_extra[pid] = extra
 
         def registry_factory() -> ToolRegistry:
-            reg = default_registry()
-            for t in extra:
-                reg.tools[t.name] = t
-            return reg
+            return install_registry(extra)
 
         manager = ConversationManager(
             cwd=path,
@@ -400,6 +400,22 @@ class ProjectHub:
 
         self._models_task = asyncio.create_task(warm())
 
+    def replace_provider(self, provider: Provider) -> None:
+        """Swap the install's model backend after its settings changed.
+
+        The catalog belongs to the old backend, so it is dropped and fetched
+        again from the new one.
+        """
+        if self._models_task is not None and not self._models_task.done():
+            self._models_task.cancel()
+        self._models_task = None
+        self._models = None
+        self.provider = provider
+        for manager in self.managers.values():
+            manager.use_provider(provider)
+        if self.managers and not self._defer_catalog:
+            self._warm_catalog(next(iter(self.managers.values())))
+
     # ---- trust ----
     def trust_status(self, pid: str) -> dict[str, Any]:
         """The trust decision for an open project: trusted?, which project-scope
@@ -410,7 +426,7 @@ class ProjectHub:
         status = self._trust_store.status(manager.cwd)
         return {**status.to_json(), "running": list(manager.mcp_servers)}
 
-    async def grant_trust(self, pid: str) -> dict[str, Any]:
+    async def grant_trust(self, pid: str, *, expected: str | None = None) -> dict[str, Any]:
         """Record trust for an open project and connect its (now-permitted)
         project-scope MCP servers live, so the user need not reopen the project.
 
@@ -426,35 +442,61 @@ class ProjectHub:
         if manager is None:
             raise KeyError(pid)
         store = self._trust_store
-        store.grant(manager.cwd)
+        store.grant(manager.cwd, expected=expected)
 
         connected: list[str] = []
         # Only start servers not already tracked, so a repeat grant is a no-op.
         running = set(manager.mcp_servers)
         pending = [n for n in trust.project_mcp_servers(manager.cwd) if n not in running]
         if pending:
-            servers, tools = await mcp_module.connect_project_servers(manager.cwd)
+            servers, tools = await mcp_module.connect_project_servers(
+                manager.cwd, store=store)
             fresh = [s for s in servers if s.name not in running]
+            for s in servers:
+                if s not in fresh:
+                    await s.stop()  # a duplicate of one already running
             self._servers.extend(fresh)
+            self._project_servers.setdefault(pid, []).extend(fresh)
             extra = self._project_extra.setdefault(pid, [])
-            fresh_names = {s.name for s in fresh}
-            for t in tools:
-                sname = t.name.split("__")[1] if t.name.startswith("mcp__") else ""
-                if sname in fresh_names:
-                    extra.append(t)
+            extra.extend(t for t in tools if getattr(t, "_server", None) in fresh)
             for s in fresh:
                 manager.mcp_servers.append(s.name)
                 connected.append(s.name)
         return {**store.status(manager.cwd).to_json(), "connected": connected}
 
-    def revoke_trust(self, pid: str) -> dict[str, Any]:
-        """Forget trust for a project. Governs future connects; servers already
-        running in this session keep running until the project is torn down."""
+    async def revoke_trust(self, pid: str) -> dict[str, Any]:
+        """Forget trust for a project and stop what that trust started.
+
+        The project's MCP servers are stopped and their tools leave the list new
+        conversations are built from. A conversation already holding one of
+        those tools keeps the name, and a call to it now fails; its command
+        tools re-check trust on every call and refuse the same way.
+        """
         manager = self.managers.get(pid)
         if manager is None:
             raise KeyError(pid)
         existed = self._trust_store.revoke(manager.cwd)
-        return {**self._trust_store.status(manager.cwd).to_json(), "revoked": existed}
+        stopped = await self._stop_project_servers(pid, manager)
+        return {**self._trust_store.status(manager.cwd).to_json(), "revoked": existed,
+                "stopped": stopped}
+
+    async def _stop_project_servers(self, pid: str, manager: ConversationManager) -> list[str]:
+        mine = self._project_servers.get(pid, [])
+        doomed = [s for s in mine if getattr(s, "scope", "") == "project"]
+        if not doomed:
+            return []
+        extra = self._project_extra.get(pid)
+        if extra is not None:
+            extra[:] = [t for t in extra if getattr(t, "_server", None) not in doomed]
+        for server in doomed:
+            with contextlib.suppress(Exception):
+                await server.stop()
+            mine.remove(server)
+            if server in self._servers:
+                self._servers.remove(server)
+            if server.name in manager.mcp_servers:
+                manager.mcp_servers.remove(server.name)
+        return [s.name for s in doomed]
 
     # ---- forgetting a project ----
     def data_summary(self, pid: str) -> dict[str, Any]:
@@ -537,12 +579,24 @@ class ProjectHub:
             # A terminal panel open on this project holds a login shell that
             # nothing else would ever kill: it is not a conversation, so the
             # liveness check above does not see it, and its socket belongs to a
-            # window that is about to be told the project is gone.
-            terminal_registry.close_for(path)
+            # window that is about to be told the project is gone. Off the loop:
+            # ending a shell's session gives it a moment to hang up.
+            await asyncio.to_thread(terminal_registry.close_for, path)
             await manager.close()
             self.managers.pop(pid, None)
             self._project_extra.pop(pid, None)
+            for server in self._project_servers.pop(pid, []):
+                with contextlib.suppress(Exception):
+                    await server.stop()
+                if server in self._servers:
+                    self._servers.remove(server)
             result["closed"] = True
+        elif manager is not None and purge_data:
+            # The default project stays open, but its idle conversations are
+            # in-memory copies of the data about to go; kept, one would write
+            # a headless log back into the emptied directory on its next turn.
+            for conv_id in list(manager.conversations):
+                await manager.release(conv_id)
         if purge_data:
             purge = purge_project_data(path)
             result["data_dir"] = purge.path

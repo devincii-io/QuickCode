@@ -5,6 +5,7 @@
 //   make this agent behave differently        → Agents
 //   which agent do new sessions start as      → Compositions
 //   how much may it do without asking         → Permission profiles
+//   run my own script at fixed points          → Hooks
 //   what can it do at all / add a capability  → Parts
 //   why does it do that, what is fixed        → Machine room
 //   where do the models come from             → Install
@@ -91,6 +92,13 @@ export function renderRail(node, ctx, route) {
         </a>`).join("")}
       ${item("#/config/profiles/new", "New profile",
         { add: true, active: at("profiles", "new") })}
+    </section>
+
+    <section class="rail-sec">
+      ${item("#/config/hooks", "Hooks", {
+        sigil: "()", active: startsAt("hooks") && !at("hooks", "new"),
+      })}
+      ${item("#/config/hooks/new", "New hook", { add: true, active: at("hooks", "new") })}
     </section>
 
     <section class="rail-sec">

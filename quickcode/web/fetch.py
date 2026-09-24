@@ -22,11 +22,13 @@ having any to strip.
 from __future__ import annotations
 
 import asyncio
+import zlib
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
 import httpx
 
+from quickcode.web import body as body_mod
 from quickcode.web.ssrf import BlockedURL, Resolver, Target, validate_url
 
 MAX_BYTES = 4_000_000
@@ -104,6 +106,9 @@ def build_request(target: Target, *, headers: dict[str, str] | None = None) -> h
         "User-Agent": user_agent(),
         "Accept": "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5",
         "Accept-Language": "en,*;q=0.5",
+        # Only what body.py can inflate with an output limit. A request built
+        # by hand gets no default from the client, so this is the whole list.
+        "Accept-Encoding": body_mod.ACCEPT_ENCODING,
         "Host": target.header_host,
         **(headers or {}),
     }
@@ -113,20 +118,6 @@ def build_request(target: Target, *, headers: dict[str, str] | None = None) -> h
         headers=merged,
         extensions={"sni_hostname": target.host},
     )
-
-
-async def _read_capped(response: httpx.Response, max_bytes: int) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    total = 0
-    truncated = False
-    async for chunk in response.aiter_bytes():
-        total += len(chunk)
-        if total > max_bytes:
-            chunks.append(chunk[: max_bytes - (total - len(chunk))])
-            truncated = True
-            break
-        chunks.append(chunk)
-    return b"".join(chunks), truncated
 
 
 async def fetch_url(
@@ -212,15 +203,26 @@ async def _fetch(
                         f"({response.reason_phrase or 'error'})."
                     )
 
-                raw, truncated = await _read_capped(response, max_bytes)
+                try:
+                    raw, truncated = await body_mod.read_capped(response, max_bytes)
+                except body_mod.UnsupportedEncoding as exc:
+                    raise FetchError(
+                        f"{target.host} sent {exc}-compressed content, which web_fetch "
+                        "does not inflate (it asked for gzip or deflate)."
+                    ) from exc
+                except zlib.error as exc:
+                    raise FetchError(f"{target.host} sent a corrupt compressed body.") from exc
             finally:
                 await response.aclose()
 
-            encoding = response.charset_encoding or "utf-8"
-            try:
-                body = raw.decode(encoding, errors="replace")
-            except LookupError:
-                body = raw.decode("utf-8", errors="replace")
+            encoding = body_mod.charset_of(raw, response.charset_encoding, content_type)
+            if body_mod.looks_binary(raw, encoding):
+                raise FetchError(
+                    f"{target.host} sent a binary body"
+                    f"{f' labelled {content_type}' if content_type else ''}. "
+                    "web_fetch reads text, HTML and JSON only."
+                )
+            body = raw.decode(encoding, errors="replace")
 
             return FetchOutcome(
                 url=url,

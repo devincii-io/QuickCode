@@ -1,18 +1,69 @@
 """Disposable UI review server. No real provider, credentials, or project files.
 
 Run through uv with --no-sync, then open the printed URL. Ctrl+C stops it.
+
+    workspace_smoke_server.py [port] [--jobs] [--ask] [--edits]
+
+``--jobs`` makes the preview agent answer a message by starting a background
+job (``bash`` with ``run_in_background``) that prints a coloured tick five times
+a second until it is killed -- the Jobs tab's subject, for
+``scripts/smoke_jobs.js``. The permission prompt for it is the real one.
+
+``--ask`` makes the preview agent act instead of only talking: every turn it
+reads README.md, edits it, then runs a shell command, so the permission prompt
+(its diff, the rules "Always allow" would save, "Why?") can be reviewed
+(scripts/smoke_permissions.js).
+
+With no flag the preview agent only talks: scripts/smoke_workspaces.js,
+smoke_palette.js and smoke_search.js run against that.
+
+``--edits`` makes the preview agent change files in each conversation's first
+turn -- read README.md, edit it, write notes.md -- in auto-edit mode, so those
+calls run unasked and leave checkpoints behind (scripts/smoke_rewind.js).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
 from pathlib import Path
 
+TICKER = """\
+import itertools, time
+for i in itertools.count(1):
+    print(f"\\x1b[32mtick\\x1b[0m {i} \\x1b[2m{'#' * (i % 20)}\\x1b[0m", flush=True)
+    time.sleep(0.2)
+"""
+
+# The first turn under --edits: (tool call id, tool, arguments) per round.
+EDIT_ROUNDS = [
+    [("smoke-read", "read", {"file_path": "README.md"})],
+    [("smoke-edit", "edit", {"file_path": "README.md", "old_string": "UI review project.",
+                             "new_string": "UI review project, edited by the agent."}),
+     ("smoke-write", "write", {"file_path": "notes.md", "content": "Notes the agent wrote.\n"})],
+]
+
+
+def edit_round(req) -> list | None:
+    """The tool calls this request should make, or None to just talk: each
+    round's calls go out once, in order, and only while tools are offered."""
+    if not req.tools:
+        return None
+    answered = {m.tool_call_id for m in req.messages if m.role == "tool"}
+    for calls in EDIT_ROUNDS:
+        if calls[0][0] not in answered:
+            return calls
+    return None
+
 
 def main() -> None:
+    argv = sys.argv[1:]
+    jobs = "--jobs" in argv
+    edits = "--edits" in argv
+    positional = [a for a in argv if not a.startswith("--")]
     with tempfile.TemporaryDirectory(prefix="quickcode-workspace-") as scratch:
         root = Path(scratch)
         # Set before importing QuickCode: config path defaults are evaluated at import.
@@ -23,16 +74,55 @@ def main() -> None:
         import uvicorn
 
         from quickcode.config import Config
-        from quickcode.core.events import TextDelta, TurnDone
+        from quickcode.core.events import TextDelta, ToolCallEnd, TurnDone
         from quickcode.providers.base import ModelInfo
         from quickcode.server.app import create_app
         from quickcode.server.projects import ProjectHub, ProjectRegistry
+        from quickcode.update import AUTO_CHECK_KEY, PLUGIN_ID
+
+        ask = "--ask" in sys.argv[1:]
+        # One tool call per round of a turn, in order; then the usual reply.
+        acts = [
+            ("read", {"file_path": "README.md"}),
+            ("edit", {"file_path": "README.md", "old_string": "UI review project.",
+                      "new_string": "UI review project, with a permission preview."}),
+            ("bash", {"command": "FOO=1 npm test && cat .env"}),
+        ]
 
         class PreviewProvider:
+            calls = 0
+
             async def list_models(self):
                 return [ModelInfo(id="preview/agent", name="Preview agent", context_length=100_000)]
 
             async def stream_chat(self, req):
+                last = req.messages[-1] if req.messages else None
+                if jobs and last is not None and last.role == "user":
+                    PreviewProvider.calls += 1
+                    python = Path(sys.executable).as_posix()
+                    yield ToolCallEnd(
+                        id=f"job{PreviewProvider.calls}", name="bash",
+                        arguments=json.dumps({
+                            "command": f'"{python}" -u ticker.py',
+                            "description": "Tick until stopped",
+                            "run_in_background": True,
+                        }),
+                    )
+                    yield TurnDone("tool_calls")
+                    return
+                if ask:
+                    last_user = max(i for i, m in enumerate(req.messages) if m.role == "user")
+                    done = sum(m.role == "tool" for m in req.messages[last_user:])
+                    if done < len(acts):
+                        name, args = acts[done]
+                        yield ToolCallEnd(f"preview-{last_user}-{done}", name, json.dumps(args))
+                        yield TurnDone("tool_calls")
+                        return
+                if edits and (calls := edit_round(req)):
+                    for cid, name, args in calls:
+                        yield ToolCallEnd(cid, name, json.dumps(args))
+                    yield TurnDone("tool_calls")
+                    return
                 for text in ["I am reviewing this project. ", "The workspace and agent panes ",
                              "keep separate conversations, drafts, and settings."]:
                     await asyncio.sleep(.5)
@@ -41,15 +131,23 @@ def main() -> None:
 
         async def serve():
             cfg = Config(last_model="preview/agent")
-            cfg.update_check = False
             cfg.save()
-            hub = ProjectHub(config=cfg, provider=PreviewProvider(), registry=ProjectRegistry.ephemeral())
+            # The update check's off switch is a plugin setting, not a config key.
+            settings = root / ".quickcode" / "settings.json"
+            settings.write_text(json.dumps({
+                "plugins": {PLUGIN_ID: {"settings": {AUTO_CHECK_KEY: False}}},
+            }), encoding="utf-8")
+            hub = ProjectHub(config=cfg, provider=PreviewProvider(),
+                             registry=ProjectRegistry.ephemeral(),
+                             default_mode="auto-edit" if edits else None)
             for name in ["Website redesign", "Client portal"]:
                 project = root / name
                 project.mkdir()
                 (project / "README.md").write_text(f"# {name}\nUI review project.\n", encoding="utf-8")
+                if jobs:
+                    (project / "ticker.py").write_text(TICKER, encoding="utf-8")
                 await hub.open(project)
-            port = int(sys.argv[1]) if len(sys.argv) > 1 else 8769
+            port = int(positional[0]) if positional else 8769
             print(f"http://127.0.0.1:{port}/#token=workspace-preview", flush=True)
             app = create_app(hub, host="127.0.0.1", port=port, token="workspace-preview")
             await uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")).serve()

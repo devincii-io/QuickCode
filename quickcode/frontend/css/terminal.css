@@ -1,8 +1,8 @@
 /* The terminal dock: the drawer under the transcript, the screen inside it,
-   and the read-only feed of the agent's commands.
+   the read-only feed of the agent's commands, and its background jobs.
 
    Everything is namespaced under #term-dock / .qt-* so nothing here can leak
-   into the shell, and every colour is a theme variable from app.css — except
+   into the shell, and every colour is a theme variable from tokens.css — except
    the sixteen ANSI slots, which a terminal needs and no theme defines. Those
    are declared here as their own variables so a theme can still override them
    without this file knowing about themes. */
@@ -177,9 +177,110 @@ body.resizing-terminal { cursor: row-resize; user-select: none; }
 }
 .qt-cmd-empty { color: var(--fg-faint); font-style: italic; }
 
+/* ---------- background jobs ---------- */
+
+/* Clear, Restart and the status line are the shell's; on the other tabs they
+   would describe or act on something that is not on screen. */
+#term-dock:not([data-tab="shell"]) #btn-term-clear,
+#term-dock:not([data-tab="shell"]) #btn-term-restart { display: none; }
+#term-dock:not([data-tab="shell"]) #term-status { visibility: hidden; }
+
+.qt-tab-count,
+#btn-term-toggle[data-jobs]::after {
+  display: inline-block; min-width: 16px; margin-left: 6px; padding: 0 5px;
+  border-radius: 8px; font-size: 10.5px; line-height: 16px; text-align: center;
+  background: var(--warning); color: var(--bg);
+}
+.qt-tab-count[hidden] { display: none; }
+#btn-term-toggle[data-jobs]::after { content: attr(data-jobs); }
+
+.qt-jobs { flex: 1; min-height: 0; display: flex; }
+.qt-jobs [hidden] { display: none !important; }
+
+.qt-jobs-list {
+  flex: none; width: 270px; overflow: auto; padding: 6px;
+  display: flex; flex-direction: column; gap: 3px;
+  border-right: 1px solid var(--line); background: var(--surface);
+}
+.qt-job {
+  display: grid; grid-template-columns: auto 1fr auto;
+  grid-template-areas: "chip id meta" "label label label";
+  align-items: center; gap: 2px 6px;
+  padding: 5px 7px; border-radius: 6px; border: 1px solid transparent;
+  text-align: left; color: var(--fg);
+}
+.qt-job:hover { background: var(--panel); }
+.qt-job.active { background: var(--boost); border-color: var(--line); }
+.qt-job:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+.qt-job .qt-job-chip { grid-area: chip; }
+.qt-job-id { grid-area: id; font-family: var(--mono); font-size: 11.5px; color: var(--fg-dim); }
+.qt-job-meta { grid-area: meta; font-family: var(--mono); font-size: 11px; color: var(--fg-faint); }
+.qt-job-label {
+  grid-area: label; min-width: 0; font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.qt-job-chip {
+  flex: none; font-size: 10.5px; line-height: 15px; padding: 0 6px;
+  border-radius: 8px; border: 1px solid currentColor; white-space: nowrap;
+}
+.qt-chip-running { color: var(--warning); }
+.qt-chip-ok { color: var(--success); }
+.qt-chip-error { color: var(--error); }
+.qt-chip-killed { color: var(--fg-faint); }
+
+.qt-jobs-detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.qt-jobs-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+.qt-jobs-cmd {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qt-jobs-btn {
+  flex: none; font-size: 11.5px; padding: 2px 8px; border-radius: 6px;
+  color: var(--fg-dim); background: var(--panel); border: 1px solid var(--line);
+}
+.qt-jobs-btn:hover { color: var(--fg); background: var(--boost); }
+.qt-jobs-kill:hover { color: var(--error); border-color: var(--error); }
+.qt-jobs-btn:disabled { opacity: .5; cursor: default; }
+.qt-jobs-meta {
+  flex: none; padding: 3px 10px; font-size: 11.5px; color: var(--fg-faint);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qt-jobs-out {
+  flex: 1; min-height: 0; overflow: auto; padding: 6px 10px;
+  background: var(--qt-bg); color: var(--qt-fg);
+  font-family: var(--mono); font-size: 12px; line-height: 1.35; white-space: pre;
+}
+.qt-jobs-out:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }
+
+.qt-jobs-empty { display: none; }
+.qt-jobs.qt-jobs-none .qt-jobs-list,
+.qt-jobs.qt-jobs-none .qt-jobs-detail { display: none; }
+.qt-jobs.qt-jobs-none .qt-jobs-empty {
+  display: block; margin: auto; max-width: 480px; padding: 16px;
+  text-align: center; font-size: 12.5px; color: var(--fg-faint);
+}
+.qt-jobs-empty-title { color: var(--fg-dim); margin-bottom: 4px; }
+
+/* In the kill confirmation, which is a modal outside the dock. */
+.qt-jobs-confirm {
+  max-height: 160px; overflow: auto; margin: 8px 0 0; padding: 6px 8px;
+  border-radius: 6px; background: var(--panel);
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all;
+}
+
 /* A narrow window has no room for a wide shell beside anything; the dock keeps
    its own height and the transcript gives way, which is the same rule the side
    panel follows at this width. */
 @media (max-width: 720px) {
   #term-dock.open { height: min(var(--term-h, 280px), 60vh); }
+  .qt-jobs { flex-direction: column; }
+  .qt-jobs-list {
+    width: auto; max-height: 40%;
+    border-right: none; border-bottom: 1px solid var(--line);
+  }
 }

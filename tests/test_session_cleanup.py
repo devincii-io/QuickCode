@@ -307,3 +307,94 @@ def test_api_resuming_an_archived_session_restores_it(tmp_path):
         }
         listed = client.get("/api/sessions").json()
         assert [(s["conv_id"], s["archived"]) for s in listed] == [("conv-a", False)]
+
+
+# ---- edge cases ----
+
+def test_purge_removes_both_copies_when_a_log_is_active_and_archived(tmp_path):
+    # Archive and unarchive both refuse to create this state, but a restored
+    # backup or a copy made by hand can. Deleting only the active copy used to
+    # let the archived one step in under the same id, so a deleted session
+    # came back out of the archive.
+    write_session(tmp_path, "conv-a", [meta(model="m"), message("user", "old")])
+    SessionStore(tmp_path, "conv-a").archive()
+    write_session(tmp_path, "conv-a", [meta(model="m"), message("user", "new")])
+
+    assert purge_sessions(tmp_path, ["conv-a"]).sessions == ["conv-a"]
+    assert not SessionStore(tmp_path, "conv-a").path.exists()
+    assert SessionStore.list_sessions(tmp_path, include_archived=True) == []
+
+
+def _refuse_to_unlink_logs(monkeypatch):
+    real = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.suffix == ".jsonl":
+            raise PermissionError(32, "The process cannot access the file", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def test_api_delete_reports_a_log_it_could_not_remove(tmp_path, monkeypatch):
+    # A log another process holds open cannot be unlinked on Windows. The
+    # failure was swallowed into "missing" and the route answered 204, so the
+    # row vanished from the UI and came back on the next refresh.
+    write_session(tmp_path, "conv-a", [meta(model="m"), message("user", "hi")])
+    manager, client = make_project(tmp_path)
+    with client:
+        _refuse_to_unlink_logs(monkeypatch)
+        resp = client.delete("/api/sessions/conv-a")
+        assert resp.status_code == 500
+        assert "could not delete" in resp.json()["detail"]
+    assert (tmp_path / ".quickcode" / "sessions" / "conv-a.jsonl").exists()
+
+
+def test_api_bulk_delete_reports_a_log_it_could_not_remove_as_failed(tmp_path, monkeypatch):
+    write_session(tmp_path, "conv-a", [meta(model="m"), message("user", "hi")])
+    manager, client = make_project(tmp_path)
+    with client:
+        _refuse_to_unlink_logs(monkeypatch)
+        body = client.post("/api/sessions/delete", json={"conv_ids": ["conv-a"]}).json()
+    assert body["deleted"] == []
+    assert [(s["conv_id"], s["reason"]) for s in body["skipped"]] == [("conv-a", "failed")]
+
+
+def test_the_live_flag_survives_a_conversation_opening_while_the_list_is_built(tmp_path):
+    # GET /api/sessions is a sync route, so it runs on a worker thread while
+    # the event loop keeps opening conversations. Iterating the live dict
+    # directly raised "dictionary changed size during iteration" -- a 500 on
+    # the session list whenever a pane opened at the wrong moment.
+    manager = make_manager(tmp_path, FakeProvider([]))
+
+    class OpensAnotherMidIteration:
+        def busy_reason(self):
+            manager.conversations["opened-meanwhile"] = Idle()
+            return "a turn is running"
+
+    class Idle:
+        def busy_reason(self):
+            return None
+
+    manager.conversations["running"] = OpensAnotherMidIteration()
+    assert manager.live_conversations() == {"running": "a turn is running"}
+
+
+def test_api_bulk_delete_closes_an_idle_conversation_instead_of_refusing_it(tmp_path):
+    # Opened earlier in this run, nothing attached, nothing running: the single
+    # delete closes it and goes ahead, and the bulk one has to agree -- it used
+    # to refuse it as "still open" for the rest of the process's life.
+    write_session(tmp_path, "conv-a", [meta(model="m"), message("user", "hi")])
+    write_session(tmp_path, "empty", [meta(model="m")])
+    manager, client = make_project(tmp_path)
+    with client:
+        for conv_id in ("conv-a", "empty"):
+            client.post("/api/conversations", json={"resume": conv_id})
+        assert {"conv-a", "empty"} <= set(manager.conversations)
+
+        body = client.post("/api/sessions/delete", json={"conv_ids": ["conv-a"]}).json()
+        assert body["deleted"] == ["conv-a"] and body["skipped"] == []
+        swept = client.post("/api/sessions/cleanup", json={}).json()
+        assert swept["deleted"] == ["empty"]
+        assert client.get("/api/sessions").json() == []
+    assert "conv-a" not in manager.conversations

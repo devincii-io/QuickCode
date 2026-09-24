@@ -1,5 +1,10 @@
 # Configuration UX — the interface over the plugin kernel
 
+> **Design rationale.** The Configuration view this designs shipped in 2.0.0
+> (`frontend/js/config/`). Endpoint and file names below are the proposals; the
+> shipped routes live in `server/agents_api.py` and `server/authoring_api.py`.
+> Where this document and the code disagree, the code wins.
+
 This is the interface design for QuickCode's configuration surface. Two sibling
 designs own the model underneath it: **AUTHORING** (what is creatable, the file
 formats, duplicate-to-customise) and **BINDING** (how plugins attach to the
@@ -935,7 +940,7 @@ question the current UI cannot answer at all.
 
 ## 12. Implementation sketch
 
-Ordered. Each step ends with something that runs, per `docs/PLAN-PLUGIN-UI-OVERHAUL.md`
+Ordered. Each step ends with something that runs, per `docs/archive/PLAN-PLUGIN-UI-OVERHAUL.md`
 Part D.
 
 **1 — the view shell.** `index.html` gains

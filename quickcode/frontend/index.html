@@ -5,15 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>QuickCode</title>
+<link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/modals.css">
 <link rel="stylesheet" href="css/shell.css">
 <link rel="stylesheet" href="css/home.css">
 <link rel="stylesheet" href="css/panels.css">
 <link rel="stylesheet" href="css/panels-git.css">
 <link rel="stylesheet" href="css/chat.css">
+<link rel="stylesheet" href="css/checkpoints.css">
 <link rel="stylesheet" href="css/trajectory.css">
+<link rel="stylesheet" href="css/inspector.css">
 <link rel="stylesheet" href="css/settings.css">
 <link rel="stylesheet" href="css/config.css">
+<link rel="stylesheet" href="css/hooks.css">
 <link rel="stylesheet" href="css/help.css">
 <link rel="stylesheet" href="css/toon.css">
 <link rel="stylesheet" href="css/terminal.css">
@@ -123,7 +128,7 @@
 
       <div id="panel-grip" class="panel-grip" title="Drag to resize · double-click to reset"></div>
 
-      <!-- One side panel, five tabs -->
+      <!-- One side panel; its tabs are js/panel.js TABS -->
       <aside id="side-panel">
         <header class="panel-bar">
           <nav id="panel-tabs" class="panel-tabs" role="tablist"></nav>
@@ -172,25 +177,15 @@
                 <div id="tj-spacer" class="tj-spacer"></div>
                 <div id="tj-rows" class="tj-rows"></div>
               </div>
-              <aside id="traj-detail" class="traj-detail hidden">
-                <div class="traj-detail-head">
-                  <span id="traj-detail-title">—</span>
-                  <button id="traj-detail-close" class="ghost-btn">✕</button>
-                </div>
-                <nav class="detail-tabs" id="detail-tabs">
-                  <button data-tab="summary" class="active">Summary</button>
-                  <button data-tab="payload">Payload</button>
-                  <button data-tab="result">Result</button>
-                  <button data-tab="timing">Timing</button>
-                </nav>
-                <div id="detail-body" class="detail-body"></div>
-              </aside>
+              <!-- The shared inspector (js/inspector.js) builds itself in here. -->
+              <aside id="traj-detail" class="traj-detail hidden" aria-label="Event inspector"></aside>
             </div>
           </section>
 
           <section class="panel-pane" data-pane="agents"></section>
           <section class="panel-pane" data-pane="tasks"></section>
           <section class="panel-pane" data-pane="files"></section>
+          <section class="panel-pane" data-pane="checkpoints"></section>
           <section class="panel-pane" data-pane="usage"></section>
         </div>
       </aside>
@@ -208,6 +203,8 @@
                   title="A shell of your own, in the project directory">▮ Shell</button>
           <button class="qt-tab" data-tab="agent" role="tab"
                   title="Every command the agent ran — read-only">⌁ Agent commands</button>
+          <button class="qt-tab" data-tab="jobs" role="tab"
+                  title="Commands the agent left running in the background — live output, kill">⧗ Jobs<span class="qt-tab-count" hidden></span></button>
         </nav>
         <span id="term-status" data-kind="idle">not started</span>
         <div class="qt-bar-actions">
@@ -226,6 +223,9 @@
         </section>
         <section class="qt-pane" data-pane="agent">
           <div id="term-agent"></div>
+        </section>
+        <section class="qt-pane" data-pane="jobs">
+          <div id="term-jobs"></div>
         </section>
       </div>
     </section>

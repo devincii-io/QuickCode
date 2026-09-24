@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.kernel import manifest
+from quickcode.kernel.problems import BUILTIN_SHADOWED, Problem, Provenance
 from quickcode.kernel.registry import PluginRegistry
 from quickcode.kernel.spec import PluginView
 
@@ -35,6 +36,46 @@ def _discover_authored(cwd: Path | None):
     return discovery.discover(cwd)
 
 
+def _load_hooks(cwd: Path | None):
+    from quickcode.hooks.config import load_hooks
+
+    return load_hooks(cwd)
+
+
+def _shadowed_builtin_problems(agent_defs: dict[str, Any],
+                               cwd: Path | None) -> list[Problem]:
+    """A definition file that has taken a shipped agent's name.
+
+    The legacy ``agents/`` directories may replace ``explore`` or ``general``,
+    and a spawn then runs the file. That can be exactly what the file's author
+    meant; it is also what a cloned repository would do to hand the "read-only
+    explorer" a shell. Either way it must be visible where problems are read.
+    """
+    out: list[Problem] = []
+    for name in manifest.SHIPPED_AGENTS:
+        defn = agent_defs.get(name)
+        if defn is None or manifest.is_shipped_agent(name, defn):
+            continue
+        path = getattr(defn, "path", "") or ""
+        tools = getattr(defn, "tools", None)
+        holds = ("every tool its spawner holds" if tools is None
+                 else ", ".join(tools) or "no tools")
+        out.append(Problem(
+            code=BUILTIN_SHADOWED, severity="warning",
+            message=(f"{Path(path).name or 'a definition file'} replaces the built-in "
+                     f"agent '{name}': spawning '{name}' runs this file, with "
+                     f"{holds}, not the definition QuickCode ships"),
+            fix=("If you wrote it, rename it so both exist. If you did not, read it "
+                 "before a session spawns it."),
+            subject=f"agent.{name}", field="name",
+            provenance=Provenance(
+                layer="project" if cwd is not None and Path(path).is_relative_to(cwd)
+                else "user",
+                source=Path(path).name, path=path),
+        ))
+    return out
+
+
 def build_registry(
     cwd: Path | None = None,
     *,
@@ -46,6 +87,8 @@ def build_registry(
     prompt_bodies: dict[str, str] | None = None,
     env: object | None = None,
     active_provider: str = "",
+    active_endpoint: str = "",
+    model_count: int | None = None,
 ) -> PluginRegistry:
     from quickcode.plugins import loader
     from quickcode.tools.registry import default_registry
@@ -118,8 +161,19 @@ def build_registry(
     registry.register_all(manifest.prompt_section_specs(prompt_bodies))
     registry.register_all(manifest.tool_specs(tools))
     registry.register_all(manifest.agent_specs(agent_defs or {}))
-    registry.register_all(manifest.provider_specs(providers or {}, active=active_provider))
+    registry.register_all(manifest.provider_specs(
+        providers or {}, active=active_provider, endpoint=active_endpoint,
+        model_count=model_count,
+    ))
     registry.register_all(manifest.mcp_specs(mcp_configs or {}))
+    # Command hooks, as the loop will run them: trust-gated and minus the ones
+    # switched off. What the gate refused is a problem on the page, not a card.
+    hook_config = _safe("command hooks", lambda: _load_hooks(cwd), None)
+    if hook_config is not None:
+        from quickcode.hooks.specs import hook_specs
+
+        registry.register_all(_safe("hook specs", lambda: hook_specs(hook_config), []))
+        registry.add_problems(list(hook_config.problems))
     # Authored specs land *after* the internal ones, so a reserved-id collision
     # loses. Discovery already refuses those with ``id_reserved``; this is the
     # structural backstop, not the message.
@@ -134,6 +188,7 @@ def build_registry(
               [])
     )
     registry.add_problems(authored_problems)
+    registry.add_problems(_shadowed_builtin_problems(agent_defs or {}, cwd))
     # Configuration written where nothing reads it is a silent no-op, which is
     # the one failure mode a settings screen must never have.
     from quickcode.kernel import state as state_store

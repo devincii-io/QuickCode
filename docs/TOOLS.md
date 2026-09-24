@@ -1,6 +1,6 @@
 # Tool Surface
 
-Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `agent_status`, `agent_result`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
+Six core tools (`read`, `write`, `edit`, `glob`, `grep`, `bash`), the two readers of bash's background jobs (`bash_output`, `bash_kill`), two web tools (`web_fetch`, `web_search`), plus the agentic set (`agent`, `send_message`, `agent_status`, `agent_result`, `task_*`, `plan` — table at the bottom, specced in docs/AGENTS.md). Small on purpose: too many tools degrade selection accuracy, and bash covers the long tail. Promotion rule (when does something deserve to be a dedicated tool instead of bash?): when the harness needs to **gate, render, parallelize, or enforce invariants** on it.
 
 Every tool implements:
 
@@ -10,10 +10,12 @@ class Tool[In: BaseModel]:
     description: str            # prompt copy — see style rules in PROMPTS.md §3
     Input: type[In]             # Pydantic model → strict JSON Schema on the wire
     is_read_only: bool          # True → parallel-safe
+    interruptible: bool         # True → Stop may cancel it mid-run (bash)
     permission: PermissionSpec  # how the permission engine should gate it
     source: str                 # internal | entrypoint | config (stamped, not guessed)
     async def run(self, input: In, ctx: ToolCtx) -> ToolResult: ...
     def render_call(self, input: In) -> str: ...    # "⏺ Read src/index.py"
+    def render_diff(self, input: In, ctx: ToolCtx) -> str: ...  # edit/write: the prompt's diff
     def render_result(self, r: ToolResult) -> str:  # diff view, match list, ...
         ...
 ```
@@ -39,30 +41,50 @@ without the server sniffing for a `task_` name prefix.
 
 ## read `[read-only]`
 
-> Reads a file from the local filesystem. Call this before editing any file, and when you need to see actual code rather than search matches. Returns numbered lines (`123→code`). Reads up to 2000 lines by default; for larger files pass offset/limit. Prefer this over `bash cat`.
+> Reads a file from the local filesystem and returns its contents as numbered
+> lines. Use this to view source files, configs, or logs before editing them —
+> Edit and Write both require the file to have been read first in this session.
+> file_path must be absolute. Defaults to the first 2000 lines; pass
+> offset/limit to page through larger files. Lines longer than 2000 characters
+> are cut with a marker, and total output is capped (use offset to read
+> further).
 
 ```json
 { "file_path": "string (absolute)", "offset": "number?", "limit": "number?" }
 ```
 
-- Lines longer than 2000 chars are cut with a marker.
-- Records `{path, mtime}` in the session's read-registry — the `edit` staleness check depends on it.
-- Re-reading a file supersedes the old copy in history (read-dedup, see ARCHITECTURE).
+- Lines longer than 2000 chars are cut with a marker. Lines are numbered by LF only, as ripgrep numbers them — a form feed or U+2028 does not start a new line.
+- Whenever lines follow what was shown — the window ended, or the 40 000-character output cap dropped the rest of it — a `<truncated shown="N" total="T" hint="re-read with offset=K"/>` marker names the first line not shown.
+- Encoding is detected, not assumed: a BOM (UTF-8/16/32) wins, then strict UTF-8, then cp1252, then Latin-1. A non-UTF-8 file ends with `<file encoding="…"/>`. A NUL byte in the first 8 KB without a BOM means binary, and binary files are refused rather than dumped.
+- Files over 10 MB are streamed: the window is read line by line and the total is not counted.
+- Records `{path, mtime, sha256}` in the session's read-registry — the `edit`/`write` staleness check depends on it.
+- A re-read is returned in full, and the earlier copy stays in history as it was: rewriting it would break the prompt cache from that message on (ARCHITECTURE, efficiency checklist).
 
 ## write
 
-> Creates a new file, or fully replaces one that was already read this session. For any partial change to an existing file use `edit` instead — it is cheaper and reviewable as a diff.
+> Writes content to a file, creating it (and any parent directories) if it
+> doesn't exist, or overwriting it if it does. Use this for new files or
+> full-file rewrites; for small changes to an existing file prefer Edit.
+> file_path must be absolute. If the file already exists, it must have been read
+> with the Read tool earlier in this session, or the call is rejected.
 
 ```json
 { "file_path": "string (absolute)", "content": "string" }
 ```
 
-- Overwriting a file that was never `read` → error (forces the model to look before it leaps).
-- Renders as a diff against the previous content when overwriting.
+- Overwriting a file that was never `read`, or that changed on disk since it was read → error (forces the model to look before it leaps).
+- An overwritten file keeps its encoding, BOM and line endings; a new file is written exactly as given (UTF-8, no newline translation on any platform).
+- Creates missing parent directories. The model gets a one-line confirmation (`Wrote N lines to <path>`); the UI shows the written content.
+- **Checkpointed.** Before the first change a turn makes to a file inside the project, its previous bytes (or the fact that it did not exist) are saved, and the user can rewind it to before that turn. `edit` and every other tool declaring a path target are recorded the same way, by a loop hook rather than by the tool. See docs/CHECKPOINTS.md.
 
 ## edit
 
-> Performs an exact string replacement in a file. Call this for all modifications to existing files. `old_string` must match the file exactly (including whitespace) and be unique in the file — extend it with surrounding lines until it is. Use `replace_all` to rename a symbol everywhere.
+> Performs an exact string replacement in a file. Use this for targeted changes
+> instead of rewriting the whole file with Write. old_string must match exactly
+> (including whitespace) and, unless replace_all is set, must be unique in the
+> file — include enough surrounding context to make it so. The file must have
+> been read with the Read tool earlier in this session and must not have changed
+> on disk since.
 
 ```json
 {
@@ -73,26 +95,43 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- Errors (all returned as `is_error` with a actionable message): file not read this session · file changed on disk since read · 0 matches · >1 match without `replace_all`.
-- Renders as a colored unified diff; the tool result to the model is a short confirmation + patched region snippet, not the whole file.
+- Errors (all returned as `is_error` with an actionable message): file not read this session · file changed on disk since read · 0 matches · >1 match without `replace_all` (the error lists the matching line numbers) · `old_string == new_string` · a character the file's encoding cannot store.
+- "Changed on disk" compares content when the whole file was read (a `touch` is not a change; a rewrite inside one mtime tick is), and mtime otherwise.
+- The file keeps its encoding, BOM and line endings. In a CRLF file both strings are matched and written with CRLF, since read only ever shows `\n`.
+- The result is `Replaced N occurrence(s) in <path>` plus a unified diff of the change (2 lines of context, capped at 60 diff lines) — never the whole file. The UI renders the same diff.
+- Checkpointed like `write`: several edits to one file in a turn still rewind to the bytes from before the first (docs/CHECKPOINTS.md).
 
 ## glob `[read-only]`
 
-> Fast file-pattern matching. Call this to find files by name or path (`src/**/*.ts`, `**/config.*`). Returns paths sorted by modification time, newest first. Prefer this over `bash find` or `ls -R`.
+> Finds files matching a glob pattern (supports ** for recursive matches and
+> {a,b} alternatives, e.g. "src/**/*.{ts,tsx}"). Use this to locate files by
+> name or extension when you know roughly what you're looking for but not the
+> exact path; for searching file contents use Grep instead. Skips .git,
+> node_modules, __pycache__, .venv and whatever .gitignore excludes. Returns
+> up to 200 matches, newest first, one path per line, after a marker declaring
+> how many came back.
 
 ```json
 { "pattern": "string", "path": "string? (default cwd)" }
 ```
 
-- Respects `.gitignore`; caps at 200 results with truncation marker.
+- Respects `.gitignore` (inside a git repository, as ripgrep does), `.ignore`, `.rgignore` and `.git/info/exclude`, including the ignore files of directories above `path`; never enters `.git`, `node_modules`, `__pycache__`, `.venv`/`venv`, `.mypy_cache`, `.pytest_cache` below where it starts. Naming an ignored directory in the pattern (`dist/*.js`) still lists it. Caps at 200 results with truncation marker.
+- `{a,b}` alternatives are expanded; absolute patterns work; a pattern without `**` does not descend deeper than it has segments; symlinked directories are never entered. Equal mtimes are ordered by path, so the listing is stable.
 
 ## grep `[read-only]`
 
-> Content search built on ripgrep with full regex support. Call this to find where something is defined, used, or mentioned. Filter with `glob` (e.g. `*.ts`). Prefer this over `bash grep` — it is faster and its results are paginated.
+> Searches file contents for a regular expression pattern. Use this instead of
+> running grep/rg via Bash. Prefers ripgrep when installed, falling back to an
+> equivalent pure-Python search otherwise. output_mode='content' returns a TOON
+> table, matches{path,line,text}, whose header declares the row count.
+> output_mode='files_with_matches' (default) returns one path per line and
+> 'count' returns one path:count per line, each after a marker giving the number
+> of results. Filter with glob (e.g. '*.py'), narrow with path, and cap results
+> with head_limit (default 100).
 
 ```json
 {
-  "pattern": "string (rust regex)",
+  "pattern": "string (regex: ripgrep syntax, Python re in the fallback)",
   "path": "string?",
   "glob": "string?",
   "output_mode": "\"content\" | \"files_with_matches\" | \"count\" (default files_with_matches)",
@@ -103,27 +142,77 @@ without the server sniffing for a `task_` name prefix.
 ```
 
 - `output_mode='content'` returns a TOON table, one row per match: `matches{path,line,text}`. The header declares the row count, and a value containing the delimiter is quoted — `path:line:text` could not be split back into fields once a Windows drive letter put a colon in the first one. The other two modes stay plain lines behind a `<files count="N"/>` or `<counts count="N"/>` marker: a bare path, and a count that is digits after the last colon, already survive a split, so a table there costs tokens (10–30%, measured with o200k_base) and fixes nothing. Both search backends (ripgrep and the pure-Python walk) emit the same records, so the format does not depend on what is installed.
+- Both backends also search the same files, in the same order: path order (ripgrep's parallel output is sorted afterwards); `.gitignore`, `.ignore`, `.rgignore` and `.git/info/exclude` honoured, git's global excludes file on neither; hidden files searched inside the project and skipped outside it (dot-directories in a home directory are where credentials live); `.git`, `.quickcode`, `.ssh`, `.env`, `.env.*` and the directories glob prunes are never walked into, though naming one as `path` searches it (with the permission prompt); binary files and files over 5 MB skipped. `glob` filters use ripgrep's rule — no slash matches the name at any depth, a slash anchors to `path` — on both backends.
+- A matched line over 500 characters is cut to a window around the first match. Overlapping `context` windows print each line once.
 
 ## bash
 
-> **Design target:** `run_in_background` and persistent background-task output
-> are not implemented in `0.1.0`; the tool returns an explicit error when that
-> flag is requested. Current status is tracked in [ROADMAP.md](ROADMAP.md).
-
-> Executes a command in ${shellName} on ${platform} and returns combined stdout+stderr. Use for builds, tests, git, package managers, and anything without a dedicated tool. Do NOT use for reading files or searching (use read/grep/glob). State persists via tracked cwd; quote paths containing spaces.
+> Executes a shell command and returns its combined stdout/stderr. Use this
+> for anything the other tools don't cover: running tests, git, build tools,
+> package managers, etc. Prefers Git Bash on Windows (falls back to
+> PowerShell), /bin/bash elsewhere. The working directory persists across
+> calls in this session. Output over 30000 characters is truncated (head and
+> tail kept). timeout_ms defaults to 120000 and caps at 600000. For a command
+> that should keep running -- a dev server, a watcher, a build you will check
+> on later -- pass run_in_background=true: it returns a job id (bash_1, ...)
+> immediately and the command runs on past this turn; read it with bash_output
+> and stop it with bash_kill. At most 8 run at once, and all of them are
+> stopped when the conversation closes.
 
 ```json
 {
   "command": "string",
   "description": "string (5-10 words shown to the user, e.g. \"Run test suite\")",
   "timeout_ms": "number? (default 120000, max 600000)",
-  "run_in_background": "boolean?"
+  "run_in_background": "boolean? (default false)"
 }
 ```
 
-- Runs in a real PTY (`pty/session.py`, ConPTY on Windows — QuickTerm's reader/watcher/writer thread pattern, see ARCHITECTURE §PTY). Tracked cwd; persistent shell session per conversation.
-- Output cap 30k chars to the model (head+tail kept, middle truncated with marker); the UI pane keeps the full scrollback ring. Background tasks stream to the ring, readable via a follow-up call and surfaced as a toast on exit.
-- **Security:** commands are untrusted model output. The permission layer prompts unless the command matches a persisted allow-rule; commands with `;`, `&&`, `|`, `$()`, backticks never prefix-match a rule — full-string match or prompt. Process-tree kill on Esc/timeout.
+- One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes with stdin on the null device, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
+- There is no persistent shell. A bare `cd <dir>` is handled without spawning anything and moves a tracked working directory that later calls start in; `cd` inside a longer command line affects that command only.
+- Output is decoded (UTF-8, then the system code page), stripped of ANSI escapes, and capped at 30 000 chars to the model (head and tail kept, middle elided with a marker). Every command and its output is listed in the terminal drawer's *Agent* tab.
+- **Not checkpointed.** A command line names no files anyone can check, so what `bash` changes cannot be rewound; a rewind reports a tracked file that `bash` changed as a conflict rather than overwriting it (docs/CHECKPOINTS.md).
+- **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree. The command's environment is QuickCode's without its API keys (`subproc.child_env`), so `echo $QUICKCODE_OPENROUTER_API_KEY` prints nothing — true of every process QuickCode starts.
+
+**Background jobs (`run_in_background: true`).** The command starts detached and the call returns at once with a job id (`bash_1`, `bash_2`, …); the model keeps its turn and the command keeps running past it. `bash_output` reads it and `bash_kill` stops it (below). What differs from a foreground call, and what does not:
+
+- **The permission gate is identical.** The gate reads `command` and nothing else, so a background call is decomposed per subcommand, checked against protected paths and circuit breakers, and matched against rules exactly as the same command in the foreground would be. The dialog says `Bash (background)` so the user knows they are approving something that keeps running.
+- **Plain pipes on every platform, stdin on the null device.** A detached program that reads stdin would otherwise wait for ever rather than until a timeout. `PYTHONUNBUFFERED` defaults to `1` so a Python server's first lines are not stuck in a pipe buffer. `timeout_ms` does not apply.
+- **Bounded.** At most 8 jobs run at once per conversation; a ninth is refused with the running ids named, never queued. Each job keeps its most recent 1 MiB of output between reads, and a read after an overflow says how many bytes were dropped. The 32 most recent finished jobs stay readable; older ones are forgotten.
+- **Owned by the conversation.** Jobs live in one table per conversation (`ToolCtx.extra["bash_jobs"]`, `tools/bash_jobs.py`), shared with its subagents the way the subagent job table is. Closing the conversation, removing its project or quitting the app kills every job's process tree. `Esc` does not: a background job is one the model deliberately detached from the turn, and a dev server dying because a turn was interrupted would be a surprise. A headless `-p` run kills its jobs when its one turn ends.
+- **Logged additively.** `bash_job_started` (`{job_id, command, description}`, the command cut to 200 characters — the full text is already in the `tool_call`) and `bash_job_done` (`{job_id, status, exit_code, seconds}`, status `exited | killed`, plus `killed_by: "user"` when the kill came from the Jobs tab) go into the session log. A job that exits on its own, or that the user killed, also leaves a transcript note, and if the model has not seen that ending by the time its next turn starts, a reminder naming the job and its unread output is queued for that turn (`… was killed by the user after 7.3s` for the user's kill).
+- **Watched in the Jobs tab.** The terminal drawer lists the conversation's jobs with their live output and a Kill button (docs/UI.md). Behind it, `server/jobs_api.py`, in both route shapes: `GET …/conversations/{conv_id}/jobs` (id, command, description, status, exit code, start and end times, bytes written, bytes the ring dropped, bytes the model has not read), `GET …/jobs/{job_id}/output?since=&limit=` and `POST …/jobs/{job_id}/kill`. The output read takes absolute byte offsets and returns the newest bytes after `since` — at most `limit` (64 KiB by default, 256 KiB at most), the rest reported as a `gap` — and **never moves the model's cursor**: watching a job does not change what `bash_output` calls new, and the job's ending is still news to the model. It is decoded as `bash_output` decodes (`decode_output`, a split UTF-8 character held back until its second half arrives) but not stripped: colour and carriage-return redraws are the panel's terminal renderer's to apply. A kill waits for the tree the way `bash_kill` does; killing a job that already ended is a no-op. Only an open conversation has jobs, so any other id is a 404, never a reason to open one. New output also raises a live-only `bash_job_output` event (`{job_id, bytes}`, no text, at most one per job every 250 ms), which is how the tab knows to read.
+
+## bash_output `[read-only]`
+
+> Read what a background shell job (bash with run_in_background=true) has written since you last read it, and whether it is still running or what it exited with. Each call returns only new output. Pass wait_s to wait for it to finish, or with filter for a matching line such as a server's ready message. Omit bash_id to list this conversation's jobs.
+
+```json
+{
+  "bash_id": "string? (omit to list every job)",
+  "filter": "string? (regex; only matching new lines are returned, the rest are consumed)",
+  "wait_s": "number? (default 0, max 120)"
+}
+```
+
+- The first line is the job's state (`bash_1 is still running (4.2s).`, `… exited with code 1 after 9.8s.`, `… was killed after 30.0s.`), then the new output, decoded and cleaned exactly as a foreground result is (`decode_output`, ANSI stripped, carriage-return redraws collapsed). A UTF-8 character split across two reads waits for its second half instead of turning the first read into mojibake.
+- `wait_s` returns early when the job exits or, with `filter`, as soon as a new line matches — the way to wait for a server's "listening on" line without polling in a `sleep` loop. `Esc` cuts a wait short.
+- Without `bash_id`: a `bash_jobs{id,status,exit_code,seconds,unread_bytes,command}` TOON table.
+- `PermissionSpec(mutates=False, target_field="bash_id")`: it reads a buffer the conversation already holds, so it never prompts and batches with the other reads.
+
+## bash_kill
+
+> Stop a background shell job started with bash(run_in_background=true), killing its whole process tree. Whatever it wrote before it died stays readable with bash_output. Takes a job id, never a pid, so only jobs this conversation started can be stopped.
+
+```json
+{
+  "bash_id": "string"
+}
+```
+
+- Kills the tree (`taskkill /T /F` on Windows, the job's own process group on POSIX — the same `subproc.kill_tree` every spawn site uses). Killing a job that already finished says so and changes nothing.
+- `PermissionSpec(mutates=False, target_field="bash_id")`, not read-only: it never prompts, because the command was approved when it started and the id can only name a job in this conversation's own table, but it runs alone rather than alongside the reads in a round.
+- `bash_output` and `bash_kill` are granted wherever `bash` is (`kernel/composition.py::SHELL_JOB_TOOLS`), so a composition or agent definition that names only `bash` cannot start a job it has no way to read or stop. A binding that revokes one of them by name still wins.
 
 ---
 
@@ -164,7 +253,7 @@ Both take `target_field`, so a rule can name what is being reached rather than o
 
 - A bare tool name (`web_fetch`) matches every use of that tool, in whichever list it appears.
 - **Not implemented:** a bare name in `deny` does *not* remove the tool from the model's tool list. Earlier text here said it did. It is an ordinary rule: the tool is still offered, the model still calls it, and the call comes back as an error it can read — correct, but one round trip more expensive than withholding it, and the model does see a capability it cannot use. The only thing that withholds a tool from a request is `PlanModeHook` (docs/PERMISSIONS.md §Plan mode); nothing consults `rules.deny` when building the tool list.
-- Deny beats allow **by rule kind, not by file**: every source is concatenated into one `deny` list and one `allow` list, and any deny match wins. Note that both sources are project files (docs/PERMISSIONS.md §Where rules come from) — there is no user-scope `permissions` block to write the rule above into. To carry a deny across projects, put it in a permission profile.
+- Deny beats allow **by rule kind, not by file**: every source is concatenated into one `deny` list and one `allow` list, and any deny match wins. Note that both sources are project files (docs/PERMISSIONS.md §Rules, "Where rules come from") — there is no user-scope `permissions` block to write the rule above into. To carry a deny across projects, put it in a permission profile.
 - `web_search(*)` matches any query without a `/` in it — `*` stops at a path separator, and a query like `asyncio gather/wait` needs `web_search(**)`. A narrower `web_search(python *)` is possible but rarely what anyone wants — the point of a rule on search is usually the quota, not the topic.
 
 ## web_fetch
@@ -207,7 +296,7 @@ Not parameters, and not reachable from the model: request headers (there are non
 
 Only the second is worth re-fetching for. The first means the page is larger than the tool will ever download.
 
-**Content types.** `text/*` plus `application/json`, `ld+json`, `xml`, `xhtml+xml`, `rss+xml`, `atom+xml`, `javascript`, `x-ndjson`, `yaml` / `x-yaml`. A missing `Content-Type` is assumed textual and left to the decoder. Anything else is refused with its type named — more useful to a model than 400 KB of decoded PNG. HTML and XHTML go through `web/markdown.py` (stdlib `html.parser`, deliberately: this runs on attacker-supplied markup and the failure mode of a tolerant parser is a slightly wrong heading, while the failure mode of a dependency is a dependency); everything else is returned as-is.
+**Content types.** `text/*` plus `application/json`, `ld+json`, `xml`, `xhtml+xml`, `rss+xml`, `atom+xml`, `javascript`, `x-ndjson`, `yaml` / `x-yaml`. A missing `Content-Type` is assumed textual and left to the decoder — but any body with a NUL byte in its first 8 KB (and no UTF-16/32 BOM or charset) is refused as binary, whatever it was labelled. The charset comes from a BOM, then the header, then an HTML `<meta charset>`, then UTF-8. Anything else is refused with its type named — more useful to a model than 400 KB of decoded PNG. HTML and XHTML go through `web/markdown.py` (stdlib `html.parser`, deliberately: this runs on attacker-supplied markup and the failure mode of a tolerant parser is a slightly wrong heading, while the failure mode of a dependency is a dependency); everything else is returned as-is.
 
 **Other refusals before any parsing:** an HTTP status ≥ 400 (reported with the reason phrase), and a `Content-Length` header declaring more than the byte cap — refused with nothing downloaded.
 
@@ -216,13 +305,13 @@ Only the second is worth re-fetching for. The first means the page is larger tha
 The rules live in `quickcode/web/ssrf.py`, the per-hop enforcement in `quickcode/web/fetch.py`. The threat model is worth stating plainly: the URL is composed by the *model*, from text it read on a web page, in an issue comment, in a file somebody else wrote. So the URL is attacker-reachable input, and QuickCode's own API listens on 127.0.0.1 behind a token on a machine that is usually on a LAN with printers, routers, NAS boxes and a cloud metadata service.
 
 1. **Scheme.** `http` and `https` only. `file:`, `ftp:`, `data:`, `gopher:` and everything else are refused before anything else is parsed. A URL with no scheme is refused with a sentence saying so. Credentials in the URL (`user:password@host`) are refused outright — they would be sent, logged, and followed through redirects.
-2. **Hostname patterns.** Refused without asking DNS, because on many machines DNS would answer helpfully: `localhost`; any name ending in `.local`, `.localhost`, `.internal` (also GCP's metadata domain), `.intranet`, `.lan`, `.home.arpa`, `.corp`, `.private`; and **any bare hostname with no dot**, which would resolve through the machine's own search domains — which is exactly how an intranet host gets reached without ever looking private.
-3. **Address classes.** Every address the name resolves to is classified and refused if it is the unspecified address (`0.0.0.0` / `::`), loopback, link-local (`169.254/16`, `fe80::/10` — where cloud metadata lives), private (RFC 1918 and unique-local `fc00::/7`), multicast, reserved, or carrier-grade NAT (`100.64/10`). IPv6 addresses carrying an IPv4 one inside them — IPv4-mapped, 6to4, Teredo — are unwrapped and the embedded address classified too, because `::ffff:127.0.0.1` is loopback however it is spelled and some stacks will happily connect to it.
+2. **Hostname patterns.** Refused without asking DNS, because on many machines DNS would answer helpfully: `localhost`; any name ending in `.local`, `.localhost`, `.internal` (also GCP's metadata domain), `.intranet`, `.lan`, `.home.arpa`, `.corp`, `.private`; and **any bare hostname with no dot**, which would resolve through the machine's own search domains — which is exactly how an intranet host gets reached without ever looking private. An internationalised name is converted to its ASCII (punycode) form first, and the rules apply to that form; it is also what goes into DNS, the `Host` header and SNI.
+3. **Address classes.** Every address the name resolves to is classified and refused if it is the unspecified address (`0.0.0.0` / `::`), loopback, link-local (`169.254/16`, `fe80::/10` — where cloud metadata lives), private (RFC 1918, unique-local `fc00::/7` and the deprecated site-local `fec0::/10`), multicast, reserved, or carrier-grade NAT (`100.64/10`). IPv6 addresses carrying an IPv4 one inside them — IPv4-mapped, 6to4, Teredo, NAT64 (`64:ff9b::/96`) — are unwrapped and the embedded address classified too, because `::ffff:127.0.0.1` is loopback however it is spelled and some stacks will happily connect to it. A NAT64 address is judged by its embedded IPv4 alone: on an IPv6-only network with DNS64 every IPv4-only site resolves to one, so refusing the prefix as reserved would refuse the internet, while `64:ff9b::a00:1` is `10.0.0.1`.
    **One bad address refuses the whole name**, not "pick a good one". A host answering with both a public and a loopback address is not a host with a public address; it is an attack.
 4. **Per-hop re-validation.** `follow_redirects=True` would validate the URL it was handed and then follow a `302` anywhere it likes — so a public URL redirecting to `http://127.0.0.1:8765/api/sessions` would be a *validated* fetch of the agent's own control plane. Redirects are therefore stepped through by hand, at most 5 of them, running the whole validation again on every single hop. A refusal after a redirect says so (`… (after a redirect)`). Exhausting the budget is an error, never a silent stop.
 5. **Cookies cleared between hops.** Requests are built by hand and dispatched with `client.send`, which never attaches stored cookies — but the client does *collect* them from responses, so the jar is emptied after every hop rather than relying on that asymmetry. A `Set-Cookie` on a redirect cannot be replayed to whatever it redirected to. The general requirement to strip credentials before following a cross-host redirect is met by never having any to strip.
 6. **DNS rebinding defence.** The request is sent **to the address that was checked** — the URL handed to httpx carries the IP literal — while the original name travels in the `Host` header and in the TLS SNI extension (`sni_hostname`), so virtual hosting still works and the certificate is still verified against the hostname rather than against an address it would never match. Without this the name is resolved twice and the second answer, the one actually connected to, was never checked. That is DNS rebinding, and it is the standard way past a validator that only validates.
-7. **Size and time.** 4 000 000 bytes, capped **while streaming** rather than after — a tool that buffers whatever arrives and truncates at the end is a tool that can be handed a multi-gigabyte response. `Content-Length` is checked first when present and refuses before a byte is downloaded; the read aborts the moment the cap is crossed either way. Time: `timeout_s` (default 30, max 120) around the entire fetch including redirects, plus httpx's own 10 s connect / 20 s read per hop.
+7. **Size and time.** 4 000 000 bytes, capped **while streaming** rather than after — a tool that buffers whatever arrives and truncates at the end is a tool that can be handed a multi-gigabyte response. `Content-Length` is checked first when present and refuses before a byte is downloaded; the read aborts the moment the cap is crossed either way. The cap counts *inflated* bytes and holds while inflating: the body is read raw and inflated by `web/body.py` with an output limit, because httpx inflates each network chunk whole and 64 KB of gzip is 64 MB of zeros before any cap sees it. Only `gzip` and `deflate` are advertised or accepted; any other `Content-Encoding` is refused by name. Time: `timeout_s` (default 30, max 120) around the entire fetch including redirects, plus httpx's own 10 s connect / 20 s read per hop.
 
 The User-Agent is truthful — `QuickCode/<version> (+https://github.com/devincii-io/QuickCode; web_fetch tool; automated request on a user's behalf)` — so a site operator who wants to block it can.
 
@@ -233,7 +322,7 @@ A security note that lists only what it catches is a security note that misleads
 - **A public host that proxies inward is invisible here.** An open proxy, an SSRF-vulnerable service, a URL shortener that resolves server-side — each is indistinguishable from a legitimate public host at this layer, because the badness is on the far end of a connection that looks entirely normal from this end. Nothing on the client side can see it. If the model fetches `https://example.com/?url=http://169.254.169.254/`, this module sees `example.com` and a public address, and it is right about both.
 - **A configured `HTTP_PROXY` / `HTTPS_PROXY` means the proxy does the connecting.** httpx trusts the standard proxy environment variables, and when one is set the socket goes to the proxy, not to the pinned address — the validation still runs and still refuses names and address classes, but the *pin* stops being the thing that decides where the packets end up, because the proxy resolves the target itself. In a proxied environment the guarantee degrades from "connects only to the address that was checked" to "asks a proxy for a host that passed the name checks".
 - **HTTP/2 and connection reuse.** Not a live gap: a client is opened per fetch and httpx speaks HTTP/1.1 unless the `h2` extra is installed. But a pooled connection keyed by hostname rather than by the pinned address would reintroduce the rebinding window, so the pinning and the pooling have to stay the way they are. This is a constraint on future changes, not a current hole.
-- **Exotic IPv6 embeddings.** 6to4, Teredo and IPv4-mapped addresses are unwrapped and their embedded IPv4 checked; a future or unusual embedding would be classified on its outer form only.
+- **Exotic IPv6 embeddings.** 6to4, Teredo, NAT64 and IPv4-mapped addresses are unwrapped and their embedded IPv4 checked; a future or unusual embedding would be classified on its outer form only.
 - **The content is still untrusted.** Nothing above makes the returned text safe. It is markdown from a page somebody else wrote, and it may well have been written to be read by an agent. The tool description tells the model to treat it as text and not as instructions; that is a mitigation, not a boundary.
 
 ## web_search
@@ -254,20 +343,21 @@ A security note that lists only what it catches is a security note that misleads
 
 **There is deliberately no `provider` argument.** Which engine answers is a *setting*, resolved from `search.provider` in `~/.quickcode/config.json`, then `QUICKCODE_SEARCH_PROVIDER`, then Brave. The model cannot shop between engines: a model that can pick its search backend will pick the one that answered last time, or the one whose name it saw in an error, and the user finds out at the end of the month. It is also not a knob the model has any grounds to turn — the quota, the terms and the bill are all the user's.
 
-**What it returns.** A numbered plain-text list, with a footer pointing at the other tool:
+**What it returns.** One TOON table, with a footer pointing at the other tool:
 
+````
+Results for "python 3.13 free threading" via Brave Search:
+```toon
+results[5]{title,url,snippet}:
+  What's New In Python 3.13,https://docs.python.org/3/whatsnew/3.13.html,"The biggest changes include a new interactive interpreter, and experimental…"
+  …
 ```
-5 results for "python 3.13 free threading" via Brave Search:
-
-1. What's New In Python 3.13
-   https://docs.python.org/3/whatsnew/3.13.html
-   The biggest changes include a new interactive interpreter, and experimental…
-   extract: …
-
 Use web_fetch on a URL above to read the full page.
-```
+````
 
-Snippets are clipped to 400 characters. The `extract:` line only appears for the agent-oriented providers (Tavily, Exa) that return extracted page text, and is clipped to 1200; it is printed when present rather than the renderer asking which provider it came from. `ui_meta` carries the provider name and label, the query, the count and a `[{title, url}]` list. No results is a normal answer, not an error.
+Snippets are clipped to 400 characters. An `extract` column appears only when a provider returned extracted page text (Tavily, Exa) — on every row or on none, since a table's rows must agree — and is clipped to 1200. Before rendering, every result is reduced to plain text (Brave's `<strong>` highlighting and HTML entities are stripped), results whose URL is not http(s) are dropped, and a URL listed twice is kept once, in rank order. `ui_meta` carries the provider name and label, the query, the count and a `[{title, url}]` list. No results is a normal answer, not an error.
+
+**Errors.** A failed search names the provider, the host and the status with a hint on what to do (401/403 key, 402/432 credit or plan limit, 429 rate limit, 5xx "try again later"; a provider can override a hint where the shared one misleads — SearXNG's 403 means JSON output is switched off, not a bad key). When the provider explains itself in the body, that explanation is appended, clipped, with every configured credential and anything shaped like `key=…` blanked first. An unconfigured provider's error names **Settings → Web search** before the environment variable and the `set-key` command, because the installed app has no Python to run `python -m` with.
 
 ### Providers
 
@@ -317,16 +407,18 @@ The tool also **registers even with no key configured**, matching how the OpenRo
 
 | Tool | Purpose |
 |---|---|
-| `agent` | Spawn a subagent (own pane, own model, capped permissions). Blocking by default; `background: true` returns a job handle instead of a report. |
+| `agent` | Spawn a subagent (own pane, own model, capped permissions). Blocking by default; `background: true` returns a job handle instead of a report; `isolation: "worktree"` runs it in its own git worktree. |
 | `send_message` | Message/resume a subagent or teammate by name/id. |
 | `agent_status` | List the background jobs and their state (`running`/`done`/`error`/`cancelled`), or ask about one by id. |
 | `agent_result` | Collect a finished background job's report; `wait_s` blocks for one still running. |
 | `task_create` / `task_update` / `task_list` / `task_get` | The task board — solo checklist *and* teammate coordination backbone (dependencies, file-locked claiming). No separate todo tool. |
 | `plan` | Present a plan for approval and exit plan mode (docs/PERMISSIONS.md §Plan mode). |
 
-All four are granted **by depth, never by allowlist** (`kernel/composition.py::DELEGATION_TOOLS`): an agent that may spawn receives the whole set, and an agent at the depth limit receives none of it. Granting `agent` without the collectors would make `background: true` a way to start work nobody can read.
+The four delegation tools (`agent`, `send_message`, `agent_status`, `agent_result`) are granted **by depth, never by allowlist** (`kernel/composition.py::DELEGATION_TOOLS`): an agent that may spawn receives the whole set, and an agent at the depth limit receives none of it. Granting `agent` without the collectors would make `background: true` a way to start work nobody can read.
 
 **Detached jobs, end to end.** `agent(background: true, …)` prepares the child synchronously — an unknown `agent_type`, an exhausted budget or a refused composition still comes back as a tool error — then runs it on a task the *conversation* owns and returns a one-row `agent_jobs{id,type,status,seconds,collected,description}` TOON table. The model keeps its turn. Every delegation, detached or blocking, emits an `agent_done` event (`{agent_id, definition, status, seconds}`, status `done | error | cancelled`) into the session log when the child stops — a detached one *additionally* queues a reminder that the spawner reads at the top of its next turn, because it ends at a moment nothing in the spawner's own transcript marks; `agent_result` returns the same sanitized, artifact-offloaded report a blocking call would have (a detached run and a blocking one share `_run_and_finish`). Turn end is not a way out: a turn that finishes with a job running or a report uncollected leaves both a transcript note and a queued reminder. Interrupt (`Esc`) and closing the conversation cancel every job still in flight; the record survives with status `cancelled` and a `[did not finish]` report, so a later `agent_result` on that id says what happened rather than failing to recognise it.
+
+**Worktree isolation, end to end.** `agent(isolation: "worktree", …)` — allowed when the definition says `isolation: optional` (built-in `general`), automatic when it says `isolation: worktree` — gives the child a detached git worktree under `.quickcode/worktrees/`, made from the spawner's HEAD plus its uncommitted changes to tracked files. The child's `cwd`, shell, background jobs and permission root are the worktree, so the spawner's checkout is outside its project. However the run ends, its changes are committed to a `quickcode/*` branch and the checkout is removed; the report ends with a harness-written `<worktree branch=… base=… files=…>` block holding the `git diff --stat` and the command to bring the work in, which the spawner runs through `bash` (`git merge`, gated as ever). Outside a git repository the spawn is refused as a tool error. The tool keeps `mutates=False`: it writes only QuickCode's own `.quickcode/worktrees/` and `quickcode/*` refs, never the user's branch, index or working tree. Full behaviour in docs/AGENTS.md §1.2.
 
 `runtime.subagents.max_parallel` (default 4, max 16) caps how many jobs run **at once** — `max_agents` is a lifetime total and says nothing about simultaneity, which only became reachable when spawning stopped blocking the turn. Asking past the cap is an error naming the jobs in flight, never a queue.
 

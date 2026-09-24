@@ -39,6 +39,15 @@ button:disabled { opacity: .45; cursor: default; }
 [data-state="Ready"] > .ws-dot, [data-state="Ready"] > header > .ws-dot { background: var(--success); }
 [data-state="Working"] > .ws-dot, [data-state="Working"] > header > .ws-dot { background: var(--primary); }
 [data-state="Needs approval"] > .ws-dot, [data-state="Needs approval"] > header > .ws-dot { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent); }
+/* Unseen activity (js/notify.js): a count beside a pane, an agent and a workspace. */
+.ws-notice {
+  flex: none; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+  display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; line-height: 1;
+  color: var(--bg); background: var(--success); animation: ws-notice-in .18s ease-out;
+}
+.ws-notice[data-kind="review"] { background: var(--warning); }
+.ws-notice[data-kind="error"] { background: var(--error); }
+@keyframes ws-notice-in { from { transform: scale(.4); opacity: 0; } }
 .ws-sidebar-bottom { display: grid; gap: 2px; padding-top: 12px; border-top: 1px solid var(--line-strong); }
 .ws-sidebar-bottom button { text-align: left; color: var(--fg-dim); padding: 9px 10px; border-radius: 6px; font-size: 13px; }
 .ws-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -89,7 +98,7 @@ button:disabled { opacity: .45; cursor: default; }
 .ws-form .ws-check { display: flex; gap: 10px; align-items: center; }
 .ws-form input { accent-color: var(--primary); }
 .ws-form .ws-error { color: var(--error); }
-.ws-form .ws-error:empty { display: none; }
+.ws-form .ws-error:empty, .ws-form .ws-hint:empty { display: none; }
 .ws-form output { color: var(--primary); }
 
 /* An embedded agent already has its workspace and conversation in the frame header. */

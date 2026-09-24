@@ -29,7 +29,7 @@ function ensureHost() {
   host.className = "toast-host";
   host.setAttribute("aria-live", "polite");
   // The stack is chrome, not content: it must never eat a click meant for the
-  // page. Only the toasts themselves take pointer events (see app.css).
+  // page. Only the toasts themselves take pointer events (see modals.css).
   document.body.appendChild(host);
   return host;
 }

@@ -19,7 +19,10 @@ assertion depend on the developer's ``.bashrc``.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -27,7 +30,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from quickcode.pty import registry
-from quickcode.pty.interactive import InteractivePty, interactive_shell_argv
+from quickcode.pty.interactive import InteractivePty
+from quickcode.pty.shells import interactive_shell_argv
 from quickcode.server import terminal
 from quickcode.server.app import create_app
 from quickcode.server.projects import project_id
@@ -68,10 +72,14 @@ def _no_terminal_outlives_a_test():
     registry.close_all()
 
 
+TOKEN = "t0ken"
+
+
 def terminal_socket(client: TestClient, path: str, **kw):
     # TestClient's handshake carries Host: testserver; the local guard wants the
     # loopback host the app was configured with.
     headers = {"host": "127.0.0.1:8642", **kw.pop("headers", {})}
+    kw.setdefault("subprotocols", ["qcauth." + TOKEN])
     return client.websocket_connect(path, headers=headers, **kw)
 
 
@@ -97,7 +105,7 @@ def app_for(tmp_path: Path, *dirs: Path):
     hub = make_hub(tmp_path / "reg", provider, dirs[0])
     for extra in dirs[1:]:
         asyncio.run(hub.open(extra))
-    app = create_app(hub, host="127.0.0.1", port=8642, token="")
+    app = create_app(hub, host="127.0.0.1", port=8642, token=TOKEN)
     return hub, TestClient(app, base_url="http://127.0.0.1:8642")
 
 
@@ -189,6 +197,31 @@ def test_closing_the_socket_kills_the_shell(tmp_path, fake_shell):
         assert wait_until(lambda: registry.count(proj) == 0)
 
 
+class _Closable:
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_projects_that_differ_only_in_case_keep_their_own_terminals(tmp_path):
+    """The registry case-folded every path, while project ids fold only on
+    Windows: on Linux, forgetting ~/proj closed the shells open in ~/Proj."""
+    upper, lower = tmp_path / "Proj", tmp_path / "proj"
+    upper.mkdir()
+    try:
+        lower.mkdir()
+    except FileExistsError:
+        pytest.skip("case-insensitive file system: these are one directory")
+    assert project_id(upper) != project_id(lower)
+    mine, theirs = _Closable(), _Closable()
+    registry.add(lower, mine)
+    registry.add(upper, theirs)
+    assert registry.close_for(lower) == 1
+    assert mine.closed and not theirs.closed
+    assert registry.count(upper) == 1
+
+
 def test_closing_a_project_kills_the_terminals_open_on_it(tmp_path, fake_shell):
     default = tmp_path / "default"
     other = tmp_path / "other"
@@ -233,6 +266,50 @@ def test_each_project_gets_its_own_shell_and_cannot_reach_another_ones(tmp_path,
                 assert registry.count(second) == 1
 
 
+def test_output_arriving_after_the_server_s_loop_has_closed_is_dropped(tmp_path, monkeypatch):
+    """The pty's reader and watcher threads outlive the socket by design (the
+    pty is closed off the loop). What they report in that window is for a loop
+    that may be gone, and ``call_soon_threadsafe`` on a closed loop raises --
+    in the pty's thread, where nothing catches it."""
+    callbacks = {}
+
+    class Pty:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self, on_output, on_exit):
+            callbacks.update(output=on_output, exit=on_exit)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(terminal, "InteractivePty", Pty)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        assert ws.receive_json()["type"] == "terminal_ready"
+
+    callbacks["output"]("said after the app stopped")
+    callbacks["exit"](0)
+
+
+def test_a_shell_that_will_not_start_is_reported_and_not_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(terminal, "shell_argv", lambda: [str(tmp_path / "no-such-shell")])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        ev = ws.receive_json()
+        assert ev["type"] == "terminal_error" and ev["message"]
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            ws.receive_json()
+        assert excinfo.value.code == 4500
+    assert wait_until(lambda: registry.count() == 0)
+
+
 def test_a_terminal_for_an_unknown_project_is_refused(tmp_path, fake_shell):
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -253,7 +330,7 @@ def test_a_terminal_socket_without_the_token_is_refused(tmp_path, fake_shell):
     client = TestClient(app, base_url="http://127.0.0.1:8642")
     with client:
         with pytest.raises(WebSocketDisconnect) as excinfo:
-            with terminal_socket(client, "/ws/terminal") as ws:
+            with terminal_socket(client, "/ws/terminal", subprotocols=[]) as ws:
                 ws.receive_json()
         assert excinfo.value.code == 4403
         # ...and the same socket with the token opens a shell.
@@ -289,8 +366,15 @@ def test_nothing_the_model_can_call_knows_the_terminal_exists() -> None:
     """
     root = Path(__file__).resolve().parents[1] / "quickcode"
     doors = ["ws/terminal", "InteractivePty", "serve_terminal", "server.terminal"]
+    # The conversation's side of the server, and what assembles its session.
+    driven = [
+        root / "server" / "manager.py",
+        root / "server" / "conversation.py",
+        root / "server" / "reviews.py",
+        root / "session" / "assemble.py",
+    ]
     offenders = []
-    for path in list((root / "tools").rglob("*.py")) + [root / "server" / "manager.py"]:
+    for path in list((root / "tools").rglob("*.py")) + driven:
         text = path.read_text(encoding="utf-8")
         for door in doors:
             if door in text:
@@ -325,20 +409,171 @@ def test_the_terminal_environment_promises_a_colour_terminal() -> None:
     assert env["TERM"] == "xterm-256color"
 
 
+def test_the_shell_does_not_inherit_quickcodes_own_keys(monkeypatch) -> None:
+    """Every program typed at the prompt would otherwise get the app's API
+    keys in its environment — a `curl` to anywhere, an `npm install` script."""
+    monkeypatch.setenv("QUICKCODE_OPENROUTER_API_KEY", "sk-or-not-for-you")
+    monkeypatch.setenv("QUICKCODE_BRAVE_API_KEY", "brave-not-for-you")
+    monkeypatch.setenv("QUICKCODE_SOMEDAY_TOKEN", "tok-not-for-you")
+    monkeypatch.setenv("QUICKCODE_SEARCH_PROVIDER", "brave")
+    env = terminal._shell_env()
+    assert not any("not-for-you" in value for value in env.values())
+    assert env["QUICKCODE_SEARCH_PROVIDER"] == "brave"  # a choice, not a secret
+    assert env.get("PATH") == os.environ.get("PATH")
+
+
+def test_an_inherited_terminal_width_does_not_override_the_ptys(monkeypatch) -> None:
+    monkeypatch.setenv("COLUMNS", "300")
+    monkeypatch.setenv("LINES", "3")
+    env = terminal._shell_env()
+    assert "COLUMNS" not in env and "LINES" not in env
+
+
+def test_a_frozen_app_gives_the_shell_the_loader_path_it_was_started_with(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/QuickCode/_internal")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")
+    monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", "/opt/QuickCode/_internal")
+    env = terminal._shell_env()
+    assert env["LD_LIBRARY_PATH"] == "/usr/local/lib"
+    assert "LD_LIBRARY_PATH_ORIG" not in env
+    assert not any(name.startswith("_PYI_") for name in env)
+
+
+def test_an_app_without_a_token_serves_no_terminal(tmp_path, fake_shell):
+    """Fail closed: without a token the only guard left is the Host header,
+    which any local process can forge, and behind this socket is a shell."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    hub = make_hub(tmp_path / "reg", FakeProvider([]), proj)
+    client = TestClient(create_app(hub, host="127.0.0.1", port=8642, token=""),
+                        base_url="http://127.0.0.1:8642")
+    with client:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with terminal_socket(client, "/ws/terminal", subprotocols=[]) as ws:
+                ws.receive_json()
+        assert excinfo.value.code == 4403
+    assert registry.count() == 0
+
+
+def test_a_resize_to_infinity_does_not_end_the_session(tmp_path, fake_shell):
+    """`json.loads` accepts `Infinity`, and `int(inf)` raises OverflowError,
+    which the resize handler did not catch: one frame killed the terminal."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        ws.receive_json()
+        read_until(ws, "READY ")
+        ws.send_text('{"type": "resize", "rows": Infinity, "cols": -Infinity}')
+        ws.send_text('{"type": "resize", "rows": NaN, "cols": 1e400}')
+        ws.send_json({"type": "resize", "rows": True, "cols": [80]})
+        ws.send_json({"type": "input", "data": "still here\r"})
+        assert "echo:still here" in read_until(ws, "echo:still here")
+
+
+# ------------------------------------------------------- flow control
+
+FLOOD_SHELL = '''
+import sys
+progress, count = sys.argv[1], int(sys.argv[2])
+for i in range(count):
+    sys.stdout.write("line %07d\\n" % i)
+    if i % 500 == 0:
+        with open(progress, "w") as fh:
+            fh.write(str(i))
+sys.stdout.flush()
+with open(progress, "w") as fh:
+    fh.write("done")
+print("DONE", flush=True)
+'''
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="timing of a POSIX pty")
+def test_output_waits_for_the_browser_to_catch_up(tmp_path, monkeypatch):
+    """`yes` must not outrun the browser.
+
+    The server used to read as fast as the program wrote, keep the newest
+    megabyte and drop the rest, so a long `cat` arrived with a hole in it and
+    a tab that could not keep up queued frames until it fell over. Now the
+    pty stops being read until the browser acknowledges what it has drawn,
+    and the program waits on its own write, as it would in any terminal.
+    """
+    window = 32 * 1024
+    lines = 60_000
+    monkeypatch.setattr(terminal, "OUTPUT_WINDOW", window)
+    script = tmp_path / "flood.py"
+    script.write_text(FLOOD_SHELL, encoding="utf-8")
+    progress = tmp_path / "progress"
+    monkeypatch.setattr(terminal, "shell_argv", lambda: [
+        sys.executable, "-u", str(script), str(progress), str(lines)])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    parts: list[str] = []
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        assert ws.receive_json()["type"] == "terminal_ready"
+        received = 0
+        while received < window:
+            ev = ws.receive_json()
+            if ev["type"] == "output":
+                parts.append(ev["data"])
+                received += len(ev["data"])
+        # Nothing acknowledged yet: the program is parked on its write.
+        assert wait_until(progress.exists)
+        time.sleep(0.5)
+        parked = progress.read_text(encoding="utf-8")
+        time.sleep(0.5)
+        assert progress.read_text(encoding="utf-8") == parked != "done"
+
+        ws.send_json({"type": "ack", "chars": received})
+        for _ in range(100_000):
+            ev = ws.receive_json()
+            if ev["type"] == "output":
+                parts.append(ev["data"])
+                ws.send_json({"type": "ack", "chars": len(ev["data"])})
+                if "DONE" in "".join(parts[-2:]):
+                    break
+            elif ev["type"] == "exit":
+                break
+    numbers = re.findall(r"line (\d{7})\r?\n", "".join(parts))
+    assert len(numbers) == lines, "output was lost between the pty and the browser"
+    assert numbers == [f"{i:07d}" for i in range(lines)]
+
+
+RAW_SHELL = '''
+import sys, time, tty
+tty.setraw(0)
+print("RAW", flush=True)
+time.sleep(4)
+'''
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX raw mode")
+def test_typing_at_a_program_that_is_not_reading_leaves_the_server_responsive(
+    tmp_path, monkeypatch
+):
+    """One event loop serves every project. A blocking write into a pty whose
+    program had stopped reading used to hold that loop until the program
+    exited — every other window, socket and request frozen behind a paste."""
+    script = tmp_path / "raw.py"
+    script.write_text(RAW_SHELL, encoding="utf-8")
+    monkeypatch.setattr(terminal, "shell_argv", lambda: [sys.executable, "-u", str(script)])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        ws.receive_json()
+        read_until(ws, "RAW")
+        for _ in range(8):
+            ws.send_json({"type": "input", "data": "x" * 65536})
+        started = time.monotonic()
+        response = client.get("/api/health", headers={"host": "127.0.0.1:8642"})
+        assert response.status_code == 200
+        assert time.monotonic() - started < 2, "the server stalled behind the terminal"
+
+
 # ------------------------------------------------------------------ outbox
-
-
-async def test_a_flood_of_output_is_bounded_and_keeps_the_newest() -> None:
-    """`yes` into a terminal must not become the server's memory problem."""
-    box = terminal._Outbox()
-    chunk = "x" * 4096
-    for _ in range(terminal.MAX_PENDING_CHARS // len(chunk) + 40):
-        box.push(chunk)
-    box.push("THE-NEWEST")
-    text = await box.drain()
-    assert len(text) <= terminal.MAX_PENDING_CHARS + len(chunk) + len("THE-NEWEST")
-    assert text.endswith("THE-NEWEST")
-    assert box.dropped > 0
 
 
 async def test_the_outbox_coalesces_a_burst_into_one_frame() -> None:

@@ -4,6 +4,135 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning
 follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+A repository-wide audit and the open roadmap items, done together. Every
+area of the app was reviewed for bugs and security holes, each fix landed with
+a test that failed first, the largest modules were split into ones a person can
+read, and the suite now runs on Linux and macOS as well as Windows (2600+
+tests, ~2 minutes).
+
+### Added
+
+- **Background shell jobs.** `bash(run_in_background=true)` starts a command
+  detached and returns a job id at once; `bash_output` reads what it has written
+  since the last read and `bash_kill` stops it. At most eight per conversation,
+  the newest 1 MiB of output kept, and every job's process tree is killed when
+  its conversation closes. A **Jobs** tab in the terminal drawer lists them,
+  tails their output live and kills them — without moving the model's own
+  read cursor.
+- **Command hooks.** Scripts that run on `PreToolUse`, `PostToolUse`,
+  `UserPromptSubmit`, `Stop` and `SessionStart`, configured per user or per
+  project (docs/HOOKS.md). A hook can only make a permission decision stricter,
+  never skip a prompt; project hooks run only in a trusted project. A **Hooks**
+  page in Settings adds, edits, deletes and test-runs them.
+- **A native Anthropic provider.** `provider: "anthropic"` talks to the
+  Messages API over plain `httpx` — no SDK — with signed thinking replayed
+  verbatim, explicit prompt-cache breakpoints on the system prompt and the
+  conversation tail, and cache reads and writes in the cost ledger. The provider
+  can be switched in Settings without a restart.
+- **Checkpoints and rewind.** Before an edit or write changes a file, its prior
+  contents are saved per turn. **Rewind files** under a turn (or the
+  Checkpoints tab) previews the diff, calls out files something else has
+  changed since, and restores the chosen files byte for byte. Changes made
+  through `bash` cannot be tracked, and the dialog says so.
+- **"Why was I prompted?"** The permission dialog, the Help sandbox and a new
+  `qc why "<command>"` all ask the real engine and show which rule, protected
+  path, breaker or mode decided — the hand-written JavaScript copy of the engine
+  is gone.
+- **A better permission dialog.** It shows the diff an edit or write would
+  make, exactly which rules "Always allow" will save, the hook's reason when a
+  hook forced the prompt, and a "Why?" panel.
+- **Git-worktree isolation for writing subagents.** A definition (or the
+  `agent` call, where allowed) can ask for `isolation: worktree`: the child works
+  in its own checkout under `.quickcode/worktrees/`, and its changes come back
+  as a branch with a diff summary and the command to merge it.
+- **A context guard.** A long tool loop now compacts between two of its rounds
+  instead of ending in a context-length error, and a request the provider
+  refuses for length is retried once with its largest tool results cut.
+- **Notifications, a command palette and session search.** A badge and an
+  optional OS notification when a background pane finishes or needs a
+  decision; `Ctrl+K` for every command, mode, model and page; and search across
+  a project's sessions from the sessions menu.
+- **Headless runs are the app's session.** `quickcode -p` now builds its
+  session through the same code as the app: presets, disabled plugins,
+  authored tools, entry-point plugin tools and MCP servers (`--no-mcp` to skip)
+  all apply, and `--continue` resumes on the composition the run started with.
+
+### Changed
+
+- The chat transcript is windowed: a 10,000-event session replays in about
+  0.6 s instead of 35 s, and a live event costs a fraction of a millisecond.
+  The trajectory view stays at about 60 fps at that size.
+- `server/app.py` (1,600 lines) is now route modules, `server/manager.py`
+  (1,350) is split into `manager.py`, `conversation.py` and `reviews.py`,
+  `kernel/manifest.py` is a package, and the frontend's `modals.js`,
+  `composer.js` and `main.js` are split by concern. The route table and every
+  JSON response were diffed before and after each split.
+- **auto-edit mode prompts for anything that is not an edit.** It used to
+  auto-allow every mutating tool, including `web_fetch`, authored command tools
+  and MCP tools.
+- The default Anthropic orchestrator model is `claude-opus-5-5`.
+- CI runs the release gate (`scripts/release.py --check`) on Linux for
+  Python 3.12–3.14 plus one Windows job.
+
+### Security
+
+- **"Always allow" saved more than was approved.** Approving `FOO=1 make`
+  saved `bash(FOO=1 *)`, which then allowed `FOO=1 rm -rf build`. It now saves
+  one exact rule per approved subcommand, read from the engine's own
+  evaluation, and never one that covers a protected path or a breaker.
+- **Seventeen permission-engine bypasses**, among them: a symlink out of the
+  project read as inside it on POSIX; deny rules on protected paths became a
+  clickable prompt; `find -exec`, `xargs`, `bash -c`, `$()` and git aliases hid
+  the command they run; hidden `.env` reads through globs, braces and option
+  values; breakers missed `--no-preserve-root`, `rm -rf "$HOME"`, `+refspec`
+  and renamed fork bombs; and subagents ran with none of the session's deny
+  rules.
+- **No child process gets QuickCode's API keys.** Bash, background jobs,
+  command tools, hooks, MCP servers and git all start from one scrubbed
+  environment, and every key — including web-search keys kept in
+  `config.json` — is blanked in session logs.
+- The local server compares tokens in constant time and sends a strict Content
+  Security Policy; a second launch hands its token only to an instance that
+  proves it holds it; the terminal refuses to open without a token.
+- The git panel and every git call run without the repository's own hooks,
+  fsmonitor, textconv, filter drivers or external diff, so opening a cloned
+  repository cannot run its code.
+- Command tools refuse values that would parse as options and Windows batch
+  targets that `cmd.exe` would re-parse; the trust gate reads plugin files with
+  the same parser the loader uses; revoking trust takes effect at once.
+- The updater downloads only a newer stable release, only over https, only the
+  exact installer name, and never leaves a predictable partial file behind.
+- `web_fetch` keeps its byte cap while inflating a compressed body.
+- **A repository could ship its own `git.exe`.** On Windows, `CreateProcess`
+  and `shutil.which` both search the current directory before `PATH`, so a
+  `git.exe`, `rg.exe`, `bash.exe`, `powershell.exe` or `taskkill.exe` committed
+  to a project ran in place of the real one, before the project was trusted.
+  Every spawn now resolves a bare program name from absolute `PATH` entries
+  only, skipping the current directory and the child's working directory.
+
+### Fixed
+
+- Settings files saved by Windows editors (UTF-8 with a BOM, UTF-16) were
+  silently ignored; every reader now decodes them the same way, and saving a
+  preset or profile no longer un-trusts the project.
+- `read`, `edit` and `write` keep a file's encoding, BOM and line endings;
+  `glob` and `grep` agree on what they search and return results in path order.
+- Session logs survive a truncated or corrupt line, never double-number events
+  when two processes write, redact secrets, and list hundreds of sessions from
+  an incremental index.
+- Interrupting a turn at any point leaves a history the provider accepts;
+  parallel tool calls keep call order; Stop reaches a stream that has gone
+  quiet.
+- The terminal's shell gets a controlling tty (Ctrl+C works), is a real login
+  shell, and is killed with its whole session when the panel closes.
+- Workspaces: dividers keep focus while resizing, equalize is even, closing a
+  pane moves focus to its neighbour, and a corrupted saved layout cannot brick
+  the app.
+- Over a hundred further fixes across the loop, providers, subagents, MCP
+  client, session store, frontend and packaging — the commit log has each one.
+
 ## [2.7.0] - 2026-09-06
 
 ### Added

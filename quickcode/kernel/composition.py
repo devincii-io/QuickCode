@@ -51,6 +51,12 @@ ORCHESTRATOR_ID = "@orchestrator"
 # every background report it produced.
 DELEGATION_TOOLS = ("agent", "send_message", "agent_status", "agent_result")
 
+# The shell-job pair rides with ``bash`` for the same reason: bash's
+# run_in_background starts work that only these two can read or stop, so an
+# agent granted bash without them could start a job it can never see the end
+# of. Granted wherever bash is, unless a binding revokes one by name.
+SHELL_JOB_TOOLS = ("bash_output", "bash_kill")
+
 # plan < ask < auto-edit < dontask < yolo (least -> most privileged).
 MODE_PRIVILEGE: dict[Mode, int] = {
     Mode.plan: 0, Mode.ask: 1, Mode.auto_edit: 2, Mode.dontask: 3, Mode.yolo: 4,
@@ -85,9 +91,6 @@ def parse_mode(raw: Any, default: Mode = Mode.ask) -> Mode:
 # selectors
 # --------------------------------------------------------------------------
 
-SELECTORS = ("@orchestrator", "@subagents", "@all")
-
-
 def selector_matches(selector: str, agent_id: str, role: Role) -> bool:
     """Do the four surviving selectors reach this agent?
 
@@ -111,9 +114,7 @@ def selector_matches(selector: str, agent_id: str, role: Role) -> bool:
 # Composition
 # --------------------------------------------------------------------------
 
-# Which fields intersect and which overwrite. The resolver reads these rather
-# than restating them, so the two can never drift.
-CAPABILITY_FIELDS = ("tools", "spawns", "models", "ceiling")
+# The plain value fields: a stated one is written to disk as it is.
 VALUE_FIELDS = (
     "model", "model_selectable", "max_turns", "color",
     "skip_project_instructions", "base",
@@ -231,9 +232,6 @@ class Composition:
         return cls(**stated, explicit=frozenset(stated))
 
 
-EMPTY = Composition()
-
-
 # --------------------------------------------------------------------------
 # RuntimeLimits
 # --------------------------------------------------------------------------
@@ -252,7 +250,7 @@ class RuntimeLimits:
 
     The values below are the fallbacks used when nothing has been configured
     and no manifest is reachable. The declared defaults, and the minima and
-    maxima that clamp a configured value, live in ``kernel/manifest.py`` --
+    maxima that clamp a configured value, live in ``kernel/core_settings.py`` --
     ``resolve.runtime_limits`` reads them from there rather than restating
     them here.
     """
@@ -346,9 +344,6 @@ class Resolved:
     def errors(self) -> tuple[Problem, ...]:
         return tuple(p for p in self.problems if p.severity == "error")
 
-    def advisories(self) -> tuple[Problem, ...]:
-        return tuple(p for p in self.problems if p.severity != "error")
-
     def refusal(self) -> str:
         """One message naming every error, for a spawn that must not happen."""
         return "; ".join(p.message for p in self.errors())
@@ -398,9 +393,26 @@ class Resolved:
         """
         if not isinstance(raw, dict) or not raw.get("id"):
             return None
+        # The record is a file on disk and may have been hand-edited or cut
+        # short. A field of the wrong shape makes the whole snapshot unusable
+        # rather than quietly half-read: ``"tools": "read"`` iterated as a string
+        # would hand the session the tools r, e, a and d.
+        lists = ("tools", "denied_tools", "spawns", "sections", "models", "problems")
+        maps = ("section_bodies", "settings", "chain")
+        if any(not isinstance(raw.get(k, []), list) for k in lists) or any(
+            not isinstance(raw.get(k, {}), dict) for k in maps
+        ):
+            return None
+        try:
+            return cls._from_checked_json(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _from_checked_json(cls, raw: dict[str, Any]) -> Resolved:
         role = raw.get("role")
         chain: dict[str, tuple[Provenance, ...]] = {}
-        for key, entries in (raw.get("chain") or {}).items():
+        for key, entries in raw.get("chain", {}).items():
             if isinstance(entries, list):
                 chain[str(key)] = tuple(
                     Provenance.from_json(e) for e in entries if isinstance(e, dict)
@@ -413,14 +425,14 @@ class Resolved:
             spawns=tuple(str(t) for t in raw.get("spawns", [])),
             sections=tuple(str(t) for t in raw.get("sections", [])),
             section_bodies={str(k): str(v)
-                            for k, v in (raw.get("section_bodies") or {}).items()},
+                            for k, v in raw.get("section_bodies", {}).items()},
             models=tuple(str(t) for t in raw.get("models", [])),
             model=str(raw.get("model", "")),
             model_selectable=bool(raw.get("model_selectable", True)),
             ceiling=parse_mode(raw.get("ceiling")),
             max_turns=int(raw.get("max_turns", 30) or 30),
             settings={str(k): dict(v)
-                      for k, v in (raw.get("settings") or {}).items()
+                      for k, v in raw.get("settings", {}).items()
                       if isinstance(v, dict)},
             chain=chain,
             problems=tuple(

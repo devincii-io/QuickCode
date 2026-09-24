@@ -149,7 +149,9 @@ def test_the_ripgrep_path_excludes_the_same_secrets_the_walk_does(tmp_path, monk
     grep_module._run_ripgrep(
         "rg", GrepTool.Input(pattern="x", output_mode="content"), tmp_path)
     assert all(f"!{name}" in seen["args"] for name in (".env", ".env.*"))
-    assert "!.ssh/**" in seen["args"]
+    # `!.ssh`, not `!.ssh/**`: a pattern with a slash in it is anchored to the
+    # search root, so the old one missed every `.ssh` below the top level.
+    assert "!.ssh" in seen["args"]
 
 
 def test_no_builtin_tool_targets_a_path_without_declaring_path_target():

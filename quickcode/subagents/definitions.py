@@ -29,15 +29,24 @@ Project definitions (``.quickcode/agents/``) shadow user ones
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Literal
 
+from quickcode import textio
 from quickcode.core.permissions import Mode
 from quickcode.kernel.composition import ORCHESTRATOR_ID, Composition, parse_mode
 
 log = logging.getLogger("quickcode.subagents.definitions")
 
 Role = Literal["orchestrator", "subagent"]
+
+# Whether a spawn of this agent runs in its own git worktree
+# (``subagents/worktree.py``). ``none``: never. ``optional``: when the spawner
+# asks for it (the ``agent`` tool's ``isolation`` argument). ``worktree``:
+# always, whatever the spawner asks.
+Isolation = Literal["none", "optional", "worktree"]
+ISOLATION_CHOICES: tuple[str, ...] = ("none", "optional", "worktree")
 
 
 class _Unset:
@@ -63,7 +72,7 @@ class AgentDef:
     """
 
     __slots__ = ("name", "description", "role", "composition", "source", "path",
-                 "prompt_body")
+                 "prompt_body", "isolation")
 
     def __init__(
         self,
@@ -75,6 +84,7 @@ class AgentDef:
         source: str = "internal",
         path: str = "",
         prompt_body: str = "",
+        isolation: Isolation = "none",
         # legacy scalars, folded into the composition
         tools: list[str] | None | Any = _UNSET,
         model: str | None = None,
@@ -94,6 +104,10 @@ class AgentDef:
         self.source = source
         self.path = path
         self.prompt_body = prompt_body
+        # An identity attribute rather than a composition field: it says where
+        # the agent works, not what it may do, and nothing in resolution
+        # narrows or widens it.
+        self.isolation: Isolation = isolation if isolation in ISOLATION_CHOICES else "none"
 
         comp = composition if composition is not None else Composition()
         stated: dict[str, Any] = {}
@@ -217,6 +231,7 @@ def builtin_defs() -> dict[str, AgentDef]:
             model="worker",
             mode_cap=Mode.auto_edit,
             prompt_body=_GENERAL_PROMPT,
+            isolation="optional",
         ),
     }
 
@@ -226,6 +241,8 @@ def builtin_defs() -> dict[str, AgentDef]:
 # --------------------------------------------------------------------------
 
 _PROJECT_DIR = Path(".quickcode") / "agents"
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_BLOCK_ITEM = re.compile(r"(?:^|\s)-\s+")
 _USER_DIR = Path.home() / ".quickcode" / "agents"
 
 
@@ -249,7 +266,8 @@ def load_defs(cwd: Path) -> dict[str, AgentDef]:
             for md in sorted(d.glob("*.md")):
                 try:
                     parsed = _parse_def(md)
-                except Exception:
+                except Exception as exc:  # one bad file must not stop a session
+                    log.warning("skipping agent definition %s: %s", md, exc)
                     continue
                 if parsed is not None:
                     defs[parsed.name] = parsed
@@ -266,8 +284,13 @@ def load_defs(cwd: Path) -> dict[str, AgentDef]:
 
 
 def _parse_def(path: Path) -> AgentDef | None:
-    """One ``.quickcode/agents/*.md`` file."""
-    text = path.read_text(encoding="utf-8")
+    """One ``.quickcode/agents/*.md`` file.
+
+    Read through ``textio`` because Notepad saves a byte-order mark: with the
+    mark left in, the first line is not ``---`` and the whole frontmatter --
+    its ``tools:`` allowlist included -- was read as prompt text.
+    """
+    text = textio.read_text(path)
     meta, body = _split_frontmatter(text)
     return agent_def_from_meta(
         meta, body, path=str(path), source="authored", fallback_name=path.stem,
@@ -290,6 +313,16 @@ def agent_def_from_meta(
     """
     name = (meta.get("name") or fallback_name or "").strip()
     if not name:
+        return None
+    if name != ORCHESTRATOR_ID and not _NAME_RE.match(name):
+        # The name becomes the agent id, which becomes a file name under
+        # ``.quickcode/artifacts`` and an attribute in the ``<subagent id=...>``
+        # tag the parent reads. A project file is enough to set it.
+        log.warning(
+            "skipping agent definition %s: name %r is not a plain id "
+            "(letters, digits, '.', '_' and '-', starting with a letter or digit)",
+            path or name, name,
+        )
         return None
     tools_raw = meta.get("tools")
     # Kept verbatim: patterns are resolved against the live tool pool at spawn
@@ -324,6 +357,14 @@ def agent_def_from_meta(
                 path, ORCHESTRATOR_ID,
             )
 
+    isolation = meta.get("isolation", "none").strip().lower() or "none"
+    if isolation not in ISOLATION_CHOICES:
+        log.warning(
+            "%s: isolation: %r is not one of %s; loading with isolation: none",
+            path or name, isolation, ", ".join(ISOLATION_CHOICES),
+        )
+        isolation = "none"
+
     spawns_raw = meta.get("spawns")
     sections_raw = meta.get("sections")
     return AgentDef(
@@ -343,6 +384,7 @@ def agent_def_from_meta(
         max_turns=max_turns,
         color=meta.get("color", "cyan"),
         prompt_body=body.strip(),
+        isolation=isolation,
     )
 
 
@@ -362,7 +404,16 @@ def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 
 def _parse_list(raw: str) -> list[str]:
-    """Parse ``[read, glob, grep]`` or ``read, glob`` into a list."""
+    """Parse ``[read, glob, grep]``, ``read, glob`` or a YAML block list.
+
+    The frontmatter reader folds indented lines onto their key, so a block
+    list (``tools:`` then ``  - read`` / ``  - grep``) arrives as
+    ``- read - grep`` -- which ``parse_list`` took for one pattern matching
+    nothing, leaving the agent with no tools at all.
+    """
     from quickcode.kernel.authoring.format import parse_list
 
+    text = raw.strip()
+    if text.startswith("- "):
+        return [item.strip().strip("'\"") for item in _BLOCK_ITEM.split(text) if item.strip()]
     return parse_list(raw)

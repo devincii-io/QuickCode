@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import locale
+import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -23,20 +24,48 @@ from quickcode.providers.base import ToolSchema
 In = TypeVar("In", bound=BaseModel)
 
 
+MTIME_TOLERANCE_S = 1e-3
+
+
 @dataclass
 class ReadRegistry:
-    """Tracks {path: mtime} for files read this session (edit staleness check)."""
+    """What this session has seen of each file: the staleness check for edit
+    and write.
+
+    ``digests`` holds a hash of the bytes whenever the whole file was read.
+    With it, "changed since read" is a question about content: a file that was
+    touched but not changed is still fresh, and one rewritten inside a single
+    mtime tick (FAT and some network shares count in seconds) is still stale.
+    Without it -- a window of a file too large to hold -- mtime is the answer.
+
+    Paths are keyed by their resolved, case-normalised form, so ``C:\\Proj\\a.py``
+    read and ``c:/proj/a.py`` edited are the same file, as they are on disk.
+    """
 
     seen: dict[str, float] = field(default_factory=dict)
+    digests: dict[str, str] = field(default_factory=dict)
 
-    def record(self, path: str, mtime: float) -> None:
-        self.seen[str(Path(path))] = mtime
+    @staticmethod
+    def _key(path: str) -> str:
+        return os.path.normcase(os.path.realpath(path))
 
-    def mtime_at_read(self, path: str) -> float | None:
-        return self.seen.get(str(Path(path)))
+    def record(self, path: str, mtime: float, digest: str | None = None) -> None:
+        key = self._key(path)
+        self.seen[key] = mtime
+        if digest is None:
+            self.digests.pop(key, None)
+        else:
+            self.digests[key] = digest
 
     def was_read(self, path: str) -> bool:
-        return str(Path(path)) in self.seen
+        return self._key(path) in self.seen
+
+    def changed_since_read(self, path: str, mtime: float, digest: str) -> bool:
+        key = self._key(path)
+        if key in self.digests:
+            return self.digests[key] != digest
+        seen = self.seen.get(key)
+        return seen is not None and abs(mtime - seen) > MTIME_TOLERANCE_S
 
 
 @dataclass
@@ -194,6 +223,11 @@ class Tool(Generic[In]):
     # --- rendering (plain-string defaults; UI may override with widgets) ---
     def render_call(self, input: In) -> str:  # noqa: A002
         return f"⏺ {self.name}"
+
+    def render_diff(self, input: In, ctx: ToolCtx) -> str:  # noqa: A002
+        """What the call would change, as a unified diff, for the permission
+        prompt -- "" for a tool that does not change file content."""
+        return ""
 
     def render_result(self, result: ToolResult) -> str:
         return result.content

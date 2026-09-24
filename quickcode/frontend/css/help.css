@@ -21,7 +21,7 @@
  *   card and the box for a tool is the same amber. Learning the diagram is
  *   therefore learning the colour language of the rest of the app.
  *
- * The .help-* prefix is already taken by the keyboard modal in app.css:594.
+ * The .help-* prefix is already taken by the keyboard modal in modals.css.
  * Everything here is .hp-.
  */
 
@@ -215,7 +215,7 @@
 .hp-edge-label b { color: var(--fg-dim); font-weight: 400; }
 
 /* Your message and the model's turn take the hues the transcript already gives
-   them (app.css:23-31), so the diagram is readable in the vocabulary of the
+   them (tokens.css), so the diagram is readable in the vocabulary of the
    chat window rather than in one invented for this page. */
 .hp-node[data-node="you"], .hp-key-swatch[data-node="you"] {
   --kind-hue: var(--chip-user);
@@ -376,6 +376,28 @@
 .hp-trace-step { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
 .hp-trace li[data-hit="1"] .hp-trace-step { color: var(--fg); }
 .hp-trace-why code { font-family: var(--mono); overflow-wrap: anywhere; }
+/* A subcommand's own checks, and a command another command runs, nest under it. */
+.hp-trace-sub { margin-top: 4px; }
+.hp-trace-sub li { grid-template-columns: 16px minmax(80px, 130px) minmax(0, 1fr); }
+.hp-trace-decision {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600; margin-right: 4px;
+}
+.hp-trace-decision[data-outcome="allow"] { color: var(--success); }
+.hp-trace-decision[data-outcome="ask"] { color: var(--warning); }
+.hp-trace-decision[data-outcome="deny"] { color: var(--error); }
+.hp-verdict-summary { margin: 2px 0 4px; }
+/* What changes the answer from outside the gate: an untrusted project's
+   ignored allow rules, hooks, a tool the session never offers. */
+.hp-explain-extra {
+  font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+  border-left: 2px solid var(--line-strong); padding: 2px 0 2px 9px; margin: 8px 0 0;
+}
+.hp-explain-extra[data-kind="hint"] { border-left-color: var(--warning); }
+.hp-explain-extra[data-kind="invalid"] { border-left-color: var(--error); }
+.hp-check {
+  display: flex; align-items: baseline; gap: 7px; margin: -2px 0 12px;
+  font-size: 11.5px; color: var(--fg-dim);
+}
 
 /* The mode comparison table. Wide, so it scrolls inside itself. */
 .hp-table-wrap { overflow-x: auto; overscroll-behavior-x: contain; margin: 10px 0; }

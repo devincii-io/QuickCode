@@ -60,7 +60,7 @@ Kind = Literal[
 ]
 
 Source = Literal[
-    "internal",   # shipped with QuickCode, declared in manifest.py
+    "internal",   # shipped with QuickCode, declared in kernel/manifest/
     "entrypoint", # third-party, discovered via importlib entry points
     "config",     # data-driven, e.g. an MCP server from settings.json
     "authored",   # a markdown file the user wrote, in .quickcode/plugins/

@@ -3,6 +3,7 @@
 // can touch the disk.
 
 import { api, currentProject } from "../api.js";
+import { diffNode, unifiedLines } from "../diff.js";
 import { subscribe } from "../store.js";
 import { debounce, el, esc } from "../util.js";
 
@@ -89,8 +90,10 @@ export const panel = {
         body.innerHTML = `<div class="pf-empty">No textual diff.</div>`;
         return;
       }
-      body.innerHTML = `<pre class="pf-pre">${diffHtml(data.diff)}</pre>` +
-        (data.truncated ? `<div class="pf-trunc">diff truncated</div>` : "");
+      const pre = diffNode(unifiedLines(data.diff));
+      pre.classList.add("pf-pre");
+      body.replaceChildren(pre);
+      if (data.truncated) body.append(el(`<div class="pf-trunc">diff truncated</div>`));
     }
 
     refresh();
@@ -111,19 +114,8 @@ export const panel = {
         return;
       }
       if (kind === "event" && ev.type === "tool_result" && WRITING_TOOLS.has(ev.name)) bump();
+      // A rewind writes files too, from the user's side rather than a tool's.
+      if (kind === "event" && ev.type === "files_rewound") bump();
     });
   },
 };
-
-// Escape first, colorize second — never the other way round.
-function diffHtml(text) {
-  return text.split("\n").map((line) => {
-    const safe = esc(line);
-    if (line.startsWith("+++") || line.startsWith("---")) return `<span class="d-meta">${safe}</span>`;
-    if (line.startsWith("@@")) return `<span class="d-hunk">${safe}</span>`;
-    if (line.startsWith("+")) return `<span class="d-add">${safe}</span>`;
-    if (line.startsWith("-")) return `<span class="d-del">${safe}</span>`;
-    if (line.startsWith("diff ") || line.startsWith("index ")) return `<span class="d-meta">${safe}</span>`;
-    return safe;
-  }).join("\n");
-}

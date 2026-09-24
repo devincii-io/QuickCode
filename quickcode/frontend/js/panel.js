@@ -1,18 +1,20 @@
-// The right-hand side panel: one tab strip over five panes — Trajectory plus
-// the four panel-contract modules (Agents, Tasks, Files, Usage).
+// The right-hand side panel: one tab strip over six panes — Trajectory plus
+// the five panel-contract modules (Agents, Tasks, Files, Checkpoints, Usage).
 //
 // Trajectory is not special-cased beyond its markup: its DOM lives in
 // index.html (trajectory.js binds to those ids at boot) and this module only
-// shows and hides the pane around it. The other four are mounted once into
+// shows and hides the pane around it. The others are mounted once into
 // containers they own outright, per the panel contract.
 //
 // Open state, active tab, width and maximization are remembered per project,
 // because "I keep the trajectory open in this repo" is a per-repo habit.
 
 import { panel as agentsPanel } from "./panels/agents.js";
+import { panel as checkpointsPanel } from "./panels/checkpoints.js";
 import { panel as filesPanel } from "./panels/files.js";
 import { panel as tasksPanel } from "./panels/tasks.js";
 import { panel as usagePanel } from "./panels/usage.js";
+import { markSelected, wireTabs } from "./ui/tabs.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -26,6 +28,8 @@ const TABS = [
   { id: agentsPanel.id, title: agentsPanel.title, icon: agentsPanel.icon, module: agentsPanel },
   { id: tasksPanel.id, title: tasksPanel.title, icon: tasksPanel.icon, module: tasksPanel },
   { id: filesPanel.id, title: filesPanel.title, icon: filesPanel.icon, module: filesPanel },
+  { id: checkpointsPanel.id, title: checkpointsPanel.title, icon: checkpointsPanel.icon,
+    module: checkpointsPanel },
   { id: usagePanel.id, title: usagePanel.title, icon: usagePanel.icon, module: usagePanel },
 ];
 
@@ -65,16 +69,12 @@ function apply() {
   main.classList.toggle("panel-max", state.open && state.max);
   aside.style.setProperty("--panel-w", state.width + "px");
   aside.setAttribute("aria-hidden", state.open ? "false" : "true");
+  markSelected(tabsEl, state.tab);
+  // The strip keeps every tab's name and scrolls when they do not fit, so the
+  // tab you just chose has to bring itself back into view.
+  const btn = tabsEl.querySelector(`[data-tab="${state.tab}"]`);
+  if (btn && state.open) btn.scrollIntoView({ inline: "nearest", block: "nearest" });
   for (const t of TABS) {
-    const btn = tabsEl.querySelector(`[data-tab="${t.id}"]`);
-    if (btn) {
-      const on = t.id === state.tab;
-      btn.classList.toggle("active", on);
-      btn.setAttribute("aria-selected", on ? "true" : "false");
-      // The strip keeps every tab's name and scrolls when they do not fit, so
-      // the tab you just chose has to bring itself back into view.
-      if (on && state.open) btn.scrollIntoView({ inline: "nearest", block: "nearest" });
-    }
     const pane = main.querySelector(`.panel-pane[data-pane="${t.id}"]`);
     if (pane) pane.classList.toggle("active", t.id === state.tab);
   }
@@ -148,6 +148,8 @@ export function initPanel() {
     if (!b) return;
     openPanelTab(b.dataset.tab);
   });
+  wireTabs(tabsEl, (tab) => main.querySelector(`.panel-pane[data-pane="${tab.dataset.tab}"]`),
+    openPanelTab);
 
   $("btn-panel-close").addEventListener("click", () => togglePanel(false));
   $("btn-panel-max").addEventListener("click", () => toggleMaximize());

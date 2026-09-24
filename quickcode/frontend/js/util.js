@@ -21,10 +21,44 @@ export function fmtTokens(n) {
   return String(n);
 }
 
+/** A count with the reader's thousands separator; missing reads as 0. */
+export function fmtCount(n) {
+  return Number(n || 0).toLocaleString();
+}
+
+/** "734 ms", "3.2 s", "12m 34s", "3h 7m". Like fmtTokens, the rounded value
+ *  picks the unit, so nothing reads "1000 ms" or "60.0 s". */
 export function fmtMs(ms) {
-  if (ms == null) return "";
-  if (ms < 1000) return ms + " ms";
-  return (ms / 1000).toFixed(1) + " s";
+  if (ms == null || Number.isNaN(Number(ms))) return "";
+  const v = Math.max(0, Number(ms));
+  if (v < 999.5) return Math.round(v) + " ms";
+  if (v < 59_950) return (v / 1000).toFixed(1) + " s";
+  const tot = Math.round(v / 1000);
+  const h = Math.floor(tot / 3600), m = Math.floor((tot % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m ${tot % 60}s`;
+}
+
+/** "18.2 KB": a size on disk or on the wire. */
+export function fmtBytes(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v < 1024) return `${v} B`;
+  const units = ["KB", "MB", "GB"];
+  let x = v / 1024;
+  let i = 0;
+  while (x >= 1023.95 && i < units.length - 1) { x /= 1024; i++; }
+  return `${x.toFixed(1)} ${units[i]}`;
+}
+
+/** "45.6k chars": the length of a text, which is not its size in bytes. */
+export function fmtChars(n) {
+  if (n < 1000) return `${n} chars`;
+  if (n < 999_950) return `${(n / 1000).toFixed(1)}k chars`;
+  return `${(n / 1e6).toFixed(2)}M chars`;
+}
+
+/** "1 file", "3 files", "2 matches". */
+export function plural(n, one, many = `${one}s`) {
+  return `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
 }
 
 export function fmtCost(usd) {
@@ -55,7 +89,7 @@ export function oneLine(s, max = 200) {
   return String(s ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-// Paint a theme (the eleven config colors) onto the CSS variables app.css
+// Paint a theme (the eleven config colors) onto the CSS variables tokens.css
 // defines. Shared by boot and by the Settings appearance picker, which applies
 // a preset live before persisting it.
 const THEME_VARS = {
@@ -88,7 +122,7 @@ export function applyTheme(theme) {
   // The eleven colours are only half a theme: --fg-dim, the two --line weights
   // and the eight --chip-* roles are *derived*, and a percentage of light ink
   // on a dark page does not survive being asked to be dark ink on a light one.
-  // css/app.css carries a second set of them under [data-theme="light"]; this
+  // css/tokens.css carries a second set of them under [data-theme="light"]; this
   // is the switch. It reads the background's luminance rather than the preset's
   // name because every colour is hand-editable — a user's own light palette is
   // not called "light" and still has to land on the light values. Sitting on

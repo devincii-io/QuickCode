@@ -3,8 +3,9 @@
 Layered the same way permissions and MCP servers already are
 (``core/permissions.py``, ``plugins/mcp.py``): the user's
 ``~/.quickcode/settings.json`` underneath, the project's
-``.quickcode/settings.json`` on top. Writes always land in the project file --
-a plugin tuned for one repo has no business changing another.
+``.quickcode/settings.json`` on top. Writes land in the project file -- a
+plugin tuned for one repo has no business changing another -- except the switch
+of one of the user's own hooks, which lives with the hook (``save_entry``).
 
 Shape, alongside the existing ``permissions`` and ``mcpServers`` keys::
 
@@ -22,19 +23,28 @@ trip through this one.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
 from quickcode.config import CONFIG_DIR
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import (
+    LOCAL_SETTINGS_IGNORED,
+    PROJECT_SETTINGS_IGNORED,
+    Problem,
+    Provenance,
+)
+from quickcode.kernel.settings_file import (
+    LOCAL_SETTINGS_FILENAME,
+    SETTINGS_DIRNAME,
+    SETTINGS_FILENAME,
+    read_settings,
+    write_project_settings,
+    write_settings,
+)
 
 log = logging.getLogger("quickcode.kernel.state")
 
-SETTINGS_DIRNAME = ".quickcode"
-SETTINGS_FILENAME = "settings.json"
-LOCAL_SETTINGS_FILENAME = "settings.local.json"
 PLUGINS_KEY = "plugins"
 PRESETS_KEY = "presets"
 
@@ -51,19 +61,6 @@ def local_settings_path(cwd: Path) -> Path:
     """The gitignored sibling. Permissions and MCP read it; plugin and preset
     state deliberately do not -- see ``local_settings_problems``."""
     return Path(cwd) / SETTINGS_DIRNAME / LOCAL_SETTINGS_FILENAME
-
-
-def _read(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        # A hand-edited settings file with a stray comma must not take the app
-        # down; the layer is skipped and the user is told once, in the log.
-        log.warning("ignoring unreadable settings at %s: %s", path, exc)
-        return {}
-    return raw if isinstance(raw, dict) else {}
 
 
 def _entries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -85,15 +82,21 @@ def _project_entries(cwd: Path, trusted: bool | None) -> dict[str, dict[str, Any
     """
     from quickcode.security import trust
 
-    entries = _entries(_read(project_settings_path(cwd)))
+    entries = _entries(read_settings(project_settings_path(cwd)))
     if trust.resolve_trust(cwd, trusted):
         return entries
 
     out: dict[str, dict[str, Any]] = {}
     refused: list[str] = []
     for plugin_id, entry in entries.items():
+        if entry.get("enabled") is False and not trust.project_may_disable(plugin_id):
+            # Switching off one of the user's own hooks is the one ``enabled``
+            # value that widens; see ``trust.GATED_DISABLE_PREFIXES``.
+            refused.append(f"{plugin_id}.enabled")
+            entry = {k: v for k, v in entry.items() if k != "enabled"}
         if plugin_id not in trust.GATED_PLUGIN_IDS:
-            out[plugin_id] = entry
+            if entry:
+                out[plugin_id] = entry
             continue
         settings = entry.get("settings")
         settings = settings if isinstance(settings, dict) else {}
@@ -120,7 +123,7 @@ def load_state(cwd: Path | None, *, trusted: bool | None = None) -> dict[str, di
     should not silently discard the user's setting for the others.
     """
     merged: dict[str, dict[str, Any]] = {}
-    layers = [_entries(_read(user_settings_path()))]
+    layers = [_entries(read_settings(user_settings_path()))]
     if cwd is not None:
         layers.append(_project_entries(cwd, trusted))
 
@@ -146,7 +149,7 @@ def layer_states(
     """
     out: list[tuple[str, Path, dict[str, dict[str, Any]]]] = []
     user = user_settings_path()
-    out.append(("user", user, _entries(_read(user))))
+    out.append(("user", user, _entries(read_settings(user))))
     if cwd is not None:
         project = project_settings_path(cwd)
         out.append(("project", project, _project_entries(cwd, trusted)))
@@ -196,13 +199,13 @@ def local_settings_problems(cwd: Path | None) -> list[Problem]:
     path = local_settings_path(cwd)
     if not path.exists():
         return []
-    raw = _read(path)
+    raw = read_settings(path)
     found = [key for key in (PLUGINS_KEY, PRESETS_KEY) if isinstance(raw.get(key), dict)]
     if not found:
         return []
     return [
         Problem(
-            code="local_settings_ignored",
+            code=LOCAL_SETTINGS_IGNORED,
             severity="info",
             message=(
                 f"{path.name} contains {' and '.join(found)}, which is not read "
@@ -236,7 +239,7 @@ def untrusted_project_problems(
         return []
     return [
         Problem(
-            code="project_settings_ignored",
+            code=PROJECT_SETTINGS_IGNORED,
             severity="warning",
             message=(
                 f"this project sets {len(keys)} permission "
@@ -275,38 +278,68 @@ def prompt_overrides(cwd: Path | None) -> dict[str, str]:
 
 def save_entry(cwd: Path, plugin_id: str, *, enabled: bool | None = None,
                settings: dict[str, Any] | None = None) -> None:
-    """Merge one plugin's state into the project settings file.
+    """Merge one plugin's state into the settings file it belongs in.
 
     Everything else in the file -- permissions, mcpServers, other plugins --
-    is read, updated in place and written back, so this never clobbers config
-    it does not own.
+    is left as it was, so this never clobbers config it does not own.
+
+    That is the project file, except for one of the user's own hooks: its
+    switch lives beside the hook, in the user's file. Written to the project,
+    switching it off did nothing in an untrusted project -- the gate refuses a
+    project's ``enabled: false`` for a user hook -- so the hook kept running
+    and the switch came back on at the next load.
     """
-    path = project_settings_path(cwd)
-    raw = _read(path)
-    section = raw.get(PLUGINS_KEY)
-    if not isinstance(section, dict):
-        section = {}
-    entry = section.get(plugin_id)
-    if not isinstance(entry, dict):
-        entry = {}
+    def merge(raw: dict[str, Any]) -> None:
+        section = raw.get(PLUGINS_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        entry = section.get(plugin_id)
+        if not isinstance(entry, dict):
+            entry = {}
 
+        if enabled is not None:
+            entry["enabled"] = bool(enabled)
+        if settings:
+            current = entry.get("settings")
+            if not isinstance(current, dict):
+                current = {}
+            current.update(settings)
+            entry["settings"] = current
+
+        section[plugin_id] = entry
+        raw[PLUGINS_KEY] = section
+
+    if not _user_owned(plugin_id):
+        write_project_settings(cwd, merge)
+        return
+    write_settings(user_settings_path(), merge)
     if enabled is not None:
-        entry["enabled"] = bool(enabled)
-    if settings:
-        current = entry.get("settings")
-        if not isinstance(current, dict):
-            current = {}
-        current.update(settings)
-        entry["settings"] = current
+        _clear_project_switch(cwd, plugin_id)
 
-    section[plugin_id] = entry
-    raw[PLUGINS_KEY] = section
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # The project settings file is covered by the trust hash, so saving a
-    # setting from the Settings page untrusted the project it was saved in --
-    # silently switching off its allow rules and its MCP servers. A change the
-    # user made here is not a reason to stop trusting the project.
-    from quickcode.security.trust import keep_trust
 
-    with keep_trust(cwd):
-        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+def _user_owned(plugin_id: str) -> bool:
+    """A plugin whose state is the user's rather than a project's: exactly the
+    ones a project may not switch off (``trust.GATED_DISABLE_PREFIXES``)."""
+    from quickcode.security import trust
+
+    return not trust.project_may_disable(plugin_id)
+
+
+def _clear_project_switch(cwd: Path, plugin_id: str) -> None:
+    """Drop the project file's ``enabled`` for ``plugin_id``: the project layer
+    outranks the user's, so a switch left there would decide instead."""
+    if "enabled" not in _entries(read_settings(project_settings_path(cwd))).get(plugin_id, {}):
+        return
+
+    def drop(raw: dict[str, Any]) -> None:
+        section = raw.get(PLUGINS_KEY)
+        entry = section.get(plugin_id) if isinstance(section, dict) else None
+        if not isinstance(entry, dict):
+            return
+        entry.pop("enabled", None)
+        if not entry:
+            del section[plugin_id]
+        if not section:
+            del raw[PLUGINS_KEY]
+
+    write_project_settings(cwd, drop)

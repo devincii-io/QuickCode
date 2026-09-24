@@ -1,105 +1,5 @@
-/* QuickCode web UI — dark, dense, trace-first. Theme colors arrive as CSS
-   variables from /api/bootstrap (config theme); defaults below match the
-   "warm" preset so the shell looks right before bootstrap lands. */
-
-:root {
-  --bg: #15140f;
-  --surface: #1b1a15;
-  --panel: #24221b;
-  --boost: #2b2820;
-  --fg: #e9e3d5;
-  --primary: #c8973f;
-  --secondary: #8fae74;
-  --accent: #e08a4b;
-  --success: #8fb56a;
-  --warning: #d9a441;
-  --error: #d76c53;
-
-  --fg-dim: color-mix(in srgb, var(--fg) 55%, transparent);
-  --fg-faint: color-mix(in srgb, var(--fg) 32%, transparent);
-  --line: color-mix(in srgb, var(--fg) 10%, transparent);
-  --line-strong: color-mix(in srgb, var(--fg) 18%, transparent);
-
-  --chip-system: #a884e0;
-  --chip-user: #6da8e8;
-  --chip-context: #56b8a8;
-  --chip-assistant: var(--secondary);
-  --chip-tool: var(--primary);
-  --chip-review: #e07a9a;
-  --chip-agent: #58bdd4;
-  --chip-error: var(--error);
-  --chip-meta: color-mix(in srgb, var(--fg) 40%, transparent);
-
-  --mono: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
-  --sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --radius: 10px;
-
-  /* Elevation and the dialog scrim. Both were literal rgba(0,0,0,…) in five
-     files; a half-opaque black smudge is right under a near-black page and
-     wrong over a white one, so they are tokens now. Dark mixes from --bg,
-     which is already the darkest thing in the palette; the light block mixes
-     from --fg, because a shadow is ink either way and --bg is paper there. */
-  --shadow-1: 0 12px 34px color-mix(in srgb, var(--bg) 62%, transparent);
-  --shadow-2: 0 18px 60px color-mix(in srgb, var(--bg) 66%, transparent);
-  --scrim: color-mix(in srgb, var(--bg) 62%, transparent);
-}
-
-/* ---------- the light side of the same palette ----------
- *
- * /api/bootstrap sends eleven colours and nothing else, so everything derived
- * above — the four --fg/--line alphas and the eight --chip-* roles — was fixed
- * against a near-black background and stayed there when someone picked the
- * light preset. On white it measured: --line 1.21:1, --fg-dim 3.65:1, and
- * every chip between 2.18:1 and 2.98:1. Borders vanished and the cyan subagent
- * colour was the worst of them.
- *
- * A percentage of ink on paper is not the mirror of a percentage of paper on
- * ink, so the numbers cannot simply be reused — each one below is re-aimed and
- * measured against --surface (the lightest thing anything sits on, therefore
- * the worst case) with --panel and --boost checked behind it. The targets are
- * WCAG's: 4.5:1 for text, 3:1 for a boundary that means something.
- *
- * applyTheme() in js/util.js stamps data-theme from the *luminance* of the
- * background it was handed, not from a preset name — all eleven colours are
- * hand-editable, so a light palette the user built themselves and called
- * anything at all still lands here. No attribute means the dark values above,
- * which is what the shipped default wants.
- *
- * Whoever changes a number here: run the contrast check before and after. The
- * floors are the point, not the exact percentages.
- */
-:root[data-theme="light"] {
-  color-scheme: light;
-
-  --fg-dim:   color-mix(in srgb, var(--fg) 66%, transparent);  /* 5.13:1 — body */
-  --fg-faint: color-mix(in srgb, var(--fg) 52%, transparent);  /* 3.33:1 — meta */
-  --line:     color-mix(in srgb, var(--fg) 42%, transparent);  /* 2.53:1 — hairline */
-  --line-strong: color-mix(in srgb, var(--fg) 55%, transparent); /* 3.65:1 — edge */
-
-  /* Same five hues, darkened against black until each clears 4.5:1 on --panel
-     (the darkest surface a chip is drawn on) — 61-72% of the dark value. They
-     encode a role, so what had to survive the darkening is the hue: mixing
-     towards black moves lightness only, and the five stay as far apart in hue
-     as they were. Their luminances are deliberately near-identical, which is
-     also true of the dark set. */
-  --chip-system:  #795fa1;   /* violet — 4.54:1 on panel */
-  --chip-user:    #476d97;   /* blue   — 4.62:1 */
-  --chip-context: #37766c;   /* teal   — 4.54:1 */
-  --chip-review:  #9d556c;   /* rose   — 4.56:1 */
-  --chip-agent:   #367381;   /* cyan   — 4.59:1 */
-  --chip-meta: color-mix(in srgb, var(--fg) 55%, transparent);  /* 3.65:1 */
-
-  /* Far softer than the dark set: on paper a card is lifted by a hint, and the
-     60px/50%-black drop the dark theme wants reads as a bruise. Two layers so
-     the near shadow gives the edge and the far one gives the lift. */
-  --shadow-1:
-    0 2px 5px color-mix(in srgb, var(--fg) 9%, transparent),
-    0 8px 22px color-mix(in srgb, var(--fg) 11%, transparent);
-  --shadow-2:
-    0 3px 9px color-mix(in srgb, var(--fg) 10%, transparent),
-    0 14px 44px color-mix(in srgb, var(--fg) 15%, transparent);
-  --scrim: color-mix(in srgb, var(--fg) 38%, transparent);
-}
+/* QuickCode web UI — dark, dense, trace-first. The theme variables live in
+   css/tokens.css, dialogs, menus and toasts in css/modals.css. */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
@@ -172,7 +72,10 @@ textarea, input { font: inherit; color: inherit; }
 
 /* markdown */
 .bubble p { margin: 0 0 8px; }
-.bubble p:last-child { margin-bottom: 0; }
+/* copy.js appends its button to the bubble, so the closing paragraph is no
+   longer :last-child; it is the one the button follows. */
+.bubble p:last-child,
+.bubble > p:has(+ .copy-btn:last-child) { margin-bottom: 0; }
 .bubble h1, .bubble h2, .bubble h3 { margin: 12px 0 6px; line-height: 1.25; }
 .bubble h1 { font-size: 18px; } .bubble h2 { font-size: 16px; } .bubble h3 { font-size: 14.5px; }
 .bubble ul, .bubble ol { margin: 0 0 8px 22px; }
@@ -221,9 +124,12 @@ textarea, input { font: inherit; color: inherit; }
 .tool-body .lbl { font-size: 11px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .6px; margin: 8px 0 4px; }
 .tool-body .lbl:first-child { margin-top: 0; }
 
-/* diff coloring inside tool bodies */
+/* diff coloring (js/diff.js): tool bodies and the permission prompt */
 .diff-add { color: var(--success); }
 .diff-del { color: var(--error); }
+.diff-hunk { color: var(--primary); }
+.diff-file { color: var(--fg-dim); font-weight: 600; }
+.diff-note { color: var(--fg-faint); font-style: italic; }
 
 /* subagent cards */
 .agent-card {
@@ -436,11 +342,11 @@ textarea, input { font: inherit; color: inherit; }
 /* ---------- the connection banner ----------
    Docked at the top of the window rather than inside the workspace: a server
    that has stopped is worth knowing about from Configuration and Help too, and
-   those views cover the workspace. It sits above everything except a modal
-   backdrop, and it takes pointer events only on the card itself so it can
-   never eat a click meant for the chrome underneath. */
+   those views cover the workspace. Its place among the overlays is in
+   css/tokens.css (--z-banner), and it takes pointer events only on the card
+   itself so it can never eat a click meant for the chrome underneath. */
 .conn-host {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 80;
+  position: fixed; top: 0; left: 0; right: 0; z-index: var(--z-banner);
   display: flex; justify-content: center; padding: 8px 12px;
   pointer-events: none;
 }
@@ -574,27 +480,6 @@ textarea, input { font: inherit; color: inherit; }
 }
 .trust-foot .btn:disabled { opacity: .5; cursor: default; }
 
-/* ---------- modals ---------- */
-.modal-backdrop {
-  position: fixed; inset: 0; background: var(--scrim); display: grid;
-  place-items: center; z-index: 40; animation: fadein .12s ease-out;
-}
-@keyframes fadein { from { opacity: 0; } }
-.modal {
-  background: var(--surface); border: 1px solid var(--line-strong);
-  border-radius: 14px; width: min(720px, 92vw); max-height: 84vh;
-  display: flex; flex-direction: column; overflow: hidden;
-  box-shadow: var(--shadow-2);
-}
-.modal-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 13px 18px; border-bottom: 1px solid var(--line); font-weight: 600;
-}
-.modal-body { padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain; }
-.modal-foot {
-  display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px;
-  border-top: 1px solid var(--line);
-}
 .btn {
   padding: 6px 16px; border-radius: 8px; background: var(--panel); font-size: 13px;
 }
@@ -603,77 +488,11 @@ textarea, input { font: inherit; color: inherit; }
 .btn.danger { background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error); }
 .btn.success { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 
-/* permission modal specifics */
-.perm-preview {
-  font-family: var(--mono); font-size: 12.5px; background: var(--bg);
-  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
-  white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow-y: auto;
-  margin: 10px 0;
-}
-.perm-tool { font-family: var(--mono); color: var(--primary); font-weight: 700; }
-.deny-input {
-  width: 100%; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; margin-top: 8px;
-}
-/* A rename that was refused says so under the field it was typed in — the form
-   is still on screen, so the message has a home and does not need a toast. */
-.rn-err:not(:empty) { margin-top: 8px; font-size: 12px; color: var(--error); }
-
-/* dropdown menus (mode / model) */
-.menu {
-  position: fixed; z-index: 50; background: var(--surface);
-  border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
-  box-shadow: var(--shadow-2);
-  min-width: min(300px, calc(100vw - 24px)); max-width: min(420px, calc(100vw - 24px));
-  max-height: 60vh; display: flex; flex-direction: column;
-}
-/* The search box is a fixed header over the scrolling list, so a 400-model
-   catalog scrolls inside the card and never carries the box out of sight. */
-.menu-search {
-  flex: none; margin: 8px; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 6px 10px; font-size: 13px; outline: none;
-}
-.menu-list {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px;
-  overscroll-behavior: contain;   /* reaching the end must not scroll the chat */
-}
-.menu-foot { flex: none; border-top: 1px solid var(--line); padding: 4px; }
-.menu-item {
-  display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 8px;
-}
-.menu-item:hover, .menu-item.hover { background: var(--panel); }
-.menu-item .mi-title { font-weight: 600; font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
-/* Long ids ellipsize instead of pushing the checkmark out of the card. */
-.menu-item .mi-name {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.menu-item .mi-title .check { margin-left: auto; flex: none; color: var(--success); }
-.menu-item .mi-desc { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
-.menu-item .mi-meta {
-  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* settings modal */
-/* Bounded, so a long page scrolls beside the tab rail instead of carrying it
-   off the top of the dialog. */
-.settings-layout { display: flex; min-height: 380px; max-height: 74vh; }
-.settings-nav {
-  flex: 0 0 150px; border-right: 1px solid var(--line); padding: 10px 8px;
-  display: flex; flex-direction: column; gap: 2px; overflow-y: auto;
-}
-.settings-nav button {
-  text-align: left; padding: 7px 12px; border-radius: 8px; color: var(--fg-dim); font-size: 13px;
-}
-.settings-nav button.active { background: var(--panel); color: var(--fg); }
-.settings-content { flex: 1; min-width: 0; padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain; }
+/* settings fields */
 .set-filter {
   width: 100%; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; margin-bottom: 10px;
 }
-.set-count { font-size: 11.5px; color: var(--fg-faint); margin-bottom: 6px; }
-/* The catalog scrolls on its own so the filter above it stays reachable. */
-.set-scroll { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
 .set-field { margin-bottom: 14px; }
 /* The label and the sentence under it were the same weight and nearly the same
    colour, so a field read as one grey paragraph with a box in it. The label is
@@ -693,19 +512,6 @@ textarea, input { font: inherit; color: inherit; }
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none;
 }
 .set-field select { padding-right: 26px; }   /* the arrow lives there */
-/* The old flat plugin list lived here; Settings now renders plugins from the
-   kernel API and styles them in css/settings.css. */
-
-/* sessions modal list */
-.session-row {
-  display: flex; gap: 12px; align-items: baseline; width: 100%; text-align: left;
-  padding: 9px 12px; border-radius: 8px;
-}
-.session-row:hover { background: var(--panel); }
-.session-row .s-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-row .s-meta { color: var(--fg-faint); font-size: 11.5px; font-family: var(--mono); flex: none; }
-.session-row .s-live { color: var(--success); font-size: 11px; flex: none; }
-
 /* task board (floating card at top of chat when tasks exist) */
 .task-strip {
   max-width: 860px; margin: 0 auto 12px; border: 1px solid var(--line);
@@ -716,30 +522,6 @@ textarea, input { font: inherit; color: inherit; }
 .task-item .t-mark { flex: none; }
 .task-item.st-completed { color: var(--fg-faint); text-decoration: line-through; }
 .task-item.st-in_progress { color: var(--warning); }
-
-/* slash-command menu (anchored above the composer) */
-.slash-menu { max-width: none; min-width: 240px; }
-.slash-menu .menu-item { padding: 7px 12px; }
-.slash-menu .sm-line { display: flex; gap: 8px; align-items: baseline; }
-.slash-menu .sm-cmd { font-family: var(--mono); font-size: 13px; color: var(--primary); font-weight: 600; }
-.slash-menu .sm-arg { font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint); }
-.slash-menu .sm-desc { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
-.slash-hint {
-  border-top: 1px solid var(--line); padding: 5px 12px; flex: none;
-  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
-}
-
-/* help modal */
-.help-sec { margin-bottom: 18px; }
-.help-sec:last-child { margin-bottom: 0; }
-.help-sec h4 {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
-  color: var(--fg-faint); margin-bottom: 6px; font-weight: 600;
-}
-.help-row { display: flex; gap: 14px; align-items: baseline; padding: 3px 0; font-size: 13px; }
-.help-key { flex: 0 0 210px; font-family: var(--mono); font-size: 12px; color: var(--primary); }
-.help-desc { color: var(--fg-dim); }
-.help-note { font-size: 12.5px; color: var(--fg-dim); }
 
 /* appearance picker (Settings → Appearance) */
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -756,134 +538,6 @@ textarea, input { font: inherit; color: inherit; }
   font-size: 12.5px; text-transform: capitalize;
 }
 .tc-name .check { margin-left: auto; color: var(--success); }
-
-/* menus: separator and inert note rows */
-.menu-sep { height: 1px; background: var(--line); margin: 4px 6px; }
-.menu-note { padding: 9px 12px; font-size: 12.5px; color: var(--fg-dim); }
-
-/* A menu entry that carries its own actions: the label still fills the row,
-   the buttons sit beside it (nesting them inside would be invalid markup). */
-.menu-row { display: flex; align-items: stretch; border-radius: 8px; }
-.menu-row:hover { background: var(--panel); }
-.menu-row .menu-item { flex: 1; min-width: 0; }
-.menu-row.archived .mi-name, .menu-row.archived .mi-meta { opacity: .62; }
-.mi-tag {
-  flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: .4px;
-  color: var(--fg-faint); border: 1px solid var(--line); border-radius: 9px;
-  padding: 0 6px; font-weight: 400;
-}
-.mi-act {
-  flex: none; padding: 0 9px; color: var(--fg-faint); font-size: 12px;
-  border-radius: 8px; opacity: 0; transition: opacity .1s;
-}
-.menu-row:hover .mi-act, .mi-act:focus-visible, .mi-act.armed { opacity: 1; }
-.mi-act:hover { color: var(--fg); background: var(--surface); }
-.mi-del:hover { color: var(--error); }
-.mi-act.armed {
-  color: var(--error); font-family: var(--mono); font-size: 11px;
-  background: color-mix(in srgb, var(--error) 14%, transparent);
-}
-
-/* Footer tools: sweeping abandoned sessions and revealing the archive. */
-.menu-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 8px; }
-.menu-tool {
-  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
-  padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line);
-}
-.menu-tool:hover { color: var(--fg-dim); border-color: var(--line-strong); }
-.menu-tool[aria-pressed="true"] { color: var(--fg-dim); background: var(--panel); }
-.menu-tool.armed {
-  color: var(--error); border-color: color-mix(in srgb, var(--error) 55%, transparent);
-  background: color-mix(in srgb, var(--error) 14%, transparent);
-}
-.menu-err { flex: 1 0 100%; font-size: 11px; color: var(--error); }
-
-/* Multi-select in the session switcher. The box is always there — a checkbox
-   that appears on hover is a control you have to find twice — but it stays
-   quiet until it is ticked. */
-.mi-pick {
-  flex: none; display: grid; place-items: center; padding: 0 4px 0 8px;
-  opacity: .35; transition: opacity .1s;
-}
-.menu-row:hover .mi-pick, .menu-row.picked .mi-pick, .mi-pick:focus-within { opacity: 1; }
-.mi-pick input { accent-color: var(--primary); cursor: pointer; }
-.menu-row.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
-.menu-selbar {
-  flex: 1 0 100%; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
-  padding: 2px 0 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
-}
-.msb-count {
-  font-family: var(--mono); font-size: 10.5px; color: var(--primary); font-weight: 600;
-}
-.msb-hint { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
-.msb-del:hover {
-  color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent);
-}
-
-/* ---------- deleting a project's QuickCode data (js/modals.js) ---------- */
-/* The one destructive action that gets a dialog. It has to answer two
-   questions before the button is pressed: exactly which directory, and what is
-   in it — and it has to say what is *not* going, because "delete the project"
-   is the thing the user is afraid this means. */
-.purge { display: flex; flex-direction: column; gap: 12px; }
-.purge-lead { font-size: 13px; color: var(--fg); }
-.purge-list {
-  display: flex; flex-direction: column; gap: 10px;
-  max-height: 260px; overflow-y: auto;
-  border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px;
-  background: var(--panel);
-}
-.purge-item { display: flex; flex-direction: column; gap: 2px; }
-.purge-name { font-size: 13px; font-weight: 600; }
-.purge-path { font-size: 11.5px; word-break: break-all; }
-.purge-path code { font-family: var(--mono); color: var(--fg-dim); }
-.purge-what { font-size: 11.5px; color: var(--fg-faint); font-family: var(--mono); }
-.purge-safe {
-  font-size: 12px; color: var(--fg-dim); border-left: 3px solid var(--success);
-  padding: 6px 10px; background: color-mix(in srgb, var(--success) 6%, transparent);
-  border-radius: 0 8px 8px 0;
-}
-.purge-safe code { font-family: var(--mono); }
-
-/* ---------- toasts (js/toast.js) ---------- */
-/* Bottom-right, above the composer's menus in z-order but out of the click
-   path: the host itself never takes a pointer event, only the cards do. */
-.toast-host {
-  position: fixed; right: 16px; bottom: 16px; z-index: 90;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-  max-width: min(420px, calc(100vw - 32px)); pointer-events: none;
-}
-.toast {
-  pointer-events: auto;
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 9px 10px 9px 12px; border-radius: var(--radius);
-  border: 1px solid var(--line-strong); background: var(--panel);
-  box-shadow: var(--shadow-1);
-  font-size: 12.5px; line-height: 1.45;
-  animation: toast-in .16s ease-out;
-}
-.toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.toast-x {
-  flex: none; color: var(--fg-faint); font-size: 12px; line-height: 1;
-  padding: 2px 3px; border-radius: 5px;
-}
-.toast-x:hover { color: var(--fg); background: var(--boost); }
-.toast-ok {
-  border-color: color-mix(in srgb, var(--success) 45%, transparent);
-  background: color-mix(in srgb, var(--success) 12%, var(--panel));
-}
-.toast-info { border-color: var(--line-strong); }
-.toast-err {
-  border-color: color-mix(in srgb, var(--error) 55%, transparent);
-  background: color-mix(in srgb, var(--error) 14%, var(--panel));
-  color: var(--fg);
-}
-.toast-out { opacity: 0; transition: opacity .15s ease-in; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
-
-/* @path rows reuse the slash menu, but a path is long where a command is
-   short, so its label wraps instead of stretching the popover. */
-.slash-menu .sm-cmd { overflow-wrap: anywhere; }
 
 /* ---------- native form controls ---------- */
 /*
@@ -984,10 +638,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
    rectangle floating inside .composer-box, which already lights its own edge
    on :focus-within. */
 #input:focus-visible { box-shadow: none; }
-/* The dialog itself is focused on open so Escape works wherever you clicked;
-   it is a programmatic target, not a tab stop, so it draws no ring. */
-.modal:focus { outline: none; }
-
 /* ---- copy affordances & the right-click menu (js/copy.js) ---- */
 
 /* On the block it copies, out of the way until the pointer is in there. A
@@ -1004,7 +654,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .copy-btn:focus-visible { opacity: 1; }
 
 .ctx-menu {
-  position: fixed; z-index: 200; min-width: 180px;
+  position: fixed; z-index: var(--z-ctx); min-width: 180px;
   display: flex; flex-direction: column; gap: 1px;
   padding: 4px; border: 1px solid var(--line-strong); border-radius: 8px;
   background: var(--surface);

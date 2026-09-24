@@ -99,18 +99,3 @@ export function usedByHtml(plugin, ctx = {}) {
     ${inheritNote(plugin, ctx)}
   </section>`;
 }
-
-/** The same block, appended to a host. For callers that build their page by
- *  node rather than by template. */
-export function renderUsedBy(host, plugin, ctx = {}) {
-  const wrap = document.createElement("div");
-  wrap.innerHTML = usedByHtml(plugin, ctx);
-  const node = wrap.firstElementChild;
-  if (node) host.appendChild(node);
-  return node;
-}
-
-/** How many things reach a plugin — for a card badge, without building HTML. */
-export function usedByCount(plugin) {
-  return Array.isArray(plugin?.used_by) ? plugin.used_by.length : 0;
-}

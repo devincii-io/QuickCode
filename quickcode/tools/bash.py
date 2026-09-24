@@ -13,14 +13,14 @@ colors, tty semantics, and correct process-tree kill on timeout. On Windows
 they run on plain pipes, so that a command which reads stdin gets EOF and
 exits instead of waiting for a person who is not there (see ``_use_pty``).
 Either way the tool falls back to a plain subprocess if the PTY backend is
-unavailable. Background execution is not yet supported.
+unavailable. ``run_in_background`` hands the command to the conversation's job
+table instead (``tools/bash_jobs.py``) and returns its id at once.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
-import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -35,6 +35,7 @@ from quickcode.tools.base import (
     ToolResult,
     decode_output,
 )
+from quickcode.tools.bash_jobs import MAX_RUNNING, JobLimitReached
 
 DEFAULT_TIMEOUT_MS = 120_000
 MAX_TIMEOUT_MS = 600_000
@@ -77,7 +78,7 @@ def _use_pty(ctx: ToolCtx) -> bool:
     each turn from an error into a hang that only the timeout ends. Everything
     else the tty buys is spent before the model sees it: colour is stripped
     (``_clean_output``), and a progress bar arrives as carriage-return
-    spam. Process-tree kill works on both paths (``_kill_tree``).
+    spam. Process-tree kill works on both paths (``subproc.kill_tree``).
 
     Speed was the original reason and it turned out to be a smaller and more
     interesting one. ConPTY costs a flat ~3.0 s per command, measured on
@@ -116,7 +117,12 @@ class BashInput(BaseModel):
         description=f"Timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, max {MAX_TIMEOUT_MS}).",
     )
     run_in_background: bool = Field(
-        False, description="Not yet supported in this build; leave False."
+        False,
+        description=(
+            "Start the command detached and return its job id at once, for servers, "
+            "watchers and long builds. Read it with bash_output, stop it with bash_kill. "
+            "timeout_ms does not apply."
+        ),
     )
 
 
@@ -129,7 +135,12 @@ class BashTool(Tool[BashInput]):
         "(falls back to PowerShell), /bin/bash elsewhere. The working directory "
         "persists across calls in this session. Output over 30000 characters "
         "is truncated (head and tail kept). timeout_ms defaults to 120000 and "
-        f"caps at {MAX_TIMEOUT_MS}. run_in_background is not yet supported."
+        f"caps at {MAX_TIMEOUT_MS}. For a command that should keep running -- a dev "
+        "server, a watcher, a build you will check on later -- pass "
+        "run_in_background=true: it returns a job id (bash_1, ...) immediately and "
+        "the command runs on past this turn; read it with bash_output and stop it "
+        f"with bash_kill. At most {MAX_RUNNING} run at once, and all of them are "
+        "stopped when the conversation closes."
     )
     is_read_only: ClassVar[bool] = False
     # Stop must be able to end a command. `run` kills the process tree on the
@@ -162,24 +173,21 @@ class BashTool(Tool[BashInput]):
         first = command.splitlines()[0] if command else ""
         more = " …" if len(command.splitlines()) > 1 or len(first) > 160 else ""
         shown = first[:160] + more
-        return f"⏺ Bash: {shown}" + (f"  — {note}" if note else "")
+        # Said in the dialog because it changes what is being approved: a
+        # command that keeps running after the answer, not one that finishes.
+        label = "Bash (background)" if input.run_in_background else "Bash"
+        return f"⏺ {label}: {shown}" + (f"  — {note}" if note else "")
 
     async def run(self, input: BashInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
-        if input.run_in_background:
-            return ToolResult(
-                content=(
-                    "Error: run_in_background is not yet supported in this build. "
-                    "Re-run with run_in_background=False."
-                ),
-                is_error=True,
-            )
-
         cwd = Path(ctx.extra.get("bash_cwd", ctx.cwd))
 
         stripped = input.command.strip()
         m = _LONE_CD_RE.match(stripped)
         if m:
             return _handle_cd(m.group(1), cwd, ctx)
+
+        if input.run_in_background:
+            return await _start_background(input, cwd, ctx)
 
         timeout_ms = min(max(input.timeout_ms or DEFAULT_TIMEOUT_MS, 1), MAX_TIMEOUT_MS)
         timeout_s = timeout_ms / 1000.0
@@ -195,7 +203,6 @@ class BashTool(Tool[BashInput]):
                 raise PtyNotWorthIt
             session = PtySession(argv, cwd=str(cwd))
             raw_out, returncode, timed_out = await asyncio.to_thread(session.run, timeout_s)
-            text = _clean_output(raw_out)
         except asyncio.CancelledError:
             # Stop, mid-command. Cancelling this coroutine does not reach the
             # child -- `run` is parked in a worker thread and `find /` would
@@ -205,25 +212,17 @@ class BashTool(Tool[BashInput]):
             if session is not None:
                 session.kill()
             raise
-        except Exception:  # noqa: BLE001 - any PTY failure -> subprocess fallback
-            # The fallback needs the same cancellation handling as the PTY
-            # path, and needs it more: this is what a plain `pip install
-            # quickcode` runs, without the `pty` extra. Stop was inert here --
-            # the UI told the user and the model the command had been
-            # interrupted while it ran happily to completion. `holder` is how
-            # this coroutine reaches the process the worker thread started.
-            holder: list = []
+        except Exception:  # noqa: BLE001 - any PTY failure -> plain pipes
+            # Stop has to reach this path too, and `communicate` kills the tree
+            # when it is cancelled: this is what Windows runs by default, and
+            # what a plain `pip install quickcode` runs without the `pty` extra.
             try:
-                return await asyncio.to_thread(
-                    _run_subprocess, argv, str(cwd), timeout_s, timeout_ms, ctx, holder
-                )
-            except asyncio.CancelledError:
-                proc = holder[0] if holder else None
-                if proc is not None and proc.poll() is None:
-                    _kill_tree(proc.pid, ctx)
-                raise
+                raw_out, returncode, timed_out = await _run_pipes(argv, str(cwd), timeout_s)
+            except OSError as exc:
+                return ToolResult(content=f"Error: failed to start command: {exc}",
+                                  is_error=True)
 
-        text = _cap(text)
+        text = _cap(_clean_output(raw_out))
 
         if timed_out:
             msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
@@ -238,6 +237,35 @@ class BashTool(Tool[BashInput]):
             return ToolResult(content=content, is_error=True)
 
         return ToolResult(content=text or "(no output)")
+
+
+async def _start_background(input: BashInput, cwd: Path, ctx: ToolCtx) -> ToolResult:  # noqa: A002
+    jobs = ctx.extra.get("bash_jobs")
+    if jobs is None:
+        return ToolResult(
+            content=(
+                "Error: background jobs are not available in this session. Run the "
+                f"command in the foreground (timeout_ms up to {MAX_TIMEOUT_MS})."
+            ),
+            is_error=True,
+        )
+    try:
+        job = await jobs.start(
+            _build_argv(input.command, ctx), cwd=str(cwd),
+            command=input.command, description=input.description,
+        )
+    except JobLimitReached as exc:
+        return ToolResult(content=f"Error: {exc}", is_error=True)
+    except OSError as exc:
+        return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
+    return ToolResult(
+        content=(
+            f"Started background job {job.job_id}. It keeps running after this call "
+            "returns. Read its output with "
+            f'bash_output(bash_id="{job.job_id}") -- pass wait_s to wait for it to '
+            f'finish -- and stop it with bash_kill(bash_id="{job.job_id}").'
+        ),
+    )
 
 
 def _handle_cd(raw_target: str, cwd: Path, ctx: ToolCtx) -> ToolResult:
@@ -268,8 +296,10 @@ def _handle_cd(raw_target: str, cwd: Path, ctx: ToolCtx) -> ToolResult:
 # PTY still makes programs emit colors / take their tty code paths.
 _ANSI_RE = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC ... BEL/ST
-    r"|\x1b[@-Z\\-_]"  # 2-char escapes (excluding CSI '[')
+    r"|\x1b[PX^_][^\x1b]*\x1b\\"  # DCS/SOS/PM/APC ... ST, payload and all
     r"|\x1b\[[0-?]*[ -/]*[@-~]"  # CSI sequences
+    r"|\x1b[ -/]+[0-~]"  # ESC, intermediates, final: `tput sgr0` ends in ESC ( B
+    r"|\x1b[0-Z\\-~]"  # every other 2-char escape: ESC 7, ESC =, ESC c, ...
 )
 
 
@@ -318,96 +348,36 @@ def _collapse_redraws(line: str) -> str:
     return "".join(buf)
 
 
-def _run_subprocess(
-    argv: list[str], cwd: str, timeout_s: float, timeout_ms: int, ctx: ToolCtx,
-    holder: list | None = None,
-) -> ToolResult:
-    """Fallback path when the PTY backend is unavailable. Plain pipes.
+async def _run_pipes(
+    argv: list[str], cwd: str, timeout_s: float,
+) -> tuple[bytes, int | None, bool]:
+    """Plain pipes, stdin on the null device: ``(output, exit code, timed out)``.
 
-    ``holder`` is filled with the ``Popen`` as soon as it exists, so the caller
-    -- which is waiting on a worker thread and cannot see this frame -- can
-    kill the process tree if the turn is interrupted.
+    The same shape ``PtySession.run`` returns, so both paths share what
+    happens to the result.
     """
-    try:
-        proc = subproc.popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-    except OSError as exc:
-        return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
-    if holder is not None:
-        holder.append(proc)
-
-    try:
-        raw_out, _ = proc.communicate(timeout=timeout_s)
-        returncode = proc.returncode
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc.pid, ctx)
-        try:
-            raw_out, _ = proc.communicate(timeout=5)
-        except Exception:  # noqa: BLE001
-            raw_out = b""
-        text = _clean_output(raw_out)
-        text = _cap(text)
-        msg = f"Error: command timed out after {timeout_ms}ms and was killed.\n{text}"
-        return ToolResult(content=msg, is_error=True)
-
-    text = _clean_output(raw_out)
-    text = _cap(text)
-
-    if returncode != 0:
-        content = (
-            f"Command exited with code {returncode}.\n{text}"
-            if text
-            else f"Command exited with code {returncode}."
-        )
-        return ToolResult(content=content, is_error=True)
-
-    return ToolResult(content=text or "(no output)")
+    proc = await subproc.spawn_async(argv, cwd=cwd, stderr=subproc.STDOUT)
+    raw_out, _, timed_out = await subproc.communicate(proc, timeout=timeout_s)
+    return raw_out, proc.returncode, timed_out
 
 
 def _build_argv(command: str, ctx: ToolCtx) -> list[str]:
     is_windows = ctx.platform.lower().startswith("win")
     if is_windows:
-        bash_path = _find_git_bash()
+        bash_path = _find_git_bash(ctx.cwd)
         if bash_path:
             return [bash_path, "-lc", command]
         return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
     return ["/bin/bash", "-lc", command]
 
 
-def _find_git_bash() -> str | None:
-    import shutil
-
+def _find_git_bash(project: str | Path | None = None) -> str | None:
+    """Git Bash where its installer puts it, else a ``bash.exe`` on ``PATH`` --
+    never one in the current directory or ``project`` (``subproc.find_program``)."""
     for candidate in _GIT_BASH_CANDIDATES:
         if Path(candidate).exists():
             return candidate
-    found = shutil.which("bash")
-    if found:
-        return found
-    return None
-
-
-def _kill_tree(pid: int, ctx: ToolCtx) -> None:
-    if ctx.platform.lower().startswith("win"):
-        try:
-            subproc.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:
-            pass
-    else:
-        import os
-        import signal
-
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
+    return subproc.find_program("bash", cwd=project)
 
 
 def _cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:

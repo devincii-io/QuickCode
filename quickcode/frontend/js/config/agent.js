@@ -17,18 +17,17 @@
 //   denied and a missing prompt section with the reason it is missing. An
 //   omitted key answers nothing.
 
-import { esc } from "../util.js";
+import { esc, fmtCount as num } from "../util.js";
 import { chip, flash, openPluginView, splitError, tierBadge } from "../settings/ui.js";
 import { renderSettingsForm } from "../settings/fields.js";
-import { sigilHtml } from "./kinds.js";
+import { editableFile, sigilHtml } from "./kinds.js";
 import { mountPreview } from "./preview.js";
 import { openToolPicker } from "./toolpicker.js";
 import { duplicatePlugin } from "./create/scaffold.js";
 import { usedByHtml } from "./usedby.js";
+import { store } from "../store.js";
 
 export const ORCHESTRATOR = "@orchestrator";
-
-const num = (n) => Number(n || 0).toLocaleString();
 
 // ---- provenance -----------------------------------------------------------
 
@@ -109,10 +108,13 @@ function instructionsHtml(d) {
         <span class="wb-body-count"></span>
       </div>
       <p class="wb-note block">Typing here re-renders the preview from the
-        server. Saving the body to disk is the authoring pass — this agent's
-        definition is
-        <code>${esc(d.path || "built into QuickCode")}</code>${d.path
-          ? "" : ", and a built-in definition is duplicated rather than edited"}.</p>`}
+        server and saves nothing. This agent's definition is
+        <code>${esc(d.path || "built into QuickCode")}</code>: ${editableFile(d.path)
+          ? `to keep a change, <a class="k-link" href="#/config/edit/${
+              encodeURIComponent(`agent.${d.id}`)}">edit the file</a>`
+          : d.path
+            ? "a file in the older agents directory, which this editor does not open — Duplicate makes a copy under plugins/ that it does"
+            : "a built-in definition is duplicated rather than edited"}.</p>`}
   </section>`;
 }
 
@@ -241,6 +243,20 @@ function problemsHtml(d) {
   </section>`;
 }
 
+/** Live and frozen are two answers, and the header offers the other one: the
+ *  open session's own snapshot from a live view, the files as they are now
+ *  from a frozen one. */
+function sessionLinkHtml(d) {
+  const base = `#/config/agents/${encodeURIComponent(d.id)}`;
+  if (d.resolved_against?.conv) {
+    return `<a class="ghost-btn" href="${base}"
+      title="Resolve against the settings files as they are now">Show live</a>`;
+  }
+  if (!store.convId) return "";
+  return `<a class="ghost-btn" href="${base}?conv=${encodeURIComponent(store.convId)}"
+    title="What the open session runs — frozen when it opened">This session</a>`;
+}
+
 function headHtml(d) {
   const facts = [
     `${(d.resolved?.tools || []).length} tools`,
@@ -259,7 +275,7 @@ function headHtml(d) {
         ${d.builtin ? tierBadge("locked", { label: "built-in" }) : chip("yours", "src-config")}
       </span>
       <span class="cfg-head-actions">
-        ${d.id === ORCHESTRATOR ? "" : d.builtin
+        ${d.id === ORCHESTRATOR ? "" : d.builtin || !editableFile(d.path)
           ? `<button class="ghost-btn" data-dup title="Write an editable markdown
               copy of this agent under .quickcode/plugins/. Every line that is
               fixed here becomes plain text there; this one is untouched and
@@ -267,6 +283,7 @@ function headHtml(d) {
           : `<a class="ghost-btn" href="#/config/edit/${
               encodeURIComponent(`agent.${d.id}`)}">Edit file</a>`}
         ${d.id === ORCHESTRATOR ? "" : `<button class="ghost-btn" data-raw>Raw</button>`}
+        ${sessionLinkHtml(d)}
       </span>
     </div>
     <div class="wb-facts">${facts.map((f) => `<span class="k-fact">${esc(f)}</span>`).join("")}

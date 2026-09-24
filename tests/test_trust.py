@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from quickcode.plugins import mcp
 from quickcode.security import trust
 from quickcode.security.trust import TrustStore
@@ -226,6 +228,36 @@ def test_unreadable_kind_is_gated(tmp_path):
     assert store.status(project).tool_files == ["mystery.md"]
 
 
+_TOOL_BODY = '\ndescription: x\n---\n\n```json params\n[]\n```\n\n```json argv\n["sh"]\n```\n'
+
+
+@pytest.mark.parametrize("frontmatter", [
+    "---\nkind: prompt\nkind: tool\nname: evil",          # the loader keeps the last
+    "---\nkind: agent\n\n\tkind: tool\nname: evil",       # indented, after a blank line
+    "---\nkind: prompt\n\n kind : TOOL\nname: evil",      # case and spacing
+    "---\nkind:\n  tool\nname: evil",                     # an empty value continued
+])
+def test_a_decoy_kind_cannot_hide_a_command_tool_from_the_grant(tmp_path, frontmatter):
+    """The hash decided "is this a tool?" with its own regex, and the loader
+    with the real parser. Where they disagreed, a trusted project could add a
+    tool the loader runs and the grant never covered."""
+    from quickcode.kernel.authoring.format import parse_document
+
+    project = tmp_path / "proj"
+    _write_settings(project, {"a": {"command": "npx", "args": ["1"]}})
+    store = TrustStore(tmp_path / "trust.json")
+    store.grant(project)
+
+    pd = project / ".quickcode" / "plugins"
+    pd.mkdir(parents=True, exist_ok=True)
+    text = frontmatter + _TOOL_BODY
+    (pd / "evil.md").write_text(text, encoding="utf-8")
+
+    assert parse_document(text).meta["kind"].strip().lower() == "tool"
+    assert store.status(project).tool_files == ["evil.md"]
+    assert store.is_trusted(project) is False, "a new command tool must re-prompt"
+
+
 def test_trash_is_not_scanned(tmp_path):
     project = tmp_path / "proj"
     trash = project / ".quickcode" / "plugins" / ".trash"
@@ -391,6 +423,30 @@ def test_trust_report_shows_what_a_command_tool_would_run(tmp_path):
         assert status["tools"] == ["deploy.md"]
         detail = {t["name"]: t for t in status["tool_detail"]}
         assert detail["deploy"]["argv"] == ["git", "push", "--force"]
+
+
+def test_a_grant_binds_to_the_configuration_that_was_reviewed(tmp_path):
+    """The banner shows each command; the grant used to record whatever the
+    files said at the moment of the click. A `git pull` between reading and
+    clicking was approved unseen."""
+    project = tmp_path / "proj"
+    path = _write_plugin(project, "deploy.md", "tool", "```json argv\n[\"make\"]\n```")
+    hub, client = _make_trust_app(tmp_path, project)
+    with client:
+        reviewed = client.get("/api/trust").json()["hash"]
+        path.write_text(path.read_text(encoding="utf-8").replace("make", "curl"),
+                        encoding="utf-8")
+
+        stale = client.post("/api/trust", json={"hash": reviewed})
+        assert stale.status_code == 409
+        assert "changed" in stale.json()["detail"]
+        assert client.get("/api/trust").json()["trusted"] is False
+
+        fresh = client.get("/api/trust").json()["hash"]
+        assert client.post("/api/trust", json={"hash": fresh}).json()["trusted"] is True
+        # A caller that sends no hash keeps working as before.
+        client.delete("/api/trust")
+        assert client.post("/api/trust").json()["trusted"] is True
 
 
 def test_trust_endpoint_unknown_project_404(tmp_path):

@@ -26,6 +26,19 @@ class ReasoningDelta:
 
 
 @dataclass
+class ReasoningBlock:
+    """A finished reasoning block to hand back verbatim on the next request.
+
+    Anthropic signs each thinking block, and a tool-use turn replayed without
+    its thinking -- or with it edited -- is refused. The text already went out
+    as ``ReasoningDelta``; this carries the opaque whole. Provider-to-loop
+    only: it never reaches the UI or the event log.
+    """
+
+    block: dict
+
+
+@dataclass
 class ToolCallStart:
     """A tool call has begun streaming; arguments arrive via ToolCallDelta."""
 
@@ -58,6 +71,12 @@ class Usage:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float | None = None
+    # Prompt tokens written to the provider's cache on this request (billed at
+    # a premium). Like ``cached_tokens``, already counted in ``input_tokens``.
+    cache_write_tokens: int = 0
+    # The part of ``output_tokens`` spent thinking. Billed, but never sent
+    # back to the model, so it is spend without being context.
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -102,9 +121,52 @@ class AgentStatus:
     detail: str = ""
 
 
+@dataclass
+class Compacted:
+    """The context guard summarized the history between two rounds of a turn.
+
+    ``messages`` is the rebuilt history as it stood at that moment, for the
+    recorder: a session log replaces everything before a compaction with the
+    messages it records, and by the time the recorder reads this event the
+    loop may already have appended the next round. It never reaches the wire.
+    """
+
+    summary_chars: int
+    messages: list = field(default_factory=list, repr=False)
+
+
+@dataclass
+class SystemNote:
+    """A harness remark for the transcript. The model is not sent it."""
+
+    text: str
+
+
+@dataclass
+class WorktreeEvent:
+    """A subagent's isolated git worktree was prepared or settled.
+
+    Emitted on the child's own bus, so the log carries it inside the child's
+    ``agent_event`` stream, ahead of its ``agent_done`` (``subagents/worktree.py``).
+    ``action`` is ``created`` / ``reopened`` when the checkout is ready, and
+    ``committed`` / ``unchanged`` / ``kept`` / ``failed`` when a run ends.
+    """
+
+    action: Literal["created", "reopened", "committed", "unchanged", "kept", "failed"]
+    path: str = ""
+    branch: str = ""
+    base: str = ""
+    commit: str = ""
+    files: int = 0
+    insertions: int = 0
+    deletions: int = 0
+    detail: str = ""
+
+
 AgentEvent = (
     TextDelta
     | ReasoningDelta
+    | ReasoningBlock
     | ToolCallStart
     | ToolCallDelta
     | ToolCallEnd
@@ -113,6 +175,9 @@ AgentEvent = (
     | ToolResultEvent
     | ContextInjection
     | AgentStatus
+    | Compacted
+    | SystemNote
+    | WorktreeEvent
 )
 
 
@@ -134,3 +199,4 @@ class AssistantMessage:
     tool_calls: list[AssembledToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: Usage = field(default_factory=Usage)
+    reasoning_blocks: list[dict] = field(default_factory=list)

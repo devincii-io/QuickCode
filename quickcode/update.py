@@ -27,9 +27,11 @@ cannot reliably replace the package it is currently running. Only the Windows
 installer layout gets a downloadable artifact, and that path is deliberately
 narrow, in the spirit of ``security/trust.py``:
 
-  1. ``SHA256SUMS.txt`` is fetched from the release **first**;
-  2. the installer is streamed to ``~/.quickcode/updates/<name>.part`` while
-     being hashed;
+  1. ``SHA256SUMS.txt`` is fetched from the release **first**, over https on
+     every hop, redirects included;
+  2. the installer -- only the one named for this release's version -- is
+     streamed to a fresh, randomly named ``.part`` file under
+     ``~/.quickcode/updates`` while being hashed;
   3. a digest that does not match refuses loudly and **deletes the download** —
      the partial file never gets its real name, so nothing can be run by
      accident;
@@ -49,6 +51,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +60,7 @@ from typing import Any
 import httpx
 
 from quickcode.config import CONFIG_DIR
+from quickcode.fsutil import atomic_write_text
 
 log = logging.getLogger("quickcode.update")
 
@@ -106,11 +110,29 @@ _HEADERS = {
     "User-Agent": "QuickCode",
 }
 
-INSTALLER_RE = re.compile(r"^QuickCode-Setup-.+\.exe$", re.IGNORECASE)
+# What scripts/release.py names the installer. Its name becomes a file name on
+# disk, so the version inside it must be one plain path component.
+INSTALLER_NAME = "QuickCode-Setup-{version}.exe"
+_SAFE_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]*")
 CHECKSUMS_NAME = "SHA256SUMS.txt"
+# A manifest is a few lines; anything this size is not one.
+MAX_CHECKSUMS_BYTES = 64 * 1024
 
 PIP_COMMAND = "uv pip install -U quickcode"
 PIP_COMMAND_ALT = "pip install -U quickcode"
+
+
+# Read at call time, not captured, so the Windows-only layout checks and the
+# launch path can be exercised on any host by patching this one name. Patching
+# ``os.name`` instead would make every ``pathlib.Path`` in the process try to
+# become a ``WindowsPath``, which POSIX refuses to instantiate.
+IS_WINDOWS = sys.platform == "win32"
+
+# Win32 process-creation flags. ``subprocess`` only exports these names on
+# Windows; the values are fixed by the Win32 API.
+DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+CREATE_BREAKAWAY_FROM_JOB = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
 
 
 class UpdateError(Exception):
@@ -137,22 +159,48 @@ class ChecksumMismatch(UpdateError):
 # Versions
 # --------------------------------------------------------------------------
 
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+.]?(.+))?$")
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(.*)$")
+# After the three numbers: ``.post1``, ``-r2``, or a bare fourth component
+# (``2.7.0.1``, PEP 440's implicit ``2.7.0-1``) all come *after* the release.
+_POST_RE = re.compile(r"(?:post|rev|r)[-._]?\d*|\d+(?:\.\d+)*", re.IGNORECASE)
+# PEP 440's pre-release phases, in order; spelling variants share a weight.
+_PHASES = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2,
+           "c": 3, "rc": 3, "pre": 3, "preview": 3}
 
 
 def parse_version(text: str) -> tuple[int, int, int, int, str] | None:
     """``"v2.1.0"`` → ``(2, 1, 0, 1, "")``; ``None`` when it is not a version.
 
-    The fourth element ranks a release above any pre-release of the same
-    numbers (0 for ``2.1.0-rc1``, 1 for ``2.1.0``), which is the whole reason
-    this is not a plain three-tuple.
+    The fourth element ranks the three numbers' variants: 0 for a pre-release
+    (``2.1.0-rc1``, ``2.1.0.dev3``), 1 for the release, 2 for anything after it
+    (``2.1.0.post1``, ``2.1.0.1``). Build metadata and local labels (``+…``)
+    are dropped: they name a build, not a place in the order.
     """
     match = _VERSION_RE.match((text or "").strip())
     if match is None:
         return None
-    major, minor, patch, suffix = match.groups()
-    suffix = (suffix or "").strip()
-    return (int(major), int(minor), int(patch), 0 if suffix else 1, suffix)
+    major, minor, patch, rest = match.groups()
+    suffix = rest.split("+", 1)[0].strip().lstrip("-._")
+    if not suffix:
+        rank = 1
+    elif _POST_RE.fullmatch(suffix):
+        rank = 2
+    else:
+        rank = 0
+    return (int(major), int(minor), int(patch), rank, suffix)
+
+
+def _order_key(parsed: tuple[int, int, int, int, str]) -> tuple:
+    """Compare suffixes piecewise: numbers as numbers, phases in PEP 440 order,
+    so ``rc10`` follows ``rc2`` and ``rc.1`` is ``rc1``."""
+    major, minor, patch, rank, suffix = parsed
+    pieces = tuple(
+        (1, int(tok), "") if tok.isdigit()
+        else (0, _PHASES[tok], "") if tok in _PHASES
+        else (0, len(_PHASES), tok)
+        for tok in re.findall(r"\d+|[a-z]+", suffix.lower())
+    )
+    return (major, minor, patch, rank, pieces)
 
 
 def is_newer(latest: str, installed: str) -> bool | None:
@@ -160,7 +208,7 @@ def is_newer(latest: str, installed: str) -> bool | None:
     a, b = parse_version(latest), parse_version(installed)
     if a is None or b is None:
         return None
-    return a > b
+    return _order_key(a) > _order_key(b)
 
 
 def installed_version() -> str:
@@ -221,7 +269,7 @@ def _uninstaller_beside(app: Path) -> bool:
     checks below insist on it.
     """
     try:
-        return any(app.glob("unins*.exe"))
+        return any(app.glob("unins*.exe", case_sensitive=False))
     except OSError:
         return False
 
@@ -235,7 +283,7 @@ def _frozen_app_dir(executable: str | os.PathLike[str] | None = None) -> Path | 
     and no ``sys.prefix`` worth reading — a frozen process reports the
     application folder there — so this looks at the executable instead.
     """
-    if os.name != "nt" or not getattr(sys, "frozen", False):
+    if not IS_WINDOWS or not getattr(sys, "frozen", False):
         return None
     try:
         app = Path(executable or sys.executable).resolve().parent
@@ -253,7 +301,7 @@ def _inno_app_dir(prefix: Path) -> Path | None:
     uninstaller is written by the installer and by nothing else, so its
     presence is evidence rather than inference.
     """
-    if os.name != "nt":
+    if not IS_WINDOWS:
         return None
     if prefix.name.lower() != "venv":
         return None
@@ -406,35 +454,30 @@ def set_auto_check(enabled: bool) -> bool:
     ``load_state`` reads underneath the project layer — so a project can still
     pin it off, and cannot turn it on for you.
     """
+    from quickcode.kernel.settings_file import SettingsUnreadable, write_settings
     from quickcode.kernel.state import PLUGINS_KEY, user_settings_path
 
     path = user_settings_path()
-    raw: dict[str, Any] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw = loaded
-        except (OSError, json.JSONDecodeError) as exc:
-            raise UpdateError(f"could not read {path}: {exc}") from exc
 
-    section = raw.get(PLUGINS_KEY)
-    if not isinstance(section, dict):
-        section = {}
-    entry = section.get(PLUGIN_ID)
-    if not isinstance(entry, dict):
-        entry = {}
-    settings = entry.get("settings")
-    if not isinstance(settings, dict):
-        settings = {}
-    settings[AUTO_CHECK_KEY] = bool(enabled)
-    entry["settings"] = settings
-    section[PLUGIN_ID] = entry
-    raw[PLUGINS_KEY] = section
+    def merge(raw: dict[str, Any]) -> None:
+        section = raw.get(PLUGINS_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        entry = section.get(PLUGIN_ID)
+        if not isinstance(entry, dict):
+            entry = {}
+        settings = entry.get("settings")
+        if not isinstance(settings, dict):
+            settings = {}
+        settings[AUTO_CHECK_KEY] = bool(enabled)
+        entry["settings"] = settings
+        section[PLUGIN_ID] = entry
+        raw[PLUGINS_KEY] = section
 
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        write_settings(path, merge)
+    except SettingsUnreadable as exc:
+        raise UpdateError(str(exc)) from exc
     except OSError as exc:
         raise UpdateError(f"could not write {path}: {exc}") from exc
     return bool(enabled)
@@ -453,9 +496,7 @@ def _write_cache(data: dict[str, Any], path: Path | None = None) -> None:
     p = path or CACHE_PATH
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(p)
+        atomic_write_text(p, json.dumps(data, indent=2))
     except OSError as exc:  # a cache that cannot be written costs one request
         log.debug("could not write the update cache: %s", exc)
 
@@ -504,8 +545,16 @@ class Release:
         )
 
     def installer_asset(self) -> tuple[str, dict[str, Any]] | None:
+        """This release's installer, by its exact name, or ``None``.
+
+        Not a pattern: another version's installer attached to this release
+        is not this release, and a name with a path in it is not a file name.
+        """
+        if not _SAFE_VERSION_RE.fullmatch(self.version):
+            return None
+        wanted = INSTALLER_NAME.format(version=self.version).lower()
         for name, info in self.assets.items():
-            if INSTALLER_RE.match(name):
+            if name.lower() == wanted:
                 return name, info
         return None
 
@@ -668,6 +717,13 @@ class UpdateStatus:
 # --------------------------------------------------------------------------
 
 
+async def _https_only(request: httpx.Request) -> None:
+    """Every hop, redirects included: the asset URLs redirect to a CDN, and a
+    checksum fetched over plaintext vouches for nothing."""
+    if request.url.scheme != "https":
+        raise UpdateError(f"refused a non-https request to {request.url.host}")
+
+
 def _client(transport: httpx.AsyncBaseTransport | None, timeout: float) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=transport,
@@ -675,6 +731,7 @@ def _client(transport: httpx.AsyncBaseTransport | None, timeout: float) -> httpx
         headers=_HEADERS,
         follow_redirects=False,
         trust_env=False,   # no proxy or auth picked up from the environment
+        event_hooks={"request": [_https_only]},
     )
 
 
@@ -866,12 +923,50 @@ def _https(url: str, what: str) -> str:
     return str(url)
 
 
-async def _get_text(url: str, transport: httpx.AsyncBaseTransport | None) -> str:
-    async with _client(transport, CHECK_TIMEOUT_S) as client:
-        response = await client.get(url, follow_redirects=True)
-        if response.status_code >= 400:
-            raise UpdateError(f"could not fetch {url} (HTTP {response.status_code})")
-        return response.text
+async def _get_checksums(url: str, transport: httpx.AsyncBaseTransport | None) -> str:
+    body = bytearray()
+    try:
+        async with _client(transport, CHECK_TIMEOUT_S) as client:
+            async with client.stream("GET", url, follow_redirects=True) as response:
+                if response.status_code >= 400:
+                    raise UpdateError(
+                        f"could not fetch {CHECKSUMS_NAME} (HTTP {response.status_code})"
+                    )
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) > MAX_CHECKSUMS_BYTES:
+                        raise UpdateError(f"{CHECKSUMS_NAME} is implausibly large; refused")
+    except httpx.HTTPError as exc:
+        raise UpdateError(
+            f"could not fetch {CHECKSUMS_NAME} ({exc.__class__.__name__}); nothing "
+            "was downloaded"
+        ) from exc
+    return body.decode("utf-8", errors="replace")
+
+
+def _require_upgrade(status: UpdateStatus) -> None:
+    """Refuse anything but a stable release newer than the running version.
+
+    ``check`` already decides this for the chip and the Install page, but the
+    download is where a release becomes an executable on disk, so it is decided
+    again here instead of trusted from a status that may be cached or stale.
+    Without it the route would fetch the running version, an older one (a
+    downgrade the installer would happily perform), or a pre-release.
+    """
+    release = status.release
+    if release is None:
+        raise UpdateError("there is no release to download")
+    if release.draft or release.prerelease:
+        raise UpdateError(
+            f"{release.tag or 'this release'} is a pre-release, so it is not "
+            "offered as an update; nothing was downloaded"
+        )
+    installed = installed_version()
+    if status.state != "available" or is_newer(release.version, installed) is not True:
+        raise UpdateError(
+            f"{release.version or 'the latest release'} is not newer than the "
+            f"running {installed}; nothing was downloaded"
+        )
 
 
 def _record_path(target: Path) -> Path:
@@ -889,8 +984,10 @@ async def download_installer(
     The order is the point. ``SHA256SUMS.txt`` is fetched **first**, so the
     expected digest is known before a single byte of executable is written; a
     manifest that does not name the installer ends the operation with nothing
-    downloaded. The body streams to ``<name>.part`` and is hashed as it
-    arrives. Only a matching digest earns the real filename.
+    downloaded. The body streams to a fresh, unpredictable ``.part`` file and is
+    hashed as it arrives. Only a matching digest earns the real filename; every
+    other way out -- a refusal, a dropped connection, a cancelled request --
+    deletes it.
     """
     if status.release is None:
         raise UpdateError("there is no release to download")
@@ -900,6 +997,7 @@ async def download_installer(
             "this install is not the Windows installer layout, so downloading "
             "an installer would not update it. " + manual_instructions(info)[0]
         )
+    _require_upgrade(status)
     installer = status.release.installer_asset()
     if installer is None:
         raise UpdateError("this release has no Windows installer attached")
@@ -915,7 +1013,7 @@ async def download_installer(
     # names a plaintext URL is refused without a request having gone out.
     sums_url = _https(sums_asset["url"], CHECKSUMS_NAME)
     asset_url = _https(asset["url"], name)
-    sums = parse_checksums(await _get_text(sums_url, transport))
+    sums = parse_checksums(await _get_checksums(sums_url, transport))
     expected = sums.get(name)
     if not expected:
         raise UpdateError(
@@ -926,20 +1024,21 @@ async def download_installer(
     directory = Path(dest_dir) if dest_dir is not None else DOWNLOAD_DIR
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / name
-    partial = directory / (name + ".part")
-    with contextlib.suppress(OSError):
-        partial.unlink()
+    # Created exclusively under a random name, so nothing can be waiting at it
+    # and nothing can guess it while it fills.
+    fd, raw = tempfile.mkstemp(prefix=f"{name}.", suffix=".part", dir=directory)
+    partial = Path(raw)
 
     digest = hashlib.sha256()
     total = 0
     try:
-        async with _client(transport, DOWNLOAD_TIMEOUT_S) as client:
-            async with client.stream("GET", asset_url, follow_redirects=True) as response:
-                if response.status_code >= 400:
-                    raise UpdateError(
-                        f"could not download {name} (HTTP {response.status_code})"
-                    )
-                with partial.open("wb") as handle:
+        with os.fdopen(fd, "wb") as handle:
+            async with _client(transport, DOWNLOAD_TIMEOUT_S) as client:
+                async with client.stream("GET", asset_url, follow_redirects=True) as response:
+                    if response.status_code >= 400:
+                        raise UpdateError(
+                            f"could not download {name} (HTTP {response.status_code})"
+                        )
                     async for chunk in response.aiter_bytes(64 * 1024):
                         total += len(chunk)
                         if total > MAX_DOWNLOAD_BYTES:
@@ -949,29 +1048,24 @@ async def download_installer(
                             )
                         digest.update(chunk)
                         handle.write(chunk)
-    except (httpx.HTTPError, OSError) as exc:
-        _discard(partial)
-        raise UpdateError(f"could not download {name}: {exc}") from exc
-    except UpdateError:
-        _discard(partial)
-        raise
 
-    actual = digest.hexdigest()
-    if actual != expected:
-        # Loud, and gone. The bytes are deleted before the caller is told, so
-        # there is no window in which a mismatched installer exists on disk
-        # under a name anything would run.
-        _discard(partial)
-        log.error("checksum mismatch for %s: expected %s, got %s", name, expected, actual)
-        raise ChecksumMismatch(name, expected, actual)
+        actual = digest.hexdigest()
+        if actual != expected:
+            # Loud, and gone. The bytes are deleted before the caller is told,
+            # so there is no window in which a mismatched installer exists on
+            # disk under a name anything would run.
+            _discard(partial)
+            log.error("checksum mismatch for %s: expected %s, got %s", name, expected, actual)
+            raise ChecksumMismatch(name, expected, actual)
 
-    try:
+        # A record left by an earlier download must never vouch for these bytes.
+        _discard(_record_path(target))
         partial.replace(target)
         _record_path(target).write_text(actual, encoding="ascii")
-    except OSError as exc:
+    except (httpx.HTTPError, OSError) as exc:
+        raise UpdateError(f"could not download {name}: {exc}") from exc
+    finally:
         _discard(partial)
-        _discard(target)
-        raise UpdateError(f"could not save the verified download: {exc}") from exc
 
     return Download(path=str(target), name=name, sha256=actual, size=total)
 
@@ -1040,7 +1134,7 @@ def launch_installer(
         )
     verify_download(path, recorded)
 
-    if os.name != "nt":
+    if not IS_WINDOWS:
         raise UpdateError("the Windows installer can only be run on Windows")
     # Detached for real, and never with a shell: the argv is one path this
     # module wrote.
@@ -1052,11 +1146,11 @@ def launch_installer(
     # it out of any job object we were launched into, and is attempted
     # separately because a job that forbids breakaway makes it fail outright --
     # in which case not detaching is better than not installing.
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     try:
         subprocess.Popen(  # noqa: S603
             [str(path)], close_fds=True,
-            creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+            creationflags=flags | CREATE_BREAKAWAY_FROM_JOB,
         )
     except OSError:
         subprocess.Popen([str(path)], close_fds=True, creationflags=flags)  # noqa: S603

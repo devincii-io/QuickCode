@@ -6,16 +6,17 @@ can reason about, and an approval prompt that shows the exact argv before
 anything runs.
 
 **Argv, never a shell.** The template is a JSON array; each element is one
-token; the process is spawned with ``asyncio.create_subprocess_exec``. A
-parameter value containing ``; rm -rf /`` or ``$(curl evil)`` is inert bytes,
-because nothing between the model and ``execve`` ever parses it. There is no
-sanitiser here to be wrong about a case nobody thought of -- injection is
-structurally impossible rather than filtered. That is defence against the
-*model*, which fills the parameters and is the one component in this path
-nobody can audit. Shell mode is refused at validation, not half-implemented.
+token; the process is spawned with ``subproc.spawn_async``, an exec rather
+than a shell. A parameter value containing ``; rm -rf /`` or ``$(curl evil)``
+is inert bytes, because nothing between the model and ``execve`` ever parses
+it. There is no sanitiser here to be wrong about a case nobody thought of --
+injection is structurally impossible rather than filtered. That is defence
+against the *model*, which fills the parameters and is the one component in
+this path nobody can audit. Shell mode is refused at validation, not
+half-implemented.
 
-**Permission.** A command tool declares ``PermissionSpec(mutates=True)``,
-always. ``read_only: true`` in the frontmatter is recorded and surfaced, and
+**Permission.** A command tool declares ``PermissionSpec(mutates=True,
+executes=True)``, always -- so ``auto-edit``, which allows edits, still asks. ``read_only: true`` in the frontmatter is recorded and surfaced, and
 grants nothing: QuickCode cannot check what a program does, and an authored
 file that could opt itself out of the permission prompt would be a hole exactly
 as large as an unaudited MCP server with a nicer card. The way to stop being
@@ -31,10 +32,7 @@ not become the way to read ``~/.ssh``.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
-import os
 import re
 import tempfile
 from pathlib import Path
@@ -42,17 +40,20 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, create_model
 
+from quickcode import subproc
 from quickcode.context import toon
 from quickcode.core.permissions import PermissionSpec
 from quickcode.kernel.authoring import argv as argv_rules
 from quickcode.kernel.authoring.model import AuthoredPlugin, Param
+from quickcode.security import launch
 from quickcode.tools.base import Tool, ToolCtx, ToolResult, decode_output, truncate
 
 # Environment handed to the child. A command tool is started from a file that
 # may be committed, so the child gets what a program needs to run and not the
 # whole ambient environment: an API key in ``os.environ`` is not something a
 # repository's tool should inherit by default. Anything else is opt-in through
-# ``env_from``.
+# ``env_from`` -- except QuickCode's own credentials, which no child is given
+# (``subproc.child_env``), so a committed file cannot ask for them by name.
 _BASE_ENV_KEYS = (
     "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
     "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LANG", "LC_ALL",
@@ -85,7 +86,12 @@ class CommandTool(Tool[BaseModel]):
             target_field=target or None,
             path_target=bool(param is not None and param.type == "path"),
             shell=False,
+            executes=True,
         )
+
+    def permission_paths(self, args: dict) -> list[str]:
+        """Every path this call names, for the engine's protected-path check."""
+        return [raw for _name, raw in _path_values(self.plugin, args)]
 
     # -- transcript -------------------------------------------------------
 
@@ -113,7 +119,8 @@ class CommandTool(Tool[BaseModel]):
         values = input.model_dump()
         root = Path(ctx.cwd).resolve()
 
-        refusal = _check_paths(plugin, values, root)
+        refusal = (_check_trust(plugin, root) or _check_paths(plugin, values, root)
+                   or _check_options(plugin, values))
         if refusal:
             return ToolResult(content=refusal, is_error=True)
 
@@ -128,18 +135,31 @@ class CommandTool(Tool[BaseModel]):
 
         workdir = _workdir(plugin, values, root)
         env = _child_env(plugin)
+        program = launch.resolve_program(argv[0], env, cwd=workdir)
+        refusal = _batch_refusal(argv[0], program)
+        if not refusal and launch.is_batch(program):
+            refusal = _check_batch(plugin, values, program)
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
         meta = {"argv": list(argv), "cwd": str(workdir), "tool": self.name,
                 "authored": True, "path": plugin.path}
+        if not workdir.is_dir():
+            return ToolResult(
+                content=f"Error: the working directory {workdir} does not exist.",
+                is_error=True, ui_meta=meta,
+            )
 
         combined = plugin.output == "text"
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
+            # No console window, its own process group (so a timeout or a torn
+            # down turn kills what it started, not just the top), and stdin on
+            # the null device unless the tool declares some.
+            proc = await subproc.spawn_async(
+                [program, *argv[1:]],
                 cwd=str(workdir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT if combined else asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.PIPE if plugin.stdin else asyncio.subprocess.DEVNULL,
                 env=env,
+                stdin=subproc.PIPE if plugin.stdin else subproc.DEVNULL,
+                stderr=subproc.STDOUT if combined else subproc.PIPE,
             )
         except (OSError, ValueError) as exc:
             return ToolResult(
@@ -148,15 +168,10 @@ class CommandTool(Tool[BaseModel]):
             )
 
         payload = plugin.stdin.encode("utf-8") if plugin.stdin else None
-        try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(payload), timeout=plugin.timeout_ms / 1000.0
-            )
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+        out, err, timed_out = await subproc.communicate(
+            proc, payload, timeout=plugin.timeout_ms / 1000.0
+        )
+        if timed_out:
             return ToolResult(
                 content=f"Error: {self.name} timed out after {plugin.timeout_ms}ms "
                         "and was killed.",
@@ -279,6 +294,61 @@ def _check_paths(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> 
     return ""
 
 
+def _check_trust(plugin: AuthoredPlugin, root: Path) -> str:
+    """"" unless this is a project's tool and the project is no longer trusted.
+
+    Discovery already dropped untrusted tools, but a conversation holds the
+    tools it was opened with. Asking again here is what makes a revocation --
+    or an edit to the project's gated config -- stop the program now rather
+    than at the next conversation.
+    """
+    if plugin.scope != "project":
+        return ""
+    project = Path(plugin.path).parents[2] if plugin.path else root
+    from quickcode.security import trust
+
+    if trust.resolve_trust(project):
+        return ""
+    return (f"Error: {plugin.name} is a command tool from this project, and the "
+            "project is not trusted any more (trust was revoked, or its "
+            "configuration changed since it was approved). It will not run until "
+            "the project is trusted again.")
+
+
+def _check_options(plugin: AuthoredPlugin, values: dict[str, Any]) -> str:
+    """"" unless a value would be parsed by the program as one of its options."""
+    params = plugin.params_by_name()
+    hit = argv_rules.leading_dash(plugin.argv, params, values)
+    if hit is None:
+        return ""
+    name, value = hit
+    param = params.get(name)
+    is_path = param is not None and "path" in (param.type, param.item_type)
+    spelling = (f" Pass it as {'./' + value!r} to name a file that really "
+                "starts with '-'." if is_path else "")
+    return (f"Error: {name}={value!r} starts with '-', so {plugin.argv[0]} would "
+            f"read it as an option rather than as a value.{spelling} If the "
+            "program should see it as a value, the tool's author can put a "
+            '"--" element before it or set "allow_leading_dash": true on the '
+            "parameter.")
+
+
+def _check_batch(plugin: AuthoredPlugin, values: dict[str, Any], program: str) -> str:
+    """"" unless a value would be re-parsed as syntax by ``cmd.exe``."""
+    for param in plugin.params:
+        raw = values.get(param.name)
+        items = raw if isinstance(raw, (list, tuple)) else [raw]
+        for item in items:
+            text = argv_rules.scalar(item)
+            if launch.batch_unsafe(text):
+                return (f"Error: {param.name}={text!r} cannot be passed to "
+                        f"{Path(program).name}: a .cmd or .bat file runs under "
+                        "cmd.exe, which would read its quotes, %, !, ^, &, |, < "
+                        "or > as commands rather than as data. Rephrase the value "
+                        "without those characters.")
+    return ""
+
+
 def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path:
     if plugin.cwd_mode == "file_dir":
         for _name, raw in _path_values(plugin, values):
@@ -296,14 +366,37 @@ def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path
     return root
 
 
+# --------------------------------------------------------------------------
+# the process
+# --------------------------------------------------------------------------
+
+def _batch_refusal(name: str, program: str) -> str:
+    """"" unless ``name`` resolved to a Windows batch file, which is refused.
+
+    Windows cannot execute a batch file; CreateProcess hands it to cmd.exe,
+    which re-parses the whole command line with its own quoting rules -- so a
+    parameter value of ``x & calc`` runs calc. That is precisely the shell
+    this module exists not to have, and it cannot be escaped reliably (see
+    CVE-2024-24576 and its siblings). ``npm``, ``npx`` and ``yarn`` are batch
+    shims on Windows, so this is also the answer to "why won't npm run".
+    """
+    if not subproc.IS_WINDOWS or not launch.is_batch(program):
+        return ""
+    return (
+        f"Error: {name!r} is {program}, a batch file. Windows runs batch files "
+        "through cmd.exe, which re-parses every argument, so a parameter value "
+        "could run commands of its own -- exactly what a command tool's argv "
+        "exists to rule out. Point argv at the real program instead (for npm, "
+        "`node` and the .js file the shim calls), or use the bash tool."
+    )
+
+
 def _child_env(plugin: AuthoredPlugin) -> dict[str, str]:
+    inherited = subproc.child_env()
     env: dict[str, str] = {}
-    for key in _BASE_ENV_KEYS:
-        value = os.environ.get(key)
-        if value is not None:
-            env[key] = value
-    for key in plugin.env_from:
-        value = os.environ.get(key)
+    for key in (*_BASE_ENV_KEYS, *plugin.env_from):
+        # Windows names are case-insensitive, and its os.environ upper-cases them.
+        value = inherited.get(key.upper() if subproc.IS_WINDOWS else key)
         if value is not None:
             env[key] = value
     env.update(plugin.env_literal)

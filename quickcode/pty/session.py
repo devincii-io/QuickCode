@@ -18,8 +18,9 @@ rather than a long-lived interactive shell:
   so the writer degenerates to nothing, but the reader/watcher split is what
   keeps ``run`` responsive to real exit).
 
-Bytes stay on the hot path; the caller decodes once at the boundary
-(UTF-8 + ``surrogateescape``).
+Bytes stay on the hot path; the caller decodes once at the boundary with
+``tools.base.decode_output`` (UTF-8, then the system code page, never
+surrogates).
 
 On Windows the backend is ConPTY via ``pywinpty`` (``winpty.PtyProcess``); on
 POSIX it is the stdlib ``pty``/``os.openpty`` plus a process group. If the
@@ -72,7 +73,7 @@ class PtySession:
             raise ValueError("argv must be a non-empty list")
         self.argv = [str(a) for a in argv]
         self.cwd = str(cwd) if cwd is not None else None
-        self.env = env
+        self.env = subproc.child_env() if env is None else env
         self.dimensions = dimensions
         self.pid: int | None = None
 
@@ -86,7 +87,7 @@ class PtySession:
         the reader sees EOF, ``run`` returns, and the thread exits. Safe to
         call before the spawn, after the exit, or twice.
         """
-        _kill_tree(getattr(self, "pid", None))
+        subproc.kill_tree(getattr(self, "pid", None))
 
     def run(self, timeout_s: float) -> tuple[bytes, int | None, bool]:
         """Spawn, stream to completion (or timeout), and return.
@@ -108,8 +109,10 @@ class PtySession:
             raise PtyError(f"pywinpty unavailable: {exc}") from exc
 
         try:
+            # Resolved here: pywinpty looks a bare name up with shutil.which,
+            # which searches the current directory first on Windows.
             proc = winpty.PtyProcess.spawn(
-                self.argv,
+                subproc.resolve_argv(self.argv, env=self.env, cwd=self.cwd),
                 cwd=self.cwd,
                 env=self.env,
                 dimensions=self.dimensions,
@@ -161,7 +164,7 @@ class PtySession:
 
         timed_out = self._wait_for_exit(exited, timeout_s)
         if timed_out:
-            _kill_tree(self.pid)
+            subproc.kill_tree(self.pid)
             exited.wait(KILL_GRACE_S)
             if exit_code[0] is None:
                 try:
@@ -190,15 +193,13 @@ class PtySession:
             raise PtyError(f"openpty failed: {exc}") from exc
 
         try:
-            proc = subproc.popen(
+            proc = subproc.spawn(
                 self.argv,
                 cwd=self.cwd,
                 env=self.env,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                start_new_session=True,  # own process group for tree-kill
-                close_fds=True,
             )
         except Exception as exc:  # noqa: BLE001
             os.close(master_fd)
@@ -244,7 +245,7 @@ class PtySession:
 
         timed_out = self._wait_for_exit(exited, timeout_s)
         if timed_out:
-            _kill_tree(self.pid)
+            subproc.kill_tree(self.pid)
             exited.wait(KILL_GRACE_S)
 
         self._drain(reader_done, total, lock)
@@ -288,39 +289,3 @@ class PtySession:
                 stable = 0
                 last = cur
             time.sleep(0.05)
-
-
-def _kill_tree(pid: int | None) -> None:
-    """Kill the process and its whole subtree."""
-    if pid is None:
-        return
-    if IS_WINDOWS:
-
-        try:
-            subproc.run(  # noqa: S607
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-    else:
-        import signal
-
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except Exception:  # noqa: BLE001
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except Exception:  # noqa: BLE001
-                pass
-
-
-def run_pty(
-    argv: list[str],
-    cwd: str | os.PathLike[str] | None,
-    env: dict[str, str] | None,
-    timeout_s: float,
-) -> tuple[bytes, int | None, bool]:
-    """Convenience wrapper: build a :class:`PtySession` and run it once."""
-    return PtySession(argv, cwd=cwd, env=env).run(timeout_s)

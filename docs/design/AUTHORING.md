@@ -1,6 +1,12 @@
 # Authoring — how a human creates a plugin
 
-Companion to `../PLAN-PLUGIN-UI-OVERHAUL.md`. That document made the internals
+> **Design rationale.** Shipped in 2.0.0 with three authorable kinds —
+> `tool`, `agent` and `prompt` (`kernel/authoring/schema.py::KINDS`). The `mcp`
+> and `preset` kinds designed below were deferred: a file declaring either is
+> refused with a message naming where that configuration lives instead
+> (`settings.json`). Where this document and the code disagree, the code wins.
+
+Companion to `../archive/PLAN-PLUGIN-UI-OVERHAUL.md`. That document made the internals
 enumerable: 37 plugins, one registry, three tiers. It stopped one step short of
 the point. Today every plugin is declared in `kernel/manifest.py`, which means
 the only way to add a capability is to edit QuickCode's source. The kernel can
@@ -66,6 +72,15 @@ Substitution rules, exactly:
    element(s) it names, false drops them.
 5. `{{` and `}}` are literal braces. An unknown `{name}` is a validation error,
    not a silent empty string.
+
+No shell is not the same as no parser: the program still parses its own
+options. A model-supplied value that would *begin* an argv element with `-` is
+refused at run time (`pytest {path}` with `--basetemp=/` empties a directory,
+and the path resolves inside the project). Numbers, `enum` choices and `bool`
+flags are exempt; so is everything after a literal `"--"` element, and any
+parameter declared `"allow_leading_dash": true` (for one that follows an option
+taking a value, like `grep -e {pattern}`). A path the model really means is
+spelled `./-name`.
 
 Shell mode exists, because `npm test 2>&1 | tail -40` is a real thing people
 want. It is opt-in with `shell: true`, it is `confirm`-tier to enable, and it
@@ -285,7 +300,7 @@ Common to all kinds:
 | `on_nonzero` | enum | `error` (default) \| `content`. `content` is for tools where a non-zero exit *is* the answer (a linter, a test run). |
 | `read_only` | bool | Default `false`. Your assertion, `confirm`-tier to set: it removes the permission prompt and allows parallel execution. |
 | `permission_target` | string | Name of the parameter a rule like `pytest-failed(tests/**)` matches on. |
-| `env_from` | list | Ambient env var names passed through. |
+| `env_from` | list | Ambient env var names passed through (never QuickCode's own API keys). |
 
 Body blocks: ` ```json params ` (required, may be `[]`), ` ```json argv `
 (required unless `shell`), ` ```sh command ` (shell mode only),

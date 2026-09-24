@@ -81,6 +81,12 @@ function endOfTurn(state) {
 // outlive the turn that spawned it, so one live event revives the row.
 function presumeSettled() {
   if (!store.state || store.state.busy) return;
+  // The same holds for the main agent's calls: one the log never answered
+  // was cut off, and would otherwise read as running until the end of the
+  // next turn — a bar growing to "now" in the trajectory, a name on the
+  // activity line.
+  store.runningTools.clear();
+  store.pendingCalls.clear();
   for (const a of store.agents.values()) {
     if (a.done) continue;
     a.done = true;
@@ -137,6 +143,51 @@ function agentRecord(id, definition) {
 
 function notify(kind, ev) { for (const fn of subs) fn(kind, ev); }
 
+// An assembled record supersedes the live buffers that built it. Returns
+// whether anything was actually dropped.
+function supersede(ev) {
+  if (ev.type === "assistant_message") {
+    const had = !!(store.streamText || store.streamReasoning);
+    store.streamText = "";
+    store.streamReasoning = "";
+    return had;
+  }
+  if (ev.type === "tool_call") return store.pendingCalls.delete(ev.id);
+  if (ev.type === "agent_event" && ev.ev?.type === "assistant_message") {
+    const a = store.agents.get(ev.agent_id);
+    const had = !!a?.streamText;
+    if (a) a.streamText = "";
+    return had;
+  }
+  return false;
+}
+
+const RUNNING = new Set(["sending", "streaming", "executing_tools"]);
+
+// A replayed call with no result is only in flight if its turn is: an older
+// one was cut off by an interrupt, which is answered in the history and never
+// logged (see TERMINAL_STATUS). Status events are live-only, so nothing in a
+// replay clears them, and they used to linger into the next turn's activity
+// line as tools that were not running.
+function settleReplayedCalls() {
+  if (!store.state?.busy) { store.runningTools.clear(); return; }
+  let turn = 0;
+  for (const e of store.events) if (e.type === "user_message") turn = Math.max(turn, e.turn || 0);
+  for (const [id, call] of store.runningTools) {
+    if ((call.turn || 0) < turn) store.runningTools.delete(id);
+  }
+}
+
+// Status flips are live-only too, so a socket that attaches mid-turn — the
+// server's own 1013 resync lands exactly then — has heard none, and the status
+// bar and the activity line read "idle" over a working agent while Stop is
+// showing. `busy` is the server's word that a turn is running; a replayed call
+// still awaiting its result says which half of the turn it is in.
+function resumeStatus() {
+  if (!store.state?.busy || RUNNING.has(store.agentStatus)) return;
+  ingest({ type: "status", state: store.runningTools.size ? "executing_tools" : "streaming", detail: "" });
+}
+
 export function resetConversation() {
   store.state = null;
   store.events = [];
@@ -169,22 +220,27 @@ export function ingest(ev) {
   if (t === "replay_done") {
     store.replaying = false;
     presumeSettled();
+    settleReplayedCalls();
     notify("replay_done");
+    resumeStatus();
     return;
   }
 
   // Logged events carry seq; dedupe (replay can overlap the live stream).
   if (ev.seq != null) {
-    if (store.seenSeq.has(ev.seq)) return;
+    if (store.seenSeq.has(ev.seq)) {
+      // The server attaches a socket before it snapshots the log, so the live
+      // queue can repeat the tail of the replay — deltas included. Those deltas
+      // arrive ahead of this duplicate and belong to the message it records,
+      // which is already on screen; left alone they drew it a second time.
+      if (supersede(ev)) notify("stream");
+      return;
+    }
     store.seenSeq.add(ev.seq);
     store.events.push(ev);
     countMetric(ev);
-    // An assembled record supersedes live buffers.
-    if (t === "assistant_message") {
-      store.streamText = "";
-      store.streamReasoning = "";
-    } else if (t === "tool_call") {
-      store.pendingCalls.delete(ev.id);
+    supersede(ev);
+    if (t === "tool_call") {
       store.runningTools.set(ev.id, ev);
     } else if (t === "tool_result") {
       store.runningTools.delete(ev.id);
@@ -197,7 +253,6 @@ export function ingest(ev) {
       const a = agentRecord(ev.agent_id);
       revive(a);
       if (ev.ev?.type === "assistant_message") {
-        a.streamText = "";
         // The provider emits TurnDone once per *round*, so the recorder
         // synthesises an assistant_message every time a round produced text —
         // including the rounds that end in tool calls and carry on working.
@@ -321,8 +376,4 @@ export function toolResultFor(callId, agentId = null) {
     return inner;
   }
   return undefined;
-}
-
-export function eventBySeq(seq) {
-  return store.events.find((e) => e.seq === seq);
 }

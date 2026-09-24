@@ -8,7 +8,7 @@
 // not disconnect the workspace socket: main.js's showHelp() never calls
 // disconnect(), exactly as showConfig() does not.
 //
-// The keyboard reference stays a modal as well (js/modals.js openHelp). That is
+// The keyboard reference stays a modal as well (js/help/quickref.js openHelp). That is
 // deliberate and not a duplicate: `?` is pressed mid-sentence to remember one
 // shortcut, and making that cost a view transition would be a regression. The
 // modal keeps the fast reference and links here; this view holds the same list
@@ -27,31 +27,26 @@ import { renderTutorial } from "./tutorial.js";
 import { renderHandsOn } from "./handson.js";
 import { renderKeyboard } from "./keyboard.js";
 import { renderWorkspaces } from "./workspaces.js";
+import { HELP_PAGES } from "./sections.js";
 
 const $ = (id) => document.getElementById(id);
 
 export const DEFAULT_ROUTE = "#/help/overview";
 
-// The pages, in rail order. One table: the rail reads it, the router reads it,
-// so a section can never exist in the navigation and not in the router.
-export const SECTIONS = [
-  { slug: "workspaces", title: "Workspaces & panes", sigil: "◫",
-    blurb: "Arrange agents and customize your workspace.", render: renderWorkspaces },
-  { slug: "overview", title: "The big picture", sigil: "◎",
-    blurb: "How one message becomes an answer.", render: renderOverview },
-  { slug: "plugins", title: "The plugin model", sigil: "::",
-    blurb: "What everything in Settings is.", render: renderPlugins },
-  { slug: "questions", title: "The six questions", sigil: "¶",
-    blurb: "How to read any card in Settings.", render: renderQuestions },
-  { slug: "permissions", title: "Permissions & trust", sigil: "§",
-    blurb: "What it may do, and what it may run.", render: renderPermissions },
-  { slug: "tutorial", title: "Your first session", sigil: "1.",
-    blurb: "A walkthrough, in order.", render: renderTutorial },
-  { slug: "handson", title: "Hands-on", sigil: "fn",
-    blurb: "Three things you can try here.", render: renderHandsOn },
-  { slug: "keyboard", title: "Keyboard & commands", sigil: "[]",
-    blurb: "Shortcuts and slash commands.", render: renderKeyboard },
-];
+// The pages, in rail order. One table (help/sections.js): the rail reads it,
+// the router reads it, so a section can never exist in the navigation and not
+// in the router.
+const RENDER = {
+  workspaces: renderWorkspaces,
+  overview: renderOverview,
+  plugins: renderPlugins,
+  questions: renderQuestions,
+  permissions: renderPermissions,
+  tutorial: renderTutorial,
+  handson: renderHandsOn,
+  keyboard: renderKeyboard,
+};
+export const SECTIONS = HELP_PAGES.map((page) => ({ ...page, render: RENDER[page.slug] }));
 
 let currentApi = null;
 let wired = false;
@@ -115,8 +110,6 @@ export async function getFacts() {
   }
   return facts;
 }
-
-export function invalidate() { facts = null; loading = null; }
 
 // ---- rendering ------------------------------------------------------------
 

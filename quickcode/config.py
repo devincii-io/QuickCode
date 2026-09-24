@@ -13,7 +13,8 @@ import platform
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from quickcode import subproc
+from quickcode import gitcmd, jsonfile, textio
+from quickcode.fsutil import atomic_write_text
 from quickcode.search import SearchSettings
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -66,22 +67,6 @@ THEME_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 
-# Order to present color fields in the editor (stable, grouped structure→accent).
-THEME_COLOR_ORDER: list[str] = [
-    "background",
-    "surface",
-    "panel",
-    "boost",
-    "foreground",
-    "primary",
-    "secondary",
-    "accent",
-    "success",
-    "warning",
-    "error",
-]
-
-
 # Model cost band. Deliberately NOT called ``Tier``: ``kernel/spec.py`` owns
 # that name for mutability (free | confirm | locked), and one word meaning
 # two things across modules that import both is a bug waiting for a reader.
@@ -128,17 +113,17 @@ class Profile:
 
     @property
     def api_key_env(self) -> str:
-        """Fixed, non-configurable env var name for the API key."""
-        from quickcode.secrets import API_KEY_ENV
+        """Fixed, non-configurable env var name for this provider's API key."""
+        from quickcode.secrets import provider_key_env
 
-        return API_KEY_ENV
+        return provider_key_env(self.provider)
 
     @property
     def api_key(self) -> str | None:
         """Env var first, then the DPAPI-encrypted value saved from Settings."""
-        from quickcode.secrets import load_api_key
+        from quickcode.secrets import load_provider_key
 
-        return load_api_key()
+        return load_provider_key(self.provider)
 
     def models_for(self, role: Role, tier: ModelTier | None = None) -> list[CatalogEntry]:
         """Curated models eligible for a role, optionally filtered by tier."""
@@ -222,7 +207,7 @@ class Config:
     def load(cls, path: Path = CONFIG_PATH) -> Config:
         if not path.exists():
             return cls()
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = jsonfile.load(path)
         profiles: dict[str, Profile] = {}
         for name, p in raw.get("profiles", {}).items():
             profiles[name] = Profile(
@@ -273,7 +258,7 @@ class Config:
                 for name, p in self.profiles.items()
             },
         }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        atomic_write_text(path, json.dumps(data, indent=2))
 
 
 @dataclass
@@ -299,13 +284,8 @@ class Environment:
         is_git = (root / ".git").exists()
         branch = ""
         if is_git:
-            try:
-                branch = subproc.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=root, capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
-            except Exception:
-                branch = ""
+            found = gitcmd.run(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=5)
+            branch = found.stdout.strip() if found.ok else ""
         instr, instr_file = _load_project_instructions(root)
         return cls(
             cwd=str(root),
@@ -334,7 +314,7 @@ def _load_project_instructions(root: Path) -> tuple[str, str]:
         p = root / name
         if p.exists():
             try:
-                return p.read_text(encoding="utf-8"), name
+                return textio.read_text(p), name
             except Exception:
                 continue
     return "", ""

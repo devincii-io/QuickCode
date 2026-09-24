@@ -90,6 +90,11 @@ export function explainHtml(plugin, { omitWhyFixed = false } = {}) {
   if (plugin.tier === "locked" && !omitWhyFixed) {
     rows.push(["WHY FIXED", esc(lockedBecause(plugin)), ""]);
   }
+  // A path in the repository, not a link: the docs are not shipped inside the
+  // app, and a link that opens nothing is worse than a reference you can find.
+  if (plugin.docs_anchor) {
+    rows.push(["DOCS", `<code class="k-docs">${esc(plugin.docs_anchor)}</code>`, "detail"]);
+  }
   return `<dl class="k-explain">${rows.map(([k, v, cls]) =>
     `<dt>${k}</dt><dd class="${cls}">${v}</dd>`).join("")}</dl>`;
 }
@@ -140,6 +145,7 @@ export function fixedBlockHtml(plugin, settings) {
       </div>
       <div class="k-fixed-value">${value(s)}</div>
       ${s.help ? `<p class="k-fixed-help">${esc(s.help)}</p>` : ""}
+      ${s.effect_detail ? `<p class="k-fixed-help">${esc(s.effect_detail)}</p>` : ""}
       <p class="k-fixed-why"><span class="k-why">Why fixed</span> ${
         esc(lockedBecause(plugin, s))}</p>
     </div>`).join("")}

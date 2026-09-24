@@ -7,10 +7,11 @@
 // Where they get their answers, stated here once and again in the UI beside
 // each one:
 //
-//   Rule sandbox    modelled. There is no read-only endpoint that evaluates a
-//                   permission rule, so js/help/engine.js is a line-for-line
-//                   port of core/permissions.py. The tool list and each tool's
-//                   declared shape are live.
+//   Rule sandbox    live. Every keystroke (debounced) asks this project's real
+//                   permission engine through POST …/permissions/explain and
+//                   draws the trace it returns (js/help/explain.js). The rules
+//                   typed here are added for that one question and written
+//                   nowhere.
 //   Mode comparison live. The tools are this install's, and the withholding
 //                   rule is the one PlanModeHook applies.
 //   Layering        live. It calls the real resolver over HTTP and shows the
@@ -18,7 +19,7 @@
 
 import { esc } from "../util.js";
 import { MODES, MODE_IDS } from "./modes.js";
-import { characterToSpec, evaluate, suggestRule } from "./engine.js";
+import { explainErrorHtml, explainHtml, explainer } from "./explain.js";
 import { getFacts } from "./view.js";
 import { honesty, link, note, pageHtml, sub } from "./ui.js";
 
@@ -27,12 +28,13 @@ import { honesty, link, note, pageHtml, sub } from "./ui.js";
 // ---------------------------------------------------------------------------
 
 // Each sample teaches exactly one thing, and every one of them produces a
-// verdict people get wrong on their first guess.
+// verdict people get wrong on their first guess. They leave the project's own
+// rules out, so the lesson is the same in every project.
 const SAMPLES = [
   {
     label: "deny beats allow",
     mode: "ask", tool: "bash", target: "git push origin main",
-    allow: "bash(git *)", ask: "", deny: "bash(git push*)",
+    allow: "bash(git **)", ask: "", deny: "bash(git push**)",
   },
   {
     label: "one bad clause gates the line",
@@ -40,9 +42,14 @@ const SAMPLES = [
     allow: "bash(npm *)", ask: "", deny: "",
   },
   {
-    label: "protected path beats yolo",
-    mode: "yolo", tool: "edit", target: ".env",
+    label: "protected path beats an allow",
+    mode: "auto-edit", tool: "edit", target: ".env",
     allow: "edit(**)", ask: "", deny: "",
+  },
+  {
+    label: "a deny beats the protected-path prompt",
+    mode: "ask", tool: "read", target: ".env",
+    allow: "read", ask: "", deny: "read(**.env)",
   },
   {
     label: "read-only builtins in plan mode",
@@ -50,14 +57,19 @@ const SAMPLES = [
     allow: "", ask: "", deny: "",
   },
   {
-    label: "a substitution disqualifies every allow",
-    mode: "ask", tool: "bash", target: "echo $(whoami)",
-    allow: "bash(echo *)", ask: "", deny: "",
+    label: "a redirection disqualifies every allow",
+    mode: "ask", tool: "bash", target: "echo done > notes.txt",
+    allow: "bash(echo **)", ask: "", deny: "",
   },
   {
-    label: "matching is whole-string",
-    mode: "ask", tool: "read", target: "config/.env.local",
-    allow: "read(.env)", ask: "", deny: "",
+    label: "a command inside a command",
+    mode: "ask", tool: "bash", target: "find . -name '*.log' -exec rm {} +",
+    allow: "bash(find **)", ask: "", deny: "bash(rm **)",
+  },
+  {
+    label: "* stops at a slash",
+    mode: "ask", tool: "edit", target: "src/app/main.py",
+    allow: "edit(src/*)", ask: "", deny: "",
   },
 ];
 
@@ -75,30 +87,31 @@ function toolChoices(kernel) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const CHARACTER_LABEL = {
-  shell: "shell — the target is a command line, decomposed per subcommand",
-  file_write: "mutating, and its target is a path",
-  file_read: "read-only, and its target is a path",
-  mutating: "mutating, with no path or command target",
-  read_only: "read-only, with no path target",
-  internal_write: "writes QuickCode's own bookkeeping, not your files",
-};
-
 function lines(text) {
   return String(text || "").split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
+/** The declared shape the engine answered with, in words. */
+function shapeText(spec) {
+  if (!spec) return "";
+  if (spec.shell) return "shell: the target is a command line, judged per subcommand";
+  const what = spec.mutates ? "mutating" : "read-only";
+  const target = spec.target_field
+    ? `, target ${spec.target_field}${spec.path_target ? " (a path)" : ""}` : ", no target";
+  return `${what}${target}${spec.executes ? ", runs a program" : ""}`;
+}
+
 function sandboxHtml(tools) {
-  const opt = (t) => `<option value="${esc(t.name)}" data-character="${esc(t.character)}"
-    >${esc(t.name)}</option>`;
+  const opt = (t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`;
   return `<section class="hp-widget" id="hp-sandbox">
     <div class="hp-widget-head">
       <h4>Permission sandbox</h4>
-      <span class="hp-widget-kicker">type a rule, watch the gate decide</span>
+      <span class="hp-widget-kicker">ask the real gate why</span>
     </div>
-    <p class="hp-widget-lede">Pick a tool, a mode and what it would act on, write
-      whatever rules you like, and see the answer <em>and the reason</em>. The
-      trace underneath shows which check answered and which never got to run —
+    <p class="hp-widget-lede">Pick a tool, a mode and what it would act on, add
+      whatever rules you like, and see the answer <em>and the reason</em> — from
+      this project's own permission engine, the code that gates every tool call.
+      The trace underneath shows which check answered and which never got to run,
       which is usually the part that was surprising.</p>
 
     <div class="hp-samples">
@@ -146,45 +159,23 @@ function sandboxHtml(tools) {
                   placeholder="one per line"></textarea>
       </div>
     </div>
+    <label class="hp-check">
+      <input type="checkbox" id="hp-sb-project" checked>
+      Start from this project's own rules and active profile — untick to see
+      the rules above on their own
+    </label>
 
     <div id="hp-sb-out" aria-live="polite"></div>
 
-    ${honesty("modelled", "Modelled in the browser: the rule syntax, the glob "
-      + "matching, the ordering and the bash decomposition are ported from "
-      + "quickcode/core/permissions.py. The tool list and each tool's declared "
-      + "shape are read live from this install. The one thing the browser cannot "
-      + "reproduce is real path resolution — the running engine resolves the "
-      + "target against the project on disk, so it also catches a symlink "
-      + "pointing outside it, which this cannot.")}
+    ${honesty("live", "Live: every answer here comes from this project's "
+      + "running permission engine (POST …/permissions/explain) — the same "
+      + "code, rule matching and path resolution that gates a real tool call. "
+      + "The rules you type are added for the one question and written nowhere. "
+      + "Command hooks, which can only tighten an answer, are not run.")}
   </section>`;
 }
 
-function verdictHtml(tool, spec, target, result) {
-  const rule = suggestRule(tool, spec, target);
-  const outcomeWord = { allow: "runs", ask: "asks you", deny: "refused" };
-  return `<div class="hp-verdict" data-outcome="${esc(result.decision)}">
-      <span class="hp-verdict-badge">${esc(result.decision)}</span>
-      <div class="hp-verdict-why">
-        <code>${esc(tool)}</code> on <code>${esc(target || "(empty)")}</code>
-        — ${esc(outcomeWord[result.decision] || result.decision)}.
-        ${result.decision === "ask"
-          ? `<br><span class="hp-dim-inline">Always allow would write
-             <code>${esc(rule)}</code> to
-             <code>.quickcode/settings.local.json</code>.</span>` : ""}
-      </div>
-    </div>
-    <ol class="hp-trace">
-      ${result.trace.map((s) => `<li data-hit="${s.hit === true ? "1"
-        : s.hit === "skip" ? "skip" : "0"}">
-        <span class="hp-trace-mark">${s.hit === true ? "▸"
-          : s.hit === "skip" ? "·" : "○"}</span>
-        <span class="hp-trace-step">${esc(s.name)}</span>
-        <span class="hp-trace-why">${esc(s.why)}</span>
-      </li>`).join("")}
-    </ol>`;
-}
-
-function wireSandbox(root, tools) {
+function wireSandbox(root, tools, api) {
   const $ = (id) => root.querySelector(id);
   const mode = $("#hp-sb-mode");
   const tool = $("#hp-sb-tool");
@@ -193,39 +184,36 @@ function wireSandbox(root, tools) {
   const deny = $("#hp-sb-deny");
   const ask = $("#hp-sb-ask");
   const allow = $("#hp-sb-allow");
+  const project = $("#hp-sb-project");
   const out = $("#hp-sb-out");
   if (!mode || !tool || !out) return;
 
-  const specOf = (name) => characterToSpec(
-    tools.find((t) => t.name === name)?.character || "");
-
-  const run = () => {
-    const name = tool.value;
-    const spec = specOf(name);
-    const character = tools.find((t) => t.name === name)?.character || "";
-    shape.textContent = CHARACTER_LABEL[character]
-      || "shape not declared — treated as mutating, which is the engine's own "
-       + "fallback";
-    const result = evaluate({
-      mode: mode.value,
-      tool: name,
-      spec,
-      target: target.value,
-      rules: { allow: lines(allow.value), ask: lines(ask.value), deny: lines(deny.value) },
-    });
-    out.innerHTML = verdictHtml(name, spec, target.value, result);
+  const paint = (result, error) => {
+    if (error) {
+      out.innerHTML = explainErrorHtml(error);
+      shape.textContent = "";
+      return;
+    }
+    out.innerHTML = explainHtml(result);
+    shape.textContent = shapeText(result.spec);
   };
+  const ask$ = explainer((body) => api.explainPermission(body), paint);
 
-  for (const node of [mode, tool, target, deny, ask, allow]) {
+  const run = () => ask$({
+    tool: tool.value,
+    target: target.value,
+    mode: mode.value,
+    rules: { allow: lines(allow.value), ask: lines(ask.value), deny: lines(deny.value) },
+    project_rules: project.checked,
+    profile: project.checked,
+  });
+
+  for (const node of [mode, tool, target, deny, ask, allow, project]) {
     node.addEventListener("input", run);
     node.addEventListener("change", run);
   }
 
-  root.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-sample]");
-    if (!btn) return;
-    const s = SAMPLES[Number(btn.dataset.sample)];
-    if (!s) return;
+  const load = (s) => {
     mode.value = s.mode;
     // A sample naming a tool this install does not have keeps whatever is
     // selected rather than silently evaluating a different call.
@@ -234,31 +222,36 @@ function wireSandbox(root, tools) {
     allow.value = s.allow;
     ask.value = s.ask;
     deny.value = s.deny;
+    project.checked = false;
     run();
+  };
+
+  root.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-sample]");
+    const s = btn && SAMPLES[Number(btn.dataset.sample)];
+    if (s) load(s);
   });
 
   // Open on the first sample, so the widget says something before it is touched.
-  const first = SAMPLES[0];
-  if (tools.some((t) => t.name === first.tool)) tool.value = first.tool;
-  mode.value = first.mode;
-  target.value = first.target;
-  allow.value = first.allow;
-  deny.value = first.deny;
-  run();
+  load(SAMPLES[0]);
 }
 
 // ---------------------------------------------------------------------------
 // 2. Mode comparison — which tools each mode even offers
 // ---------------------------------------------------------------------------
 
+// The `metadata.character` values of tools that plan mode keeps: the shell,
+// and the ones that do not mutate. The kernel derives the character from the
+// tool's PermissionSpec; an unknown one is treated as mutating, which is the
+// engine's own fallback for an undeclared tool.
+const KEPT_IN_PLAN = new Set(["shell", "file_read", "read_only", "internal_write"]);
+
 function offeredIn(mode, tool) {
-  const spec = characterToSpec(tool.character);
   // PlanModeHook.visible_tools, exactly: the plan tool is offered only in plan
   // mode, and in plan mode a tool that mutates and is not a shell tool is
   // withheld from the request entirely.
   if (tool.name === "plan") return mode === "plan";
-  if (mode === "plan" && spec.mutates && !spec.shell) return false;
-  return true;
+  return mode !== "plan" || KEPT_IN_PLAN.has(tool.character);
 }
 
 function modeCompareHtml(tools) {
@@ -528,9 +521,12 @@ export async function renderHandsOn(host) {
 
       ${note("None of this touches your project", `
         <p class="hp-p">Nothing on this page writes a file, changes a setting or
-          sends anything to a model. The sandbox does not consult your real rules
-          either — type them in and see, then go and write the ones you want in
-          ${link("#/config/parts/policies", "Policies & limits")}.</p>`)}
+          sends anything to a model. The sandbox reads your project's rules to
+          answer, and the rules you type there exist for that one question — try
+          them, then go and write the ones you want in
+          ${link("#/config/profiles", "Permission profiles")} or
+          <code>.quickcode/settings.json</code>. From a terminal,
+          <code>qc why "&lt;command&gt;"</code> asks the same engine.</p>`)}
     `,
   });
 
@@ -551,7 +547,7 @@ export async function renderHandsOn(host) {
     if (modesSlot) modesSlot.innerHTML = msg;
   } else {
     sandboxSlot.innerHTML = sandboxHtml(tools);
-    wireSandbox(sandboxSlot, tools);
+    wireSandbox(sandboxSlot, tools, facts.api);
     if (modesSlot) {
       modesSlot.innerHTML = modeCompareHtml(tools);
       wireModes(modesSlot, tools);

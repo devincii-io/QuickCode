@@ -16,10 +16,15 @@
 //     `store` and re-renders on every relevant notification, so mounting it
 //     hidden and revealing it later needs no extra call.
 
+import { perFrame } from "../frame.js";
 import { inspectLink, wireInspect } from "../inspect.js";
 import { midTurn, store, subscribe } from "../store.js";
+import { argSummary } from "../tool_args.js";
 import { highlightToon, toon } from "../toon.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
+
+// The panel is narrower than the transcript, and so are its argument lines.
+const ARG_WIDTHS = { width: 100, wide: 100, each: 32 };
 
 let root = null;
 const openIds = new Set();     // agent_id -> card expanded
@@ -31,7 +36,15 @@ const scrollTops = new Map();  // agent_id -> body scrollTop, kept across rebuil
 const follow = new Map();      // agent_id -> stick this transcript to its newest line
 const index = new Map();       // agent_id -> agent, for the lazy-fill observer
 let ticker = null;
-let frame = 0;
+// Bursts of agent events cost one repaint.
+const schedule = perFrame(() => render());
+// Deltas outrun the screen, and a fan-out multiplies them: live text is
+// patched once per frame for the agents that changed, not once per delta.
+const streamDirty = new Set();
+const flushStreamsSoon = perFrame(() => {
+  for (const id of streamDirty) renderAgentStream(id);
+  streamDirty.clear();
+});
 let io = null;
 
 // Stacked reads better for one agent at a time; columns are the point when
@@ -126,7 +139,7 @@ export const panel = {
 function onStoreChange(kind, ev) {
   if (kind === "reset") {
     openIds.clear(); openCalls.clear(); autoOpened.clear(); times.clear();
-    shownCap.clear(); scrollTops.clear(); follow.clear();
+    shownCap.clear(); scrollTops.clear(); follow.clear(); streamDirty.clear();
     soloId = null;
     return schedule();
   }
@@ -145,13 +158,10 @@ function onStoreChange(kind, ev) {
     }
     return;
   }
-  if (kind === "agent_stream") return renderAgentStream(ev.agent_id);
-}
-
-// Coalesce bursts of agent events into one repaint.
-function schedule() {
-  if (frame) return;
-  frame = requestAnimationFrame(() => { frame = 0; render(); });
+  if (kind === "agent_stream") {
+    streamDirty.add(ev.agent_id);
+    flushStreamsSoon();
+  }
 }
 
 // ---- model ----
@@ -196,7 +206,7 @@ function buildAgents() {
       if (e.type === "tool_call") {
         toolCount++;
         ended = false;
-        lastLine = `${e.name} ${argSummary(e.name, e.arguments)}`;
+        lastLine = `${e.name} ${argSummary(e.name, e.arguments, ARG_WIDTHS)}`;
       } else if (e.type === "tool_result") {
         lastResult = e;
         ended = false;
@@ -254,17 +264,16 @@ function stamp(a) {
   }
 }
 
-function fmtDur(ms) {
-  if (ms == null || ms < 0) return "";
-  if (ms < 60000) return fmtMs(Math.round(ms));
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+// A live start against a replayed end can come out a hair negative; that
+// reads as nothing rather than as "-3 ms".
+function spanText(ms) {
+  return ms == null || ms < 0 ? "" : fmtMs(ms);
 }
 
 function durText(a) {
   const t = times.get(a.id);
   if (!t) return "";
-  return fmtDur((t.end ?? Date.now()) - t.start);
+  return spanText((t.end ?? Date.now()) - t.start);
 }
 
 // ---- rendering ----
@@ -512,21 +521,6 @@ function fillBody(body, a) {
   }
 }
 
-// One-line argument preview, mirroring the chat view's tool summaries.
-function argSummary(name, argsRaw) {
-  let a;
-  try { a = JSON.parse(argsRaw || "{}"); } catch { return oneLine(argsRaw, 100); }
-  if (!a || typeof a !== "object") return oneLine(argsRaw, 100);
-  if (name === "bash") return oneLine(a.command, 100);
-  if (name === "read" || name === "write" || name === "edit")
-    return oneLine(a.file_path || a.path, 100);
-  if (name === "grep") return oneLine(`${a.pattern ?? ""}  ${a.path || ""}`, 100);
-  if (name === "glob") return oneLine(a.pattern, 100);
-  if (name === "agent") return oneLine(a.definition || a.prompt, 100);
-  return oneLine(
-    Object.entries(a).map(([k, v]) => `${k}: ${oneLine(String(v), 32)}`).join(", "), 100);
-}
-
 // Arguments are shown in the encoding the model reads them in, not re-rendered
 // as JSON. The model's own tool-call arguments arrive as a JSON string on the
 // wire; what a subagent's context actually looks like is TOON, and a panel that
@@ -548,7 +542,7 @@ function toolNode(agentId, ev) {
     <div class="pa-tool-head" role="button" tabindex="0" aria-expanded="${open}">
       <span class="pa-dot pa-running pa-live"></span>
       <span class="pa-tool-name">${esc(ev.name)}</span>
-      <span class="pa-tool-args">${esc(argSummary(ev.name, ev.arguments))}</span>
+      <span class="pa-tool-args">${esc(argSummary(ev.name, ev.arguments, ARG_WIDTHS))}</span>
       <span class="pa-tool-ms"></span>
     </div>
     <div class="pa-tool-body">
@@ -596,7 +590,8 @@ function renderAgentStream(agentId) {
   const card = root.querySelector(`.pa-card[data-agent="${CSS.escape(String(agentId))}"]`);
   if (!card) return schedule();
   const last = card.querySelector(".pa-last");
-  if (last) last.textContent = oneLine(rec.streamText, 120);
+  // Only the head is shown, so only the head is normalised.
+  if (last) last.textContent = oneLine(rec.streamText.slice(0, 600), 120);
   const body = card.querySelector(".pa-body");
   // Not filled yet (collapsed, or scrolled out of view): nothing to paint, and
   // forcing a rebuild for an invisible agent is exactly what we are avoiding.
@@ -621,7 +616,7 @@ function tick() {
   for (const node of root.querySelectorAll(".pa-dur")) {
     const t = times.get(node.dataset.dur);
     if (!t) continue;
-    if (t.end == null) { running = true; node.textContent = fmtDur(Date.now() - t.start); }
+    if (t.end == null) { running = true; node.textContent = spanText(Date.now() - t.start); }
   }
   if (!running) setTicking(false);
 }

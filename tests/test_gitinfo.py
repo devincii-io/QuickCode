@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -151,3 +152,100 @@ def test_project_scoped_git_404s_for_unknown_project(repo):
         assert client.get(
             "/api/projects/deadbeef1234/git/diff", params={"path": "tracked.txt"}
         ).status_code == 404
+
+
+# ---- what a crafted path or a crafted repository must not reach ----
+
+
+@pytest.fixture
+def nested(repo: Path) -> Path:
+    """A project that is a subdirectory of a larger repository, beside a
+    changed file of that repository that lies outside the project."""
+    (repo / "outside-secret.txt").write_text("keep out\n", encoding="utf-8")
+    git(repo, "add", "outside-secret.txt")
+    git(repo, "commit", "-m", "secret")
+    (repo / "outside-secret.txt").write_text("keep out\nTOP SECRET CHANGE\n", encoding="utf-8")
+    project = repo / "proj"
+    project.mkdir()
+    (project / "mine.txt").write_text("mine\n", encoding="utf-8")
+    return project
+
+
+@pytest.mark.parametrize("path", [
+    ":(top)outside-secret.txt", ":/outside-secret.txt", ":(top,glob)**", ":/", ":(glob)../*",
+])
+def test_pathspec_magic_cannot_carry_a_diff_out_of_the_project(nested, path):
+    """``_safe_rel`` proves a path is inside the project, but git reads a
+    leading ``:`` as pathspec magic, and ``:(top)`` / ``:/`` mean the root of
+    the *repository* -- which, for a project inside a larger repo, is above
+    it."""
+    with make_client(make_manager(nested, FakeProvider())) as client:
+        res = client.get("/api/git/diff", params={"path": path})
+    assert res.status_code in (200, 400)
+    if res.status_code == 200:
+        assert "TOP SECRET" not in res.json()["diff"]
+
+
+@pytest.mark.parametrize("path", [
+    "/etc/passwd", "//server/share/file", "\\\\server\\share\\file", "C:\\Windows\\win.ini",
+    "C:/Windows/win.ini", "c:relative-to-drive.txt",
+])
+def test_an_absolute_drive_or_unc_path_is_refused_before_it_is_resolved(repo, path):
+    """Resolving a UNC path is a network connection on Windows (and an NTLM
+    handshake with whoever answers), so these are refused on their face."""
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        assert client.get("/api/git/diff", params={"path": path}).status_code == 400
+
+
+def _tripwire(repo: Path, name: str) -> tuple[Path, Path]:
+    marker = repo.parent / f"{name}-ran"
+    script = repo.parent / f"{name}.sh"
+    script.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 1\n', encoding="utf-8")
+    script.chmod(0o755)
+    return script, marker
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script as the command")
+def test_opening_the_git_panel_never_runs_a_command_the_repository_configured(repo):
+    """A repository's own ``.git/config`` travels with a downloaded archive,
+    and ``git status`` / ``git diff`` will run what it names: an fsmonitor
+    hook, an external diff, a textconv driver. The panel is a viewer that
+    runs as soon as a project opens, before anyone has trusted it."""
+    fsmonitor, fs_ran = _tripwire(repo, "fsmonitor")
+    external, ext_ran = _tripwire(repo, "external")
+    textconv, tc_ran = _tripwire(repo, "textconv")
+    git(repo, "config", "core.fsmonitor", str(fsmonitor))
+    git(repo, "config", "diff.external", str(external))
+    git(repo, "config", "diff.conv.textconv", str(textconv))
+    (repo / ".gitattributes").write_text("*.txt diff=conv\n", encoding="utf-8")
+
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        assert client.get("/api/git/status").json()["is_repo"] is True
+        diff = client.get("/api/git/diff", params={"path": "tracked.txt"}).json()["diff"]
+        client.get("/api/git/diff", params={"path": "fresh.txt"})
+
+    assert "+two" in diff
+    assert not fs_ran.exists(), "core.fsmonitor ran"
+    assert not ext_ran.exists(), "diff.external ran"
+    assert not tc_ran.exists(), "a textconv driver ran"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script as the command")
+def test_the_git_panel_never_runs_a_filter_the_repository_configured(repo):
+    """``filter.<name>.clean`` runs on ``git status`` whenever the stat data
+    cannot settle whether a file changed, on every diff of a working-tree file,
+    and on ``diff --no-index``. The name is the repository's to choose, so no
+    single ``-c`` option covers it."""
+    clean, ran = _tripwire(repo, "clean")
+    git(repo, "config", "filter.evil.clean", str(clean))
+    (repo / ".gitattributes").write_text("*.txt filter=evil\n", encoding="utf-8")
+    (repo / "tracked.txt").write_text("ONE\n", encoding="utf-8")  # same size as HEAD's
+
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        files = client.get("/api/git/status").json()["files"]
+        diff = client.get("/api/git/diff", params={"path": "tracked.txt"}).json()["diff"]
+        client.get("/api/git/diff", params={"path": "fresh.txt"})
+
+    assert {"path": "tracked.txt", "status": "M"} in files
+    assert "+ONE" in diff
+    assert not ran.exists(), "a clean filter from .git/config ran"

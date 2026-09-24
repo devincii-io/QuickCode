@@ -7,17 +7,21 @@
 // that has both puts the panel on the right and the terminal along the bottom
 // for those reasons, and the user asked for it there.
 //
-// Two tabs, and the split is by who is typing:
+// Three tabs, and the split is by who is typing:
 //
 //   Shell   — the live pty. The user's own shell, in the project directory.
 //   Agent   — every `bash` the agent ran, read-only (see agentfeed.js).
+//   Jobs    — the commands the agent left running in the background, live,
+//             with a Kill button (see jobs.js).
 //
 // The height, the open state and the chosen tab are remembered per project,
 // like the side panel's width — "I keep a terminal open in this repo" is a
 // per-repo habit.
 
+import { markSelected, wireTabs } from "../ui/tabs.js";
 import { initAgentFeed } from "./agentfeed.js";
-import { keyToBytes } from "./keys.js";
+import { initJobs } from "./jobs.js";
+import { inputChunks, keyToBytes, pasteBytes, stagedCommand } from "./keys.js";
 import { TerminalSocket } from "./socket.js";
 import { TerminalView } from "./view.js";
 
@@ -30,6 +34,7 @@ const maxHeight = () => Math.round(window.innerHeight * 0.8);
 let dock, grip, screenHost, statusEl, tabsEl;
 let view = null;
 let socket = null;
+let jobsView = null;
 let projectId = null;
 let started = false;              // has a shell ever been asked for?
 let state = { open: false, tab: "shell", height: DEFAULT_H };
@@ -37,13 +42,14 @@ let state = { open: false, tab: "shell", height: DEFAULT_H };
 // ---- persistence ----
 
 const storeKey = (pid) => `qc-terminal:${pid || "default"}`;
+const TABS = ["shell", "agent", "jobs"];
 
 function load(pid) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(storeKey(pid)) || "{}"); } catch { /* corrupt */ }
   return {
     open: saved.open === true,
-    tab: saved.tab === "agent" ? "agent" : "shell",
+    tab: TABS.includes(saved.tab) ? saved.tab : "shell",
     height: clampHeight(Number(saved.height) || DEFAULT_H),
   };
 }
@@ -62,19 +68,18 @@ function clampHeight(h) {
 
 function apply() {
   dock.classList.toggle("open", state.open);
+  // Clear and Restart act on the shell; the other tabs hide them.
+  dock.dataset.tab = state.tab;
   dock.style.setProperty("--term-h", state.height + "px");
   dock.setAttribute("aria-hidden", state.open ? "false" : "true");
-  for (const btn of tabsEl.querySelectorAll("[data-tab]")) {
-    const on = btn.dataset.tab === state.tab;
-    btn.classList.toggle("active", on);
-    btn.setAttribute("aria-selected", on ? "true" : "false");
-  }
+  markSelected(tabsEl, state.tab);
   for (const pane of dock.querySelectorAll(".qt-pane")) {
     pane.classList.toggle("active", pane.dataset.pane === state.tab);
   }
   const toggle = $("btn-term-toggle");
   if (toggle) toggle.classList.toggle("on", state.open);
   if (state.open && state.tab === "shell") ensureShell();
+  if (jobsView) jobsView.setVisible(state.open && state.tab === "jobs");
   fit();
 }
 
@@ -138,26 +143,54 @@ export function toggleTerminal(force) {
   if (state.open && state.tab === "shell") focusShell();
 }
 
-export function openTerminalTab(tab) {
+// `focus: false` leaves focus where it is: on the tab strip, when the arrow
+// keys chose the Shell tab rather than a click.
+export function openTerminalTab(tab, { focus = true } = {}) {
   state.open = true;
   state.tab = tab;
   save();
   apply();
-  if (tab === "shell") focusShell();
+  if (focus && tab === "shell") focusShell();
 }
 
 function focusShell() {
   requestAnimationFrame(() => screenHost.focus({ preventScroll: true }));
 }
 
-/** Put a command at the prompt. Never with a newline — see agentfeed.js. */
+/** Put a command at the prompt. Never anything that runs it — see keys.js. */
 function stageCommand(command) {
-  const text = String(command || "").replace(/[\r\n]+/g, " ").trim();
+  const text = stagedCommand(command);
   if (!text) return;
   openTerminalTab("shell");
   if (!socket.live) return;
-  socket.input(text);
+  sendText(pasteBytes(text, view.emu.bracketedPaste));
   focusShell();
+}
+
+// Under the server's per-frame limit (MAX_INPUT_CHARS), which otherwise cut a
+// large paste short without a word.
+const INPUT_CHUNK = 32 * 1024;
+
+function sendText(text) {
+  for (const chunk of inputChunks(text, INPUT_CHUNK)) socket.input(chunk);
+}
+
+/** How many background jobs are running, on the Jobs tab and the toolbar
+ *  toggle — a server the agent left running is worth seeing with the drawer
+ *  shut. */
+function showJobCount(n) {
+  const badge = tabsEl.querySelector('[data-tab="jobs"] .qt-tab-count');
+  if (badge) {
+    badge.textContent = n ? String(n) : "";
+    badge.hidden = !n;
+  }
+  const toggle = $("btn-term-toggle");
+  if (!toggle) return;
+  if (n) toggle.dataset.jobs = String(n);
+  else delete toggle.dataset.jobs;
+  toggle.title = n
+    ? `Show or hide the terminal (Ctrl+\`) — ${n} background job${n === 1 ? "" : "s"} running`
+    : "Show or hide the terminal (Ctrl+`)";
 }
 
 // ---- wiring ----
@@ -176,14 +209,17 @@ export function initTerminal() {
     onStatus: (kind, detail) => setStatus(kind, detail),
   });
   initAgentFeed($("term-agent"), { onRerun: stageCommand });
+  jobsView = initJobs($("term-jobs"), { onCount: showJobCount });
 
   tabsEl.addEventListener("click", (e) => {
     const b = e.target.closest("[data-tab]");
     if (b) openTerminalTab(b.dataset.tab);
   });
+  wireTabs(tabsEl, (tab) => dock.querySelector(`.qt-pane[data-pane="${tab.dataset.tab}"]`),
+    (tab) => openTerminalTab(tab, { focus: false }));
   $("btn-term-close").addEventListener("click", () => toggleTerminal(false));
   $("btn-term-clear").addEventListener("click", () => {
-    view.clear();
+    view.clear({ keepModes: true });
     // A cleared screen the shell does not know about would leave its prompt
     // half-way down; ^L is how a terminal asks for a redraw.
     if (socket.live) socket.input("\x0c");
@@ -209,7 +245,7 @@ function initKeyboard() {
   screenHost.addEventListener("keydown", (e) => {
     // The panel's own shortcut wins over anything it would otherwise send.
     if (e.key === "`" && (e.ctrlKey || e.metaKey)) return;
-    const bytes = keyToBytes(e);
+    const bytes = keyToBytes(e, { appCursor: view.emu.appCursor });
     if (bytes === null) return;               // browser keeps it (copy, paste)
     e.preventDefault();
     e.stopPropagation();
@@ -219,7 +255,7 @@ function initKeyboard() {
   screenHost.addEventListener("paste", (e) => {
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData("text");
-    if (text && socket.live) socket.input(text.replace(/\r\n/g, "\r").replace(/\n/g, "\r"));
+    if (text && socket.live) sendText(pasteBytes(text, view.emu.bracketedPaste));
   });
   // Ctrl+` from anywhere: the one shortcut a terminal panel is expected to have.
   document.addEventListener("keydown", (e) => {

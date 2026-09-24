@@ -1,11 +1,12 @@
 """The plugin registry: one place that knows what exists and how it is set.
 
-Discovery has three sources, in a fixed order so a later one can extend but
+Discovery has four sources, in a fixed order so a later one can extend but
 never silently replace an earlier one:
 
-1. ``manifest.py``  -- the internal plugins we ship.
-2. entry points     -- third-party packages (``quickcode.tools`` and friends).
-3. config           -- data-driven plugins, e.g. one per configured MCP server.
+1. ``kernel/manifest/`` -- the internal plugins we ship.
+2. entry points        -- third-party packages (``quickcode.tools`` and friends).
+3. config              -- data-driven plugins, e.g. one per configured MCP server.
+4. authored files      -- ``.quickcode/plugins/*.md`` (``kernel/authoring/``).
 
 The registry holds specs plus persisted state. It does not build tools,
 render prompts, or run anything -- the subsystems do that, asking the
@@ -17,13 +18,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from quickcode.kernel import state as state_store
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.patterns import pattern_matches
+from quickcode.kernel.problems import ID_DUPLICATE, Problem, Provenance
 from quickcode.kernel.spec import (
     Kind,
     LockedSetting,
@@ -64,14 +65,6 @@ class Use:
     def to_json(self) -> dict[str, str]:
         return {"kind": self.kind, "id": self.id, "title": self.title,
                 "via": self.via, "href": self.href}
-
-
-def _matches(pattern: str, name: str) -> bool:
-    return pattern == name or fnmatchcase(name, pattern)
-
-
-def _is_glob(text: str) -> bool:
-    return any(ch in text for ch in ("*", "?", "["))
 
 
 def _mcp_server(tool_name: str) -> str:
@@ -129,9 +122,6 @@ class PluginRegistry:
         # staleness that deliberate rebuild exists to avoid. See ``used_by``.
         self._used_by: dict[str, list[Use]] | None = None
 
-    def add_problem(self, problem: Problem) -> None:
-        self.problems.append(problem)
-
     def add_problems(self, problems: list[Problem]) -> None:
         self.problems.extend(problems)
 
@@ -147,7 +137,7 @@ class PluginRegistry:
             kept = self._specs[spec.id]
             log.warning("duplicate plugin id %r from %s ignored", spec.id, spec.source)
             self.problems.append(Problem(
-                code="id_duplicate", severity="error",
+                code=ID_DUPLICATE, severity="error",
                 message=(f"'{spec.id}' is claimed twice: the {kept.source} one "
                          f"is in use and the {spec.source} one was refused"),
                 fix=("Rename the second one. An id names one plugin; letting a "
@@ -250,8 +240,12 @@ class PluginRegistry:
 
     def _build_used_by(self) -> dict[str, list[Use]]:
         from quickcode.kernel import preset as preset_module
-        from quickcode.kernel.composition import DELEGATION_TOOLS, ORCHESTRATOR_ID
-        from quickcode.kernel.resolve import resolve_composition
+        from quickcode.kernel.composition import (
+            DELEGATION_TOOLS,
+            ORCHESTRATOR_ID,
+            SHELL_JOB_TOOLS,
+        )
+        from quickcode.kernel.resolve import expand_tool_pattern, resolve_composition
 
         index: dict[str, dict[tuple[str, str], Use]] = {}
 
@@ -286,9 +280,12 @@ class PluginRegistry:
             )
             servers: set[str] = set()
             for name in resolved.tools:
-                via = ("granted by depth, because it can spawn"
-                       if name in DELEGATION_TOOLS
-                       else "its orchestrator holds it")
+                if name in DELEGATION_TOOLS:
+                    via = "granted by depth, because it can spawn"
+                elif name in SHELL_JOB_TOOLS and "bash" in resolved.tools:
+                    via = "granted with bash, whose background jobs it reads or stops"
+                else:
+                    via = "its orchestrator holds it"
                 add(f"tool.{name}", composition_use(preset, via))
                 server = _mcp_server(name)
                 if server:
@@ -328,11 +325,12 @@ class PluginRegistry:
                 continue
             servers = set()
             for pattern in comp.tools or ():
+                wanted = expand_tool_pattern(pattern)
                 for tool in tool_names:
-                    if not _matches(pattern, tool):
+                    if not pattern_matches(wanted, tool):
                         continue
                     add(f"tool.{tool}", agent_use(name, (
-                        f"matched by `{pattern}` in its tools" if _is_glob(pattern)
+                        f"matched by `{pattern}` in its tools" if wanted != tool
                         else "listed in its tools")))
                     server = _mcp_server(tool)
                     if server:
@@ -341,7 +339,7 @@ class PluginRegistry:
                 add(f"mcp.{server}", agent_use(name, "it lists tools from this server"))
             for pattern in comp.spawns or ():
                 for other in agent_ids:
-                    if _matches(pattern, other):
+                    if pattern_matches(pattern, other):
                         add(f"agent.{other}", agent_use(name, "it may spawn it"))
             if comp.base:
                 add(f"agent.{comp.base}", agent_use(name, "it derives from it (`base:`)"))
@@ -431,7 +429,7 @@ class PluginRegistry:
             "tier": spec.tier(),
             "metadata": spec.metadata,
             # The six questions, in the order the UI asks them. Written once in
-            # manifest.py and carried through verbatim -- a card that explained
+            # kernel/manifest/ and carried through verbatim -- a card that explained
             # itself differently from the registry would be describing an app
             # that does not exist.
             "summary": spec.summary,

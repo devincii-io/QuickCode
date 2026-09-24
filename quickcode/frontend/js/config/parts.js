@@ -16,6 +16,7 @@ import {
 import { emptyFilterHtml, emptyHtml, wireEmpty } from "./empty.js";
 import { partOfProblem, problemsCardHtml, wireProblems } from "./problems.js";
 import { duplicatePlugin } from "./create/scaffold.js";
+import { store } from "../store.js";
 
 const LEDE = {
   tools: `Everything the model can call. Read-only tools skip the permission
@@ -110,7 +111,7 @@ const SCOPE_FILTERS = [
 ];
 
 function filterBar(state, counts) {
-  return `<div class="cfg-filters">
+  return `<div class="cfg-filters" data-filterbar>
     <div class="cfg-filter-group" role="group" aria-label="Source">
       ${SOURCE_FILTERS.map(([v, label]) => `<button class="cfg-fchip${
         state.source === v ? " on" : ""}" data-source="${esc(v)}">${esc(label)}${
@@ -138,6 +139,8 @@ export async function renderParts(host, ctx, slug, query = {}) {
     source: query.source || "", scope: query.scope || "",
   };
   const counts = { authored: all.filter((p) => p.source === "authored").length };
+  const prompt = part.slug === "prompt" ? await promptView(ctx, query) : null;
+  const facts = prompt?.facts || ctx.facts;
   // A problem whose plugin was skipped has no card to sit on, which is exactly
   // why the card is pinned above the list rather than attached to a row.
   //
@@ -167,7 +170,8 @@ export async function renderParts(host, ctx, slug, query = {}) {
         </span>
       </div>
     </header>
-    <div class="cfg-lede">${LEDE[part.slug] || ""}</div>
+    <div class="cfg-lede">${prompt?.lede || LEDE[part.slug] || ""}</div>
+    ${prompt?.switch || ""}
     <div class="pb-slot">${problemsCardHtml(mine, {
       title: `Problems on this page`,
       note: elsewhere ? `${elsewhere} more elsewhere —
@@ -202,7 +206,7 @@ export async function renderParts(host, ctx, slug, query = {}) {
     const rows = matches();
     const filtered = state.q.trim() || state.source || state.scope || state.server;
     list.innerHTML = rows.length
-      ? rows.map((p) => cardHtml(p, ctx.facts, scopes[p.id] || p.metadata?.scope || "")).join("")
+      ? rows.map((p) => cardHtml(p, facts, scopes[p.id] || p.metadata?.scope || "")).join("")
       : filtered
         ? emptyFilterHtml(part.slug, { source: state.source, scope: state.scope })
         : emptyHtml(part.slug);
@@ -210,7 +214,7 @@ export async function renderParts(host, ctx, slug, query = {}) {
 
   paint();
   filter.addEventListener("input", () => { state.q = filter.value; paint(); });
-  host.querySelector(".cfg-filters").addEventListener("click", (e) => {
+  host.querySelector("[data-filterbar]").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-source], [data-scope]");
     if (!btn || btn.disabled) return;
     if ("source" in btn.dataset) {
@@ -237,14 +241,60 @@ export async function renderParts(host, ctx, slug, query = {}) {
     openPluginView(ctx.api, ctx.kernel.plugins.find((p) => p.id === card.dataset.id));
   });
 
-  // Tools show their real signature, which means reading each declaration.
-  // Done after the first paint and cached on ctx, so it costs one pass per
-  // configuration session rather than one per visit.
+  // Tools show their real signature. The kernel payload carries it; reading a
+  // declaration is only the fallback, done after the first paint and cached on
+  // ctx, so even then it costs one pass per configuration session.
   if (part.slug === "tools") await fillSignatures(ctx, all, list);
 }
 
+// ---- the Prompt page: the next session's prompt, or this session's ----------
+//
+// Two prompts can differ, and the page says which one its byte ranges are from.
+// Live is what the next session starts from, resolved from the active
+// composition; `?conv=` is the prompt a running session is being sent, frozen
+// when it opened, from `GET /api/prompt?conv=`. The switch only appears when
+// there is a session to switch to.
+
+async function promptView(ctx, query) {
+  const conv = query.conv || "";
+  const current = store.convId || "";
+  const chips = (conv || current) ? `<div class="cfg-filters">
+      <div class="cfg-filter-group" role="group" aria-label="Which prompt">
+        <a class="cfg-fchip${conv ? "" : " on"}" href="#/config/parts/prompt">Next session</a>
+        <a class="cfg-fchip${conv ? " on" : ""}" href="#/config/parts/prompt?conv=${
+          encodeURIComponent(conv || current)}">This session</a>
+      </div>
+      <span class="cfg-filter-note-inline">A session keeps the prompt it opened
+        with; edits here reach the next one.</span>
+    </div>` : "";
+  if (!conv) return { switch: chips };
+  try {
+    const frozen = await ctx.api.prompt(conv);
+    const ranges = {};
+    for (const s of frozen.sections || []) ranges[s.id] = { start: s.start, end: s.end };
+    return {
+      switch: chips,
+      facts: { ...ctx.facts, ranges },
+      lede: `Where each section lands in the prompt this session is being sent —
+        frozen when it opened, whatever the files say now.${frozen.exact ? ""
+          : ` These boundaries were found by searching the text: the files have
+             changed since the session opened, so they could not be re-rendered
+             exactly.`}`,
+    };
+  } catch (err) {
+    return {
+      switch: chips,
+      lede: `Could not read this session's prompt (${esc(err.message)}), so the
+        ranges below are the next session's.`,
+    };
+  }
+}
+
 async function fillSignatures(ctx, tools, list) {
-  const missing = tools.filter((t) => ctx.facts.schemas[t.id] === undefined);
+  // The kernel carries each tool's signature on its payload now; a request per
+  // tool is only the fallback for a plugin that arrived without one.
+  const missing = tools.filter(
+    (t) => ctx.facts.schemas[t.id] === undefined && !t.metadata?.signature);
   if (!missing.length) { repaintSignatures(ctx, list); return; }
   await Promise.all(missing.map(async (t) => {
     try {

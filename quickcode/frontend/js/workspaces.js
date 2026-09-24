@@ -1,26 +1,39 @@
 import { api, authToken, initAuth } from "./api.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
-import { openDirBrowser } from "./modals.js";
+import { openDirBrowser } from "./dirbrowser.js";
 import { applyTheme, el, esc } from "./util.js";
 import { toastError, toastOk } from "./toast.js";
-import { renderAppearanceControls } from "./appearance.js";
-import { dwindleDir, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
-import { MAX_PANES, restoreWorkspace } from "./workspace_state.js";
+import { readAppearance, renderAppearanceControls } from "./appearance.js";
+import { HELP_PAGES as HELP_SECTIONS } from "./help/sections.js";
+import { Attention, badgeTitle, noticeCopy, paintBadge, showOsNotice, windowActive } from "./notify.js";
+import { bindPaletteKey, openPalette } from "./palette.js";
+import { workspaceItems } from "./workspace_palette.js";
+import { dwindleDir, equalize, evenRatio, heirOf, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
+import { MAX_PANES, MAX_RATIO, MIN_RATIO, clampRatio, resizeKey, restoreWorkspace } from "./workspace_state.js";
 
 const KEY = "qc-workspaces-v1";
+const GAP = 6;
 const workspaces = new Map();
 const frames = new Map();
+// Keyed by split node so a re-layout moves a divider instead of replacing it,
+// which would drop its keyboard focus and any pointer capture on it.
+const dividers = new Map();
 let active = null, zoomed = null, home = true, shell, grid, sidebar, utility;
 let dragged = null, undo = null, storageWarning = false;
 let chrome = { width: 232, collapsed: false };
+// Turns finished, reviews waiting and errors in panes you were not looking at.
+const attention = new Attention();
 
 function saveChrome() {
   try { localStorage.setItem("qc-workspace-chrome", JSON.stringify(chrome)); } catch { /* current window keeps its layout */ }
 }
-function toggleSidebar() {
-  chrome.collapsed = !chrome.collapsed;
+function showSidebar() {
   shell.classList.toggle("ws-collapsed", chrome.collapsed);
   document.getElementById("ws-sidebar-toggle").setAttribute("aria-expanded", String(!chrome.collapsed));
+}
+function toggleSidebar() {
+  chrome.collapsed = !chrome.collapsed;
+  showSidebar();
   saveChrome();
 }
 
@@ -29,17 +42,19 @@ function initSidebarResize() {
     const saved = JSON.parse(localStorage.getItem("qc-workspace-chrome"));
     if (saved) chrome = { width: Math.max(160, Math.min(360, Number(saved.width) || 232)), collapsed: saved.collapsed === true };
   } catch { /* defaults */ }
-  shell.style.setProperty("--sidebar-width", `${chrome.width}px`);
-  shell.classList.toggle("ws-collapsed", chrome.collapsed);
+  showSidebar();
   const grip = shell.querySelector(".ws-sidebar-grip");
   const apply = (width) => {
     chrome.width = Math.max(160, Math.min(360, width));
     shell.style.setProperty("--sidebar-width", `${chrome.width}px`);
     grip.setAttribute("aria-valuenow", String(Math.round(chrome.width)));
   };
+  apply(chrome.width);
   grip.addEventListener("keydown", (e) => {
-    if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
-    e.preventDefault(); apply(chrome.width + (e.key === "ArrowLeft" ? -10 : 10)); saveChrome();
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const width = { ArrowLeft: chrome.width - 10, ArrowRight: chrome.width + 10, Home: 160, End: 360 }[e.key];
+    if (width === undefined) return;
+    e.preventDefault(); apply(width); saveChrome();
   });
   grip.addEventListener("dblclick", () => { apply(232); saveChrome(); });
   grip.addEventListener("pointerdown", (e) => {
@@ -102,6 +117,7 @@ async function activate(ws) {
     rememberProject(pid);
     render();
     save();
+    acknowledge();
   } catch (err) {
     ws.opening = null;
     toastError(`Could not open ${ws.project.name || ws.project.path}: ${err.message}`);
@@ -120,16 +136,22 @@ async function openProject(project, { resume = null } = {}) {
   if (resume) addPane(ws, null, resume);
 }
 
-function addPane(ws = current(), dir = null, convId = null) {
+// `seq` is an event to open in the pane's inspector: a session search hit.
+function addPane(ws = current(), dir = null, convId = null, seq = null) {
   if (!ws) return;
+  const at = Number.isSafeInteger(seq) ? seq : null;
   const existing = convId && Object.values(ws.panes).find((p) => p.convId === convId);
-  if (existing) { focus(ws, existing.id); return; }
+  if (existing) {
+    focus(ws, existing.id);
+    if (at !== null) post(frames.get(existing.id)?.iframe, { action: "reveal", seq: at });
+    return;
+  }
   if (leaves(ws.tree).length >= MAX_PANES) {
     toastError(`A workspace can show up to ${MAX_PANES} agents. Close a pane before adding another.`);
     return;
   }
   const id = crypto.randomUUID();
-  const pane = { id, convId, title: "New agent", persisted: !!convId };
+  const pane = { id, convId, title: "New agent", persisted: !!convId, reveal: at };
   const box = frames.get(ws.focused)?.element.getBoundingClientRect() || grid.getBoundingClientRect();
   ws.tree = insertBeside(ws.tree, ws.focused, id, dir || dwindleDir(box));
   ws.panes[id] = pane;
@@ -141,32 +163,65 @@ function addPane(ws = current(), dir = null, convId = null) {
 }
 
 function focus(ws, id, input = true) {
-  if (active !== ws.project.id) { activate(ws); }
+  if (active !== ws.project.id || home) activate(ws);
   ws.focused = id;
   if (zoomed && zoomed !== id) zoomed = null;
+  attention.clear(id);
   render();
   save();
   if (input) post(frames.get(id)?.iframe, { action: "focus" });
+}
+
+// Whether you can see this pane now: its notices are read the moment you can.
+function watching(f) {
+  return windowActive() && !home && !utility && active === f.ws.project.id
+    && f.ws.focused === f.pane.id && (!zoomed || zoomed === f.pane.id);
+}
+
+function acknowledge() {
+  const f = frames.get(current()?.focused);
+  if (f && watching(f) && attention.clear(f.pane.id)) render();
+}
+
+function notice(f, data) {
+  if (watching(f) || !attention.add(f.pane.id, data.kind)) return;
+  const copy = noticeCopy(data.kind, f.pane.title, typeof data.detail === "string" ? data.detail.slice(0, 60) : "");
+  document.getElementById("ws-live").textContent = `${copy.title}. ${copy.body}`;
+  render();
+  if (!windowActive() && readAppearance().notify) {
+    showOsNotice(copy, { tag: `qc-${f.pane.id}`, onClick: () => {
+      window.focus();
+      if (frames.get(f.pane.id) === f) focus(f.ws, f.pane.id);
+    } });
+  }
 }
 
 function closePane(ws, id) {
   const pane = ws.panes[id];
   if (!pane) return;
   undo = { ws, pane };
+  const heir = heirOf(ws.tree, id);
   ws.tree = removeLeaf(ws.tree, id);
   delete ws.panes[id];
   frames.get(id)?.element.remove();
   frames.delete(id);
-  if (ws.focused === id) ws.focused = leaves(ws.tree)[0] || null;
+  const wasFocused = ws.focused === id;
+  if (wasFocused) ws.focused = heir || leaves(ws.tree)[0] || null;
   zoomed = null;
   render();
   save();
+  // The close button left with its pane. Keyboard focus goes where the room went.
+  if (wasFocused && ws.focused) post(frames.get(ws.focused)?.iframe, { action: "focus" });
+  else if (wasFocused) document.querySelector("#ws-empty button")?.focus();
   toastOk("Pane closed. The conversation is kept in session history.");
 }
 
 function undoClose() {
   if (!undo) return;
   const { ws, pane } = undo;
+  // Reopened from history since it closed: one pane per conversation.
+  const open = pane.convId && Object.values(ws.panes).find((p) => p.convId === pane.convId);
+  if (open) { undo = null; focus(ws, open.id); return; }
   if (leaves(ws.tree).length >= MAX_PANES) { toastError("Close a pane before restoring another."); return; }
   undo = null;
   ws.panes[pane.id] = pane;
@@ -178,9 +233,9 @@ function undoClose() {
 
 function mount(ws, pane) {
   if (frames.has(pane.id)) return;
-  const element = el(`<section class="ws-pane" aria-label="Agent pane">
+  const element = el(`<section class="ws-pane" aria-label="Agent: ${esc(pane.title)}">
     <header class="ws-pane-head" draggable="true">
-      <span class="ws-dot"></span><button class="ws-pane-name" title="Rename conversation">${esc(pane.title)}</button>
+      <span class="ws-dot" aria-hidden="true"></span><button class="ws-pane-name" title="Rename conversation">${esc(pane.title)}</button>
       <span class="ws-pane-status">Connecting</span>
       <button class="ws-icon" data-action="h" title="Split right" aria-label="Split right">◫</button>
       <button class="ws-icon" data-action="v" title="Split below" aria-label="Split below">⬒</button>
@@ -191,13 +246,18 @@ function mount(ws, pane) {
   const iframe = element.querySelector("iframe");
   const query = new URLSearchParams({ pane: "1", project: ws.project.id, view: pane.id });
   if (pane.convId) query.set("resume", pane.convId);
+  if (pane.convId && pane.reveal != null) query.set("at", String(pane.reveal));
+  delete pane.reveal;
   // sessionStorage is shared by same-origin frames in this tab. No secret is
   // put in a frame URL, a saved layout, or a postMessage payload.
   iframe.src = `${location.pathname}?${query}`;
   element.dataset.pane = pane.id;
+  element.id = `ws-pane-${pane.id}`;
   frames.set(pane.id, { element, iframe, ws, pane });
   grid.appendChild(element); // Never reparent a mounted iframe: it would reload.
-  element.addEventListener("pointerdown", () => focus(ws, pane.id, false));
+  const select = () => { if (home || active !== ws.project.id || ws.focused !== pane.id) focus(ws, pane.id, false); };
+  element.addEventListener("pointerdown", select);
+  element.addEventListener("focusin", select);
   element.querySelector(".ws-pane-head").addEventListener("dblclick", (e) => {
     if (!e.target.closest("button")) toggleZoom(pane.id);
   });
@@ -207,7 +267,7 @@ function mount(ws, pane) {
       const action = button.dataset.action;
       if (action === "close") closePane(ws, pane.id);
       else if (action === "zoom") toggleZoom(pane.id);
-      else addPane(ws, action);
+      else { ws.focused = pane.id; addPane(ws, action); } // Keyboard activation has no pointerdown.
     };
   });
   element.addEventListener("dragstart", (e) => {
@@ -256,9 +316,64 @@ function box(element, rect) {
   for (const key of ["left", "top", "width", "height"]) element.style[key] = `${rect[key]}px`;
 }
 
+function makeDivider(node) {
+  const element = el(`<div class="ws-divider" role="separator" tabindex="0"
+    aria-valuemin="${Math.round(MIN_RATIO * 100)}" aria-valuemax="${Math.round(MAX_RATIO * 100)}"></div>`);
+  const resize = (ratio) => { node.ratio = ratio; layout(); };
+  element.addEventListener("keydown", (e) => {
+    const ratio = resizeKey(node.ratio, e);
+    if (ratio === null) return;
+    e.preventDefault(); resize(ratio); save();
+  });
+  element.addEventListener("dblclick", () => { resize(evenRatio(node)); save(); });
+  element.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    // Captured on the divider itself, so the dblclick that follows lands on it.
+    element.setPointerCapture(e.pointerId);
+    grid.classList.add("ws-resizing");
+    const move = (ev) => {
+      const split = dividers.get(node)?.box;
+      if (!split) return;
+      const bounds = grid.getBoundingClientRect();
+      const horizontal = node.dir !== "v";
+      const offset = horizontal ? ev.clientX - bounds.left - split.left : ev.clientY - bounds.top - split.top;
+      resize(clampRatio(offset / Math.max(1, (horizontal ? split.width : split.height) - GAP)));
+    };
+    const end = () => {
+      for (const [type, fn] of events) element.removeEventListener(type, fn);
+      grid.classList.remove("ws-resizing");
+      save();
+    };
+    const events = [["pointermove", move], ["pointerup", end], ["pointercancel", end], ["lostpointercapture", end]];
+    for (const [type, fn] of events) element.addEventListener(type, fn);
+  });
+  return element;
+}
+
+function placeDivider(ws, d) {
+  let entry = dividers.get(d.node);
+  if (!entry) {
+    entry = { element: makeDivider(d.node) };
+    dividers.set(d.node, entry);
+    grid.appendChild(entry.element);
+  }
+  entry.box = d.box;
+  const { element } = entry;
+  const horizontal = d.node.dir !== "v";
+  const [before, after] = d.node.children.map((child) => leaves(child));
+  const title = (id) => ws.panes[id]?.title || "agent";
+  element.className = `ws-divider ${horizontal ? "horizontal" : "vertical"}`;
+  element.setAttribute("aria-orientation", horizontal ? "vertical" : "horizontal");
+  element.setAttribute("aria-valuenow", String(Math.round(clampRatio(d.node.ratio) * 100)));
+  element.setAttribute("aria-controls", before.map((id) => `ws-pane-${id}`).join(" "));
+  element.setAttribute("aria-label", `Resize ${title(before.at(-1))} and ${title(after[0])}`);
+  box(element, d);
+}
+
 function layout() {
   const ws = current();
-  grid.querySelectorAll(".ws-divider").forEach((n) => n.remove());
+  const placed = new Set();
   for (const [id, f] of frames) {
     const visible = !home && f.ws === ws && (!zoomed || id === zoomed);
     f.element.hidden = !visible;
@@ -268,56 +383,24 @@ function layout() {
     button.title = zoomed === id ? "Restore panes (Alt+Z)" : "Maximize pane (Alt+Z)";
     button.setAttribute("aria-label", zoomed === id ? "Restore panes" : "Maximize pane");
   }
-  if (!ws || home) return;
-  const rect = { left: 0, top: 0, width: grid.clientWidth, height: grid.clientHeight };
-  if (zoomed && frames.has(zoomed)) { box(frames.get(zoomed).element, rect); return; }
-  const positions = layoutRects(ws.tree, rect, 6, { min: .15, max: .85 });
-  for (const [id, r] of positions.leaves) { if (frames.has(id)) box(frames.get(id).element, r); }
-  for (const d of positions.dividers) {
-    const horizontal = d.node.dir === "h";
-    const grip = el(`<div class="ws-divider ${horizontal ? "horizontal" : "vertical"}" role="separator"
-      tabindex="0" aria-label="Resize agent panes" aria-orientation="${horizontal ? "vertical" : "horizontal"}"
-      aria-valuemin="15" aria-valuemax="85" aria-valuenow="${Math.round(d.node.ratio * 100)}"></div>`);
-    box(grip, d); grid.appendChild(grip);
-    grip.addEventListener("keydown", (e) => {
-      const delta = ["ArrowRight", "ArrowDown"].includes(e.key) ? .05 : ["ArrowLeft", "ArrowUp"].includes(e.key) ? -.05 : 0;
-      if (!delta) return;
-      e.preventDefault(); d.node.ratio = Math.max(.15, Math.min(.85, d.node.ratio + delta));
-      const index = [...grid.querySelectorAll(".ws-divider")].indexOf(grip);
-      layout(); grid.querySelectorAll(".ws-divider")[index]?.focus(); save();
-    });
-    grip.addEventListener("dblclick", () => { d.node.ratio = .5; layout(); save(); });
-    grip.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      // Capture on the stable grid; dividers are replaced while laying out.
-      grid.setPointerCapture(e.pointerId);
-      grid.classList.add("ws-resizing");
-      const move = (ev) => {
-        const bounds = grid.getBoundingClientRect();
-        const offset = horizontal ? ev.clientX - bounds.left - d.box.left : ev.clientY - bounds.top - d.box.top;
-        const size = horizontal ? d.box.width : d.box.height;
-        d.node.ratio = Math.max(.15, Math.min(.85, offset / Math.max(1, size - 6)));
-        layout();
-      };
-      const end = () => {
-        grid.removeEventListener("pointermove", move);
-        grid.removeEventListener("pointerup", end);
-        grid.removeEventListener("pointercancel", end);
-        grid.classList.remove("ws-resizing");
-        if (grid.hasPointerCapture(e.pointerId)) grid.releasePointerCapture(e.pointerId);
-        save();
-      };
-      grid.addEventListener("pointermove", move);
-      grid.addEventListener("pointerup", end);
-      grid.addEventListener("pointercancel", end);
-    });
+  if (ws && !home) {
+    const rect = { left: 0, top: 0, width: grid.clientWidth, height: grid.clientHeight };
+    if (zoomed && frames.has(zoomed)) box(frames.get(zoomed).element, rect);
+    else {
+      const positions = layoutRects(ws.tree, rect, GAP, { min: MIN_RATIO, max: MAX_RATIO });
+      for (const [id, r] of positions.leaves) { if (frames.has(id)) box(frames.get(id).element, r); }
+      for (const d of positions.dividers) { placeDivider(ws, d); placed.add(d.node); }
+    }
+  }
+  for (const [node, { element }] of dividers) {
+    if (!placed.has(node)) { element.remove(); dividers.delete(node); }
   }
 }
 
 function render() {
   const ws = current();
-  document.title = !home && ws ? `${ws.name || ws.project.name} | QuickCode` : "QuickCode";
+  attention.retain(new Set(frames.keys()));
+  document.title = badgeTitle(!home && ws ? `${ws.name || ws.project.name} | QuickCode` : "QuickCode", attention.total());
   document.getElementById("ws-title").textContent = home ? "Projects" : ws?.name || ws?.project.name || "Workspace";
   document.getElementById("ws-path").textContent = home ? "Open a folder or return to a workspace" : ws?.project.path || "";
   document.getElementById("ws-new-agent").disabled = home || !ws?.ready;
@@ -328,7 +411,7 @@ function render() {
     const pid = workspace.project.id;
     let group = [...sidebar.children].find((n) => n.dataset.project === pid);
     if (!group) {
-      group = el(`<section class="ws-group"><div class="ws-project-row"><button class="ws-project"><span>▱</span><span class="ws-project-name"></span><span class="ws-count"></span></button><button class="ws-icon ws-manage" aria-label="Manage workspace" title="Manage workspace">⋯</button></div><div class="ws-agents"></div></section>`);
+      group = el(`<section class="ws-group"><div class="ws-project-row"><button class="ws-project"><span aria-hidden="true">▱</span><span class="ws-project-name"></span><span class="ws-count"></span></button><button class="ws-icon ws-manage" aria-label="Manage workspace" title="Manage workspace">⋯</button></div><div class="ws-agents"></div></section>`);
       group.dataset.project = pid; sidebar.appendChild(group);
       group.querySelector(".ws-project").onclick = () => { if (active !== pid || home) activate(workspace); };
       group.querySelector(".ws-manage").onclick = () => manageWorkspace(workspace);
@@ -339,19 +422,26 @@ function render() {
     group.querySelector(".ws-count").textContent = leaves(workspace.tree).length;
     const list = group.querySelector(".ws-agents");
     const ids = leaves(workspace.tree);
+    paintBadge(group.querySelector(".ws-project"), attention.sum(ids), group.querySelector(".ws-count"));
     for (const node of [...list.children]) { if (!ids.includes(node.dataset.id)) node.remove(); }
     ids.forEach((id) => {
       const pane = workspace.panes[id];
       let row = [...list.children].find((n) => n.dataset.id === id);
       if (!row) {
-        row = el(`<button class="ws-agent"><span class="ws-dot"></span><span class="ws-agent-name"></span><span class="ws-agent-state"></span></button>`);
+        row = el(`<button class="ws-agent"><span class="ws-dot" aria-hidden="true"></span><span class="ws-agent-name"></span><span class="ws-agent-state"></span></button>`);
         row.dataset.id = id; list.appendChild(row);
         row.onclick = () => focus(workspace, id);
       }
       row.querySelector(".ws-agent-name").textContent = pane.title;
       row.title = pane.title;
-      row.classList.toggle("active", !home && active === pid && workspace.focused === id);
+      const selected = !home && active === pid && workspace.focused === id;
+      row.classList.toggle("active", selected);
+      row.setAttribute("aria-current", String(selected));
+      paintBadge(row, attention.get(id), row.querySelector(".ws-agent-state"));
     });
+  }
+  for (const [id, f] of frames) {
+    paintBadge(f.element.querySelector(".ws-pane-head"), attention.get(id), f.element.querySelector(".ws-pane-status"));
   }
   layout();
 }
@@ -388,6 +478,7 @@ function updateTitle(pane) {
   const f = frames.get(pane.id);
   if (!f) return;
   f.element.querySelector(".ws-pane-name").textContent = pane.title;
+  f.element.setAttribute("aria-label", `Agent: ${pane.title}`);
   f.iframe.title = pane.title;
 }
 
@@ -405,7 +496,6 @@ function manageWorkspace(ws) {
   const form = modal.querySelector(".ws-form");
   form.onsubmit = (e) => { e.preventDefault(); ws.name = form.elements.name.value.trim(); render(); save(); modal.close(); };
   modal.querySelector("[data-equal]").onclick = () => {
-    const equalize = (node) => { if (node?.type === "split") { node.ratio = .5; node.children.forEach(equalize); } };
     equalize(ws.tree); zoomed = null; render(); save(); modal.close();
   };
   modal.querySelector("[data-close]").onclick = () => {
@@ -427,8 +517,40 @@ function openUtility(route, pid = home ? null : active) {
   if (pid) query.set("project", pid);
   utility.querySelector("iframe").src = `${location.pathname}?${query}${route}`;
   shell.appendChild(utility);
-  utility.addEventListener("close", () => { utility?.remove(); utility = null; });
+  utility.addEventListener("close", () => { utility?.remove(); utility = null; acknowledge(); });
   utility.showModal();
+}
+
+function openWorkspacePalette() {
+  if (utility) return;
+  const state = {
+    home, active, zoomed, undo: !!undo,
+    workspaces: [...workspaces.values()].map((w) => ({
+      id: w.project.id, name: w.name || w.project.name || w.project.path, ready: !!w.ready, focused: w.focused,
+      panes: leaves(w.tree).map((id) => ({ id, title: w.panes[id]?.title || "Agent", state: frames.get(id)?.element.dataset.state || "" })),
+    })),
+  };
+  openPalette({
+    items: workspaceItems(state, {
+      newAgent: () => addPane(),
+      split: (dir) => addPane(current(), dir),
+      zoom: () => toggleZoom(),
+      sidebar: toggleSidebar,
+      reopen: undoClose,
+      focusPane: (wid, id) => { const w = workspaces.get(wid); if (w?.panes[id]) focus(w, id); },
+      openWorkspace: (wid) => { const w = workspaces.get(wid); if (w && (active !== wid || home)) activate(w); },
+      openFolder: () => openDirBrowser(openProject),
+      projects: showHome,
+      appearance,
+      route: (hash) => openUtility(hash),
+    }, HELP_SECTIONS),
+    // Known projects that are not open as a workspace yet.
+    load: api.projects().then(({ projects }) => projects.filter((p) => !workspaces.has(p.id)).map((p) => ({
+      group: "Projects", title: `Open ${p.name || p.path}`, hint: p.path, keywords: "project workspace",
+      run: () => openProject(p),
+    }))),
+    placeholder: "Go to an agent, a workspace or a page…",
+  });
 }
 
 function shortcut(e) {
@@ -450,14 +572,15 @@ export async function bootWorkspaces() {
   const launch = initAuth();
   document.body.classList.add("workspace-shell");
   shell = el(`<div id="workspace-shell" class="ws-home">
-    <aside class="ws-sidebar"><div class="ws-brand"><img src="assets/icon.svg" width="25" height="25" alt=""><strong>QuickCode</strong><span>Workspace</span></div>
+    <aside id="ws-sidebar" class="ws-sidebar"><div class="ws-brand"><img src="assets/icon.svg" width="25" height="25" alt=""><strong>QuickCode</strong><span>Workspace</span></div>
       <button class="ws-open btn" id="ws-open">＋ Open folder</button>
       <div class="ws-section-label">Workspaces</div><nav id="ws-list" aria-label="Workspaces and agents"></nav>
       <div class="ws-sidebar-bottom"><button id="ws-projects">All projects</button><button id="ws-appearance">Appearance</button><button id="ws-settings">Settings</button><button id="ws-help">Help & shortcuts</button></div>
       <div class="ws-sidebar-grip" role="separator" tabindex="0" aria-label="Resize workspace sidebar" aria-orientation="vertical" aria-valuemin="160" aria-valuemax="360" aria-valuenow="232"></div>
     </aside>
-    <div class="ws-content"><header class="ws-toolbar"><button id="ws-sidebar-toggle" class="ws-icon" title="Toggle sidebar (Alt+B)" aria-label="Toggle sidebar">☰</button><div class="ws-location"><strong id="ws-title">Projects</strong><span id="ws-path"></span></div><button id="ws-undo" class="btn" hidden>Reopen closed pane</button><button id="ws-new-agent" class="btn primary" title="New agent pane (Alt+N)">＋ New agent</button></header>
+    <div class="ws-content"><header class="ws-toolbar"><button id="ws-sidebar-toggle" class="ws-icon" title="Toggle sidebar (Alt+B)" aria-label="Toggle sidebar" aria-controls="ws-sidebar">☰</button><div class="ws-location"><strong id="ws-title">Projects</strong><span id="ws-path"></span></div><button id="ws-undo" class="btn" hidden>Reopen closed pane</button><button id="ws-new-agent" class="btn primary" title="New agent pane (Alt+N)">＋ New agent</button></header>
       <main id="ws-grid" aria-label="Agent workspace"><div id="ws-empty" hidden><h2>Your workspace is ready</h2><p>Open an agent to start a conversation in this folder.</p><button class="btn primary">New agent</button></div></main>
+      <div id="ws-live" class="sr-only" aria-live="polite"></div>
     </div></div>`);
   document.body.appendChild(shell);
   grid = document.getElementById("ws-grid"); sidebar = document.getElementById("ws-list");
@@ -478,6 +601,9 @@ export async function bootWorkspaces() {
   document.getElementById("home-help").onclick = () => openUtility("#/help/workspaces");
   new ResizeObserver(layout).observe(grid);
   document.addEventListener("keydown", shortcut);
+  bindPaletteKey(openWorkspacePalette);
+  window.addEventListener("focus", acknowledge);
+  document.addEventListener("visibilitychange", acknowledge);
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin || e.data?.source !== "qc-agent") return;
     const f = [...frames.values()].find((f) => f.iframe.contentWindow === e.source);
@@ -486,11 +612,17 @@ export async function bootWorkspaces() {
     const data = e.data;
     if (data.action === "utility-close" && isUtility) { utility.close(); return; }
     if (!f) return;
-    if (data.action === "focus") { if (current()?.focused !== f.pane.id || active !== f.ws.project.id) focus(f.ws, f.pane.id, false); }
+    if (data.action === "focus") {
+      if (current()?.focused !== f.pane.id || active !== f.ws.project.id) focus(f.ws, f.pane.id, false);
+      else acknowledge();
+    }
+    else if (data.action === "notice") notice(f, data);
+    else if (data.action === "palette") openWorkspacePalette();
+    else if (data.action === "split" && (data.dir === "h" || data.dir === "v")) { f.ws.focused = f.pane.id; addPane(f.ws, data.dir); }
     else if (data.action === "home") showHome();
     else if (data.action === "settings" && /^#\/(config|help)/.test(data.route)) openUtility(data.route, f.ws.project.id);
     else if (data.action === "shortcut") shortcut({ ...data, preventDefault() {} });
-    else if (data.action === "open-session") { focus(f.ws, f.pane.id, false); addPane(f.ws, null, data.convId); }
+    else if (data.action === "open-session") { focus(f.ws, f.pane.id, false); addPane(f.ws, null, data.convId, data.seq); }
     else if (data.action === "state") {
       if (data.convId) f.pane.convId = data.convId;
       if (data.persisted) f.pane.persisted = true;
@@ -521,9 +653,14 @@ export async function bootWorkspaces() {
   try {
     const bs = await api.bootstrap(); applyTheme(bs.theme);
     const data = await api.projects();
-    // A project explicitly forgotten from Home must not return after reload.
-    const known = new Set(data.projects.map((p) => p.id));
-    for (const id of workspaces.keys()) if (!known.has(id)) workspaces.delete(id);
+    // A project explicitly forgotten from Home must not return after reload,
+    // and the registry, not the saved layout, says which folder an id opens.
+    const known = new Map(data.projects.map((p) => [p.id, p]));
+    for (const [id, ws] of workspaces) {
+      const entry = known.get(id);
+      if (entry) ws.project = { id, path: entry.path, name: entry.name };
+      else workspaces.delete(id);
+    }
     sidebar.replaceChildren();
     if (launch.project) {
       const p = data.projects.find((p) => p.id === launch.project);

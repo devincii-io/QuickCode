@@ -1,0 +1,35 @@
+/* The shared event inspector (js/inspector.js): Summary / Payload / Result /
+ * Timing. The frame (.traj-detail-head, .detail-tabs, .detail-body, .kv) is
+ * styled in app.css and shell.css, where it started out; this file owns what
+ * the component added — the title chip, highlighted JSON, labelled sections
+ * and the "show all" affordance for large payloads. */
+
+.insp-title {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.insp-title .chip {
+  flex: none; padding: 1px 8px; border-radius: 4px; color: var(--bg);
+  font-size: 10px; font-weight: 700; letter-spacing: .7px;
+}
+
+.insp-block { margin-bottom: 10px; }
+.insp-block pre { margin: 0; }
+.detail-body pre.is-error { color: var(--error); }
+.insp-label {
+  margin: 12px 0 5px; font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.insp-more { margin-top: 6px; font-size: 11.5px; padding: 3px 10px; }
+
+.detail-body .json .j-key { color: var(--primary); }
+.detail-body .json .j-str { color: var(--secondary); }
+.detail-body .json .j-num { color: var(--accent); }
+.detail-body .json .j-lit { color: var(--chip-agent); }
+
+.detail-tabs button:focus-visible { outline: 1px solid var(--primary); outline-offset: 1px; }
+
+/* The transcript's one line for the system prompt (inspect.js promptNote). */
+.sys-note.sys-prompt { cursor: pointer; }
+.sys-note.sys-prompt:hover .trace-link { color: var(--accent); }
+.sys-note.sys-prompt:focus-visible { outline: 1px solid var(--primary); outline-offset: 2px; }

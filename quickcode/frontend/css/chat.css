@@ -2,7 +2,7 @@
  *
  * Loaded after app.css so it may override the older tool-card rules it
  * replaces. Tokens (--panel, --line, --fg-dim, --chip-*, --mono) come from
- * app.css:5-36 — nothing here hardcodes a colour, because the palette is
+ * tokens.css — nothing here hardcodes a colour, because the palette is
  * user-swappable at runtime.
  */
 
@@ -127,13 +127,6 @@
 .io-diff { border-top: 1px solid var(--line); padding: 9px 11px; }
 .io-trace { margin-top: 8px; }
 
-/* ---- payload highlighting ---- */
-
-.hl-key { color: var(--primary); }
-.hl-str { color: var(--secondary); }
-.hl-num { color: var(--accent); }
-.hl-lit { color: var(--warning); }
-
 /* ---- file references ---- */
 
 .file-ref {
@@ -204,3 +197,22 @@
   color: var(--qt-fg);
   tab-size: 8;
 }
+
+/* ---- the held-back start of a long transcript (js/chat/window.js) ---- */
+
+.chat-more {
+  display: block;
+  width: 100%;
+  max-width: var(--content-width, 860px);
+  margin: 0 auto 12px;
+  padding: 5px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.chat-more:hover { color: var(--fg); border-color: var(--primary); }
+.chat-more:focus-visible { outline: 1px solid var(--primary); outline-offset: 2px; }

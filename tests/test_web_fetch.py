@@ -362,6 +362,77 @@ async def test_an_undeclared_oversize_body_is_cut_off_mid_stream():
     assert chunks_sent <= 5
 
 
+def streamed(data: bytes, chunk: int = 65_536):
+    """A body that arrives in network-sized chunks. ``httpx.Response(content=
+    bytes)`` is read -- and inflated -- the moment it is constructed, which is
+    not what a socket does and would hide exactly what these tests look at."""
+
+    async def body():
+        for i in range(0, len(data), chunk):
+            yield data[i:i + chunk]
+
+    return body()
+
+
+async def test_a_compression_bomb_is_capped_while_inflating():
+    """The byte cap used to be applied to httpx's *decoded* chunks, and httpx
+    inflates each network chunk whole: 64 KB of gzip is 64 MB of zeros in one
+    allocation before the cap ever sees it. Inflation is now bounded."""
+    import gzip
+    import tracemalloc
+
+    bomb = gzip.compress(b"\0" * 64_000_000, compresslevel=9)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=streamed(bomb),
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+        )
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(FetchError, match="binary"):
+            await fetch_url(
+                "https://example.com/bomb", transport=httpx.MockTransport(handler),
+                resolve=resolver({}), max_bytes=1_000_000,
+            )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 16_000_000
+
+
+async def test_a_gzipped_page_is_still_read():
+    import gzip
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "gzip, deflate"
+        return httpx.Response(
+            200, content=streamed(gzip.compress(b"hello " * 1000)),
+            headers={"content-type": "text/plain", "content-encoding": "gzip"},
+        )
+
+    outcome = await fetch_url(
+        "https://example.com/z", transport=httpx.MockTransport(handler), resolve=resolver({}),
+    )
+    assert outcome.body == "hello " * 1000
+    assert not outcome.truncated
+
+
+async def test_an_encoding_it_cannot_inflate_safely_is_refused():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=streamed(b"\x8b\x00\x80hello\x03"),
+            headers={"content-type": "text/plain", "content-encoding": "br"},
+        )
+
+    with pytest.raises(FetchError, match="br"):
+        await fetch_url(
+            "https://example.com/br", transport=httpx.MockTransport(handler),
+            resolve=resolver({}),
+        )
+
+
 async def test_binary_content_is_refused_by_type():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "image/png"}, content=b"\x89PNG")
@@ -508,6 +579,99 @@ async def test_tool_refuses_the_local_api_without_asking_dns(tmp_path):
     assert "loopback" in result.content
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8765/api/sessions",
+        "http://LOCALHOST.:8765/",
+        "http://[::1]:8765/",
+        "http://[::ffff:127.0.0.1]:8765/",
+        "http://0.0.0.0:8765/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[fe80::1%25eth0]/",
+        "http://10.0.0.1/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+    ],
+)
+async def test_every_spelling_of_this_machine_and_its_network_is_refused(tmp_path, url):
+    result = await WebFetchTool().run(WebFetchInput(url=url), ctx(tmp_path))
+    assert result.is_error, url
+
+
+# --------------------------------------------------------------------------
+# Address classes the first version got wrong
+# --------------------------------------------------------------------------
+
+
+def test_a_site_local_ipv6_address_is_refused():
+    """fec0::/10 is deprecated, not gone: stacks that still route it treat it
+    exactly as a private range, and it classified as public."""
+    assert classify_ip("fec0::1")
+
+
+def test_nat64_is_judged_by_the_ipv4_address_it_carries():
+    """On an IPv6-only network with DNS64 every IPv4-only site resolves to
+    64:ff9b::<its address>. Refusing the prefix wholesale as reserved made
+    web_fetch useless there; waving it through would reach 10/8 via the
+    gateway. The embedded address is the one that decides."""
+    assert classify_ip("64:ff9b::5db8:d822") == ""       # 93.184.216.34
+    assert "127.0.0.1" in classify_ip("64:ff9b::7f00:1")
+    assert "10.0.0.1" in classify_ip("64:ff9b::a00:1")
+    assert "169.254.169.254" in classify_ip("64:ff9b::a9fe:a9fe")
+
+
+async def test_an_internationalised_hostname_is_fetched_by_its_ascii_name():
+    """The Host header and SNI must be ASCII. The raw name crashed the request
+    builder with UnicodeEncodeError, so no IDN site could be fetched at all."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="ok", headers={"content-type": "text/plain"})
+
+    outcome = await fetch_url(
+        "https://bücher.de/katalog",
+        transport=httpx.MockTransport(handler),
+        resolve=resolver({}),
+    )
+
+    assert outcome.body == "ok"
+    assert seen[0].headers["Host"] == "xn--bcher-kva.de"
+    assert seen[0].extensions["sni_hostname"] == "xn--bcher-kva.de"
+
+
+async def test_an_internationalised_name_still_meets_the_name_rules():
+    with pytest.raises(BlockedURL):
+        await validate_url("http://drückerei.local/", resolve=resolver({}))
+
+
+async def test_a_body_that_is_binary_is_refused_even_without_a_content_type():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"PK\x03\x04\x00\x00" + bytes(range(256)))
+
+    with pytest.raises(FetchError, match="binary"):
+        await fetch_url(
+            "https://example.com/download",
+            transport=httpx.MockTransport(handler),
+            resolve=resolver({}),
+        )
+
+
+async def test_an_html_meta_charset_is_honoured_when_the_header_has_none():
+    page = '<html><head><meta charset="windows-1252"><title>t</title></head>' \
+           "<body>Gr\xf6\xdfe</body></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=page.encode("cp1252"),
+                              headers={"content-type": "text/html"})
+
+    outcome = await fetch_url(
+        "https://example.com/de", transport=httpx.MockTransport(handler), resolve=resolver({})
+    )
+
+    assert "Größe" in outcome.body
+
+
 # --------------------------------------------------------------------------
 # Registration and gating: the web tools are subject to the same engine
 # --------------------------------------------------------------------------
@@ -529,7 +693,8 @@ def test_they_prompt_in_ask_mode_and_match_on_their_own_target(tmp_path):
 
     decision, target = engine.evaluate_tool(fetch, {"url": "https://example.com/a"})
     assert (decision, target) == (Decision.ask, "https://example.com/a")
-    assert engine.suggest_rule("web_fetch", "https://example.com/a")
+    offer = engine.suggest_rules(fetch, {"url": "https://example.com/a"})
+    assert offer.rules == ("web_fetch(https://example.com/a)",)
 
 
 def test_a_rule_can_allow_one_site_and_deny_another(tmp_path):

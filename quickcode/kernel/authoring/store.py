@@ -13,6 +13,13 @@ trash directory is not scanned (the scan is not recursive, deliberately). Undo
 is a file move, and there is a strong need not to silently destroy a prompt
 somebody spent an hour on.
 
+**Every write is whole or not at all** -- encoded first, written beside the
+file and renamed over it -- and a write to the project scope keeps the
+project's trust (``trust.keep_trust``): the grant covers command-tool files,
+and editing one in the app's own editor is not a reason to switch off the
+project's MCP servers and allow rules. An edit made outside the app still
+re-prompts, and a project that was not trusted stays untrusted.
+
 **Duplicate materialises**, it does not inherit. A copy carries
 ``derived_from: <original id>`` as a breadcrumb and nothing else links the two.
 Live inheritance would recreate exactly the coupling that makes the locked tier
@@ -24,10 +31,13 @@ restricted, so it is offered at every tier including ``locked`` and
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from pathlib import Path
 
+from quickcode import textio
+from quickcode.fsutil import atomic_write_bytes
 from quickcode.kernel.authoring import schema
 from quickcode.kernel.authoring.discovery import (
     TRASH_DIRNAME,
@@ -39,7 +49,14 @@ from quickcode.kernel.authoring.format import parse_document
 from quickcode.kernel.authoring.model import AuthoredPlugin
 from quickcode.kernel.authoring.reserved import reserved_reason
 from quickcode.kernel.authoring.templates import template
-from quickcode.kernel.problems import Problem
+from quickcode.kernel.problems import (
+    BAD_KIND,
+    BAD_SLUG,
+    ID_DUPLICATE,
+    ID_RESERVED,
+    NOT_DUPLICABLE,
+    Problem,
+)
 
 SCOPES = ("user", "project")
 
@@ -129,7 +146,7 @@ def create(
     if kind not in schema.KINDS:
         raise AuthoringError(
             f"'{kind}' is not an authorable kind",
-            fix=f"Use one of: {', '.join(schema.KINDS)}.", code=schema.BAD_KIND)
+            fix=f"Use one of: {', '.join(schema.KINDS)}.", code=BAD_KIND)
     if scope not in SCOPES:
         raise AuthoringError(f"'{scope}' is not a scope",
                              fix="Use 'user' or 'project'.")
@@ -137,14 +154,14 @@ def create(
     if not slug:
         raise AuthoringError("that name has no usable characters in it",
                              fix="Use letters, digits, '-' and '_'.",
-                             code=schema.BAD_SLUG)
+                             code=BAD_SLUG)
     reason = reserved_reason(f"{kind}.{slug}", kind, slug)
     if reason:
         raise AuthoringError(
             f"'{kind}.{slug}' cannot be used: {reason}",
             fix="Pick a different name, or use Duplicate to start from the "
                 "built-in one.",
-            status=400, code=schema.ID_RESERVED)
+            status=400, code=ID_RESERVED)
 
     directory = scope_dir(cwd, scope)
     directory.mkdir(parents=True, exist_ok=True)
@@ -153,17 +170,17 @@ def create(
         raise AuthoringError(
             f"{path.name} already exists in {scope} scope",
             fix="Pick another name, or edit the existing file.",
-            status=409, code=schema.ID_DUPLICATE)
+            status=409, code=ID_DUPLICATE)
 
     body = text if text is not None else template(kind, slug, title)
-    path.write_text(body, encoding="utf-8")
+    _write(path, body, cwd, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems
 
 
 def read_source(cwd: Path | str | None, plugin_id: str) -> tuple[Path, str, list[Problem]]:
     path, scope = locate(cwd, plugin_id)
-    text = path.read_text(encoding="utf-8")
+    text = textio.read_text(path)
     _plugin, problems = _validate_file(path, scope)
     return path, text, problems
 
@@ -173,18 +190,24 @@ def save_source(
 ) -> tuple[Path, AuthoredPlugin | None, list[Problem]]:
     """Write first, validate second, return the problems. Never refuses."""
     path, scope = locate(cwd, plugin_id)
-    path.write_text(text, encoding="utf-8")
+    _write(path, text, cwd, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems
 
 
 def delete(cwd: Path | str | None, plugin_id: str) -> tuple[Path, Path]:
     """Move the file to ``.trash/``. Returns ``(was, now)``."""
-    path, _scope = locate(cwd, plugin_id)
+    path, scope = locate(cwd, plugin_id)
     trash = path.parent / TRASH_DIRNAME
     trash.mkdir(parents=True, exist_ok=True)
-    target = trash / f"{path.stem}-{int(time.time())}.md"
-    path.replace(target)
+    stamp = int(time.time())
+    target = trash / f"{path.stem}-{stamp}.md"
+    n = 2
+    while target.exists():  # a second delete in the same second must not overwrite
+        target = trash / f"{path.stem}-{stamp}-{n}.md"
+        n += 1
+    with _keeping_trust(cwd, scope):
+        path.replace(target)
     return path, target
 
 
@@ -206,6 +229,26 @@ def locate(cwd: Path | str | None, plugin_id: str) -> tuple[Path, str]:
         fix="Check the id, or list the authored plugins first.", status=404)
 
 
+def _write(path: Path, text: str, cwd: Path | str | None, scope: str) -> None:
+    try:
+        data = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise AuthoringError(
+            f"the text cannot be saved as UTF-8: {exc.reason} at position {exc.start}",
+            fix="Remove the character; it is usually a broken emoji or a pasted "
+                "control sequence.", status=400) from exc
+    with _keeping_trust(cwd, scope):
+        atomic_write_bytes(path, data, fsync=True)
+
+
+def _keeping_trust(cwd: Path | str | None, scope: str):
+    if scope != "project" or cwd is None:
+        return contextlib.nullcontext()
+    from quickcode.security.trust import keep_trust
+
+    return keep_trust(cwd)
+
+
 def _md_files(directory: Path) -> list[Path]:
     try:
         if not directory.is_dir():
@@ -217,7 +260,7 @@ def _md_files(directory: Path) -> list[Path]:
 
 def _read(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return textio.read_text(path)
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -347,13 +390,13 @@ def duplicate(
         return _write_copy(directory, slug, text, scope)
 
     if kind == "agent":
-        return _duplicate_agent(directory, original, plugin_id, name, scope)
+        return _duplicate_agent(directory, original, plugin_id, name, scope, cwd)
     if kind == "prompt":
         return _duplicate_section(directory, plugin_id, name, scope, bodies or {})
 
     reason, recourse = refusal(plugin_id) or _NOTHING_TO_COPY
     raise AuthoringError(f"{plugin_id} cannot be duplicated: {reason}",
-                         fix=recourse, status=400, code=schema.NOT_DUPLICABLE)
+                         fix=recourse, status=400, code=NOT_DUPLICABLE)
 
 
 def _kind_of(plugin_id: str) -> str:
@@ -367,15 +410,24 @@ def _kind_of(plugin_id: str) -> str:
 
 def _duplicate_agent(
     directory: Path, original: str, plugin_id: str, name: str, scope: str,
+    cwd: Path | str | None = None,
 ) -> tuple[Path, AuthoredPlugin | None, list[Problem]]:
-    from quickcode.subagents.definitions import builtin_defs
+    from quickcode.subagents.definitions import builtin_defs, load_defs
 
-    defn = builtin_defs().get(original)
+    # The definition this project actually runs under that name, which is not
+    # always the shipped one: an ``agents/*.md`` file replaces it at spawn, and
+    # "duplicate what you are looking at" has to copy that file.
+    defs = load_defs(Path(cwd)) if cwd is not None else builtin_defs()
+    defn = defs.get(original)
     if defn is None:
         raise AuthoringError(f"no agent {original!r} to duplicate",
                              fix="Check the id.", status=404)
     slug = allocate_name(directory, _slugify(name) or original, kind="agent",
                          copy=not name)
+    source_text = _read(Path(defn.path)) if getattr(defn, "path", "") else ""
+    if source_text:
+        return _write_copy(directory, slug, _as_agent_plugin(
+            source_text, slug, f"{original.capitalize()} (copy)", plugin_id), scope)
     tools = defn.tools
     lines = [
         "---",
@@ -393,6 +445,7 @@ def _duplicate_agent(
         f"model_selectable: {'true' if defn.model_selectable else 'false'}",
         f"mode_cap: {defn.mode_cap.value}",
         f"max_turns: {defn.max_turns}",
+        f"isolation: {defn.isolation}",
         f"color: {defn.color}",
         f"skip_project_instructions: "
         f"{'true' if defn.skip_project_instructions else 'false'}",
@@ -448,13 +501,26 @@ def _write_copy(
     if path.exists():
         raise AuthoringError(f"{path.name} already exists",
                              fix="Pick another name.", status=409,
-                             code=schema.ID_DUPLICATE)
-    path.write_text(text, encoding="utf-8")
+                             code=ID_DUPLICATE)
+    _write(path, text, directory.parent.parent, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems
 
 
 _IDENTITY_KEYS = ("name", "title", "derived_from")
+
+
+def _as_agent_plugin(text: str, slug: str, title: str, derived_from: str) -> str:
+    """An ``agents/*.md`` file as a ``kind: agent`` plugin: the same bytes, with
+    the kind stated and the identity retargeted. Its frontmatter is already the
+    agent vocabulary -- both loaders read it through ``agent_def_from_meta``."""
+    lines = _rewrite_identity(text, slug, title, derived_from).splitlines()
+    close = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), -1)
+    if close > 0 and not any(
+        lines[i].split(":", 1)[0].strip() == "kind" for i in range(1, close)
+    ):
+        lines.insert(1, "kind: agent")
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 def _rewrite_identity(text: str, slug: str, title: str, derived_from: str) -> str:
@@ -477,10 +543,6 @@ def _rewrite_identity(text: str, slug: str, title: str, derived_from: str) -> st
             lines.insert(close, f"{key}: {replacements[key]}")
             close += 1
     return "\n".join(lines)
-
-
-def problems_json(problems: list[Problem]) -> list[dict]:
-    return [p.to_json() for p in problems]
 
 
 def plugin_json(plugin: AuthoredPlugin) -> dict:
