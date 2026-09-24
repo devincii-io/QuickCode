@@ -21,7 +21,6 @@ import { inspectLink, wireInspect } from "../inspect.js";
 import { midTurn, store, subscribe } from "../store.js";
 import { argSummary } from "../tool_args.js";
 import { highlightToon, toon } from "../toon.js";
-import { fmtDur } from "../trajectory/format.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
 
 // The panel is narrower than the transcript, and so are its argument lines.
@@ -268,7 +267,7 @@ function stamp(a) {
 // A live start against a replayed end can come out a hair negative; that
 // reads as nothing rather than as "-3 ms".
 function spanText(ms) {
-  return ms == null || ms < 0 ? "" : fmtDur(ms);
+  return ms == null || ms < 0 ? "" : fmtMs(ms);
 }
 
 function durText(a) {

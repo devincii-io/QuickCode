@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  MAX_SELECTED, RewindSelection, TurnFiles, busyReason, countByAction, diffLines, fmtBytes,
+  MAX_SELECTED, RewindSelection, TurnFiles, busyReason, countByAction, diffLines,
   listingRows, refusal, resultSummary, rewoundLine,
 } from "../../quickcode/frontend/js/checkpoints/model.js";
 import { RewindMarks } from "../../quickcode/frontend/js/chat/rewind.js";
+import { fmtBytes } from "../../quickcode/frontend/js/util.js";
 
 // ---- which turns can be rewound ----------------------------------------------
 

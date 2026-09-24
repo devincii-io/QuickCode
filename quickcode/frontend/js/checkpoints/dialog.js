@@ -12,11 +12,11 @@ import { diffNode } from "../diff.js";
 import { store, subscribe } from "../store.js";
 import { h } from "../ui/dom.js";
 import { modal, onModalClose } from "../ui/modal.js";
+import { plural } from "../util.js";
 import {
   RewindSelection, busyReason, diffLines, plannedText, reasonText, refusal, resultSummary,
 } from "./model.js";
 
-const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 let serial = 0;   // ids for aria-controls, unique across openings
 
 /** Open the dialog for "before turn `turn`" of the pane's conversation.

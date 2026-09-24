@@ -9,6 +9,8 @@
 // moves a job backwards — a list answer read before a job ended cannot bring it
 // back to life.
 
+import { fmtBytes } from "../util.js";
+
 export const TAIL_MAX_CHARS = 120_000;
 export const TAIL_MAX_LINES = 2_000;
 
@@ -132,13 +134,6 @@ export function fmtDuration(s) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${String(Math.floor(s % 60)).padStart(2, "0")}s`;
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
-}
-
-export function fmtBytes(n) {
-  n = Math.max(0, Number(n) || 0);
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // Dim, on a line of its own, and closed with a reset: the emulator draws it

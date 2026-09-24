@@ -2,7 +2,7 @@
 // bands, the clock axis, the playhead and the crosshair. Every node is pooled
 // and every label is set as text; nothing here parses markup.
 
-import { fmtDur } from "./format.js";
+import { fmtMs } from "../util.js";
 import { nodePool } from "./pool.js";
 import { LANES } from "./roles.js";
 import { trackBox } from "./windowing.js";
@@ -82,7 +82,7 @@ export function createLanes({ plotEl, gutterEl, bandsEl, axisEl, playEl, cursorE
       const node = bandPool.next();
       node.style.cssText = `left:${x0.toFixed(1)}px;width:${w.toFixed(1)}px;`
         + `background-position:${(rx0 - x0).toFixed(1)}px 0`;
-      const text = "⋯ " + fmtDur(s.r1 - s.r0) + " idle";
+      const text = "⋯ " + fmtMs(s.r1 - s.r0) + " idle";
       const est = text.length * 5.6 + 8;
       const mid = x0 + w / 2;
       const label = node.firstChild;

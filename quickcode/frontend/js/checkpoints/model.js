@@ -5,6 +5,7 @@
 // marks the turns. The API shapes are in docs/CHECKPOINTS.md.
 
 import { unifiedLines } from "../diff.js";
+import { plural } from "../util.js";
 
 // quickcode/checkpoints/rewind.py MAX_SELECTED: a longer `paths` list is a 400.
 export const MAX_SELECTED = 1000;
@@ -32,7 +33,6 @@ const DONE = {
 export function plannedText(action) { return PLANNED[action] || action || ""; }
 export function doneText(action) { return DONE[action] || action || ""; }
 
-const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** "2 restored, 1 deleted" over `[{action}]`, in a fixed order. */
 export function countByAction(files) {
@@ -259,17 +259,6 @@ export function rewoundLine(ev) {
 }
 
 // ---- the checkpoint list ------------------------------------------------------
-
-/** "18.2 KB": the checkpoint store's own sizes, not a token count. */
-export function fmtBytes(n) {
-  const v = Number(n) || 0;
-  if (v < 1024) return `${v} B`;
-  const units = ["KB", "MB", "GB"];
-  let x = v / 1024;
-  let i = 0;
-  while (x >= 1023.95 && i < units.length - 1) { x /= 1024; i++; }
-  return `${x.toFixed(1)} ${units[i]}`;
-}
 
 /** A listing (GET …/checkpoints) as the panel shows it: newest turn first,
  *  each file with one line of state. A turn with nothing left to put back

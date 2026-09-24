@@ -23,10 +23,10 @@ import { store, subscribe } from "../store.js";
 import { toastError, toastOk } from "../toast.js";
 import { node } from "../ui/dom.js";
 import { confirmModal } from "../ui/modal.js";
-import { esc, fmtTime } from "../util.js";
+import { esc, fmtBytes, fmtTime } from "../util.js";
 import { renderAnsiBlock } from "./emulator.js";
 import {
-  applyJobEvent, elapsed, fmtBytes, fmtDuration, jobChip, mergeJobs, mergeTail,
+  applyJobEvent, elapsed, fmtDuration, jobChip, mergeJobs, mergeTail,
   orderJobs, pickJob, runningCount, upsertJob,
 } from "./jobs_state.js";
 
