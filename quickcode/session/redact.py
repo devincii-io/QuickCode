@@ -42,7 +42,11 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         r"|x-subscription-token)(['\"]?\s*[:=]\s*['\"]?)((?:bearer|basic|token)\s+)?"
         r"(?!\[redacted\])[^\s'\",;}\]]{8,}"),
      r"\1\2\3" + REDACTED),
-    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@'\"]+:)[^/\s@'\"]+@"),
+    # The scheme starts where a run of scheme characters starts, not at every
+    # word boundary inside one: from each ``.`` of ``a.a.a…`` the old ``\b``
+    # rescanned the rest of the run, which is quadratic in text a page or a
+    # failing command controls.
+    (re.compile(r"(?i)(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*://[^/\s:@'\"]+:)[^/\s@'\"]+@"),
      r"\1" + REDACTED + "@"),
     (re.compile(
         r"(?i)([?&](?:api[_-]?key|apikey|key|access[_-]?token|token|auth|secret)=)"
