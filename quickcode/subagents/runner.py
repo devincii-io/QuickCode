@@ -173,6 +173,10 @@ class SubagentDeps:
     defs: dict[str, AgentDef] | None = None
     # The session's preset, for the layer-3 contribution.
     preset: Any = None
+    # The session's permission rules, read live like ``mode_getter``. A child
+    # takes their deny and ask halves (``_inherited_rules``). None means the
+    # embedder has no rules to hand down.
+    rules_getter: Callable[[], Rules] | None = None
     # Delegation turns spent per agent id, against that agent's max_turns.
     turns: dict[str, int] = field(default_factory=dict)
     budgets: dict[str, int] = field(default_factory=dict)
@@ -201,6 +205,7 @@ class SubagentDeps:
             profile=self.profile,
             env=self.env,
             mode_getter=lambda: effective_mode,
+            rules_getter=self.rules_getter,
             cwd=self.cwd,
             depth=depth,
             counter=self.counter,
@@ -396,7 +401,7 @@ def _prepare_child(
         registry=registry,
         history=History(system_prompt),
         ctx=child_ctx,
-        permissions=PermissionEngine(effective_mode, Rules(), deps.cwd),
+        permissions=PermissionEngine(effective_mode, _inherited_rules(deps), deps.cwd),
         model=model,
         permission_cb=_deny_cb,
         limits=deps.limits,
@@ -419,6 +424,21 @@ def _prepare_child(
             pass
 
     return agent_id, child
+
+
+def _inherited_rules(deps: SubagentDeps) -> Rules:
+    """The rules a child's engine starts with: the session's deny and ask.
+
+    A child used to start with no rules at all, so under an auto-edit or yolo
+    effective mode it performed what the session had explicitly denied -- a
+    `write(prod/**)` or `bash(curl **)` deny held for the orchestrator and for
+    nobody it delegated to. Allow rules stay behind: they widen, and a child
+    is not the place a grant should travel to unasked.
+    """
+    if deps.rules_getter is None:
+        return Rules()
+    session = deps.rules_getter()
+    return Rules(ask=list(session.ask), deny=list(session.deny))
 
 
 async def spawn_subagent(

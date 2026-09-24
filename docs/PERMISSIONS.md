@@ -140,6 +140,11 @@ today.
   it. A shell `cat` of an artifact still prompts — `bash` declares itself
   mutating and the bash pipeline's own scan is unchanged.
 - **Subagent capping:** a child agent's mode is `min(parent mode, its spawn-time cap)` — a yolo orchestrator does not imply yolo workers. Detail in docs/AGENTS.md.
+  A child's engine also starts with the session's `deny` and `ask` rules
+  (read live, handed down every level), and with none of its `allow` rules: a
+  deny holds for the work the orchestrator delegates, and a grant does not
+  travel anywhere it was not given. Children used to start with no rules at
+  all, so an `auto-edit` or `yolo` child did what the session was denied.
 
 ## Rules
 
