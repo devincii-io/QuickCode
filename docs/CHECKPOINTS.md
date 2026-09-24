@@ -131,8 +131,15 @@ rewind is refused (409) unless `force` is set.
 Some files are never written, forced or not: one whose saved copy is not
 restorable, one whose path now leads outside the project or through a symlink
 or junction created since the checkpoint (a rewind writes where it recorded, or
-nowhere), and one where something other than a regular file now stands. They
-are listed in `skipped` with the reason.
+nowhere), one where something other than a regular file now stands, and
+anything inside a repository's `.git` directory. They are listed in `skipped`
+with the reason.
+
+The last one is because the index is itself a file in the project: a cloned
+repository can ship one, with its blobs and a session to hang it on, and every
+other file such an index could make a rewind write the repository could simply
+have committed. A hook or a `core.fsmonitor` in `.git` it could not -- and git
+runs those on the user's next command. Restore a `.git` file with git.
 
 How the bytes go back:
 

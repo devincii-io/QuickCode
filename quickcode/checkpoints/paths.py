@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
+from quickcode.security.protected import is_git_name
+
 # The store's own directory. A tool writing in here would be checkpointing the
 # checkpoints, and a rewind would be restoring blobs into the store it reads.
 _OWN = (".quickcode", "checkpoints")
@@ -60,6 +62,18 @@ def target(root: Path, rel: str) -> Path | None:
     if os.path.normcase(os.path.realpath(candidate)) != os.path.normcase(str(candidate)):
         return None
     return candidate
+
+
+def in_git_dir(rel: str) -> bool:
+    """Whether ``rel`` is inside a repository's ``.git`` directory.
+
+    A rewind never writes there. The index it works from is a file in the
+    project, which a cloned repository can ship like any other; everything else
+    such an index could make a rewind write, the repository could have
+    committed, but a hook or a ``core.fsmonitor`` in ``.git`` it could not --
+    and git runs those on the user's next command.
+    """
+    return any(is_git_name(part) for part in rel.split("/")[:-1])
 
 
 def fold(rel: str) -> str:

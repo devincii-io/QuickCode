@@ -73,6 +73,16 @@ def is_protected_name(part: str) -> bool:
     return _SHORT_NAME.fullmatch(name) is not None
 
 
+# The spellings among those that open a repository's ``.git`` in particular.
+_GIT_SHORT_NAME = re.compile(r"(?:GIT|GI[0-9A-F]{4})~\d+")
+
+
+def is_git_name(part: str) -> bool:
+    """Whether ``part`` may open a repository's ``.git`` on some platform."""
+    name = canonical_name(part)
+    return name == ".GIT" or _GIT_SHORT_NAME.fullmatch(name) is not None
+
+
 def glob_may_name_protected(component: str, *, dotfiles: bool) -> bool:
     """Whether a glob component could expand to a protected name.
 
