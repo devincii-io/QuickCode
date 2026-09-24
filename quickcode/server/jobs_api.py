@@ -120,6 +120,7 @@ async def job_output(
         "end": tail.end,
         "gap": tail.gap,
         "dropped": job.dropped(),
+        "unread": job.unread_bytes(),
     }
 
 

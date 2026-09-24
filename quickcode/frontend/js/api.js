@@ -212,6 +212,19 @@ export const api = {
   // 409 = a project hook in an untrusted project, which does not run.
   testHook: (id, body) => req("POST", P(`/hooks/${encodeURIComponent(id)}/test`), body),
 
+  // ---- background shell jobs (the terminal drawer's Jobs tab) ----
+  // An open conversation's jobs; 404 = it is not open. The output read takes
+  // absolute byte offsets, answers with the newest bytes after `since` (at
+  // most `limit`) and never moves the model's bash_output cursor. A kill is
+  // recorded as the user's; killing a job that already ended is a 200 no-op.
+  jobs: (convId) => req("GET", P(`/conversations/${encodeURIComponent(convId)}/jobs`)),
+  jobOutput: (convId, jobId, since = 0, limit = 65536) =>
+    req("GET", P(`/conversations/${encodeURIComponent(convId)}/jobs/${
+      encodeURIComponent(jobId)}/output?since=${since}&limit=${limit}`)),
+  killJob: (convId, jobId) =>
+    req("POST", P(`/conversations/${encodeURIComponent(convId)}/jobs/${
+      encodeURIComponent(jobId)}/kill`)),
+
   // ---- project trust (the MCP gate) ----
   // A project's own mcpServers are inert until the project is trusted once,
   // because starting one runs its command on this machine. GET reports what was

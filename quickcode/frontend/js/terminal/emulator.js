@@ -614,8 +614,10 @@ export function lineHtml(line) {
  * the same colour codes. Running them through the same emulator is both less
  * code than a second renderer and more correct than one — a progress bar comes
  * out as the one line it finished on rather than four hundred.
+ *
+ * `maxLines` keeps only the newest lines, for a view that tails a live job.
  */
-export function renderAnsiBlock(text, cols = 200) {
+export function renderAnsiBlock(text, cols = 200, maxLines = Infinity) {
   const emu = new Emulator(1, cols);
   // A pty ends its lines CR+LF; a stored tool result has had that normalised
   // to a bare LF on the way to the model (tools/bash.py `_clean_pty_output`).
@@ -627,5 +629,6 @@ export function renderAnsiBlock(text, cols = 200) {
   emu.write(String(text || "").replace(/\r\n/g, "\n").replace(/\n/g, "\r\n"));
   const lines = [...emu.scrollback, ...emu.screen];
   while (lines.length && !lines[lines.length - 1].chars.length) lines.pop();
+  if (lines.length > maxLines) lines.splice(0, lines.length - maxLines);
   return lines.map((line) => `<div class="qt-line">${lineHtml(line) || "&nbsp;"}</div>`).join("");
 }

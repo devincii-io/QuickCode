@@ -140,6 +140,7 @@ async def test_reading_the_tail_leaves_the_model_s_unread_output_unread(served, 
 
     assert "for the model" in watched["text"]
     assert job.unread_bytes() == unread > 0
+    assert watched["unread"] == unread
     # The ending is still news to the model: the panel saw it, the model did not.
     notices = table(s).exit_notices()
     assert len(notices) == 1 and f"{unread} bytes" in notices[0]
