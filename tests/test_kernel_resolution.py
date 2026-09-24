@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from quickcode.config import Config, Environment
@@ -19,12 +20,13 @@ from quickcode.core.events import TextDelta, TurnDone
 from quickcode.core.permissions import Mode
 from quickcode.kernel import build_registry
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import ORCHESTRATOR_ID
+from quickcode.kernel.composition import ORCHESTRATOR_ID, Resolved
 from quickcode.kernel.resolve import resolve_composition
-from quickcode.providers.base import ModelInfo
+from quickcode.providers.base import ChatMessage, ModelInfo
 from quickcode.server.app import create_app
 from quickcode.server.manager import ConversationManager
 from quickcode.server.projects import ProjectHub
+from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import AgentDef, builtin_defs
 from quickcode.tools.registry import default_registry
 
@@ -148,3 +150,32 @@ def test_a_preset_without_a_block_of_its_own_is_its_base(tmp_path):
     assert mine.orchestrator.tools == ("read", "glob", "grep")
     assert mine.orchestrator.spawns == ("explore",)
     assert mine.title == "Mine"
+
+
+# --------------------------------------------------------------------------
+# a frozen snapshot is data from disk
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw", [
+    {"id": "@orchestrator", "tools": None},
+    {"id": "@orchestrator", "tools": "read"},
+    {"id": "@orchestrator", "max_turns": "many"},
+    {"id": "@orchestrator", "section_bodies": ["prompt.tone"]},
+    {"id": "@orchestrator", "settings": ["x"]},
+    {"id": "@orchestrator", "chain": ["x"]},
+    {"id": "@orchestrator", "problems": "none"},
+])
+def test_a_malformed_snapshot_is_unusable_not_an_exception(raw):
+    assert Resolved.from_json(raw) is None
+
+
+async def test_a_session_with_a_corrupt_snapshot_still_resumes(tmp_path):
+    """A hand-edited or truncated meta record costs the snapshot, not the
+    conversation: the session re-resolves, exactly like a pre-composition one."""
+    conv = make_manager(tmp_path).open()
+    conv.store.append_message(ChatMessage(role="user", content="hello"))
+    conv.store.append_meta(composition={"id": "@orchestrator", "tools": None})
+    assert SessionStore(tmp_path, conv.conv_id).path.exists()
+
+    reopened = make_manager(tmp_path).open(conv.conv_id)
+    assert "read" in reopened.resolved.tools

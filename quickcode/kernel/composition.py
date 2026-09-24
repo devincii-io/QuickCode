@@ -398,9 +398,26 @@ class Resolved:
         """
         if not isinstance(raw, dict) or not raw.get("id"):
             return None
+        # The record is a file on disk and may have been hand-edited or cut
+        # short. A field of the wrong shape makes the whole snapshot unusable
+        # rather than quietly half-read: ``"tools": "read"`` iterated as a string
+        # would hand the session the tools r, e, a and d.
+        lists = ("tools", "denied_tools", "spawns", "sections", "models", "problems")
+        maps = ("section_bodies", "settings", "chain")
+        if any(not isinstance(raw.get(k, []), list) for k in lists) or any(
+            not isinstance(raw.get(k, {}), dict) for k in maps
+        ):
+            return None
+        try:
+            return cls._from_checked_json(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _from_checked_json(cls, raw: dict[str, Any]) -> Resolved:
         role = raw.get("role")
         chain: dict[str, tuple[Provenance, ...]] = {}
-        for key, entries in (raw.get("chain") or {}).items():
+        for key, entries in raw.get("chain", {}).items():
             if isinstance(entries, list):
                 chain[str(key)] = tuple(
                     Provenance.from_json(e) for e in entries if isinstance(e, dict)
@@ -413,14 +430,14 @@ class Resolved:
             spawns=tuple(str(t) for t in raw.get("spawns", [])),
             sections=tuple(str(t) for t in raw.get("sections", [])),
             section_bodies={str(k): str(v)
-                            for k, v in (raw.get("section_bodies") or {}).items()},
+                            for k, v in raw.get("section_bodies", {}).items()},
             models=tuple(str(t) for t in raw.get("models", [])),
             model=str(raw.get("model", "")),
             model_selectable=bool(raw.get("model_selectable", True)),
             ceiling=parse_mode(raw.get("ceiling")),
             max_turns=int(raw.get("max_turns", 30) or 30),
             settings={str(k): dict(v)
-                      for k, v in (raw.get("settings") or {}).items()
+                      for k, v in raw.get("settings", {}).items()
                       if isinstance(v, dict)},
             chain=chain,
             problems=tuple(
