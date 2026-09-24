@@ -7,6 +7,8 @@
 // import: chat and the panels would otherwise have to import the panel shell
 // and the trajectory module, and those already import them back.
 
+import { esc } from "./util.js";
+
 let handler = null;
 
 /** Called once at boot by main.js with the real implementation. */
@@ -20,7 +22,8 @@ export function inspect(seq) {
 /** Markup for an inspect affordance; wire it with `wireInspect(root)`. */
 export function inspectLink(seq, label = "⌕ trace") {
   if (seq == null) return "";
-  return `<span class="trace-link" data-seq="${seq}" title="Open in trajectory">${label}</span>`;
+  return `<span class="trace-link" data-seq="${Number(seq)}" title="Open in trajectory">${
+    esc(label)}</span>`;
 }
 
 /** Delegate clicks on any `.trace-link` inside `root` to the inspector. */

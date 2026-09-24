@@ -3,6 +3,7 @@
 // and the slash-command menu. Parity with the old Textual TUI composer.
 
 import { api, currentProject } from "./api.js";
+import { HISTORY_MAX, parseHistory, serializeHistory } from "./input_history.js";
 import { openHelp, openModeMenu, openModelMenu } from "./modals.js";
 import { store, subscribe } from "./store.js";
 import { toast, toastError } from "./toast.js";
@@ -12,12 +13,6 @@ import { actions } from "./ws.js";
 const $ = (id) => document.getElementById(id);
 
 const HISTORY_KEY = "qc-history";
-const HISTORY_MAX = 100;
-// v1 was a bare string[]. v2 is {v, items} — same strings, but a shape that can
-// grow. The bump matters because v1's reader hard-filtered to strings and would
-// have silently eaten anything else; v2 reads v1 and rewrites it, and a v1
-// reader handed v2 sees "no history" rather than a crash.
-const HISTORY_VERSION = 2;
 const PATH_LIMIT = 40;
 
 const MODE_DESCS = [
@@ -284,7 +279,8 @@ async function openProfileMenu(anchor) {
     </a>
     <div class="prof-note" data-prof-note>A profile's rules are added to this
       project's own rather than replacing them, so it narrows by denying; its
-      mode is where a session starts, and Shift+Tab still works afterwards.
+      mode is where a session starts, and the mode pill or /mode still changes
+      it afterwards.
       Switching applies straight away, to every session open on this project.</div>`;
   document.body.appendChild(m);
   profMenuEl = m;
@@ -333,18 +329,12 @@ function mountProfilePill() {
 function historyKey() { return `${HISTORY_KEY}:${currentProject() || "default"}`; }
 
 function loadHistory() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(historyKey()) || "null");
-    // A v1 list is still perfectly good data: it is read as-is and rewritten in
-    // the new shape by the next send, rather than thrown away.
-    const items = Array.isArray(raw) ? raw : (raw?.v >= 2 ? raw.items : []);
-    return (Array.isArray(items) ? items : []).filter((x) => typeof x === "string" && x);
-  } catch { return []; }
+  try { return parseHistory(localStorage.getItem(historyKey())); } catch { return []; }
 }
 
 function saveHistory(h) {
   try {
-    localStorage.setItem(historyKey(), JSON.stringify({ v: HISTORY_VERSION, items: h }));
+    localStorage.setItem(historyKey(), serializeHistory(h));
   } catch { /* quota / private mode */ }
 }
 
@@ -861,7 +851,7 @@ export function initComposer(h) {
   });
 
   input.addEventListener("keydown", (e) => {
-    if (e.isComposing) return;
+    if (composing(e)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (slashOpen()) {
@@ -919,8 +909,18 @@ export function initComposer(h) {
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && escInterrupts()) actions.interrupt();
+    // Escape during an IME composition cancels the candidate; it is not
+    // addressed to the agent, and a CJK typist would stop every turn with it.
+    if (e.key === "Escape" && !composing(e) && escInterrupts()) actions.interrupt();
   });
+}
+
+// A keystroke that belongs to an input method rather than to the page. WebKit —
+// the engine behind the app window on macOS and Linux — fires the Enter that
+// commits a candidate with `isComposing` already false, and only keyCode 229
+// gives it away; without that check the half-typed message was sent.
+function composing(e) {
+  return e.isComposing || e.keyCode === 229;
 }
 
 // Escape interrupts the turn — but only when it is not already spoken for.

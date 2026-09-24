@@ -202,6 +202,9 @@ export function retryNow() {
   backoff = 500;
   health.fatal = "";
   open();                     // the mirror is cleared on the first frame, above
+  // teardown() stopped the watchdog, and a revived socket needs it most: the
+  // wake from sleep that triggers this is exactly when zombies are made.
+  watch();
 }
 
 // Waking from sleep, coming back online and returning to the window are the
@@ -253,9 +256,31 @@ function refused(type) {
   toastError(`Not connected to QuickCode — ${what}.`);
 }
 
+// uvicorn's default `ws_max_size`, which webapp.py leaves alone. A bigger frame
+// is refused by the server, not here: it closes the socket with 1009 after the
+// send had already "succeeded" — the composer cleared the box and the pasted
+// text was simply gone, followed by a reconnect nobody asked for.
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
+// The frame's size in bytes when it is over the limit, else 0. UTF-8 spends at
+// most three bytes per UTF-16 unit, so ordinary frames never pay for the encode.
+function oversize(frame) {
+  if (frame.length * 3 <= MAX_FRAME_BYTES) return 0;
+  const bytes = new TextEncoder().encode(frame).length;
+  return bytes > MAX_FRAME_BYTES ? bytes : 0;
+}
+
 export function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
+    const frame = JSON.stringify(obj);
+    const bytes = oversize(frame);
+    if (bytes) {
+      const mb = (bytes / (1024 * 1024)).toFixed(1);
+      toastError(`Too large to send: ${mb} MB, and QuickCode takes at most 16 MB at once. `
+        + "Nothing was sent.");
+      return false;
+    }
+    ws.send(frame);
     return true;
   }
   refused(obj?.type);

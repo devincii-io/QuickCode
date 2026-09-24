@@ -211,6 +211,18 @@ function refreshWaiting() {
     : "";
 }
 
+// Answering a review puts the next one on screen at once, in the same place,
+// with the same buttons — so the second click of a double-click, or a click
+// aimed at whatever was there a moment earlier, used to land on a request
+// nobody had read and could approve it. A review ignores clicks for a beat
+// after it appears.
+const REVIEW_ARM_MS = 400;
+
+function armed(m) {
+  const shownAt = performance.now();
+  return () => m.isConnected && performance.now() - shownAt >= REVIEW_ARM_MS;
+}
+
 function permissionModal(ev) {
   const m = modal(
     "Permission required",
@@ -228,9 +240,10 @@ function permissionModal(ev) {
     { dismissible: false }
   );
   const denyInput = m.querySelector(".deny-input");
+  const ready = armed(m);
   m.querySelector(".modal-foot").addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act;
-    if (!act) return;
+    if (!act || !ready()) return;
     if (act === "deny" && denyInput.classList.contains("hidden")) {
       denyInput.classList.remove("hidden");
       denyInput.focus();
@@ -257,9 +270,10 @@ function planModal(ev) {
     { dismissible: false }
   );
   const fb = m.querySelector(".deny-input");
+  const ready = armed(m);
   m.querySelector(".modal-foot").addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act;
-    if (!act) return;
+    if (!act || !ready()) return;
     if (act === "revise" && fb.classList.contains("hidden")) {
       fb.classList.remove("hidden"); fb.focus();
       e.target.textContent = "Send feedback";
