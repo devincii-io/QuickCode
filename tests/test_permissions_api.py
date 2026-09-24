@@ -281,6 +281,31 @@ def test_a_live_conversation_is_asked_with_what_it_approved_during_the_session(p
     ]
 
 
+def test_a_live_conversation_is_asked_from_where_its_shell_stands(project):
+    """The loop hands the gate the shell's cwd after a `cd`; so must a dry run,
+    or `ls` reads as harmless in a session whose shell has left the project."""
+    _setup(project)
+    manager = make_manager(project, FakeProvider([]))
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        fresh = client.post("/api/permissions/explain", json={
+            "command": "ls", "conv": conv_id, "mode": "ask",
+        }).json()
+        agent = manager.get(conv_id).agent
+        agent.ctx.extra["bash_cwd"] = project.parent
+        moved = client.post("/api/permissions/explain", json={
+            "command": "ls", "conv": conv_id, "mode": "ask",
+        }).json()
+        live = agent.permissions
+        bash = agent.registry.get("bash")
+        real = live.evaluate_tool(bash, {"command": "ls"}, cwd=project.parent)[0].value
+
+    assert fresh["decision"] == "allow"
+    assert moved["decision"] == real == "ask"
+    assert moved["decided_by"]["reason"] == "cwd"
+    assert moved["posture"]["shell_cwd"] == str(project.parent)
+
+
 def test_a_dry_run_changes_nothing(project):
     _setup(project)
     before = sorted(p.relative_to(project) for p in project.rglob("*"))

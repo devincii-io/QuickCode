@@ -377,7 +377,8 @@ def explain(posture: Any, tool_name: str, args: dict[str, Any], *,
     cwd = Path(engine.root)
 
     trace: list[dict[str, Any]] = []
-    decision, target = engine.evaluate_tool(tool, args, trace=trace)
+    shell_cwd = posture.shell_cwd
+    decision, target = engine.evaluate_tool(tool, args, cwd=shell_cwd, trace=trace)
 
     sources = rule_sources(cwd, profile_id=posture.profile_id, trusted=trusted,
                            live=bool(posture.conv_id), project=posture.project_rules,
@@ -399,7 +400,7 @@ def explain(posture: Any, tool_name: str, args: dict[str, Any], *,
     if sources.ignored_allow:
         what_if = _engine_with(engine, allow=[i["rule"] for i in sources.ignored_allow])
         what_if_trace: list[dict[str, Any]] = []
-        after, _ = what_if.evaluate_tool(tool, args, trace=what_if_trace)
+        after, _ = what_if.evaluate_tool(tool, args, cwd=shell_cwd, trace=what_if_trace)
         if after is not decision:
             matched = _rules_hit(what_if_trace, "allow_rule")
             hints.append({
@@ -416,7 +417,8 @@ def explain(posture: Any, tool_name: str, args: dict[str, Any], *,
     if decision is Decision.ask:
         rule = engine.suggest_rule(tool.name, target)
         after_trace: list[dict[str, Any]] = []
-        after, _ = _engine_with(engine, allow=[rule]).evaluate_tool(tool, args, trace=after_trace)
+        after, _ = _engine_with(engine, allow=[rule]).evaluate_tool(
+            tool, args, cwd=shell_cwd, trace=after_trace)
         _, still = _summarize(_render_all(after_trace, sources, {"shell": spec.shell}), after)
         suggestion = {
             "rule": rule,
@@ -443,6 +445,7 @@ def explain(posture: Any, tool_name: str, args: dict[str, Any], *,
             "conv": posture.conv_id,
             "yolo_armed": posture.yolo_armed,
             "project_rules": posture.project_rules,
+            "shell_cwd": str(shell_cwd) if shell_cwd is not None else None,
         },
         "suggestion": suggestion,
         "hints": hints,

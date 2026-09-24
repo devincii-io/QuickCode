@@ -468,7 +468,8 @@ start with, built from the same calls `manager.open()` makes: starting mode,
 `Rules.load`, the active profile merged by `profiles.effective`, the
 composition's ceiling, and each tool's `PermissionSpec`
 (`core/permission_posture.py`). Given `conv`, it is instead the live engine of
-that open conversation, including the "Always allow" answers given during it.
+that open conversation, including the "Always allow" answers given during it,
+asked from wherever that session's shell stands after its last `cd`.
 `core/permission_explain.py` adds only prose and provenance. The Help view
 used to answer with a JavaScript port of the engine; it had fallen behind the
 engine and is gone.

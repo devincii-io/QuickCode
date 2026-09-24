@@ -47,6 +47,9 @@ class Posture:
     profile_id: str = ""
     conv_id: str = ""
     yolo_armed: bool = False
+    # Where a live session's shell stands after its last `cd` -- the loop hands
+    # the gate this for every shell call, so a question about one has to too.
+    shell_cwd: Path | None = None
     # Whether the project's own settings rules are in the engine.
     project_rules: bool = True
     # Rules added for this question only, as a ``PermissionProfile``.
@@ -149,6 +152,7 @@ def for_conversation(conv: Any, *, pool: Iterable[Any] = (),
         profile_id=getattr(conv, "profile_id", "") or "",
         conv_id=conv.conv_id,
         yolo_armed=yolo_armed,
+        shell_cwd=agent.ctx.extra.get("bash_cwd") if agent.ctx else None,
     )
 
 
