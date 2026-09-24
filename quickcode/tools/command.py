@@ -42,10 +42,12 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, create_model
 
+from quickcode import subproc
 from quickcode.context import toon
 from quickcode.core.permissions import PermissionSpec
 from quickcode.kernel.authoring import argv as argv_rules
 from quickcode.kernel.authoring.model import AuthoredPlugin, Param
+from quickcode.security import launch
 from quickcode.tools.base import Tool, ToolCtx, ToolResult, decode_output, truncate
 
 # Environment handed to the child. A command tool is started from a file that
@@ -128,18 +130,25 @@ class CommandTool(Tool[BaseModel]):
 
         workdir = _workdir(plugin, values, root)
         env = _child_env(plugin)
+        program = launch.resolve_program(argv[0], env)
+        if launch.is_batch(program):
+            refusal = _check_batch(plugin, values, program)
+            if refusal:
+                return ToolResult(content=refusal, is_error=True)
         meta = {"argv": list(argv), "cwd": str(workdir), "tool": self.name,
                 "authored": True, "path": plugin.path}
 
         combined = plugin.output == "text"
         try:
             proc = await asyncio.create_subprocess_exec(
-                *argv,
+                program,
+                *argv[1:],
                 cwd=str(workdir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT if combined else asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if plugin.stdin else asyncio.subprocess.DEVNULL,
                 env=env,
+                creationflags=subproc.NO_WINDOW,
             )
         except (OSError, ValueError) as exc:
             return ToolResult(
@@ -295,6 +304,22 @@ def _check_options(plugin: AuthoredPlugin, values: dict[str, Any]) -> str:
             "program should see it as a value, the tool's author can put a "
             '"--" element before it or set "allow_leading_dash": true on the '
             "parameter.")
+
+
+def _check_batch(plugin: AuthoredPlugin, values: dict[str, Any], program: str) -> str:
+    """"" unless a value would be re-parsed as syntax by ``cmd.exe``."""
+    for param in plugin.params:
+        raw = values.get(param.name)
+        items = raw if isinstance(raw, (list, tuple)) else [raw]
+        for item in items:
+            text = argv_rules.scalar(item)
+            if launch.batch_unsafe(text):
+                return (f"Error: {param.name}={text!r} cannot be passed to "
+                        f"{Path(program).name}: a .cmd or .bat file runs under "
+                        "cmd.exe, which would read its quotes, %, !, ^, &, |, < "
+                        "or > as commands rather than as data. Rephrase the value "
+                        "without those characters.")
+    return ""
 
 
 def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path:

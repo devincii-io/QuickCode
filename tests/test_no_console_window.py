@@ -85,3 +85,38 @@ def test_no_module_spawns_a_console_program_directly() -> None:
         "`from quickcode import subproc` and call subproc.run/popen:\n  "
         + "\n  ".join(offenders)
     )
+
+
+_ASYNC_SPAWN = re.compile(r"\bcreate_subprocess_(exec|shell)\(")
+
+
+def _call_text(source: str, start: int) -> str:
+    """The source of one call, from its name to the matching parenthesis."""
+    depth = 0
+    for i in range(source.index("(", start), len(source)):
+        if source[i] == "(":
+            depth += 1
+        elif source[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return source[start:i + 1]
+    return source[start:]
+
+
+def test_no_async_spawn_opens_a_console_either() -> None:
+    """asyncio's spawns reach the same CreateProcess and need the same flag.
+
+    An MCP server started without it kept a console window open on screen for
+    as long as the server ran; an authored command tool flashed one per call.
+    """
+    offenders: list[str] = []
+    for path in _sources():
+        source = path.read_text(encoding="utf-8")
+        for match in _ASYNC_SPAWN.finditer(source):
+            if "NO_WINDOW" not in _call_text(source, match.start()):
+                line = source.count("\n", 0, match.start()) + 1
+                offenders.append(f"{path.relative_to(ROOT.parent)}:{line}")
+    assert not offenders, (
+        "pass creationflags=subproc.NO_WINDOW to these asyncio spawns:\n  "
+        + "\n  ".join(offenders)
+    )

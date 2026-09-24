@@ -22,7 +22,9 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
+from quickcode import subproc
 from quickcode.providers.base import ToolSchema
+from quickcode.security import launch
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult, truncate
 
 log = logging.getLogger("quickcode.mcp")
@@ -55,12 +57,13 @@ class MCPServer:
         env = dict(os.environ)
         env.update(self.env)
         self.proc = await asyncio.create_subprocess_exec(
-            self.command,
+            launch.resolve_program(self.command, env),
             *self.args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
+            creationflags=subproc.NO_WINDOW,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
         await asyncio.wait_for(self._initialize(), INIT_TIMEOUT_S)
