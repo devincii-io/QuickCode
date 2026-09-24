@@ -1,27 +1,31 @@
 // Chat view: incremental transcript renderer over the event store.
 
 import { promptNote } from "./inspect.js";
-import { markdownStream, renderMarkdown } from "./markdown.js";
+import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
-import { renderAnsiBlock } from "./terminal/emulator.js";
-import { highlightToon, toon } from "./toon.js";
-import { configTarget } from "./trajectory.js";
+import { argSummary, markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
+import { CardRegistry, MAIN } from "./chat/registry.js";
+import { Follower } from "./chat/scroll.js";
+import { LiveBubble } from "./chat/stream.js";
+import { REVEAL_PX, TranscriptWindow } from "./chat/window.js";
+import { setCopySource } from "./copy.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;
-let streamNode = null;          // live assistant bubble
-let streamMd = null;            // its incremental renderer (markdown.js)
-let streamTail = [];            // its nodes the next update replaces
-let reasoningText = null;       // the text node inside its <details>
+let welcome = null;             // the empty-conversation greeting, until the first event
+let follower = null;            // keeps the newest line in view while the reader is there
+let win = null;                 // which blocks are in the document (chat/window.js)
+let live = null;                // the assistant message still streaming (chat/stream.js)
 let streamFrame = 0;            // a paint is queued for the next frame
 const agentsDirty = new Set();  // subagents whose live text changed since the last frame
-let agentCards = new Map();     // agent_id -> {card, body, textNode}
+// Every card by the ids events refer to it with (tool calls per agent, agent
+// cards by agent_id), so no event has to search the transcript for its card.
+const cards = new CardRegistry();
 let onOpenTrace = () => {};
 // The open step: consecutive tool calls collect into one titled block instead
 // of stacking as loose cards. Closed by anything that is not a tool call.
-let stepNode = null;
-let lastAssistantText = "";
-// req_id -> {ev, card} for a permission still awaiting its answer. The resolved
+let step = null;                // {node, body, title, count, names, block}
+// req_id -> {ev, entry} for a permission still awaiting its answer. The resolved
 // event carries only the verdict, so the request has to be held until then or
 // the card cannot show what was actually asked.
 let openPerms = new Map();
@@ -29,20 +33,34 @@ let openPerms = new Map();
 export function initChat({ openTrace }) {
   transcript = document.getElementById("transcript");
   onOpenTrace = openTrace;
+  win = new TranscriptWindow(transcript);
+  follower = new Follower(transcript, { beforeSnap: () => win.trim() });
+  live = new LiveBubble(win);
+  transcript.addEventListener("scroll", () => {
+    follower.onScroll();
+    if (!follower.pinned && transcript.scrollTop < REVEAL_PX) win.revealOlder();
+  }, { passive: true });
+  // "Copy everything here" means the whole conversation, not the stretch of it
+  // that happens to be in the document.
+  setCopySource(transcript, snapshot);
   subscribe(onStoreChange);
   clear();
 }
 
 function onStoreChange(kind, ev) {
   if (kind === "reset") { clear(); return; }
+  // A replayed log is built off-document and attached in one go at its end;
+  // a socket that died mid-replay ends it too (ws.js drops `replaying`).
+  if (kind === "replay_start") { win.defer(); return; }
+  if (win.deferred && !store.replaying) win.settle();
   if (kind === "status") {
     if (!TERMINAL_STATUS.has(ev.state)) return;
     sweepUnresolved();
     // An interrupt takes the subagents with it (store.js `endOfTurn`), so no
     // card may be left mid-thought.
     if (ev.state === "interrupted") {
-      for (const [id, card] of agentCards) {
-        if (card.querySelector(".agent-head .tool-dot.running")) {
+      for (const [id, agent] of cards.agents) {
+        if (agent.dot.classList.contains("running")) {
           closeAgentCard({ agent_id: id, status: "interrupted" });
         }
       }
@@ -50,6 +68,7 @@ function onStoreChange(kind, ev) {
     return;
   }
   if (kind === "replay_done") {
+    win.settle();
     // A log replays without the live status events, so an interrupted turn
     // would spin its cut-off tool calls again on every reconnect. `busy` is
     // the state event the server sends before the replay, and it is what says
@@ -58,7 +77,7 @@ function onStoreChange(kind, ev) {
     scrollBottom(true); return;
   }
   if (kind === "event") {
-    transcript.querySelector(".chat-welcome")?.remove();
+    dropWelcome();
     // A queued paint belongs before this event on the page: settle it first,
     // so deferring deltas to the next frame never reorders the transcript.
     flushStream();
@@ -70,7 +89,7 @@ function onStoreChange(kind, ev) {
     scrollBottom(); return;
   }
   if (kind === "stream") {
-    transcript.querySelector(".chat-welcome")?.remove();
+    dropWelcome();
     schedulePaint();
     return;
   }
@@ -88,15 +107,12 @@ const TERMINAL_STATUS = new Set(["idle", "interrupted", "error"]);
 // session — the transcript claiming work was in flight long after the turn
 // ended. Subagent cards are left alone here: a detached job outlives the main
 // turn, and each card sweeps itself when *it* goes terminal.
-function sweepUnresolved(root = transcript) {
-  if (!root) return;
-  for (const dot of root.querySelectorAll(".tool-dot.running")) {
-    const card = dot.closest(".tool-card");
-    if (!card) continue;                                  // an agent head dot
-    if (root === transcript && card.closest(".agent-card")) continue;
-    dot.classList.remove("running");
-    dot.classList.add("stale");
-    card.querySelector(".tool-head")?.setAttribute(
+function sweepUnresolved(scope = MAIN) {
+  for (const entry of cards.runningIn(scope)) {
+    cards.settle(entry);
+    entry.dot.classList.remove("running");
+    entry.dot.classList.add("stale");
+    entry.card.querySelector(".tool-head")?.setAttribute(
       "title", "No result: the turn ended before this call finished.");
   }
 }
@@ -105,129 +121,98 @@ function sweepUnresolved(root = transcript) {
 // log never said how they ended, so the dot says "stopped, cause unrecorded"
 // rather than pulsing as if the work were still going.
 function settleAgentCards() {
-  for (const [id, card] of agentCards) {
+  for (const [id, agent] of cards.agents) {
     const rec = store.agents.get(id);
     if (!rec?.presumed) continue;
-    const dot = card.querySelector(".agent-head .tool-dot");
-    if (!dot.classList.contains("running")) continue;
+    if (!agent.dot.classList.contains("running")) continue;
     if (rec.status && rec.status !== "done") {
       closeAgentCard({ agent_id: id, status: rec.status });
       continue;
     }
-    dot.classList.remove("running");
-    dot.classList.add("stale");
-    card.querySelector(".agent-head")
-      .setAttribute("title", "No terminal record in the log — presumed finished.");
-    sweepUnresolved(card);
+    agent.dot.classList.remove("running");
+    agent.dot.classList.add("stale");
+    agent.head.setAttribute("title", "No terminal record in the log — presumed finished.");
+    sweepUnresolved(id);
   }
 }
 
 // A presumed-finished agent that speaks again was alive all along (a detached
 // job outliving the reconnect that presumed it over): take the presumption
 // back rather than leaving a working agent shown as stopped.
-function unpresume(agentId, card) {
-  const dot = card.querySelector(".agent-head .tool-dot");
-  if (!dot.classList.contains("stale")) return;
+function unpresume(agentId, agent) {
+  if (!agent.dot.classList.contains("stale")) return;
   if (store.agents.get(agentId)?.done) return;
-  dot.classList.remove("stale");
-  dot.classList.add("running");
-  card.querySelector(".agent-head").removeAttribute("title");
+  agent.dot.classList.remove("stale");
+  agent.dot.classList.add("running");
+  agent.head.removeAttribute("title");
 }
 
 function clear() {
   if (streamFrame) { cancelAnimationFrame(streamFrame); streamFrame = 0; }
   agentsDirty.clear();
+  follower.reset();
   transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
-  streamNode = null;
-  stepNode = null;
-  lastAssistantText = "";
+  welcome = transcript.firstElementChild;
+  win.reset();
+  live.forget();
+  step = null;
   openPerms = new Map();
-  agentCards = new Map();
+  cards.clear();
   taskStrip = null;
 }
 
+function dropWelcome() {
+  if (!welcome) return;
+  welcome.remove();
+  welcome = null;
+}
+
+// The whole transcript for a copy, held-back blocks included, or the live node
+// when nothing is held back.
+function snapshot() {
+  if (!win.first) return transcript;
+  const box = document.createElement("div");
+  if (taskStrip) box.appendChild(taskStrip.cloneNode(true));
+  for (const block of win.all()) box.appendChild(block.cloneNode(true));
+  return box;
+}
+
+// Queued for the next frame (chat/scroll.js), so a burst of events costs one
+// layout rather than one each.
 function scrollBottom(force = false) {
   if (store.replaying && !force) return;
-  const nearBottom =
-    transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 160;
-  if (nearBottom || force) transcript.scrollTop = transcript.scrollHeight;
+  follower.request(force);
 }
 
 // ---- streaming ----
 //
-// Deltas arrive far faster than a screen refreshes, and each one used to
-// re-parse and re-insert the whole reply: quadratic in its length, with every
-// code block rebuilt (and re-decorated by copy.js) dozens of times a second.
-// Now a delta only marks the frame dirty, and the paint appends the blocks
-// markdown.js has finished and replaces just the open one.
+// A delta only marks the frame dirty; the frame's paint patches the live
+// bubble and the subagents' live text once, however many deltas landed.
 
 function schedulePaint() {
   if (streamFrame) return;
-  streamFrame = requestAnimationFrame(paint);
+  streamFrame = requestAnimationFrame(() => paint(true));
 }
 
-function paint() {
+// `inFrame`: this is the frame's own paint, which may follow the bottom right
+// away; flushed early by an event, it leaves that to the frame.
+function paint(inFrame = false) {
   streamFrame = 0;
-  renderStream();
+  live.render({
+    text: store.streamText,
+    reasoning: store.streamReasoning,
+    pending: store.pendingCalls.size > 0,
+  });
   for (const id of agentsDirty) renderAgentStream(id);
   agentsDirty.clear();
-  scrollBottom();
+  if (inFrame && !store.replaying) follower.flush();
+  else scrollBottom();
 }
 
 function flushStream() {
   if (!streamFrame) return;
   cancelAnimationFrame(streamFrame);
   paint();
-}
-
-function ensureStreamNode() {
-  if (!streamNode) {
-    streamNode = el(`<div class="msg msg-assistant">
-        <div class="reasoning-slot"></div><div class="bubble"></div></div>`);
-    streamMd = markdownStream();
-    streamTail = [];
-    reasoningText = null;
-    transcript.appendChild(streamNode);
-  }
-  return streamNode;
-}
-
-function fragment(html) {
-  const t = document.createElement("template");
-  t.innerHTML = html;
-  return t.content;
-}
-
-function renderStream() {
-  if (!store.streamText && !store.streamReasoning && !store.pendingCalls.size) {
-    // Emptied without the message that normally replaces it: a replayed
-    // message superseded what streamed (store.js). What is on screen is stale.
-    if (streamNode) { streamNode.remove(); streamNode = null; }
-    return;
-  }
-  const node = ensureStreamNode();
-  if (store.streamReasoning) {
-    // Built once and then only its text moves, so collapsing it mid-stream
-    // sticks instead of being re-opened by the next delta.
-    if (!reasoningText) {
-      const details = el(`<details class="reasoning" open><summary>thinking</summary></details>`);
-      reasoningText = details.appendChild(document.createTextNode(""));
-      node.querySelector(".reasoning-slot").appendChild(details);
-    }
-    if (reasoningText.data !== store.streamReasoning) reasoningText.data = store.streamReasoning;
-  }
-  const bubble = node.querySelector(".bubble");
-  const { reset, commit, tail } = streamMd.update(store.streamText);
-  if (reset) {
-    for (const child of [...bubble.childNodes]) {
-      if (!child.classList?.contains("copy-btn")) child.remove();
-    }
-  }
-  for (const n of streamTail) n.remove();
-  if (commit) bubble.appendChild(fragment(commit));
-  const rest = fragment(tail);
-  streamTail = [...rest.childNodes];
-  bubble.appendChild(rest);
 }
 
 // ---- logged events ----
@@ -266,28 +251,10 @@ function renderEvent(ev) {
   }
 }
 
-// Drop the live bubble if nothing has been drawn in it. It is created as soon
-// as *anything* streams — including a tool call's arguments — so a round that
-// went straight to a tool left an empty message behind, once per round, each
-// one a stray gap in the transcript. (Its text cannot be the test: copy.js puts
-// a "copy" button in every bubble.)
-//
-// A bubble that has text stays live. Its assistant_message always follows —
-// session/recorder.py flushes one before each tool call, at the end of every
-// round and on an interrupt — and replaces it. Letting it go here, when an
-// unrelated event such as a mode switch landed mid-reply, left the partial copy
-// on the page and streamed the whole reply a second time underneath it.
-function closeStream() {
-  if (streamNode && !streamNode.querySelector(".reasoning, .bubble > :not(.copy-btn)")) {
-    streamNode.remove();
-    streamNode = null;
-  }
-}
-
 function addNode(node) {
-  closeStream();
-  stepNode = null;   // anything that is not a tool call ends the step
-  transcript.appendChild(node);
+  live.closeIfBlank();
+  step = null;   // anything that is not a tool call ends the step
+  win.append(node);
 }
 
 // ---- steps ----
@@ -295,8 +262,7 @@ function addNode(node) {
 // A step is one round's worth of tool calls under a heading. The heading
 // names the tools it used: whatever the assistant said is already rendered
 // directly above, and repeating it as a title says nothing twice.
-function stepTitle(step) {
-  const names = [...step.querySelectorAll(".tool-name")].map((n) => n.textContent);
+function stepTitle(names) {
   const unique = [...new Set(names)];
   if (!unique.length) return "Working";
   const shown = unique.slice(0, 4).join(" · ");
@@ -304,36 +270,39 @@ function stepTitle(step) {
 }
 
 function ensureStep() {
-  if (stepNode) return stepNode;
-  stepNode = el(`<div class="step">
+  if (step) return step;
+  const node = el(`<div class="step">
       <div class="step-head"><span class="step-mark">#</span>
         <span class="step-title"></span>
         <span class="step-count"></span></div>
       <div class="step-body"></div></div>`);
-  closeStream();
-  transcript.appendChild(stepNode);
-  return stepNode;
+  step = {
+    node,
+    body: node.querySelector(".step-body"),
+    title: node.querySelector(".step-title"),
+    count: node.querySelector(".step-count"),
+    names: [],                    // what each card's `.tool-name` reads
+    block: cards.nextBlock(),
+  };
+  live.closeIfBlank();
+  win.append(node);
+  return step;
 }
 
-function bumpStepCount(step) {
-  const n = step.querySelectorAll(".tool-card").length;
-  step.querySelector(".step-count").textContent = n === 1 ? "1 call" : `${n} calls`;
-  step.querySelector(".step-title").textContent = stepTitle(step);
-}
-
-function traceLink(seq) {
-  return `<span class="trace-link" data-seq="${Number(seq)}" title="Open in trajectory">⌕ trace</span>`;
+function bumpStepCount(s, name) {
+  s.names.push(name);
+  const n = s.names.length;
+  s.count.textContent = n === 1 ? "1 call" : `${n} calls`;
+  s.title.textContent = stepTitle(s.names);
 }
 
 function addUser(ev) {
-  lastAssistantText = "";
   addNode(el(`<div class="msg msg-user"><div class="bubble">${esc(ev.text)}</div></div>`));
 }
 
 function addAssistant(ev) {
-  if (streamNode) { streamNode.remove(); streamNode = null; }
-  stepNode = null;
-  lastAssistantText = ev.text || "";
+  live.drop();
+  step = null;
   const node = el(`<div class="msg msg-assistant">
       <div class="reasoning-slot"></div>
       <div class="bubble">${renderMarkdown(ev.text)}</div>
@@ -343,180 +312,53 @@ function addAssistant(ev) {
       `<details class="reasoning"><summary>thinking</summary>${esc(ev.reasoning)}</details>`;
   }
   wireTraceLinks(node);
-  transcript.appendChild(node);
+  win.append(node);
 }
 
-// tool-specific one-line argument summaries
-function argSummary(name, argsRaw) {
-  let a = {};
-  try { a = JSON.parse(argsRaw || "{}"); } catch { return oneLine(argsRaw, 120); }
-  if (name === "bash") return oneLine(a.command, 140);
-  if (name === "read" || name === "write" || name === "edit")
-    return oneLine(a.file_path || a.path, 120);
-  if (name === "grep") return oneLine(`${a.pattern}  ${a.path || ""}`, 120);
-  if (name === "glob") return oneLine(a.pattern, 120);
-  if (name === "agent") return oneLine(a.definition || a.prompt, 120);
-  const keys = Object.entries(a).map(([k, v]) => `${k}: ${oneLine(String(v), 40)}`);
-  return oneLine(keys.join(", "), 140);
-}
-
-function diffBody(name, argsRaw) {
-  // For edit: show old/new as a colored diff instead of raw JSON.
-  if (name !== "edit") return null;
-  let a;
-  try { a = JSON.parse(argsRaw || "{}"); } catch { return null; }
-  if (!a.old_string && !a.new_string) return null;
-  const del = String(a.old_string || "").split("\n")
-    .map((l) => `<span class="diff-del">- ${esc(l)}</span>`).join("\n");
-  const add = String(a.new_string || "").split("\n")
-    .map((l) => `<span class="diff-add">+ ${esc(l)}</span>`).join("\n");
-  return `<div class="lbl">${esc(a.file_path || "")}</div><pre>${del}\n${add}</pre>`;
-}
-
-// Tools that act on a path: the summary becomes a copyable file reference.
-const PATH_TOOLS = new Set(["read", "write", "edit"]);
-
-function summaryHtml(name, argsRaw) {
-  const summary = argSummary(name, argsRaw);
-  if (!PATH_TOOLS.has(name) || !summary) return esc(summary);
-  return `<span class="file-ref" data-path="${esc(summary)}" title="Copy path"
-    role="button" tabindex="0">${esc(summary)}</span>`;
-}
-
-// The card that governs this tool — the same target the trajectory links to,
-// resolved by the same function so the two views cannot drift about which page
-// decides what a tool may do.
-function configLinkHtml(ev) {
-  const target = configTarget(ev);
-  if (!target) return "";
-  return `<a class="tool-ms k-link" href="${esc(target.href)}"
-    title="Open ${esc(target.label)} in configuration — this is what governs it"
-    >${esc(target.label)} ↗</a>`;
-}
-
-function toolCardNode(ev, { agent } = {}) {
-  const card = el(`<div class="tool-card" data-call="${esc(ev.id)}">
-    <div class="tool-head" aria-expanded="false">
-      <span class="tool-dot running"></span>
-      <span class="tool-name">${esc(ev.name)}</span>
-      <span class="tool-summary">${summaryHtml(ev.name, ev.arguments)}</span>
-      ${configLinkHtml(ev)}
-      <span class="tool-ms"></span>
-    </div>
-    <div class="tool-body"></div></div>`);
-  const body = card.querySelector(".tool-body");
-  const diff = diffBody(ev.name, ev.arguments);
-  const input = diff ? `<div class="io-diff">${diff}</div>` : toonBlock(ev.arguments);
-  body.innerHTML =
-    `<details class="io io-in"><summary><span class="io-tag">IN</span>
-       <span class="io-hint">arguments</span></summary>${input}</details>` +
-    `<div class="result-slot"></div>` +
-    (ev.seq != null ? `<div class="io-trace">${traceLink(ev.seq)}</div>` : "");
-  const head = card.querySelector(".tool-head");
-  clickable(head, (e) => {
-    // The head toggles the card, but it now contains a link. Without this the
-    // link both navigates and collapses the card behind it.
-    if (e?.target?.closest?.("a")) return;
-    head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
+// A card, registered under the agent whose stream it belongs to.
+function newCard(ev, scope, block) {
+  const card = toolCardNode(ev, { wireTrace: wireTraceLinks });
+  cards.addCall({
+    scope, block, card,
+    id: ev.id,
+    name: String(ev.name ?? ""),   // what its `.tool-name` reads
+    args: ev.arguments,
+    dot: card.querySelector(".tool-dot"),
+    // Not the first `.tool-ms`: the config link ahead of it shares the class,
+    // and a result's duration used to overwrite the link's label.
+    took: card.querySelector(".tool-took"),
   });
-  wireFileRefs(card);
-  wireTraceLinks(card);
   return card;
 }
 
-// A JSON payload as TOON — the encoding the model was actually handed, so the
-// card shows what was sent rather than a JSON re-render of it. The model's
-// arguments arrive as a string it wrote, which can be truncated or malformed,
-// and a tool result is only sometimes JSON: anything that will not parse falls
-// back to the raw text, because losing the call is worse than losing the shape.
-// Escape bytes, or a carriage return doing an in-place redraw. `bash` cleans
-// its own output, so what reaches here is from a tool the boundary does not
-// control: an MCP server, a plugin. Drawn as text those are line noise, and a
-// `\r` progress bar is a few hundred near-identical lines. The panel's
-// emulator already knows what a terminal would have shown, so use it.
-const ANSI_RE = /\x1b[[\]()]|\r[^\n]/;   // eslint-disable-line no-control-regex
-
-function toonBlock(raw) {
-  const text = String(raw ?? "");
-  if (ANSI_RE.test(text)) {
-    return `<pre class="code ansi">${renderAnsiBlock(text)}</pre>`;
-  }
-  const head = text.trim()[0];
-  // Only an object or an array is worth re-encoding. Without this a bash
-  // result that happens to be the single word `12345` would parse as JSON and
-  // come back through TOON with its whitespace quietly rewritten.
-  if (head !== "{" && head !== "[") return `<pre class="code">${esc(text)}</pre>`;
-  let parsed;
-  try { parsed = JSON.parse(text); } catch { return `<pre class="code">${esc(text)}</pre>`; }
-  const encoded = toon(parsed);
-  // `{}` and `[]` encode to nothing at all. Showing the two characters the
-  // model sent says more than an empty box.
-  if (!encoded.trim()) return `<pre class="code">${esc(text)}</pre>`;
-  return `<pre class="toon">${highlightToon(encoded)}</pre>`;
-}
-
-function resultHtml(content, isError) {
-  const text = String(content ?? "");
-  const pane = toonBlock(text);
-  const tag = isError ? "ERR" : "OUT";
-  return `<details class="io io-out${isError ? " io-error" : ""}"${isError ? " open" : ""}>
-      <summary><span class="io-tag">${tag}</span>
-      <span class="io-hint">${isError ? "error" : "result"}</span></summary>${pane}</details>`;
-}
-
-// Clicking a path copies it: there is no editor to open it in, and a link
-// that silently does nothing is worse than one that does something small.
-function wireFileRefs(node) {
-  node.querySelectorAll(".file-ref").forEach((ref) => {
-    clickable(ref, (e) => {
-      e?.stopPropagation?.();
-      const path = ref.dataset.path || "";
-      navigator.clipboard?.writeText(path).then(() => {
-        ref.classList.add("copied");
-        setTimeout(() => ref.classList.remove("copied"), 900);
-      }, () => { /* clipboard blocked: leave the text selectable */ });
-    });
-  });
-}
-
 function addToolCall(ev) {
-  const step = ensureStep();
-  step.querySelector(".step-body").appendChild(toolCardNode(ev));
-  bumpStepCount(step);
+  const s = ensureStep();
+  s.body.appendChild(newCard(ev, MAIN, s.block));
+  bumpStepCount(s, String(ev.name ?? ""));
+}
+
+function settleCard(entry, ev) {
+  cards.settle(entry);
+  entry.dot.classList.remove("running");
+  entry.dot.classList.add(ev.is_error ? "error" : "ok");
+  const slot = entry.card.querySelector(".result-slot");
+  if (slot) slot.innerHTML = resultHtml(ev.content, ev.is_error);
 }
 
 function attachToolResult(ev) {
-  const card = transcript.querySelector(`.tool-card[data-call="${CSS.escape(ev.id)}"]`);
-  if (!card) return;
-  const dot = card.querySelector(".tool-dot");
-  dot.classList.remove("running");
-  dot.classList.add(ev.is_error ? "error" : "ok");
-  if (ev.ms) card.querySelector(".tool-ms").textContent = fmtMs(ev.ms);
-  const slot = card.querySelector(".result-slot");
-  if (slot) slot.innerHTML = resultHtml(ev.content, ev.is_error);
-  if (ev.is_error) card.classList.add("open");
+  const entry = cards.call(ev.id);
+  if (!entry) return;
+  settleCard(entry, ev);
+  if (ev.ms) entry.took.textContent = fmtMs(ev.ms);
+  if (ev.is_error) entry.card.classList.add("open");
 }
 
-// ---- permissions ----
-//
-// A decision belongs to the call it gates. It used to render as a chip of its
-// own under the card, which repeated the tool and the argument already on the
-// card and — being a node that is not a tool call — closed the step the card
-// was sitting in, so every gated call split its round in two. The badge and the
-// detail block below live inside the card instead.
-
-const LOCKS = {
-  pending: { glyph: "🔒", hint: "waiting for your decision" },
-  allowed: { glyph: "🔓", hint: "allowed" },
-  // The struck lock, not a bare ✗: the glyph has to keep saying "permission"
-  // next to a status dot that is already red for a failed call.
-  denied: { glyph: "🔒", hint: "denied" },
-};
+// ---- permissions (the badge itself: chat/cards.js markPerm) ----
 
 function permissionRequested(ev) {
-  const card = permCard(ev);
-  openPerms.set(ev.req_id, { ev, card });
-  if (card) markPerm(card, "pending", ev, null);
+  const entry = permCard(ev);
+  openPerms.set(ev.req_id, { ev, entry });
+  if (entry) decide(entry, "pending", ev, null);
 }
 
 function permissionResolved(ev) {
@@ -525,9 +367,14 @@ function permissionResolved(ev) {
   // The request is the half that carries the preview and the offered rule, so
   // prefer the card it already found; without it the card is now decided and
   // the undecided-card fallback below would not match.
-  const card = open?.card || permCard(ev);
-  if (!card) return;
-  markPerm(card, ev.allow ? "allowed" : "denied", open?.ev || null, ev);
+  const entry = open?.entry || permCard(ev);
+  if (!entry) return;
+  decide(entry, ev.allow ? "allowed" : "denied", open?.ev || null, ev);
+}
+
+function decide(entry, state, reqEv, resEv) {
+  cards.decide(entry);
+  markPerm(entry.card, state, reqEv, resEv);
 }
 
 // Sessions logged before the wire carried `call_id` still replay, so a missing
@@ -535,67 +382,22 @@ function permissionResolved(ev) {
 // the event: a badge on the wrong call is worse than no badge at all.
 function permCard(ev) {
   if (ev.call_id) {
-    const byId = transcript.querySelector(`.tool-card[data-call="${CSS.escape(ev.call_id)}"]`);
+    // `agent` names the agent that asked; its own calls are where the id is.
+    const scope = ev.agent && ev.agent !== "main" ? ev.agent : MAIN;
+    const byId = cards.call(ev.call_id, scope);
     if (byId) return byId;
   }
-  const undecided = [...transcript.querySelectorAll(".tool-card:not([data-perm])")]
-    .filter((c) => c.querySelector(".tool-name")?.textContent === ev.tool);
+  const undecided = cards.undecidedFor(ev.tool);
   if (!undecided.length) return null;
   const arg = oneLine(ev.arg, 200);
-  return undecided.find((c) => arg && c.querySelector(".tool-summary")?.textContent === arg)
-    || undecided[0];
-}
-
-function markPerm(card, state, reqEv, resEv) {
-  card.dataset.perm = state;
-  const lock = LOCKS[state];
-  let badge = card.querySelector(".tool-lock");
-  if (!badge) {
-    badge = el(`<span class="tool-lock"></span>`);
-    card.querySelector(".tool-head .tool-dot").after(badge);
-  }
-  badge.textContent = lock.glyph;
-  badge.title = `Permission — ${lock.hint}`;
-  const body = card.querySelector(".tool-body");
-  let block = body.querySelector(".io-perm");
-  if (!block) {
-    block = el(`<details class="io io-perm"><summary><span class="io-tag">ASK</span>
-      <span class="io-hint"></span></summary><div class="perm-detail"></div></details>`);
-    body.insertBefore(block, body.querySelector(".result-slot"));
-  }
-  block.querySelector(".io-hint").textContent = `permission — ${lock.hint}`;
-  block.querySelector(".perm-detail").innerHTML = permDetailHtml(reqEv, resEv);
-  // Open for the two states that want an answer or explain a failure, closed
-  // for a plain "allowed" — the same call `io-error` makes one block down.
-  block.open = state !== "allowed";
-}
-
-function permDetailHtml(reqEv, resEv) {
-  const verdict = !resEv ? "waiting for your decision"
-    : resEv.allow
-      ? (resEv.persist ? "allowed, and remembered as a rule" : "allowed, this once")
-      : "denied";
-  const rows = [`<div class="lbl">decision</div><div class="perm-line">${esc(verdict)}</div>`];
-  // The preview is the tool's own rendering of the call and the argument is
-  // what the rules matched on; showing both put the same string on screen
-  // twice for every path tool. The preview wins when there is one.
-  const asked = reqEv?.preview || reqEv?.arg || resEv?.arg || "";
-  if (asked) rows.push(`<div class="lbl">what it asked to do</div><pre>${esc(asked)}</pre>`);
-  if (reqEv?.rule_suggestion) {
-    rows.push(`<div class="lbl">rule offered</div>
-      <div class="perm-line perm-code">${esc(reqEv.rule_suggestion)}</div>`);
-  }
-  if (reqEv?.agent && reqEv.agent !== "main") {
-    rows.push(`<div class="lbl">agent</div><div class="perm-line">${esc(reqEv.agent)}</div>`);
-  }
-  return rows.join("");
+  return undecided.find((c) => arg && argSummary(c.name, c.args) === arg) || undecided[0];
 }
 
 // ---- subagents ----
 
 function addAgentCard(ev) {
-  closeStream();
-  stepNode = null;
+  live.closeIfBlank();
+  step = null;
   const card = el(`<div class="agent-card" data-agent="${esc(ev.agent_id)}">
     <div class="agent-head" aria-expanded="false"><span>⛓</span>
       <strong>${esc(ev.agent_id)}</strong>
@@ -607,38 +409,38 @@ function addAgentCard(ev) {
   clickable(head, () => {
     head.setAttribute("aria-expanded", String(card.classList.toggle("open")));
   });
-  transcript.appendChild(card);
-  agentCards.set(ev.agent_id, card);
+  win.append(card);
+  cards.agents.set(ev.agent_id, {
+    card, head,
+    dot: head.querySelector(".tool-dot"),
+    body: card.querySelector(".agent-body"),
+    text: card.querySelector(".agent-text"),
+    live: card.querySelector(".agent-live"),
+    block: cards.nextBlock(),
+  });
 }
 
 function addAgentEvent(ev) {
-  const card = agentCards.get(ev.agent_id);
-  if (!card) return;
-  unpresume(ev.agent_id, card);
-  const body = card.querySelector(".agent-body");
+  const agent = cards.agents.get(ev.agent_id);
+  if (!agent) return;
+  unpresume(ev.agent_id, agent);
   const inner = ev.ev || {};
   if (inner.type === "tool_call") {
-    body.appendChild(toolCardNode({ ...inner, seq: ev.seq }, { agent: ev.agent_id }));
+    agent.body.appendChild(newCard({ ...inner, seq: ev.seq }, ev.agent_id, agent.block));
   } else if (inner.type === "tool_result") {
-    const tc = body.querySelector(`.tool-card[data-call="${CSS.escape(inner.id)}"]`);
-    if (tc) {
-      const dot = tc.querySelector(".tool-dot");
-      dot.classList.remove("running");
-      dot.classList.add(inner.is_error ? "error" : "ok");
-      const slot = tc.querySelector(".result-slot");
-      if (slot) slot.innerHTML = resultHtml(inner.content, inner.is_error);
-    }
+    const entry = cards.callIn(ev.agent_id, inner.id);
+    if (entry) settleCard(entry, inner);
   } else if (inner.type === "assistant_message") {
     // One of these per round that produced text, not one per subagent: append
     // rather than overwrite, or every round but the last is lost. And a round
     // that stopped to call tools has not finished — leaving the dot green there
     // was the card claiming a still-working agent was done.
-    const text = card.querySelector(".agent-text");
+    const text = agent.text;
     text.textContent = text.textContent ? `${text.textContent}\n\n${inner.text}` : inner.text;
     // The settled text has landed, so the live copy of the same round has to
     // go: the two nodes used to be one, which rendered every round twice and
     // then lost it when the next round's first delta overwrote the lot.
-    card.querySelector(".agent-live").textContent = "";
+    agent.live.textContent = "";
     if (!midTurn(inner.finish_reason)) closeAgentCard({ agent_id: ev.agent_id });
   }
 }
@@ -648,25 +450,24 @@ function addAgentEvent(ev) {
 // pulsed "running" for the rest of the session — and a job that was cancelled
 // or errored must not read as a green tick.
 function closeAgentCard(ev) {
-  const card = agentCards.get(ev.agent_id);
-  if (!card) return;
-  card.querySelector(".agent-live").textContent = "";
-  const dot = card.querySelector(".agent-head .tool-dot");
-  dot.classList.remove("running");
-  dot.classList.add(ev.status && ev.status !== "done" ? "error" : "ok");
+  const agent = cards.agents.get(ev.agent_id);
+  if (!agent) return;
+  agent.live.textContent = "";
+  agent.dot.classList.remove("running");
+  agent.dot.classList.add(ev.status && ev.status !== "done" ? "error" : "ok");
   if (ev.status && ev.status !== "done") {
-    card.querySelector(".agent-head").setAttribute("title", `subagent ${ev.status}`);
+    agent.head.setAttribute("title", `subagent ${ev.status}`);
   }
   // Whatever this agent was still running died with it.
-  sweepUnresolved(card);
+  sweepUnresolved(ev.agent_id);
 }
 
 function renderAgentStream(agentId) {
-  const card = agentCards.get(agentId);
+  const agent = cards.agents.get(agentId);
   const a = store.agents.get(agentId);
-  if (!card || !a || a.done) return;
-  unpresume(agentId, card);
-  card.querySelector(".agent-live").textContent = a.streamText;
+  if (!agent || !a || a.done) return;
+  unpresume(agentId, agent);
+  agent.live.textContent = a.streamText;
 }
 
 // ---- tasks ----

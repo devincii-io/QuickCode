@@ -48,10 +48,17 @@ change reaches every open pane without a reload.
 - **Top bar** — project and session chips, session tabs (`js/sessionbar.js`),
   the update chip, new conversation, and toggles for the side panel, the
   terminal, Help and Settings.
-- **Transcript** (`js/chat.js`) — streaming markdown, reasoning, tool calls
-  with their results, diffs, and system notes. Rendering is batched per
-  animation frame and a streaming message patches one live node rather than
-  re-rendering the transcript.
+- **Transcript** (`js/chat.js`, `js/chat/`) — streaming markdown, reasoning,
+  tool calls with their results, diffs, and system notes. A streaming message
+  patches one live node (`chat/stream.js`) at most once a frame; tool cards and
+  their permission badges are built in `chat/cards.js`; results, verdicts and
+  subagent steps find their card by id (`chat/registry.js`), never by querying
+  the page. Following the newest line is decided by where the reader scrolled
+  and applied once a frame (`chat/scroll.js`). Long sessions are windowed
+  (`chat/window.js`): a replay is built off-document and only the newest 120
+  blocks are attached; scrolling to the top, or *show N earlier items*, brings
+  back 80 more at a time without moving the page. `scripts/bench_chat.js`
+  times a 10k-event replay and live events against the workspace smoke server.
 - **Composer** (`js/composer.js`, with its commands, `@` completion, recall
   and pills in `js/composer/`) — `Enter` sends, `Shift+Enter` inserts a
   newline, `/` opens the slash menu, `@` completes a project path, `↑/↓` walks
