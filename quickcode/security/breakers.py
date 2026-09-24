@@ -30,13 +30,37 @@ _HOME_WORD = re.compile(
     r"|\$\{?env:(?:systemdrive|systemroot|windir)\}?",
     re.I,
 )
-_FORK_BOMB = re.compile(
-    r"(?P<n>[\w:.-]+)\s*\(\s*\)\s*\{[^}]*?(?<![\w:.-])(?P=n)\s*\|\s*&?\s*(?P=n)(?![\w:.-])"
-    r"|\bfunction\s+(?P<m>[\w:.-]+)\s*(?:\(\s*\))?\s*\{[^}]*?(?<![\w:.-])(?P=m)\s*\|\s*&?\s*"
-    r"(?P=m)(?![\w:.-])"
-    r"|\bfork\s*(?:\(\s*\))?\s*while\s+fork\b"
-    r"|%0\s*\|\s*%0"
-)
+# A function definition's opening -- `name() {` or `function name {` -- found
+# first and its name read backwards, rather than one regex that starts a name
+# at every character: that form was quadratic, and a 100 KB word took minutes.
+_FUNCTION_OPEN = re.compile(r"\(\s*\)\s*\{|\bfunction\s+([\w:.-]+)\s*(?:\(\s*\))?\s*\{")
+_OTHER_BOMBS = re.compile(r"\bfork\s*(?:\(\s*\))?\s*while\s+fork\b|%0\s*\|\s*%0")
+# A fork bomb's body is short; a longer one is read only this far.
+_BODY_LIMIT = 4096
+
+
+def _is_fork_bomb(line: str) -> bool:
+    """A function that pipes itself into itself in the background, whatever it
+    is called: `:(){ :|:& };:`, `f(){ f|f& };f`, `function b { b|b& }`."""
+    if _OTHER_BOMBS.search(line):
+        return True
+    for m in _FUNCTION_OPEN.finditer(line):
+        name = m.group(1)
+        if name is None:
+            end = m.start()
+            while end > 0 and line[end - 1].isspace():
+                end -= 1
+            start = end
+            while start > 0 and (line[start - 1].isalnum() or line[start - 1] in "_:.-"):
+                start -= 1
+            name = line[start:end]
+        if not name:
+            continue
+        body = line[m.end():m.end() + _BODY_LIMIT].split("}", 1)[0]
+        n = re.escape(name)
+        if re.search(rf"(?<![\w:.-]){n}\s*\|\s*&?\s*{n}(?![\w:.-])", body):
+            return True
+    return False
 
 
 def _is_root_or_home(word: str) -> bool:
@@ -123,7 +147,7 @@ def _forces_push(args: list[str], depth: int = 0) -> bool:
 
 def tripped(line: str, depth: int = 0) -> bool:
     """Whether ``line`` contains a command that must prompt in every mode."""
-    if _FORK_BOMB.search(line):
+    if _is_fork_bomb(line):
         return True
     for words in segments(line):
         if _deletes_root_or_home(words):

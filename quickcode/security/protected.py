@@ -20,7 +20,9 @@ Being as strict on Linux costs nothing: nobody names a directory ``.GIT`` there.
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
+import stat
 from pathlib import Path
 
 PROTECTED_DIRS = frozenset({".GIT", ".QUICKCODE", ".SSH"})
@@ -110,39 +112,101 @@ def resolve(path: str, base: Path) -> Path | None:
         return None
 
 
-def written_tail(path: str, root: Path) -> list[str]:
-    """The written components below the project root.
+# A name for one entry directly under the directory it is relative to: no
+# separator, no leading `~`, no drive or stream colon, and not ending in a dot
+# or a space -- which rules out `.` and `..`, and `.. ` too, which Windows
+# reads as `..`.
+_ONE_ENTRY = re.compile(r"(?!~)[^/\\:]*[^/\\:.\s]")
 
-    An absolute path spells the root's own components too, and those are not
-    the caller's choice: a project that lives under a directory named
-    ``.quickcode`` must not make every file in it protected.
+
+class Boundary:
+    """The protected-path test for one project root.
+
+    The root is resolved once, and answers are remembered for the life of the
+    object -- which callers keep to one decision, since the filesystem the
+    answer depends on can change between decisions. A command line names the
+    same few words many times over, and a heredoc names thousands.
     """
-    parts = lexical_parts(path)
-    for anchor in (root, root.resolve()):
-        prefix = lexical_parts(str(anchor))
-        if [p.upper() for p in parts[: len(prefix)]] == [p.upper() for p in prefix]:
-            return parts[len(prefix):]
-    return parts
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.resolved_root = root.resolve()
+        self._prefixes = [
+            [p.upper() for p in lexical_parts(str(anchor))]
+            for anchor in dict.fromkeys((root, self.resolved_root))
+        ]
+        self._memo: dict[tuple[str, Path | None], bool] = {}
+
+    def written_tail(self, path: str) -> list[str]:
+        """The written components below the project root.
+
+        An absolute path spells the root's own components too, and those are
+        not the caller's choice: a project that lives under a directory named
+        ``.quickcode`` must not make every file in it protected.
+        """
+        parts = lexical_parts(path)
+        upper = [p.upper() for p in parts]
+        for prefix in self._prefixes:
+            if upper[: len(prefix)] == prefix:
+                return parts[len(prefix):]
+        return parts
+
+    def is_protected(self, path: str, base: Path | None = None) -> bool:
+        """True when ``path`` must prompt before any allow rule applies.
+
+        ``base`` is what a relative path is relative to, already resolved; the
+        project root unless the caller knows better (a shell that has
+        ``cd``-ed somewhere).
+        """
+        key = (path, base)
+        if key not in self._memo:
+            self._memo[key] = self._decide(path, base)
+        return self._memo[key]
+
+    def _decide(self, path: str, base: Path | None) -> bool:
+        if UNRESOLVABLE.search(path):
+            return True
+        at_root = base is None or base in (self.root, self.resolved_root)
+        if at_root and _ONE_ENTRY.fullmatch(path):
+            # One entry directly under the root: protected by its name, or by
+            # where it points if it is a link -- and an entry that is not a
+            # link cannot point anywhere, which spares resolving the thousands
+            # of words in a heredoc one path component at a time.
+            if is_protected_name(path):
+                return True
+            if not _redirects(self.resolved_root / path):
+                return False
+        resolved = resolve(path, base or self.root)
+        if resolved is None:
+            return True
+        if any(is_protected_name(p) for p in self.written_tail(path)):
+            return True
+        try:
+            inside = resolved.relative_to(self.resolved_root)
+        except ValueError:
+            return True
+        return any(is_protected_name(p) for p in inside.parts)
+
+
+def _redirects(path: Path) -> bool:
+    """Whether opening ``path`` may land somewhere else: a symlink, or on
+    Windows any reparse point (a junction is not a symlink to ``is_symlink``)."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    return bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def written_tail(path: str, root: Path) -> list[str]:
+    return Boundary(root).written_tail(path)
 
 
 def is_protected(path: str, root: Path, *, base: Path | None = None) -> bool:
-    """True when ``path`` must prompt before any allow rule applies.
-
-    ``base`` is what a relative path is relative to; the project root unless
-    the caller knows better (a shell that has ``cd``-ed somewhere).
-    """
-    if UNRESOLVABLE.search(path):
-        return True
-    resolved = resolve(path, base or root)
-    if resolved is None:
-        return True
-    if any(is_protected_name(p) for p in written_tail(path, root)):
-        return True
-    try:
-        inside = resolved.relative_to(root.resolve())
-    except ValueError:
-        return True
-    return any(is_protected_name(p) for p in inside.parts)
+    """True when ``path`` must prompt before any allow rule applies."""
+    return Boundary(root).is_protected(path, base)
 
 
 def is_subagent_artifact(path: str, root: Path) -> bool:

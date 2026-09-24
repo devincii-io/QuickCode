@@ -21,13 +21,12 @@ from pathlib import Path
 
 from quickcode.security import breakers, commands, shellwords, sweep
 from quickcode.security.protected import (
+    Boundary,
     glob_may_name_protected,
-    is_protected,
     is_protected_name,
     is_subagent_artifact,
     lexical_parts,
     resolve,
-    written_tail,
 )
 
 log = logging.getLogger("quickcode.permissions")
@@ -240,7 +239,7 @@ def _glob_match(pattern: str, value: str, *, fold: bool = False) -> bool:
     return re.fullmatch("".join(parts), value, re.IGNORECASE if fold else 0) is not None
 
 
-def _path_rule_targets(arg: str, root: Path) -> tuple[list[str], list[str]]:
+def _path_rule_targets(arg: str, boundary: Boundary) -> tuple[list[str], list[str]]:
     """The strings a path rule is matched against: (for deny/ask, for allow).
 
     A path rule used to see only the string the tool was called with, so a
@@ -254,16 +253,16 @@ def _path_rule_targets(arg: str, root: Path) -> tuple[list[str], list[str]]:
     no symlink between the root and the file -- because that is the one case
     in which the spelling and the location are the same claim.
     """
-    resolved = resolve(arg, root)
+    resolved = resolve(arg, boundary.root)
     if resolved is None:
         return [arg], []
     located = [resolved.as_posix(), str(resolved)]
     try:
-        located.insert(0, resolved.relative_to(root.resolve()).as_posix())
+        located.insert(0, resolved.relative_to(boundary.resolved_root).as_posix())
     except ValueError:
         pass
-    tail = written_tail(arg, root)
-    plain = ".." not in lexical_parts(arg) and root.resolve().joinpath(*tail) == resolved
+    tail = boundary.written_tail(arg)
+    plain = ".." not in lexical_parts(arg) and boundary.resolved_root.joinpath(*tail) == resolved
     restrict = list(dict.fromkeys([arg, *located]))
     allow = list(dict.fromkeys([*located, *([arg] if plain else [])]))
     return restrict, allow
@@ -290,6 +289,15 @@ def registry_specs() -> dict[str, PermissionSpec]:
         except Exception:  # never let tool import trouble break the gate
             _SPEC_CACHE = {}
     return _SPEC_CACHE
+
+
+@dataclass
+class _Scope:
+    """One decision's view of the filesystem: where the shell stands, and the
+    project boundary, whose answers are remembered for this decision only."""
+
+    base: Path
+    boundary: Boundary
 
 
 @dataclass
@@ -340,14 +348,15 @@ class PermissionEngine:
         (a shell command line, or a path -- whichever the tool declares).
         ``cwd`` is the shell's working directory, for a shell tool."""
         spec = spec or self.spec_for(tool)
+        boundary = Boundary(self.root)
 
         # Shell tools get decomposed and evaluated per subcommand, through the
         # same order as below.
         if spec.shell:
-            return self._eval_bash(arg, self._shell_base(cwd))
+            return self._eval_bash(arg, _Scope(self._shell_base(cwd), boundary))
 
         if spec.path_target:
-            restrict, permit = _path_rule_targets(arg, self.root)
+            restrict, permit = _path_rule_targets(arg, boundary)
         else:
             restrict, permit = [arg], [arg]
         # Case is ignored where the filesystem ignores it, and only by the
@@ -379,7 +388,7 @@ class PermissionEngine:
         #    outside the project without a word, and somebody who has turned on
         #    the mode named yolo, confirmed it, and watched it go red has
         #    already had that conversation.
-        if spec.path_target and is_protected(arg, self.root):
+        if spec.path_target and boundary.is_protected(arg):
             if spec.mutates or not is_subagent_artifact(arg, self.root):
                 if self.mode is Mode.dontask:
                     return Decision.deny
@@ -425,14 +434,14 @@ class PermissionEngine:
             return self.root
         return where
 
-    def _eval_bash(self, command: str, base: Path, depth: int = 0) -> Decision:
+    def _eval_bash(self, command: str, scope: _Scope, depth: int = 0) -> Decision:
         subs = [s.strip() for s in _SPLIT.split(command) if s.strip()]
         has_substitution = any(
             m in command for m in _COMPOUND_MARKERS
         ) or shellwords.has_unquoted_paren(command)
         decisions: list[Decision] = []
         for sub in subs or [command]:
-            decisions.append(self._eval_bash_sub(sub, has_substitution, base))
+            decisions.append(self._eval_bash_sub(sub, has_substitution, scope))
         # A command another command runs is decided as if it had been typed:
         # `find . -exec rm {} +`, `xargs rm`, `sudo rm`, `bash -c 'rm ...'`,
         # `echo $(rm ...)` and `git -c alias.x='!rm ...' x` all run `rm`. A deny
@@ -442,7 +451,7 @@ class PermissionEngine:
         if inner and depth >= _MAX_NESTING:
             decisions.append(Decision.ask)
         elif inner:
-            decisions += [self._eval_bash(line, base, depth + 1) for line in inner]
+            decisions += [self._eval_bash(line, scope, depth + 1) for line in inner]
         # Circuit breakers apply to the whole line even in yolo.
         if breakers.tripped(command):
             decisions.append(Decision.ask)
@@ -453,10 +462,12 @@ class PermissionEngine:
             return Decision.ask
         return Decision.allow
 
-    def _eval_bash_sub(self, sub: str, has_sub: bool, base: Path) -> Decision:
+    def _eval_bash_sub(self, sub: str, has_sub: bool, scope: _Scope) -> Decision:
         tokens = sub.split()
         lexed = shellwords.segments(sub)
-        analysis = commands.analyze(lexed[0], base=base) if lexed else commands.Analysis()
+        analysis = (
+            commands.analyze(lexed[0], base=scope.base) if lexed else commands.Analysis()
+        )
         # Strip harmless wrappers and env-var prefixes so a rule written against
         # the command still matches. Whether an assignment was among them is
         # remembered, because the two kinds of prefix are not equally harmless.
@@ -512,7 +523,7 @@ class PermissionEngine:
         # (`rg --pre`, `tree -o`, `file -C`); ``commands.analyze`` knows which.
         read_only = (
             first in READONLY_BUILTINS
-            and self._runs_from_path(spelled)
+            and self._runs_from_path(spelled, scope.boundary)
             and not has_sub
             and not has_env_prefix
             and not analysis.unsafe_read_only
@@ -531,9 +542,9 @@ class PermissionEngine:
         # takes its pager, editor and hooks path from.
         if (
             analysis.writes_protected
-            or (base != self.root and is_protected(str(base), self.root))
-            or self._names_protected(tokens[idx:], sub, base)
-            or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep, base))
+            or (scope.base != self.root and scope.boundary.is_protected(str(scope.base)))
+            or self._names_protected(tokens[idx:], lexed, scope)
+            or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep, scope))
         ):
             if self.mode is Mode.dontask:
                 return Decision.deny
@@ -570,7 +581,7 @@ class PermissionEngine:
             return Decision.deny
         return Decision.ask
 
-    def _runs_from_path(self, command: str) -> bool:
+    def _runs_from_path(self, command: str, boundary: Boundary) -> bool:
         """Whether a command word names a program found on PATH (or installed
         outside the project), rather than a file inside it.
 
@@ -584,9 +595,11 @@ class PermissionEngine:
         resolved = resolve(command, self.root)
         if resolved is None or not Path(command).expanduser().is_absolute():
             return False
-        return not resolved.is_relative_to(self.root.resolve())
+        return not resolved.is_relative_to(boundary.resolved_root)
 
-    def _names_protected(self, words: list[str], sub: str, base: Path) -> bool:
+    def _names_protected(
+        self, words: list[str], lexed: list[list[str]], scope: _Scope
+    ) -> bool:
         """Whether any word of a subcommand may name a protected path.
 
         Each word is read every way the shell might read it
@@ -604,16 +617,16 @@ class PermissionEngine:
         for candidate in shellwords.path_candidates(words[0]) or []:
             if any(is_protected_name(p) for p in lexical_parts(candidate)):
                 return True
-        lexed = [w for segment in shellwords.segments(sub) for w in segment[1:]]
-        for word in [*words[1:], *lexed]:
+        arguments = [w for segment in lexed for w in segment[1:]]
+        for word in [*words[1:], *arguments]:
             candidates = shellwords.path_candidates(word)
             if candidates is None:
                 return True
-            if any(self._candidate_protected(c, base) for c in candidates):
+            if any(self._candidate_protected(c, scope) for c in candidates):
                 return True
         return False
 
-    def _sweeps_protected(self, walk: commands.Sweep | None, base: Path) -> bool:
+    def _sweeps_protected(self, walk: commands.Sweep | None, scope: _Scope) -> bool:
         """Whether a recursive read (`grep -r`, `rg --hidden`, `rg -g '*'`,
         `diff -r`) would reach a protected file under the directories it names.
 
@@ -629,21 +642,21 @@ class PermissionEngine:
             for candidate in shellwords.path_candidates(operand) or []:
                 matches = [candidate]
                 if shellwords.has_glob(candidate):
-                    matches = glob.glob(candidate, root_dir=base)
+                    matches = glob.glob(candidate, root_dir=scope.base)
                 for match in matches:
-                    where = resolve(match, base)
+                    where = resolve(match, scope.base)
                     if where is not None and where.is_dir():
                         roots.append(where)
                     elif where is not None and where.exists():
                         names_a_file = True
         if not roots and not names_a_file:
-            roots = [base]
+            roots = [scope.base]
         return sweep.reaches_protected(
             roots, self.root, hidden=walk.hidden, globs=walk.globs, follow=walk.follow
         )
 
-    def _candidate_protected(self, candidate: str, base: Path) -> bool:
-        if is_protected(candidate, self.root, base=base):
+    def _candidate_protected(self, candidate: str, scope: _Scope) -> bool:
+        if scope.boundary.is_protected(candidate, scope.base):
             return True
         return shellwords.has_glob(candidate) and any(
             glob_may_name_protected(p, dotfiles=shellwords.GLOB_MATCHES_DOTFILES)

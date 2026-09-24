@@ -30,6 +30,7 @@ GLOB_CHARS = frozenset("*?[")
 # More alternatives than this and the word is treated as unknowable, which the
 # engine reads as protected. `{a..z}{a..z}{a..z}` is not a path anybody means.
 BRACE_LIMIT = 64
+BRACE_WORD_LIMIT = 16_384
 
 _ANSI_SIMPLE = {
     "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
@@ -143,35 +144,39 @@ def _brace_alternatives(inner: str) -> list[str] | None:
     return None
 
 
+def _brace_pairs(word: str) -> list[tuple[int, int]]:
+    """Matching ``{``/``}`` positions, in order of the opening brace."""
+    pairs: list[tuple[int, int]] = []
+    stack: list[int] = []
+    for i, c in enumerate(word):
+        if c == "{":
+            stack.append(i)
+        elif c == "}" and stack:
+            pairs.append((stack.pop(), i))
+    return sorted(pairs)
+
+
 def brace_expand(word: str, limit: int = BRACE_LIMIT) -> list[str] | None:
-    """Every word bash's brace expansion makes of ``word``; None past ``limit``."""
+    """Every word bash's brace expansion makes of ``word``; None past ``limit``
+    (or for a word too long to read braces in, which is unknown, not safe)."""
+    if "{" not in word:
+        return [word]
+    if len(word) > BRACE_WORD_LIMIT:
+        return None
     pending, done = [word], []
     while pending:
         current = pending.pop()
-        expanded = False
-        i = 0
-        while i < len(current):
-            if current[i] != "{" or (i and current[i - 1] == "$"):
-                i += 1
+        for i, j in _brace_pairs(current):
+            if i and current[i - 1] == "$":
                 continue
-            depth = 0
-            for j in range(i, len(current)):
-                depth += {"{": 1, "}": -1}.get(current[j], 0)
-                if depth == 0:
-                    break
-            else:
-                break
             try:
                 alternatives = _brace_alternatives(current[i + 1:j])
             except _Overflow:
                 return None
-            if alternatives is None:
-                i += 1
-                continue
-            pending += [current[:i] + alt + current[j + 1:] for alt in alternatives]
-            expanded = True
-            break
-        if not expanded:
+            if alternatives is not None:
+                pending += [current[:i] + alt + current[j + 1:] for alt in alternatives]
+                break
+        else:
             done.append(current)
         if len(done) + len(pending) > limit:
             return None
@@ -243,6 +248,10 @@ def has_unquoted_paren(line: str) -> bool:
 
 
 _OPERATOR_CHARS = frozenset(";&|\n()`<>")
+# Runs the lexer can take whole: unquoted ordinary characters, and the inside of
+# a double- or ANSI-C-quoted string up to its next quote or backslash.
+_PLAIN_RUN = re.compile(r"[^\s'\"\\$;&|()`<>]+")
+_QUOTED_RUN = {'"': re.compile(r'[^"\\]+'), "$'": re.compile(r"[^'\\]+")}
 
 
 def segments(line: str) -> list[list[str]]:
@@ -269,16 +278,36 @@ def segments(line: str) -> list[list[str]]:
             result.append(list(words))
             words.clear()
 
-    while i < len(line):
+    n = len(line)
+    while i < n:
         c = line[i]
+        if quote == "'":
+            end = line.find("'", i)
+            end = n - 1 if end < 0 else end
+            raw.append(line[i:end + 1])
+            quote = ""
+            i = end + 1
+            continue
         if quote:
+            run = _QUOTED_RUN[quote].match(line, i)
+            if run:
+                raw.append(run.group())
+                i = run.end()
+                continue
             raw.append(c)
             if c == quote[-1]:
                 quote = ""
-            elif c == "\\" and quote != "'" and i + 1 < len(line):
+            elif c == "\\" and i + 1 < n:
                 raw.append(line[i + 1])
                 i += 1
-        elif c == "\\" and i + 1 < len(line):
+            i += 1
+            continue
+        run = _PLAIN_RUN.match(line, i)
+        if run:
+            raw.append(run.group())
+            i = run.end()
+            continue
+        if c == "\\" and i + 1 < n:
             raw.append(c + line[i + 1])
             i += 1
         elif c in "'\"":
@@ -308,24 +337,30 @@ def substitutions(line: str) -> list[str]:
     Quotes are ignored on purpose: ``"$(rm -rf x)"`` runs inside double quotes,
     and a body found inside single quotes is at worst evaluated for nothing.
     """
-    bodies: list[str] = []
-    i = 0
-    while i < len(line):
-        if line[i] == "`":
-            end = line.find("`", i + 1)
-            end = len(line) if end < 0 else end
-            bodies.append(line[i + 1:end])
-            i = end + 1
-            continue
-        if line[i] in "$<>" and line[i + 1:i + 2] == "(":
-            depth, j = 0, i + 1
-            while j < len(line):
-                depth += {"(": 1, ")": -1}.get(line[j], 0)
-                if depth == 0:
-                    break
-                j += 1
-            bodies.append(line[i + 2:j])
-            i = i + 2
-            continue
-        i += 1
-    return [b for b in bodies if b.strip()]
+    spans: list[tuple[int, int]] = []
+    opened: list[tuple[int, bool]] = []
+    tick = -1
+    for i, c in enumerate(line):
+        if c == "`":
+            if tick < 0:
+                tick = i + 1
+            else:
+                spans.append((tick, i))
+                tick = -1
+        elif c == "(":
+            opened.append((i + 1, i > 0 and line[i - 1] in "$<>"))
+        elif c == ")" and opened:
+            start, substitutes = opened.pop()
+            if substitutes:
+                spans.append((start, i))
+    if tick >= 0:
+        spans.append((tick, len(line)))
+    spans += [(start, len(line)) for start, substitutes in opened if substitutes]
+    # Outermost bodies only: an inner one is part of its outer body, and is
+    # reached when that body is evaluated in turn. Returning every level made
+    # `$($($(...)))` cost the depth to the power of the nesting limit.
+    outermost: list[tuple[int, int]] = []
+    for start, end in sorted(spans, key=lambda span: (span[0], -span[1])):
+        if not outermost or start >= outermost[-1][1]:
+            outermost.append((start, end))
+    return [line[s:e] for s, e in outermost if line[s:e].strip()]
