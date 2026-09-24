@@ -5,10 +5,12 @@ import { markdownStream, renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
 import { argSummary, markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
 import { CardRegistry, MAIN } from "./chat/registry.js";
+import { Follower } from "./chat/scroll.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;
 let welcome = null;             // the empty-conversation greeting, until the first event
+let follower = null;            // keeps the newest line in view while the reader is there
 let streamNode = null;          // live assistant bubble
 let streamMd = null;            // its incremental renderer (markdown.js)
 let streamTail = [];            // its nodes the next update replaces
@@ -30,6 +32,8 @@ let openPerms = new Map();
 export function initChat({ openTrace }) {
   transcript = document.getElementById("transcript");
   onOpenTrace = openTrace;
+  follower = new Follower(transcript);
+  transcript.addEventListener("scroll", () => follower.onScroll(), { passive: true });
   subscribe(onStoreChange);
   clear();
 }
@@ -132,6 +136,7 @@ function unpresume(agentId, agent) {
 function clear() {
   if (streamFrame) { cancelAnimationFrame(streamFrame); streamFrame = 0; }
   agentsDirty.clear();
+  follower.reset();
   transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
   welcome = transcript.firstElementChild;
   streamNode = null;
@@ -147,11 +152,11 @@ function dropWelcome() {
   welcome = null;
 }
 
+// Queued for the next frame (chat/scroll.js), so a burst of events costs one
+// layout rather than one each.
 function scrollBottom(force = false) {
   if (store.replaying && !force) return;
-  const nearBottom =
-    transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 160;
-  if (nearBottom || force) transcript.scrollTop = transcript.scrollHeight;
+  follower.request(force);
 }
 
 // ---- streaming ----
@@ -164,15 +169,18 @@ function scrollBottom(force = false) {
 
 function schedulePaint() {
   if (streamFrame) return;
-  streamFrame = requestAnimationFrame(paint);
+  streamFrame = requestAnimationFrame(() => paint(true));
 }
 
-function paint() {
+// `inFrame`: this is the frame's own paint, which may follow the bottom right
+// away; flushed early by an event, it leaves that to the frame.
+function paint(inFrame = false) {
   streamFrame = 0;
   renderStream();
   for (const id of agentsDirty) renderAgentStream(id);
   agentsDirty.clear();
-  scrollBottom();
+  if (inFrame && !store.replaying) follower.flush();
+  else scrollBottom();
 }
 
 function flushStream() {
