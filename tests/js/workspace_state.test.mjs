@@ -53,3 +53,29 @@ test("restore binds conversations to their project and repairs stale focus", () 
   assert.equal(ws.panes.orphan, undefined);
   assert.equal(restoreWorkspace({ project: { id: "missing-path" } }), null);
 });
+
+test("stored ids that name Object.prototype members cannot pose as panes", () => {
+  const ws = restoreWorkspace({ project: { id: "p", path: "/p" }, focused: "toString",
+    tree: { type: "split", dir: "h", ratio: .5,
+      children: [{ type: "pane", pane: "__proto__" }, { type: "pane", pane: "constructor" }] },
+    panes: JSON.parse('{"__proto__": {"convId": "kept-1", "title": "Kept"}}') });
+  assert.deepEqual(Object.keys(ws.panes), ["__proto__", "constructor"]);
+  assert.equal(ws.panes.__proto__.convId, "kept-1");
+  assert.equal(ws.panes.constructor.convId, null);
+  assert.equal(ws.focused, "__proto__");
+  assert.equal(JSON.parse(JSON.stringify(ws.panes)).__proto__.title, "Kept");
+});
+
+test("a conversation id the server would refuse restores as a fresh conversation", () => {
+  const ws = restoreWorkspace({ project: { id: "p", path: "/p", name: { not: "text" }, extra: "dropped" },
+    tree: { type: "split", children: [{ type: "pane", pane: "a" }, { type: "pane", pane: "b" }] },
+    panes: { a: { convId: "bad id/.." }, b: { convId: "20260906-abc_DEF" } } });
+  assert.deepEqual({ ...ws.panes.a }, { id: "a", convId: null, persisted: false, title: "New agent" });
+  assert.equal(ws.panes.b.convId, "20260906-abc_DEF");
+  assert.equal(ws.panes.b.persisted, true);
+  assert.deepEqual(ws.project, { id: "p", path: "/p", name: "" });
+  assert.equal(readLayout({ type: "split", children: [
+    { type: "pane", pane: "../x" }, { type: "pane", pane: "x".repeat(65) }] }), null);
+  assert.equal(readLayout({ type: "pane", pane: 7 }), null);
+  assert.equal(restoreWorkspace({ project: { id: "p", path: "/p" }, panes: null, tree: null }).focused, null);
+});

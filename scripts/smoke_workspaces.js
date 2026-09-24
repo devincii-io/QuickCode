@@ -110,7 +110,16 @@ async (page) => {
   await page.frameLocator(".ws-utility iframe").locator("#cfg-done").click();
   await page.setViewportSize({ width: 1500, height: 950 });
   await pane(ids[0]).locator('[data-action="zoom"]').click();
+  const stored = await page.evaluate(() => Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)]));
+  check(stored.every(([, v]) => !v.includes("workspace-preview")), "the auth token reached localStorage");
+  check(!stored.some(([k]) => k.startsWith("qc-draft")), "a draft left the tab's sessionStorage");
+  // A layout this browser can no longer trust must open a fresh conversation, not a dead pane.
+  const project = restored.workspaces[0].project;
+  await page.evaluate((project) => localStorage.setItem("qc-workspaces-v1", JSON.stringify({ version: 1, active: project.id,
+    workspaces: [{ project, focused: "__proto__", tree: { type: "pane", pane: "restored" }, panes: { restored: { convId: "bad id/.." } } }] })), project);
+  await page.reload();
+  await ready(1);
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "independent streams, drafts, resize, drag, zoom, workspaces, close/undo, reload, rename, settings, themes, shortcuts, narrow layout", runtimeErrors: errors };
+  return { passed: true, checks: "independent streams, drafts, resize, drag, zoom, workspaces, close/undo, reload, rename, settings, themes, shortcuts, narrow layout, storage hygiene, corrupted layout", runtimeErrors: errors };
 }

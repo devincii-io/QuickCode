@@ -521,9 +521,14 @@ export async function bootWorkspaces() {
   try {
     const bs = await api.bootstrap(); applyTheme(bs.theme);
     const data = await api.projects();
-    // A project explicitly forgotten from Home must not return after reload.
-    const known = new Set(data.projects.map((p) => p.id));
-    for (const id of workspaces.keys()) if (!known.has(id)) workspaces.delete(id);
+    // A project explicitly forgotten from Home must not return after reload,
+    // and the registry, not the saved layout, says which folder an id opens.
+    const known = new Map(data.projects.map((p) => [p.id, p]));
+    for (const [id, ws] of workspaces) {
+      const entry = known.get(id);
+      if (entry) ws.project = { id, path: entry.path, name: entry.name };
+      else workspaces.delete(id);
+    }
     sidebar.replaceChildren();
     if (launch.project) {
       const p = data.projects.find((p) => p.id === launch.project);
