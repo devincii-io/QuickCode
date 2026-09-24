@@ -163,6 +163,7 @@ class Rules:
         # project trusted; one that was not stays untrusted.
         from quickcode.kernel.settings_file import (
             LOCAL_SETTINGS_FILENAME,
+            SettingsUnreadable,
             write_project_settings,
         )
 
@@ -172,7 +173,10 @@ class Rules:
             if rule not in allow:
                 allow.append(rule)
 
-        write_project_settings(root, add, filename=LOCAL_SETTINGS_FILENAME)
+        try:
+            write_project_settings(root, add, filename=LOCAL_SETTINGS_FILENAME)
+        except SettingsUnreadable as exc:
+            log.warning("allow rule %r kept for this session only: %s", rule, exc)
         self.allow.append(rule)
 
 

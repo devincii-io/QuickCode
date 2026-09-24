@@ -8,7 +8,8 @@ a reason to stop trusting it, and every such write goes through
 Before there was one writer, some saves did that and some did not.
 
 A write reads the whole file, lets the caller change it in place and writes all
-of it back, so no caller clobbers keys it does not own.
+of it back, so no caller clobbers keys it does not own -- and refuses, with
+:class:`SettingsUnreadable`, a file it cannot parse rather than replace it.
 """
 
 from __future__ import annotations
@@ -30,6 +31,17 @@ SETTINGS_FILENAME = "settings.json"
 LOCAL_SETTINGS_FILENAME = "settings.local.json"
 
 T = TypeVar("T")
+
+
+class SettingsUnreadable(ValueError):
+    """A settings file exists but cannot be merged into, so it is not written."""
+
+    def __init__(self, path: Path, problem: str) -> None:
+        self.path = path
+        super().__init__(
+            f"{path} {problem}. Nothing was saved, because saving would replace "
+            "everything in it; fix the file (or remove it) and try again."
+        )
 
 
 def read_settings(path: Path) -> dict[str, Any]:
@@ -71,8 +83,30 @@ def write_project_settings(cwd: str | os.PathLike[str],
 
 
 def _write(path: Path, mutate: Callable[[dict[str, Any]], T]) -> T:
-    raw = read_settings(path)
+    raw = _read_for_write(path)
     result = mutate(raw)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(raw, indent=2))
     return result
+
+
+def _read_for_write(path: Path) -> dict[str, Any]:
+    """The file as a dict to merge into, or a refusal.
+
+    Stricter than :func:`read_settings` on purpose: a reader can skip a file
+    it cannot parse, but a writer that did the same would write back only the
+    key it owns and erase everything else the file held.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except UnicodeDecodeError as exc:
+        raise SettingsUnreadable(path, "is not UTF-8 text") from exc
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SettingsUnreadable(path, f"is not valid JSON ({exc})") from exc
+    if not isinstance(raw, dict):
+        raise SettingsUnreadable(path, "does not hold a JSON object")
+    return raw

@@ -454,15 +454,10 @@ def set_auto_check(enabled: bool) -> bool:
     ``load_state`` reads underneath the project layer — so a project can still
     pin it off, and cannot turn it on for you.
     """
-    from quickcode.kernel.settings_file import write_settings
+    from quickcode.kernel.settings_file import SettingsUnreadable, write_settings
     from quickcode.kernel.state import PLUGINS_KEY, user_settings_path
 
     path = user_settings_path()
-    if path.exists():
-        try:
-            json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise UpdateError(f"could not read {path}: {exc}") from exc
 
     def merge(raw: dict[str, Any]) -> None:
         section = raw.get(PLUGINS_KEY)
@@ -481,6 +476,8 @@ def set_auto_check(enabled: bool) -> bool:
 
     try:
         write_settings(path, merge)
+    except SettingsUnreadable as exc:
+        raise UpdateError(str(exc)) from exc
     except OSError as exc:
         raise UpdateError(f"could not write {path}: {exc}") from exc
     return bool(enabled)

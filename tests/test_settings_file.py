@@ -126,6 +126,51 @@ def test_a_write_keeps_the_keys_it_does_not_own(project):
     assert _read(project) == {"mcpServers": MCP, "hooks": {"x": 1}, "presets": {}}
 
 
+BROKEN = '{"mcpServers": {"docs": {"command": "npx"}}, "permissions": {"allow": ["read"]},}'
+
+
+def test_a_settings_file_that_does_not_parse_is_never_overwritten(project):
+    """A stray comma in a hand-edited file used to read as ``{}``, and the next
+    save wrote back only the key it owned -- every permission rule, MCP server
+    and hook in the file gone, without a word."""
+    from quickcode.kernel.settings_file import SettingsUnreadable, write_project_settings
+
+    path = project / ".quickcode" / "settings.json"
+    path.write_text(BROKEN, encoding="utf-8")
+
+    with pytest.raises(SettingsUnreadable, match="settings.json"):
+        write_project_settings(project, lambda raw: raw.update(active_preset="x"))
+    with pytest.raises(SettingsUnreadable):
+        state_store.save_entry(project, "tool.bash", enabled=False)
+
+    assert path.read_text(encoding="utf-8") == BROKEN
+
+
+def test_the_settings_page_says_why_it_will_not_save_over_a_broken_file(project):
+    path = project / ".quickcode" / "settings.json"
+    path.write_text(BROKEN, encoding="utf-8")
+
+    with _client(project) as client:
+        answer = client.put("/api/kernel/plugins/tool.bash", json={"enabled": False})
+
+    assert answer.status_code == 400
+    assert "not valid JSON" in answer.json()["detail"]
+    assert path.read_text(encoding="utf-8") == BROKEN
+
+
+def test_always_allow_over_a_broken_file_still_allows_for_this_session(project):
+    from quickcode.core.permissions import Rules
+
+    path = project / ".quickcode" / "settings.local.json"
+    path.write_text(BROKEN, encoding="utf-8")
+    rules = Rules()
+
+    rules.persist_allow(project, "bash(npm test)")
+
+    assert rules.allow == ["bash(npm test)"]
+    assert path.read_text(encoding="utf-8") == BROKEN
+
+
 def _symlink(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)
