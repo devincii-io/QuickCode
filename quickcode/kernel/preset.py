@@ -27,7 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.kernel.composition import Binding, Composition
-from quickcode.kernel.state import _read, project_settings_path, user_settings_path
+from quickcode.kernel.state import project_settings_path, user_settings_path
+from quickcode.kernel.state import read_settings as _read
 from quickcode.security.trust import GATED_PRESET_FIELDS, project_may_state
 
 log = logging.getLogger("quickcode.kernel.preset")
