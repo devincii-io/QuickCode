@@ -48,7 +48,14 @@ from quickcode.kernel.authoring.format import parse_document
 from quickcode.kernel.authoring.model import AuthoredPlugin
 from quickcode.kernel.authoring.reserved import reserved_reason
 from quickcode.kernel.authoring.templates import template
-from quickcode.kernel.problems import Problem
+from quickcode.kernel.problems import (
+    BAD_KIND,
+    BAD_SLUG,
+    ID_DUPLICATE,
+    ID_RESERVED,
+    NOT_DUPLICABLE,
+    Problem,
+)
 
 SCOPES = ("user", "project")
 
@@ -138,7 +145,7 @@ def create(
     if kind not in schema.KINDS:
         raise AuthoringError(
             f"'{kind}' is not an authorable kind",
-            fix=f"Use one of: {', '.join(schema.KINDS)}.", code=schema.BAD_KIND)
+            fix=f"Use one of: {', '.join(schema.KINDS)}.", code=BAD_KIND)
     if scope not in SCOPES:
         raise AuthoringError(f"'{scope}' is not a scope",
                              fix="Use 'user' or 'project'.")
@@ -146,14 +153,14 @@ def create(
     if not slug:
         raise AuthoringError("that name has no usable characters in it",
                              fix="Use letters, digits, '-' and '_'.",
-                             code=schema.BAD_SLUG)
+                             code=BAD_SLUG)
     reason = reserved_reason(f"{kind}.{slug}", kind, slug)
     if reason:
         raise AuthoringError(
             f"'{kind}.{slug}' cannot be used: {reason}",
             fix="Pick a different name, or use Duplicate to start from the "
                 "built-in one.",
-            status=400, code=schema.ID_RESERVED)
+            status=400, code=ID_RESERVED)
 
     directory = scope_dir(cwd, scope)
     directory.mkdir(parents=True, exist_ok=True)
@@ -162,7 +169,7 @@ def create(
         raise AuthoringError(
             f"{path.name} already exists in {scope} scope",
             fix="Pick another name, or edit the existing file.",
-            status=409, code=schema.ID_DUPLICATE)
+            status=409, code=ID_DUPLICATE)
 
     body = text if text is not None else template(kind, slug, title)
     _write(path, body, cwd, scope)
@@ -388,7 +395,7 @@ def duplicate(
 
     reason, recourse = refusal(plugin_id) or _NOTHING_TO_COPY
     raise AuthoringError(f"{plugin_id} cannot be duplicated: {reason}",
-                         fix=recourse, status=400, code=schema.NOT_DUPLICABLE)
+                         fix=recourse, status=400, code=NOT_DUPLICABLE)
 
 
 def _kind_of(plugin_id: str) -> str:
@@ -492,7 +499,7 @@ def _write_copy(
     if path.exists():
         raise AuthoringError(f"{path.name} already exists",
                              fix="Pick another name.", status=409,
-                             code=schema.ID_DUPLICATE)
+                             code=ID_DUPLICATE)
     _write(path, text, directory.parent.parent, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems

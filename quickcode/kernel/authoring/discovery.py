@@ -48,7 +48,14 @@ from pathlib import Path
 from quickcode.kernel.authoring import schema
 from quickcode.kernel.authoring.format import parse_document
 from quickcode.kernel.authoring.model import AuthoredPlugin
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import (
+    AUTHORED_PROJECT_CONTENT,
+    BAD_JSON,
+    ID_DUPLICATE,
+    NEEDS_TRUST,
+    Problem,
+    Provenance,
+)
 
 log = logging.getLogger("quickcode.kernel.authoring")
 
@@ -138,7 +145,7 @@ def _scan(directory: Path, scope: str) -> tuple[list[AuthoredPlugin], list[Probl
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             problems.append(Problem(
-                code="bad_json", severity="error",
+                code=BAD_JSON, severity="error",
                 message=f"{path.name} could not be read: {exc}",
                 fix="Check the file's encoding; authored plugins are UTF-8.",
                 subject=path.stem,
@@ -161,7 +168,7 @@ def _scan(directory: Path, scope: str) -> tuple[list[AuthoredPlugin], list[Probl
             # meant is worse than loading neither, so both go.
             accepted.pop(plugin.id, None)
             problems.append(Problem(
-                code=schema.ID_DUPLICATE, severity="error",
+                code=ID_DUPLICATE, severity="error",
                 message=(f"'{plugin.id}' is claimed by two files in the same "
                          f"scope: {Path(prior).name} and {path.name}"),
                 fix=("Give one of them a different 'name:'. Both are skipped "
@@ -207,7 +214,7 @@ def _trust_problems(
     if tools and not _is_trusted(cwd, trusted):
         listed = ", ".join(sorted(p.name for p in tools))
         out.append(Problem(
-            code=schema.NEEDS_TRUST, severity="error",
+            code=NEEDS_TRUST, severity="error",
             message=(f"this project defines {len(tools)} command tool"
                      f"{'s' if len(tools) != 1 else ''} ({listed}) and is not "
                      "trusted, so they are inert"),
@@ -221,7 +228,7 @@ def _trust_problems(
     if text:
         kinds = sorted({p.kind for p in text})
         out.append(Problem(
-            code="authored_project_content", severity="info",
+            code=AUTHORED_PROJECT_CONTENT, severity="info",
             message=(f"this project contributes {len(text)} authored "
                      f"{'/'.join(kinds)} definition"
                      f"{'s' if len(text) != 1 else ''} from .quickcode/plugins"),

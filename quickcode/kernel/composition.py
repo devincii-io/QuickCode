@@ -114,9 +114,7 @@ def selector_matches(selector: str, agent_id: str, role: Role) -> bool:
 # Composition
 # --------------------------------------------------------------------------
 
-# Which fields intersect and which overwrite. The resolver reads these rather
-# than restating them, so the two can never drift.
-CAPABILITY_FIELDS = ("tools", "spawns", "models", "ceiling")
+# The plain value fields: a stated one is written to disk as it is.
 VALUE_FIELDS = (
     "model", "model_selectable", "max_turns", "color",
     "skip_project_instructions", "base",

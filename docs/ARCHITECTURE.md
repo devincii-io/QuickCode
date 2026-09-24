@@ -104,7 +104,7 @@ quickcode/
     orchestrator.py       # resolve_orchestrator: the session's own agent, depth 0
     patterns.py           # a tools:/spawns:/models: entry: literal name or glob
     preset.py             # presets: the composition a session's agents run
-    problems.py           # provenance and problem records
+    problems.py           # provenance, problem records, and every problem code
     authoring/            # .quickcode/plugins/*.md → plugins
       format.py schema.py model.py discovery.py store.py
       argv.py reserved.py templates.py

@@ -19,9 +19,6 @@ import pytest
 from quickcode.hooks.config import (
     DEFAULT_TIMEOUT_S,
     EVENTS,
-    HOOK_INVALID,
-    HOOK_MATCHER_IGNORED,
-    HOOK_REFUSED,
     MAX_TIMEOUT_S,
     HookCommand,
     HookConfig,
@@ -34,6 +31,7 @@ from quickcode.hooks.runner import PROJECT_DIR_ENV, run_command
 from quickcode.hooks.specs import hook_specs
 from quickcode.kernel import state as state_store
 from quickcode.kernel.bootstrap import build_registry
+from quickcode.kernel.problems import HOOK_INVALID, HOOK_MATCHER_IGNORED, HOOK_REFUSED
 from quickcode.secrets import API_KEY_ENV
 from quickcode.security import trust
 from quickcode.security.trust import TrustStore

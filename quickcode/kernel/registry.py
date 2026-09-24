@@ -22,9 +22,8 @@ from typing import Any
 from urllib.parse import quote
 
 from quickcode.kernel import state as state_store
-from quickcode.kernel.authoring.schema import ID_DUPLICATE
 from quickcode.kernel.patterns import pattern_matches
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import ID_DUPLICATE, Problem, Provenance
 from quickcode.kernel.spec import (
     Kind,
     LockedSetting,
