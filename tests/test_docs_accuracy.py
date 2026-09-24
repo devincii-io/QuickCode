@@ -570,16 +570,17 @@ def test_render_with_sections_offsets_index_the_string_the_docs_say_they_do():
 
 
 def test_every_doc_anchor_the_manifest_points_at_resolves():
-    """`kernel/manifest.py` sends the UI's 'read more' links into these files.
+    """`kernel/manifest/` sends the UI's 'read more' links into these files.
     A renamed heading turns one of them into a dead end nobody notices."""
     root = DOCS.parent
-    source = (root / "quickcode" / "kernel" / "manifest.py").read_text(encoding="utf-8")
+    files = sorted((root / "quickcode" / "kernel" / "manifest").glob("*.py"))
+    source = "\n".join(path.read_text(encoding="utf-8") for path in files)
     refs = sorted(set(re.findall(r"docs/[\w./-]+\.md(?:#[\w-]+)?", source)))
-    assert len(refs) > 10, "the anchors stopped being extractable from manifest.py"
+    assert len(refs) > 10, "the anchors stopped being extractable from kernel/manifest/"
     for ref in refs:
         rel, _, anchor = ref.partition("#")
         target = root / rel
-        assert target.exists(), f"manifest.py points at {rel}, which does not exist"
+        assert target.exists(), f"kernel/manifest/ points at {rel}, which does not exist"
         if anchor:
             assert anchor in heading_slugs(target), f"{rel} has no heading for #{anchor}"
 

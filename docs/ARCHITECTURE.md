@@ -85,7 +85,9 @@ quickcode/
   hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
     config.py protocol.py runner.py plugin.py events.py specs.py
   kernel/                 # the plugin kernel (below)
-    spec.py registry.py manifest.py bootstrap.py state.py
+    spec.py registry.py bootstrap.py state.py
+    manifest/             # the internal plugins we ship, one module per family
+      core.py sections.py tools.py agents.py authored.py providers.py mcp.py _text.py
     composition.py        # what is attached to one agent, and the runtime limits
     resolve.py            # what an agent actually gets, with provenance
     preset.py             # presets: the composition a session's agents run
@@ -191,7 +193,7 @@ Rules that matter:
 - **All tool results for a round are pushed together** — splitting them across turns trains the model out of parallel calls. They go in as *consecutive* `role: "tool"` messages, one per `tool_call_id`, in call order, which is what the wire format requires; there is no single combined message.
 - **Consecutive read-only tools run concurrently** (`asyncio.gather`); any other call is a barrier that runs alone, in call order — so a `read` issued after a `write` in the same response sees the write.
 - **Failed tools still return a result** with `is_error: true` so the model can recover.
-- **Loop guard:** `runtime.agent_loop.max_rounds` tool rounds per turn, then a system reminder to wrap up. 50 is the default (`RuntimeLimits.max_rounds` in `kernel/composition.py`, declared as a setting in `kernel/manifest.py`), not a constant — it is resolved per session by `kernel/resolve.runtime_limits` and frozen for the turn, so editing the setting mid-turn cannot move the budget under a turn already counting.
+- **Loop guard:** `runtime.agent_loop.max_rounds` tool rounds per turn, then a system reminder to wrap up. 50 is the default (`RuntimeLimits.max_rounds` in `kernel/composition.py`, declared as a setting in `kernel/manifest/core.py`), not a constant — it is resolved per session by `kernel/resolve.runtime_limits` and frozen for the turn, so editing the setting mid-turn cannot move the budget under a turn already counting.
 - **The loop knows no tool by name.** Which tools are offered is decided by hooks (`visible_tools`), a hook may answer a call itself (`intercept`, which is how plan review works), and how a call is gated comes from the tool's own `PermissionSpec`. Plan mode used to be an `if` in this file; it is now `PlanModeHook` in `core/hooks.py`.
 
 ## Provider layer
