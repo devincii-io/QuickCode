@@ -37,6 +37,12 @@ from typing import Any
 
 from quickcode.providers.base import ChatMessage
 from quickcode.session.records import parse
+from quickcode.session.redact import (
+    known_secrets,
+    scrub_error_fields,
+    scrub_event,
+    scrub_serialized,
+)
 from quickcode.session.repair import repair_history
 from quickcode.workspace import ensure_project_dir
 
@@ -351,7 +357,14 @@ class SessionStore:
         # ``.gitignore`` that stops this log from being committed.
         ensure_project_dir(self.root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = "".join(json.dumps(obj, ensure_ascii=False) + "\n" for obj in objs)
+        # Every writer ends up here, which makes it the one place a credential
+        # can be stopped whichever path carried it in. See ``redact``.
+        secrets = known_secrets()
+        payload = "".join(
+            scrub_serialized(json.dumps(scrub_error_fields(obj), ensure_ascii=False), secrets)
+            + "\n"
+            for obj in objs
+        )
         data = payload.encode("utf-8")
         with _WRITE_LOCK, target.open("a+b", buffering=0) as f:
             end = f.seek(0, os.SEEK_END)
@@ -434,6 +447,12 @@ class SessionStore:
         """
         seq = self._allocate_seq()
         ts = ev["ts"] = datetime.datetime.now().isoformat()
+        # Redacted in the caller's dict too, for the same reason ``ts`` is: it
+        # is what gets broadcast, and the window must show what replay will.
+        cleaned = scrub_event(ev)
+        if cleaned is not ev:
+            ev.clear()
+            ev.update(cleaned)
         # The user saying something is what turns an open window into a
         # session. Everything before it was the app getting ready.
         if ev.get("type") == "user_message":
