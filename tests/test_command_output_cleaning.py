@@ -31,6 +31,12 @@ def test_colour_codes_do_not_reach_the_caller() -> None:
     b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001hdone",  # the ConPTY opening handshake
     b"\x1b[2J\x1b[Hdone",                        # clear screen, home cursor
     b"\x1b[38;2;255;0;0mdone\x1b[0m",            # truecolor
+    b"\x1b(Bdone\x1b[m",                         # `tput sgr0`: charset, then SGR
+    b"\x1b)0\x1b%G\x1b#8done",                   # other ESC-intermediate-final
+    b"\x1b=\x1b7done\x1b8\x1b>",                 # keypad mode, save/restore cursor
+    b"\x1bcdone",                                # full reset
+    b"\x1bPq#0;2;0;0;0#0~~\x1b\\done",           # DCS (sixel) with its payload
+    b"\x1b_Gf=24;AAAA\x1b\\done",                # APC (kitty graphics)
 ])
 def test_no_escape_byte_survives(raw: bytes) -> None:
     assert _clean_output(raw) == "done"

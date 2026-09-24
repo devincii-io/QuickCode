@@ -61,6 +61,7 @@ checks that every path here exists and that every package is listed.
 pyproject.toml            # [project.scripts] quickcode = "quickcode.cli:main"
 quickcode/
   cli.py                  # args, config, web app vs headless (-p) dispatch, `quickcode doctor`
+  headless.py             # `-p` I/O: stdin prompt, console-safe output, exit codes, failure watch
   config.py               # profiles (base_url, model roles), project environment
   secrets.py              # API keys at rest: DPAPI on Windows, a 0600 file elsewhere
   doctor.py               # `quickcode doctor` environment checks
@@ -133,6 +134,7 @@ quickcode/
     session.py            # one PTY per bash command (QuickTerm patterns)
     interactive.py        # the terminal panel's long-lived shell
     registry.py           # live terminals, per project
+    shells.py flow.py teardown.py  # shell choice, bounded input queue, session teardown
 ```
 
 ## The plugin kernel
