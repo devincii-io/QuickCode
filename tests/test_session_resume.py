@@ -56,6 +56,22 @@ def test_a_tool_call_left_without_a_result_gets_one_on_resume(tmp_path):
     assert filled.content.startswith("[error]")
 
 
+def test_a_missing_result_is_answered_before_the_message_that_followed(tmp_path):
+    # The one place a repair can go: straight after the call's other results,
+    # ahead of the user's next message, or the pairing is still broken.
+    store = _store(tmp_path, [
+        ChatMessage(role="user", content="go"),
+        ChatMessage(role="assistant", content="", tool_calls=[_call("a"), _call("b")]),
+        ChatMessage(role="tool", content="ok", tool_call_id="a", name="read"),
+        ChatMessage(role="user", content="and now?"),
+    ])
+    loaded = store.load_messages()
+    assert _shape(loaded) == [
+        ("user", None), ("assistant", None), ("tool", "a"), ("tool", "b"), ("user", None),
+    ]
+    assert loaded[3].content.startswith("[error]")
+
+
 def test_a_tool_result_whose_call_is_gone_is_dropped(tmp_path):
     # The assistant line that made the call was lost (a damaged line, or a
     # compaction boundary that kept the result but not the call).

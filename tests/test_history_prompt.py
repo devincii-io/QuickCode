@@ -3,7 +3,6 @@ from quickcode.core.events import AssembledToolCall, AssistantMessage
 from quickcode.core.history import History
 from quickcode.prompts.sections import PromptContext
 from quickcode.prompts.system import render_system_prompt, system_reminder
-from quickcode.providers.base import ChatMessage
 
 
 def _env():
@@ -70,41 +69,6 @@ def test_tool_results_batch_in_call_order():
     tool_msgs = [m for m in h.messages if m.role == "tool"]
     assert [m.tool_call_id for m in tool_msgs] == ["a", "b"]
     assert "[error]" in tool_msgs[1].content
-
-
-def _call(cid: str) -> dict:
-    return {"id": cid, "name": "read", "arguments": "{}"}
-
-
-def test_a_logged_call_with_no_result_is_answered_before_it_is_sent():
-    """A session logged before the loop pushed results on cancellation can hold
-    an assistant call with nothing after it, and every request carrying one is
-    refused -- the conversation could never be continued."""
-    h = History("SYS")
-    h.messages = [
-        ChatMessage(role="user", content="go"),
-        ChatMessage(role="assistant", tool_calls=[_call("a"), _call("b")]),
-        ChatMessage(role="tool", content="ok", tool_call_id="a", name="read"),
-        ChatMessage(role="user", content="and now?"),
-    ]
-    sent = h.build_messages()
-    assert [(m.role, m.tool_call_id) for m in sent] == [
-        ("system", None), ("user", None), ("assistant", None),
-        ("tool", "a"), ("tool", "b"), ("user", None),
-    ]
-    assert "[error]" in sent[4].content
-    assert sent[-1].cache_control is True
-    # The request is repaired; the record of what happened is not rewritten.
-    assert len(h.messages) == 4
-
-
-def test_a_result_whose_call_is_gone_is_not_sent():
-    h = History("SYS")
-    h.messages = [
-        ChatMessage(role="tool", content="stale", tool_call_id="x"),
-        ChatMessage(role="user", content="hi"),
-    ]
-    assert [m.role for m in h.build_messages()] == ["system", "user"]
 
 
 def test_system_reminder_wraps():

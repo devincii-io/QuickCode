@@ -11,6 +11,10 @@ damaged line can take an assistant message with it and strand its results,
 and a result can be persisted twice. None of that is fixed in the log itself
 -- it is append-only -- so it is fixed on the way out, the same way every
 time, which keeps a resumed prompt byte-stable across reopenings.
+
+Loading is the only way in for such a history. A live one is paired by
+construction: the loop pushes a result for every call it made, cancelled or
+not, and compaction cuts only where a round begins.
 """
 
 from __future__ import annotations
