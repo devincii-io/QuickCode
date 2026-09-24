@@ -55,12 +55,12 @@ class History:
     # ---- request assembly ----
     def build_messages(self) -> list[ChatMessage]:
         """system → history, with a cache breakpoint on the last block."""
-        msgs = [self._system, *self.messages]
-        if self.messages:
-            self.messages[-1].cache_control = True
-            for m in self.messages[:-1]:
-                m.cache_control = False
-        return msgs
+        for m in self.messages:
+            m.cache_control = False
+        body = _paired(self.messages)
+        if body:
+            body[-1].cache_control = True
+        return [self._system, *body]
 
     def replace_with_summary(self, summary: str, tail: list[ChatMessage]) -> None:
         """Post-compaction rebuild: seed message + verbatim tail."""
@@ -68,3 +68,35 @@ class History:
             ChatMessage(role="user", content=f"<compaction-summary>{summary}</compaction-summary>"),
             *tail,
         ]
+
+
+def _paired(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """The messages with every tool call answered and every result asked for.
+
+    The loop keeps this true for the turns it runs. A session logged before it
+    did -- a cancelled subagent, a Ctrl+C in ``-p`` -- can hold an assistant
+    call with no result after it, and a provider refuses every request that
+    carries one, so the conversation could never be continued. The request is
+    repaired here; the history itself is left as it happened.
+    """
+    out: list[ChatMessage] = []
+    pending: dict[str, str] = {}
+
+    def answer_pending() -> None:
+        for cid, name in pending.items():
+            out.append(ChatMessage(
+                role="tool", content="[error] [no result]", tool_call_id=cid, name=name,
+            ))
+        pending.clear()
+
+    for m in messages:
+        if m.role == "tool":
+            if pending.pop(m.tool_call_id or "", None) is not None:
+                out.append(m)
+            continue
+        answer_pending()
+        out.append(m)
+        if m.role == "assistant":
+            pending.update((tc["id"], tc.get("name", "")) for tc in m.tool_calls)
+    answer_pending()
+    return out
