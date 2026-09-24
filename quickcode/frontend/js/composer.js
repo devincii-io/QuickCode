@@ -6,6 +6,7 @@ import { api, currentProject } from "./api.js";
 import { HISTORY_MAX, parseHistory, serializeHistory } from "./input_history.js";
 import { openHelp } from "./help/quickref.js";
 import { openModeMenu, openModelMenu } from "./menus.js";
+import { MODE_IDS, MODES } from "./modes.js";
 import { store, subscribe } from "./store.js";
 import { toast, toastError } from "./toast.js";
 import { debounce, esc } from "./util.js";
@@ -15,14 +16,6 @@ const $ = (id) => document.getElementById(id);
 
 const HISTORY_KEY = "qc-history";
 const PATH_LIMIT = 40;
-
-const MODE_DESCS = [
-  ["plan", "Read-only exploration; the agent submits a plan first."],
-  ["ask", "Every mutating action asks for permission."],
-  ["auto-edit", "Edits inside the project run; shell still asks."],
-  ["dontask", "Never prompts — anything outside the rules is denied."],
-  ["yolo", "No permission prompts at all (needs --yolo)."],
-];
 
 // ---- the composition pill -------------------------------------------------
 //
@@ -461,7 +454,7 @@ const COMMANDS = [
     exec: () => hooks.onNewConversation(),
   },
   {
-    name: "/mode", arg: "<plan|ask|auto-edit|dontask|yolo>",
+    name: "/mode", arg: `<${MODE_IDS.join("|")}>`,
     desc: "Switch the permission mode",
     complete: "/mode ",
     // no exec: Tab/Enter completes to "/mode " and lists the modes
@@ -497,10 +490,10 @@ function entriesFor(text) {
   const modeMatch = /^\/mode\s+(.*)$/.exec(text);
   if (modeMatch) {
     const q = modeMatch[1].trim().toLowerCase();
-    return MODE_DESCS
-      .filter(([id]) => id.startsWith(q))
-      .map(([id, desc]) => ({
-        label: "/mode " + id, desc, complete: "/mode " + id,
+    return MODES
+      .filter(({ id }) => id.startsWith(q))
+      .map(({ id, summary }) => ({
+        label: "/mode " + id, desc: summary, complete: "/mode " + id,
         exec: () => actions.setMode(id),
       }));
   }

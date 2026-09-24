@@ -13,10 +13,10 @@ export function openModeMenu(anchor) {
   const cur = store.state?.mode;
   const allowYolo = store.bootstrap?.allow_yolo;
   const items = MODES
-    .filter(([id]) => id !== "yolo" || allowYolo)
-    .map(([id, title, desc]) => `<button class="menu-item" data-mode="${id}">
+    .filter(({ id }) => id !== "yolo" || allowYolo)
+    .map(({ id, title, summary }) => `<button class="menu-item" data-mode="${id}">
       <div class="mi-title">${title}${cur === id ? '<span class="check">✓</span>' : ""}</div>
-      <div class="mi-desc">${desc}</div></button>`).join("");
+      <div class="mi-desc">${summary}</div></button>`).join("");
   const m = menuAt(anchor, items);
   m.addEventListener("click", (e) => {
     const b = e.target.closest("[data-mode]");

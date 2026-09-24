@@ -32,7 +32,7 @@ export function openHelp({ onFull } = {}) {
     </div>
     <div class="help-sec">
       <h4>Permission modes</h4>
-      ${MODES.map(([id, , desc]) => row([esc(id), esc(desc)])).join("")}
+      ${MODES.map(({ id, summary }) => row([esc(id), esc(summary)])).join("")}
     </div>
     <div class="help-sec">
       <h4>Side panel</h4>

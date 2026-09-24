@@ -1,12 +1,14 @@
 // The keyboard and slash-command reference, in one place.
 //
-// Two surfaces show this list: the `?` modal (js/help/quickref.js), which has to be
-// fast, and Help ▸ Keyboard & commands, which has room to explain. They read
-// the same array, because a shortcut list that exists twice is a shortcut list
-// that is wrong in one of the two places.
+// Two surfaces show this list: the `?` modal (js/help/quickref.js), which has
+// to be fast, and Help ▸ Keyboard & commands, which has room to explain. They
+// read the same array, because a shortcut list that exists twice is a shortcut
+// list that is wrong in one of the two places.
 //
 // The slash commands mirror `COMMANDS` in js/composer.js, which is what
 // actually runs when you type one.
+
+import { MODE_IDS } from "../modes.js";
 
 export const KEYS = [
   ["Alt + N", "Open a new agent pane in this workspace"],
@@ -29,7 +31,7 @@ export const KEYS = [
 export const SLASH = [
   ["/compact", "", "Compress the conversation into a summary"],
   ["/clear", "", "Start a new conversation"],
-  ["/mode", "<plan|ask|auto-edit|dontask|yolo>", "Switch the permission mode"],
+  ["/mode", `<${MODE_IDS.join("|")}>`, "Switch the permission mode"],
   ["/model", "", "Pick the model for this session"],
   ["/composition", "", "Switch this session's composition (at a turn boundary)"],
   ["/profile", "", "Switch this session's permission profile (takes effect now)"],

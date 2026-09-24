@@ -6,19 +6,19 @@
 // `quickcode/core/permissions.py` and against `PlanModeHook.visible_tools` in
 // `quickcode/core/hooks.py`.
 //
-// Deliberately not imported from js/modes.js: that list is one sentence per
-// mode for a dropdown, and stretching it to carry four decision columns would
-// make the dropdown worse to make this page possible.
+// The id, the title and the one-line summary come from js/modes.js, the table
+// every other surface reads; this file adds the decision columns, which only
+// the help pages need, rather than widening the dropdowns' table with them.
 //
 // `withholds` is the one column that is not about the *answer* but about the
 // *offer*: plan mode is the only mode that changes which tools the model is
 // shown at all, and that distinction is the reason plan mode works rather than
 // merely being advised.
 
-export const MODES = [
-  {
-    id: "plan",
-    title: "Plan mode",
+import { MODES as BASE_MODES } from "../modes.js";
+
+const DECISIONS = {
+  plan: {
     what: "Read-only exploration. The agent works out what it would do and "
         + "submits it for your review before anything is touched.",
     write: "denied — and, more to the point, not offered",
@@ -33,9 +33,7 @@ export const MODES = [
           + "Shell tools stay, because their read-only subcommands are still "
           + "worth having. The plan tool is offered here and nowhere else.",
   },
-  {
-    id: "ask",
-    title: "Ask mode",
+  ask: {
     what: "The default. Every mutating action stops and asks you first.",
     write: "prompts",
     read: "allowed",
@@ -44,9 +42,7 @@ export const MODES = [
     withholds: false,
     caveat: "",
   },
-  {
-    id: "auto-edit",
-    title: "Auto-edit mode",
+  "auto-edit": {
     what: "File edits inside the project run on their own; shell commands still "
         + "ask.",
     write: "allowed",
@@ -58,9 +54,7 @@ export const MODES = [
           + "mutating tools, and the shell is handled by its own pipeline, which "
           + "still lands on a prompt.",
   },
-  {
-    id: "dontask",
-    title: "Don't-ask mode",
+  dontask: {
     what: "Never prompts. Anything not covered by an allow rule is refused "
         + "rather than escalated.",
     write: "denied",
@@ -72,9 +66,7 @@ export const MODES = [
           + "prompted — there is nobody to prompt, and silently proceeding is "
           + "not the alternative on offer.",
   },
-  {
-    id: "yolo",
-    title: "Yolo mode",
+  yolo: {
     what: "Skips the prompts. Has to be armed first — Settings → General, or "
         + "the --yolo launch flag — and is not offered in the mode menu, or "
         + "applied from a permission profile, until it is.",
@@ -88,7 +80,9 @@ export const MODES = [
           + "still prompts however the mode is set is the circuit breaker: "
           + "rm -rf on / or ~, a git push --force, and the fork bomb.",
   },
-];
+};
+
+export const MODES = BASE_MODES.map((m) => ({ ...m, ...DECISIONS[m.id] }));
 
 export const MODE_IDS = MODES.map((m) => m.id);
 
