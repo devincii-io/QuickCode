@@ -59,6 +59,13 @@ CASES: list[object] = [
         {"v": "# hash"},
         {"v": "C:" + chr(92) + "src" + chr(92) + "a.py"},
     ]},
+    # Numbers as JavaScript spells them: no ".0" on a whole float, exponents
+    # only outside 1e-7..1e21, and no sign on zero.
+    {"numbers": [2.0, 123456789.0, 1e16, 1e21, 1e-05, 1e-07, 0.0001, -0.0, 1.5, -2.5e-9]},
+    # Edge whitespace by String.prototype.trim: a BOM counts, NEL does not.
+    {"edges": ["﻿bom", "nel\x85", "　wide", " nbsp"]},
+    {"﻿key": 1, "key\x85": 2},
+    {"list": [["x"], ".\x85"]},
     {"a,b": 1, "plain": 2},
     [{"a": 1}, {"a": 2}],
     "just a string",
