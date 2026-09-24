@@ -157,6 +157,8 @@ quickcode/
   plugins/
     loader.py             # quickcode.tools / quickcode.providers entry points
     mcp.py                # MCP client + tool adapter
+    mcp_process.py mcp_wire.py  # the server as a process; names and results on the wire
+    mcp_turn.py           # a `-p` run's MCP servers: the app's gate, a bounded start, stopped on exit
   prompts/
     sections.py           # the system prompt, one section per block
     system.py compact.py subagent.py
@@ -453,9 +455,15 @@ pool, parent or definitions.
 
 What still differs is what drives the session, not what it is:
 
-- **Tools in the pool.** The app adds entry-point plugin tools and the
-  project's MCP servers (`server/projects.py`); `-p` starts neither, so its pool
-  is the built-ins plus authored command tools.
+- **MCP servers' lifetime.** Both build the pool with
+  `tools/registry.py::install_registry` — the built-ins, the entry-point plugin
+  tools, the MCP tools — and pick the servers with the same trust gate
+  (`plugins/mcp.py::configured_servers`). The app starts them when a project
+  opens; `-p` starts them for its one turn (`plugins/mcp_turn.py`), side by
+  side, and waits at most 30 s: a server not up by then, or one that failed, is
+  stopped and named on stderr, and the run goes on without its tools, as it
+  does for project servers an untrusted project declares. They are stopped when
+  the run ends, Ctrl+C included. `--no-mcp` skips them.
 - **Prompts and plan review.** The app answers them over the WebSocket; `-p`
   refuses every permission prompt (`docs/PERMISSIONS.md#headless-mode`) and
   records a plan without review. The prompt gains `<headless_mode>`.

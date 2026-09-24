@@ -80,6 +80,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="allow cycling into yolo mode (skips all permission prompts)")
     parser.add_argument("--continue", dest="continue_session", action="store_true",
                          help="continue the most recent session")
+    parser.add_argument("--no-mcp", action="store_true",
+                         help="with -p: do not start the MCP servers the app would "
+                              "(their tools are left out of the run)")
     parser.add_argument("--port", type=_port, default=None,
                          help="local web port (default: 8642, or a free port)")
     parser.add_argument("--no-browser", action="store_true",
@@ -121,7 +124,9 @@ def _looks_like_dir(value: str) -> bool:
         return False
 
 
-def _build_agent(args: argparse.Namespace):
+def _build_agent(args: argparse.Namespace, *, extra_tools=()):
+    """The session the app would open on this project. ``extra_tools`` are the
+    MCP tools this run started; entry-point plugin tools are loaded here."""
     config = Config.load()
     cwd = _project_dir(args)
     env = Environment.detect(cwd)
@@ -138,7 +143,7 @@ def _build_agent(args: argparse.Namespace):
     from quickcode.session import assemble
     from quickcode.session.recorder import TranscriptRecorder
     from quickcode.session.store import SessionStore
-    from quickcode.tools.registry import default_registry
+    from quickcode.tools.registry import install_registry
 
     provider = loader.make_provider(profile.provider, profile.base_url, profile.api_key)
 
@@ -148,11 +153,13 @@ def _build_agent(args: argparse.Namespace):
         if conv_id is None:
             _note(f"no earlier session in {cwd}; starting a new one")
 
-    # The session the app would open on this project -- its pool, its
-    # composition, its posture, its prompt -- assembled by the same code.
+    # The session the app would open on this project -- its pool (plugin and
+    # MCP tools included), its composition, its posture, its prompt --
+    # assembled by the same code.
+    tools = install_registry([*loader.load_tool_plugins(), *extra_tools]).tools.values()
     session = assemble.build_session(
         cwd, config, env, provider,
-        pool=session_pool(cwd, default_registry().tools.values()),
+        pool=session_pool(cwd, tools),
         conv_id=conv_id,
         mode=args.mode,
         model=args.model,
@@ -280,28 +287,51 @@ def _refuse_unarmed_yolo(mode: str | None, *, armed: bool) -> None:
     raise SystemExit(2)
 
 
+def _mcp_servers(args: argparse.Namespace, cwd: Path):
+    """The MCP servers this run starts: the app's, through the app's trust gate."""
+    if args.no_mcp:
+        return None
+    from quickcode.plugins import mcp_turn
+
+    return mcp_turn.plan(cwd)
+
+
 def _main_headless(args: argparse.Namespace) -> int:
     from quickcode import headless
 
-    _project_dir(args)
+    cwd = _project_dir(args)
     prompt = args.prompt or headless.prompt_from_stdin(sys.stdin)
     if not prompt or not prompt.strip():
         print("error: no prompt given for --print (pass one, or pipe it in)", file=sys.stderr)
         return headless.EXIT_USAGE
-    agent, config, env, store, recorder = _build_agent(args)
-    if not config.profile.api_key:
-        print(
-            f"warning: no API key set. Set ${config.profile.api_key_env} "
-            "or add one in Settings.",
-            file=sys.stderr,
-        )
-    try:
-        result, failure = asyncio.run(_run_headless(agent, recorder, prompt))
-    except KeyboardInterrupt:
-        # The recorder has already closed the log out; a traceback here would
-        # only bury the one line that matters.
-        headless.emit("interrupted", sys.stderr)
-        return headless.EXIT_INTERRUPTED
+    # Before anything is started for a run that is refused anyway.
+    _refuse_unarmed_yolo(args.mode, armed=bool(args.yolo or Config.load().allow_yolo))
+    # One event loop for the whole run, not one per step: an MCP server's pipes
+    # belong to the loop that started it, and the turn has to call it.
+    with asyncio.Runner() as runner:
+        servers = _mcp_servers(args, cwd)
+        try:
+            if servers is not None:
+                runner.run(servers.start())
+                for note in servers.notes:
+                    _note(note)
+            agent, config, env, store, recorder = _build_agent(
+                args, extra_tools=servers.tools if servers is not None else ())
+            if not config.profile.api_key:
+                print(
+                    f"warning: no API key set. Set ${config.profile.api_key_env} "
+                    "or add one in Settings.",
+                    file=sys.stderr,
+                )
+            result, failure = runner.run(_run_headless(agent, recorder, prompt))
+        except KeyboardInterrupt:
+            # The recorder has already closed the log out; a traceback here
+            # would only bury the one line that matters.
+            headless.emit("interrupted", sys.stderr)
+            return headless.EXIT_INTERRUPTED
+        finally:
+            if servers is not None:
+                runner.run(servers.stop())
     if result or not failure:
         headless.emit(result)
     if failure:

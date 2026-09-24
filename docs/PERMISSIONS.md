@@ -589,3 +589,7 @@ server's `Conversation`, which a `-p` run does not have. If you want the
 engine-level behaviour, pass it: `-p --mode dontask`.
 
 `-p --mode yolo --yolo` exists for sandboxed CI use, same circuit breakers.
+
+The trust gate holds in `-p` exactly as in the app: a run starts the user's
+MCP servers and, only in a trusted project, the project's own, and says on
+stderr which project servers it left inert. `--no-mcp` starts none.
