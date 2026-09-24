@@ -113,6 +113,19 @@ PIP_COMMAND = "uv pip install -U quickcode"
 PIP_COMMAND_ALT = "pip install -U quickcode"
 
 
+# Read at call time, not captured, so the Windows-only layout checks and the
+# launch path can be exercised on any host by patching this one name. Patching
+# ``os.name`` instead would make every ``pathlib.Path`` in the process try to
+# become a ``WindowsPath``, which POSIX refuses to instantiate.
+IS_WINDOWS = sys.platform == "win32"
+
+# Win32 process-creation flags. ``subprocess`` only exports these names on
+# Windows; the values are fixed by the Win32 API.
+DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+CREATE_BREAKAWAY_FROM_JOB = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+
+
 class UpdateError(Exception):
     """A refusal the UI should render as a message, not a stack trace."""
 
@@ -221,7 +234,7 @@ def _uninstaller_beside(app: Path) -> bool:
     checks below insist on it.
     """
     try:
-        return any(app.glob("unins*.exe"))
+        return any(app.glob("unins*.exe", case_sensitive=False))
     except OSError:
         return False
 
@@ -235,7 +248,7 @@ def _frozen_app_dir(executable: str | os.PathLike[str] | None = None) -> Path | 
     and no ``sys.prefix`` worth reading — a frozen process reports the
     application folder there — so this looks at the executable instead.
     """
-    if os.name != "nt" or not getattr(sys, "frozen", False):
+    if not IS_WINDOWS or not getattr(sys, "frozen", False):
         return None
     try:
         app = Path(executable or sys.executable).resolve().parent
@@ -253,7 +266,7 @@ def _inno_app_dir(prefix: Path) -> Path | None:
     uninstaller is written by the installer and by nothing else, so its
     presence is evidence rather than inference.
     """
-    if os.name != "nt":
+    if not IS_WINDOWS:
         return None
     if prefix.name.lower() != "venv":
         return None
@@ -1040,7 +1053,7 @@ def launch_installer(
         )
     verify_download(path, recorded)
 
-    if os.name != "nt":
+    if not IS_WINDOWS:
         raise UpdateError("the Windows installer can only be run on Windows")
     # Detached for real, and never with a shell: the argv is one path this
     # module wrote.
@@ -1052,11 +1065,11 @@ def launch_installer(
     # it out of any job object we were launched into, and is attempted
     # separately because a job that forbids breakaway makes it fail outright --
     # in which case not detaching is better than not installing.
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     try:
         subprocess.Popen(  # noqa: S603
             [str(path)], close_fds=True,
-            creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+            creationflags=flags | CREATE_BREAKAWAY_FROM_JOB,
         )
     except OSError:
         subprocess.Popen([str(path)], close_fds=True, creationflags=flags)  # noqa: S603

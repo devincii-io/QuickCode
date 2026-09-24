@@ -339,7 +339,7 @@ def test_the_default_is_on(home):
 def frozen_app(tmp_path, monkeypatch, *, uninstaller: bool) -> Path:
     """A stand-in for the shipping layout: the frozen application folder, with
     or without the Inno Setup uninstaller that proves it was installed."""
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     app = tmp_path / "Programs" / "QuickCode"
     (app / "_internal").mkdir(parents=True)
     exe = app / "QuickCodeApp.exe"
@@ -363,6 +363,24 @@ def test_the_frozen_installer_layout_is_recognised(tmp_path, monkeypatch):
     assert Path(info.app_dir) == app
 
 
+def test_the_uninstaller_is_found_whatever_its_case(tmp_path, monkeypatch):
+    """Windows file names are case-insensitive, so the evidence is too -- on
+    whichever host this logic happens to be exercised."""
+    app = frozen_app(tmp_path, monkeypatch, uninstaller=False)
+    (app / "UNINS000.EXE").write_bytes(b"")
+    assert update.detect_install(app / "_internal").method == "installer"
+
+
+def test_the_installer_layout_is_never_claimed_off_windows(tmp_path, monkeypatch):
+    """The same folder on another OS is not something a Windows installer can
+    update, so nothing is offered for it."""
+    app = frozen_app(tmp_path, monkeypatch, uninstaller=True)
+    monkeypatch.setattr(update, "IS_WINDOWS", False)
+    info = update.detect_install(app / "_internal")
+    assert info.method == "unknown"
+    assert info.can_self_update is False
+
+
 def test_an_uninstalled_frozen_copy_offers_nothing(tmp_path, monkeypatch):
     """dist/QuickCode, or an unzipped release folder. There is no install to
     replace, and claiming "pip" would print a command that does nothing."""
@@ -376,7 +394,7 @@ def test_the_older_venv_installer_layout_is_still_recognised(tmp_path, monkeypat
     """Pre-frozen installs put a private venv under the app directory. Nothing
     ships that shape any more, but a wheel installed into one of those venvs
     still lands beside a real uninstaller."""
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     app = tmp_path / "Programs" / "QuickCode"
     (app / "venv").mkdir(parents=True)
     (app / "unins000.exe").write_bytes(b"")
@@ -387,7 +405,7 @@ def test_the_older_venv_installer_layout_is_still_recognised(tmp_path, monkeypat
 
 
 def test_a_venv_without_the_uninstaller_is_not_the_installer(tmp_path, monkeypatch):
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     monkeypatch.setattr(update, "installed_version", lambda: "2.0.0")
     # The suite itself runs from an editable install of this repo, which is a
     # genuine "source" answer; this test is about the other branch.
@@ -627,14 +645,16 @@ def test_the_installer_is_started_outside_this_process_tree(home, monkeypatch):
         seen["flags"] = kwargs.get("creationflags", 0)
         return object()
 
-    monkeypatch.setattr(update.os, "name", "nt")
+    monkeypatch.setattr(update, "IS_WINDOWS", True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     out = update.launch_installer(target, expected=digest, dest_dir=home / "updates")
 
     assert out["launched"] is True
     assert seen["argv"] == [str(target)]
-    assert seen["flags"] & subprocess.DETACHED_PROCESS
-    assert seen["flags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    # The Win32 values themselves, so this holds off Windows too, where
+    # subprocess does not export the names.
+    assert seen["flags"] & 0x00000008       # DETACHED_PROCESS
+    assert seen["flags"] & 0x00000200       # CREATE_NEW_PROCESS_GROUP
 
 
 def test_the_installer_never_kills_a_process_tree():
