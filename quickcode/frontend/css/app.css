@@ -654,26 +654,11 @@ textarea, input { font: inherit; color: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* settings modal */
-/* Bounded, so a long page scrolls beside the tab rail instead of carrying it
-   off the top of the dialog. */
-.settings-layout { display: flex; min-height: 380px; max-height: 74vh; }
-.settings-nav {
-  flex: 0 0 150px; border-right: 1px solid var(--line); padding: 10px 8px;
-  display: flex; flex-direction: column; gap: 2px; overflow-y: auto;
-}
-.settings-nav button {
-  text-align: left; padding: 7px 12px; border-radius: 8px; color: var(--fg-dim); font-size: 13px;
-}
-.settings-nav button.active { background: var(--panel); color: var(--fg); }
-.settings-content { flex: 1; min-width: 0; padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain; }
+/* settings fields */
 .set-filter {
   width: 100%; background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none; margin-bottom: 10px;
 }
-.set-count { font-size: 11.5px; color: var(--fg-faint); margin-bottom: 6px; }
-/* The catalog scrolls on its own so the filter above it stays reachable. */
-.set-scroll { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
 .set-field { margin-bottom: 14px; }
 /* The label and the sentence under it were the same weight and nearly the same
    colour, so a field read as one grey paragraph with a box in it. The label is
@@ -693,19 +678,6 @@ textarea, input { font: inherit; color: inherit; }
   border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none;
 }
 .set-field select { padding-right: 26px; }   /* the arrow lives there */
-/* The old flat plugin list lived here; Settings now renders plugins from the
-   kernel API and styles them in css/settings.css. */
-
-/* sessions modal list */
-.session-row {
-  display: flex; gap: 12px; align-items: baseline; width: 100%; text-align: left;
-  padding: 9px 12px; border-radius: 8px;
-}
-.session-row:hover { background: var(--panel); }
-.session-row .s-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-row .s-meta { color: var(--fg-faint); font-size: 11.5px; font-family: var(--mono); flex: none; }
-.session-row .s-live { color: var(--success); font-size: 11px; flex: none; }
-
 /* task board (floating card at top of chat when tasks exist) */
 .task-strip {
   max-width: 860px; margin: 0 auto 12px; border: 1px solid var(--line);
