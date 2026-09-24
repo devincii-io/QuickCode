@@ -1146,9 +1146,12 @@ def create_app(
         `supported: true, error: "..."`, which the UI shows as "unknown".
         """
         from quickcode.providers import credits as credits_mod
+        from quickcode.providers.choice import effective_base_url
 
         profile = hub.config.profile
-        return await credits_mod.fetch(profile.base_url, profile.api_key)
+        # Where the key is actually sent, not the URL a hand-switched profile
+        # still carries: that would post an Anthropic key to OpenRouter.
+        return await credits_mod.fetch(effective_base_url(profile), profile.api_key)
 
     @app.put("/api/config")
     async def put_config(request: Request) -> Response:

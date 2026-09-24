@@ -202,6 +202,33 @@ def test_a_new_key_for_the_active_provider_is_used_without_a_restart(tmp_path, s
     assert manager.provider._api_key == ANTHROPIC_KEY
 
 
+def test_the_balance_lookup_never_sends_the_anthropic_key_to_openrouter(
+    tmp_path, sandbox, monkeypatch
+) -> None:
+    """A profile switched by hand keeps OpenRouter's URL; the adapter already
+    refuses to send its key there, and the balance lookup must not either."""
+    from quickcode import secrets
+    from quickcode.providers import credits
+
+    secrets.save_provider_key("anthropic", ANTHROPIC_KEY)
+    sent: list = []
+
+    async def spy(base_url, api_key, **kw):
+        sent.append((base_url, api_key))
+        return await real(base_url, api_key, **kw)
+
+    real = credits.fetch
+    monkeypatch.setattr(credits, "fetch", spy)
+    manager = make_manager(tmp_path, FakeProvider([]))
+    manager.config.profile.provider = "anthropic"
+    assert "openrouter.ai" in manager.config.profile.base_url
+    with make_client(manager) as client:
+        answer = client.get("/api/credits").json()
+
+    assert answer["supported"] is False
+    assert all("openrouter.ai" not in url for url, _key in sent)
+
+
 def test_a_refused_save_does_not_switch_the_backend_halfway(tmp_path, sandbox) -> None:
     """Switched in memory but never saved or rebuilt, the config and the
     running backend would disagree -- and the next save would not notice."""

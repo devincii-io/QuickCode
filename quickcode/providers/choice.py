@@ -86,11 +86,19 @@ def model_usable(provider: str, model: str) -> bool:
     return True
 
 
-def display_name(profile: Profile) -> str:
-    """How the UI and the identity prompt name the backend."""
+def effective_base_url(profile: Profile) -> str:
+    """The URL the profile's provider actually talks to, which is not always
+    the one written in the profile (see ``anthropic.resolve_base_url``)."""
     if profile.provider == "anthropic":
         from quickcode.providers.anthropic import resolve_base_url
 
-        url = resolve_base_url(profile.base_url)
-        return "Anthropic" if url == BUILTIN["anthropic"].base_url else url
-    return "OpenRouter" if "openrouter.ai" in profile.base_url else profile.base_url
+        return resolve_base_url(profile.base_url)
+    return profile.base_url
+
+
+def display_name(profile: Profile) -> str:
+    """How the UI and the identity prompt name the backend."""
+    url = effective_base_url(profile)
+    if profile.provider == "anthropic" and url == BUILTIN["anthropic"].base_url:
+        return "Anthropic"
+    return "OpenRouter" if "openrouter.ai" in url else url
