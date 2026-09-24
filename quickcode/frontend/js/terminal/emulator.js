@@ -20,8 +20,22 @@
 // `scrollback` holds the lines that have scrolled off the top, and cursor
 // coordinates are screen-relative — which is what makes clear-screen, CUP and
 // `less` come out right instead of approximately right.
+//
+// The input is hostile by assumption. Besides the pty, `renderAnsiBlock` runs
+// this on tool results from MCP servers and plugins, so every repeat count is
+// clamped to the screen, every sequence has a length limit, and a string
+// (OSC, DCS) is discarded as it streams past rather than buffered until its
+// terminator shows up.
 
 export const MAX_SCROLLBACK = 4000;
+// History is trimmed this many lines at a time, not one per line scrolled:
+// shifting a four-thousand-entry array for every line of `yes` is quadratic.
+const TRIM_BATCH = 256;
+// The longest escape sequence held while waiting for the rest of it. Real
+// ones are a few dozen characters; past this it is discarded as it arrives.
+const MAX_SEQUENCE = 256;
+// No repeat count means more than this; xterm caps its parameters the same way.
+const MAX_PARAM = 0xffff;
 
 // The 16 ANSI colours resolve to CSS variables so a QuickCode theme can own
 // them (see css/terminal.css); 16-255 are the xterm cube and greyscale, which
@@ -30,6 +44,7 @@ const ANSI_VAR = (i) => `var(--qt-a${i})`;
 const CUBE = [0, 95, 135, 175, 215, 255];
 
 function xterm256(n) {
+  n = clamp(n, 0, 255);
   if (n < 16) return ANSI_VAR(n);
   if (n < 232) {
     const i = n - 16;
@@ -38,6 +53,14 @@ function xterm256(n) {
   const v = 8 + (n - 232) * 10;
   return `rgb(${v},${v},${v})`;
 }
+
+// DEC Special Graphics, selected by `ESC ( 0`: what ncurses draws boxes with
+// when it does not trust the locale (`smacs` in the xterm terminfo).
+const LINE_DRAWING = {
+  "`": "◆", a: "▒", f: "°", g: "±", j: "┘", k: "┐", l: "┌", m: "└", n: "┼",
+  o: "⎺", p: "⎻", q: "─", r: "⎼", s: "⎽", t: "├", u: "┤", v: "┴", w: "┬",
+  x: "│", y: "≤", z: "≥", "{": "π", "|": "≠", "}": "£", "~": "·",
+};
 
 export const DEFAULT_STYLE = Object.freeze({
   fg: null, bg: null, bold: false, dim: false, italic: false,
@@ -48,10 +71,14 @@ function blankLine() {
   return { chars: [], attrs: [], dirty: true };
 }
 
+const isParam = (c) => c >= "\x30" && c <= "\x3f";
+const isIntermediate = (c) => c >= "\x20" && c <= "\x2f";
+const isFinal = (c) => c >= "\x40" && c <= "\x7e";
+
 export class Emulator {
   constructor(rows = 24, cols = 80) {
-    this.rows = Math.max(1, rows);
-    this.cols = Math.max(1, cols);
+    this.rows = dimension(rows);
+    this.cols = dimension(cols);
     this.scrollback = [];
     this.screen = [];
     this.trimmed = 0;          // scrollback lines dropped since the last render
@@ -68,40 +95,75 @@ export class Emulator {
     this.style = DEFAULT_STYLE;
     this.saved = null;
     this.pending = "";         // an escape sequence split across two chunks
+    this.skip = null;          // discarding a string ("osc"/"st") or a bad CSI ("csi")
+    this.skipEsc = false;      // ...and the last chunk ended on what may be its ST
+    this.charset = null;       // G0: null for ASCII, LINE_DRAWING after ESC ( 0
     this.altScreen = null;     // the main screen, parked, while alt is active
+    this.bracketedPaste = false;
+    this.appCursor = false;
     this.allDirty = true;
   }
 
   // ---- geometry ----
 
   resize(rows, cols) {
-    rows = Math.max(1, rows);
-    cols = Math.max(1, cols);
+    rows = dimension(rows);
+    cols = dimension(cols);
     if (rows === this.rows && cols === this.cols) return;
     // Growing keeps what is on screen; shrinking pushes the top rows into
     // scrollback rather than deleting them, which is what a real terminal does
-    // and what stops a drag-resize from eating the last command's output.
-    while (this.screen.length > rows) {
-      if (this.row > 0) { this.pushScroll(this.screen.shift()); this.row--; }
-      else this.screen.pop();
+    // and what stops a drag-resize from eating the last command's output. The
+    // main screen parked behind `less` is resized too, or leaving `less`
+    // would restore a screen taller than the terminal.
+    if (this.altScreen) {
+      const main = this.altScreen;
+      [main.screen, main.row] = this.fit(main.screen, main.row, rows, true);
+      main.col = Math.min(main.col, cols - 1);
+      [this.screen, this.row] = this.fit(this.screen, this.row, rows, false);
+    } else {
+      [this.screen, this.row] = this.fit(this.screen, this.row, rows, true);
     }
-    while (this.screen.length < rows) this.screen.push(blankLine());
     this.rows = rows;
     this.cols = cols;
-    this.row = Math.min(this.row, rows - 1);
     this.col = Math.min(this.col, cols - 1);
     this.allDirty = true;
+  }
+
+  fit(screen, row, rows, history) {
+    while (screen.length > rows) {
+      if (row > 0) {
+        const top = screen.shift();
+        if (history) this.keep(top);
+        row--;
+      } else {
+        screen.pop();
+      }
+    }
+    while (screen.length < rows) screen.push(blankLine());
+    return [screen, Math.min(row, rows - 1)];
   }
 
   pushScroll(line) {
     // The alternate screen is by definition not history: `less` scrolling its
     // page must not deposit forty copies of the file into the scrollback.
     if (this.altScreen) return;
+    this.keep(line);
+  }
+
+  keep(line) {
     this.scrollback.push(line);
     this.newScrollback.push(line);
-    while (this.scrollback.length > MAX_SCROLLBACK) {
-      this.scrollback.shift();
-      this.trimmed++;
+    if (this.scrollback.length <= MAX_SCROLLBACK) return;
+    const drop = this.scrollback.length - (MAX_SCROLLBACK - TRIM_BATCH);
+    this.scrollback.splice(0, drop);
+    this.trimmed += drop;
+    // Lines that left the ring before any paint saw them never need to reach
+    // the DOM. Without this a hidden tab, where requestAnimationFrame never
+    // fires, grew newScrollback for as long as the program kept printing.
+    const stale = this.newScrollback.length - this.scrollback.length;
+    if (stale > 0) {
+      this.newScrollback.splice(0, stale);
+      this.trimmed -= stale;
     }
   }
 
@@ -112,30 +174,64 @@ export class Emulator {
     this.pending = "";
     let i = 0;
     while (i < s.length) {
+      if (this.skip) {
+        const end = this.skipRest(s, i);
+        if (end < 0) return;
+        i = end;
+        continue;
+      }
       const ch = s[i];
       if (ch === "\x1b") {
         const consumed = this.escape(s, i);
-        if (consumed < 0) { this.pending = s.slice(i); return; }  // incomplete
+        if (consumed < 0) {
+          this.pending = s.slice(i, i + MAX_SEQUENCE);
+          return;
+        }
         i += consumed;
         continue;
       }
       i++;
-      switch (ch) {
-        case "\n": this.lineFeed(); break;
-        case "\r": this.col = 0; break;
-        case "\b": this.col = Math.max(0, this.col - 1); break;
-        case "\t": this.col = Math.min(this.cols - 1, (this.col + 8) & ~7); break;
-        case "\x07": break;                                       // bell
-        case "\x0b": case "\x0c": this.lineFeed(); break;
-        default:
-          if (ch >= " " && ch !== "\x7f") this.put(ch);
-          break;
+      const code = ch.charCodeAt(0);
+      if (code < 0x20 || code === 0x7f) { this.control(ch); continue; }
+      if (code >= 0x80 && code <= 0x9f) continue;       // C1 controls draw nothing
+      if (code >= 0xd800 && code <= 0xdbff && i < s.length) {
+        const low = s.charCodeAt(i);
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          this.putWide(ch + s[i]);
+          i++;
+          continue;
+        }
       }
+      this.put((this.charset && this.charset[ch]) || ch);
+    }
+  }
+
+  control(ch) {
+    switch (ch) {
+      case "\n": case "\x0b": case "\x0c": this.lineFeed(); break;
+      case "\r": this.col = 0; break;
+      case "\b": this.col = Math.max(0, this.col - 1); break;
+      case "\t": this.col = Math.min(this.cols - 1, (this.col + 8) & ~7); break;
+      default: break;                                   // BEL, SO/SI, the rest
     }
   }
 
   put(ch) {
     if (this.col >= this.cols) { this.col = 0; this.lineFeed(); }
+    this.cell(ch);
+  }
+
+  /** A character outside the BMP: emoji, mostly, which a terminal draws two
+   *  cells wide. Kept in one cell plus a blank spacer so a wrap cannot split
+   *  the surrogate pair across two lines. */
+  putWide(pair) {
+    if (this.cols < 2) { this.put(pair); return; }
+    if (this.col >= this.cols - 1) { this.col = 0; this.lineFeed(); }
+    this.cell(pair);
+    this.cell("");
+  }
+
+  cell(ch) {
     const line = this.screen[this.row];
     while (line.chars.length < this.col) {
       line.chars.push(" ");
@@ -151,9 +247,28 @@ export class Emulator {
     this.row++;
     if (this.row < this.rows) return;
     this.row = this.rows - 1;
-    this.pushScroll(this.screen.shift());
-    this.screen.push(blankLine());
+    this.scrollUp(1);
+  }
+
+  scrollUp(count) {
+    for (let i = 0; i < Math.min(count, this.rows); i++) {
+      this.pushScroll(this.screen.shift());
+      this.screen.push(blankLine());
+    }
     this.allDirty = true;
+  }
+
+  scrollDown(count) {
+    for (let i = 0; i < Math.min(count, this.rows); i++) {
+      this.screen.pop();
+      this.screen.unshift(blankLine());
+    }
+    this.allDirty = true;
+  }
+
+  reverseIndex() {
+    if (this.row > 0) this.row--;
+    else this.scrollDown(1);
   }
 
   // ---- escape sequences ----
@@ -162,50 +277,101 @@ export class Emulator {
   escape(s, start) {
     const next = s[start + 1];
     if (next === undefined) return -1;
-    if (next === "[") return this.csi(s, start);
-    if (next === "]") return this.osc(s, start);
-    if (next === "P" || next === "^" || next === "_") return this.stString(s, start);
-    // Two-character escapes. Only the handful a shell actually emits matter.
-    if (next === "7") { this.saved = { row: this.row, col: this.col, style: this.style }; return 2; }
-    if (next === "8") { this.restore(); return 2; }
-    if (next === "M") { this.row = Math.max(0, this.row - 1); return 2; }
-    if (next === "c") { this.reset(); return 2; }
+    switch (next) {
+      case "[": return this.csi(s, start);
+      case "]": return this.string(s, start, "osc");
+      case "P": case "X": case "^": case "_": return this.string(s, start, "st");
+      case "7": this.saved = { row: this.row, col: this.col, style: this.style }; return 2;
+      case "8": this.restore(); return 2;
+      case "D": this.lineFeed(); return 2;
+      case "E": this.col = 0; this.lineFeed(); return 2;
+      case "M": this.reverseIndex(); return 2;
+      case "c":
+        // A full reset takes the history with it; the painter has to hear so.
+        this.reset();
+        this.clearedHistory = true;
+        return 2;
+      default: break;
+    }
+    if (isIntermediate(next)) {
+      // ESC, intermediates, one final: `ESC ( B` (ASCII), `ESC ( 0` (line
+      // drawing), `ESC # 8`. Consumed whole — `tput sgr0` ends in ESC ( B,
+      // and treating it as a two-character escape printed the B.
+      let i = start + 1;
+      while (i < s.length && i - start < MAX_SEQUENCE && isIntermediate(s[i])) i++;
+      if (i >= s.length) return -1;
+      if (next === "(") this.charset = s[i] === "0" ? LINE_DRAWING : null;
+      return i - start + 1;
+    }
+    // ESC before a control, or before another ESC: the first one was
+    // abandoned. Drop it and let what follows be itself.
+    if (next < "\x20") return 1;
     return 2;
   }
 
   csi(s, start) {
     // ESC [ <params> <intermediates> <final>
+    const limit = start + MAX_SEQUENCE;
     let i = start + 2;
-    let params = "";
-    while (i < s.length && s[i] >= "\x30" && s[i] <= "\x3f") params += s[i++];
-    // Intermediates are skipped rather than kept: no sequence that carries one
-    // draws anything a shell panel has to show.
-    while (i < s.length && s[i] >= "\x20" && s[i] <= "\x2f") i++;
+    while (i < s.length && i < limit && isParam(s[i])) i++;
+    const paramEnd = i;
+    while (i < s.length && i < limit && isIntermediate(s[i])) i++;
+    if (i >= limit || (i < s.length && isParam(s[i]))) {
+      // Overlong, or malformed (a parameter after an intermediate): discard
+      // through the final byte, however many chunks away that is.
+      this.skip = "csi";
+      return i - start;
+    }
     if (i >= s.length) return -1;
-    const final = s[i++];
-    this.applyCsi(params, final);
-    return i - start;
+    const final = s[i];
+    if (!isFinal(final)) return i - start;   // a control mid-sequence: abandon, run it
+    if (paramEnd === i) this.applyCsi(s.slice(start + 2, paramEnd), final);
+    return i - start + 1;
   }
 
-  osc(s, start) {
-    // OSC ... BEL, or OSC ... ESC \. Window titles, mostly; nothing to draw.
-    const bel = s.indexOf("\x07", start + 2);
-    const st = s.indexOf("\x1b\\", start + 2);
-    if (bel < 0 && st < 0) return s.length - start > 4096 ? s.length - start : -1;
-    if (bel >= 0 && (st < 0 || bel < st)) return bel - start + 1;
-    return st - start + 2;
+  string(s, start, kind) {
+    // OSC (titles, hyperlinks, clipboard) and DCS/SOS/PM/APC: nothing a panel
+    // draws. Discarded as they stream by, never held until the terminator.
+    this.skip = kind;
+    const end = this.skipRest(s, start + 2);
+    return end < 0 ? s.length - start : end - start;
   }
 
-  stString(s, start) {
-    const st = s.indexOf("\x1b\\", start + 2);
-    if (st < 0) return s.length - start > 4096 ? s.length - start : -1;
-    return st - start + 2;
+  /** Discard the rest of a string or bad CSI from `i`; the index after it, or -1. */
+  skipRest(s, i) {
+    if (this.skip === "csi") {
+      for (; i < s.length; i++) {
+        if (isParam(s[i]) || isIntermediate(s[i])) continue;
+        this.skip = null;
+        return isFinal(s[i]) ? i + 1 : i;
+      }
+      return -1;
+    }
+    if (this.skipEsc) {
+      this.skipEsc = false;
+      this.skip = null;
+      return s[i] === "\\" ? i + 1 : i;
+    }
+    for (; i < s.length; i++) {
+      const c = s[i];
+      if ((c === "\x07" && this.skip === "osc") || c === "\x18" || c === "\x1a") {
+        this.skip = null;
+        return i + 1;
+      }
+      if (c === "\x1b") {
+        if (i + 1 >= s.length) { this.skipEsc = true; return -1; }
+        this.skip = null;
+        return s[i + 1] === "\\" ? i + 2 : i;
+      }
+    }
+    return -1;
   }
 
   applyCsi(params, final) {
+    if (/^[<=>]/.test(params)) return;       // private-use prefixes other than ?
     const priv = params.startsWith("?");
     const nums = (priv ? params.slice(1) : params)
-      .split(";").map((p) => (p === "" ? 0 : parseInt(p, 10) || 0));
+      .split(";").map((p) => Math.min(parseInt(p, 10) || 0, MAX_PARAM));
     const n = nums[0] || 0;
     const n1 = nums[0] === 0 ? 1 : nums[0];
 
@@ -216,7 +382,7 @@ export class Emulator {
       case "A": this.row = Math.max(0, this.row - n1); break;
       case "B": this.row = Math.min(this.rows - 1, this.row + n1); break;
       case "C": this.col = Math.min(this.cols - 1, this.col + n1); break;
-      case "D": this.col = Math.max(0, this.col - n1); break;
+      case "D": this.col = Math.max(0, Math.min(this.col, this.cols) - n1); break;
       case "E": this.row = Math.min(this.rows - 1, this.row + n1); this.col = 0; break;
       case "F": this.row = Math.max(0, this.row - n1); this.col = 0; break;
       case "G": case "`": this.col = clamp(n1 - 1, 0, this.cols - 1); break;
@@ -232,6 +398,8 @@ export class Emulator {
       case "P": this.deleteChars(n1); break;
       case "@": this.insertChars(n1); break;
       case "X": this.eraseChars(n1); break;
+      case "S": this.scrollUp(n1); break;
+      case "T": this.scrollDown(n1); break;
       case "s": this.saved = { row: this.row, col: this.col, style: this.style }; break;
       case "u": this.restore(); break;
       default: break;   // scroll regions, device reports, mouse — not our job
@@ -239,20 +407,32 @@ export class Emulator {
   }
 
   decMode(nums, final) {
-    // The alternate screen is the one private mode worth modelling: without it
-    // every `less`, `vim` or `top` leaves its whole redraw in the scrollback.
-    if (!nums.includes(1049) && !nums.includes(47) && !nums.includes(1047)) return;
-    if (final === "h" && !this.altScreen) {
+    if (final !== "h" && final !== "l") return;
+    const on = final === "h";
+    for (const mode of nums) {
+      // Application cursor keys: vim, htop and anything using ncurses'
+      // keypad() then expect ESC O A for an arrow, not ESC [ A (keys.js).
+      if (mode === 1) this.appCursor = on;
+      // Bracketed paste: the shell wants pastes marked so it can insert them
+      // as text instead of running each line as it arrives (panel.js).
+      else if (mode === 2004) this.bracketedPaste = on;
+      // The alternate screen is the one screen mode worth modelling: without
+      // it every `less`, `vim` or `top` leaves its whole redraw in history.
+      else if (mode === 1049 || mode === 47 || mode === 1047) this.alternate(on);
+    }
+  }
+
+  alternate(on) {
+    if (on && !this.altScreen) {
       this.altScreen = { screen: this.screen, row: this.row, col: this.col };
       this.screen = Array.from({ length: this.rows }, blankLine);
       this.row = 0; this.col = 0;
       this.allDirty = true;
-    } else if (final === "l" && this.altScreen) {
+    } else if (!on && this.altScreen) {
       this.screen = this.altScreen.screen;
       this.row = Math.min(this.altScreen.row, this.rows - 1);
-      this.col = this.altScreen.col;
+      this.col = Math.min(this.altScreen.col, this.cols - 1);
       this.altScreen = null;
-      while (this.screen.length < this.rows) this.screen.push(blankLine());
       this.allDirty = true;
     }
   }
@@ -313,14 +493,19 @@ export class Emulator {
 
   insertChars(count) {
     const line = this.screen[this.row];
+    count = Math.min(count, this.cols - this.col);
+    if (count <= 0 || this.col >= line.chars.length) return;
     const pad = Array.from({ length: count }, () => " ");
     line.chars.splice(this.col, 0, ...pad);
     line.attrs.splice(this.col, 0, ...pad.map(() => this.style));
+    // What is pushed past the right margin is gone, as on a real screen.
+    line.chars.length = Math.min(line.chars.length, this.cols);
+    line.attrs.length = line.chars.length;
     line.dirty = true;
   }
 
   insertLines(count) {
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < Math.min(count, this.rows - this.row); i++) {
       this.screen.splice(this.row, 0, blankLine());
       this.screen.pop();
     }
@@ -328,7 +513,7 @@ export class Emulator {
   }
 
   deleteLines(count) {
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < Math.min(count, this.rows - this.row); i++) {
       this.screen.splice(this.row, 1);
       this.screen.push(blankLine());
     }
@@ -365,7 +550,8 @@ export class Emulator {
         const key = p === 38 ? "fg" : "bg";
         if (nums[i + 1] === 5) { st = { ...st, [key]: xterm256(nums[i + 2] || 0) }; i += 2; }
         else if (nums[i + 1] === 2) {
-          st = { ...st, [key]: `rgb(${nums[i + 2] || 0},${nums[i + 3] || 0},${nums[i + 4] || 0})` };
+          const [r, g, b] = [nums[i + 2], nums[i + 3], nums[i + 4]].map((v) => clamp(v || 0, 0, 255));
+          st = { ...st, [key]: `rgb(${r},${g},${b})` };
           i += 4;
         }
       }
@@ -373,6 +559,9 @@ export class Emulator {
     this.style = st;
   }
 }
+
+function dimension(n) { return clamp(Math.floor(Number(n)) || 1, 1, 1000); }
+
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(v, hi)); }
 
