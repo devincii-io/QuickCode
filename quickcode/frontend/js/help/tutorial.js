@@ -82,8 +82,10 @@ const STEPS = [
       is never a decision you cannot take back. <em>Deny</em> can carry a
       sentence, and that sentence goes to the agent, so it is a way to steer
       rather than just to refuse.`,
-    doing: `Read the rule text on the <em>Always allow</em> line before pressing
-      it. It is broader than the single call you are looking at.`,
+    doing: `Read the rules listed under <em>Always allow</em> before pressing it:
+      one exact rule per command in the call, and a note for any part that will
+      ask again whatever is saved. <em>Why am I being asked?</em> shows the check
+      that stopped it.`,
   },
   {
     title: "Watch it work in the trajectory",
@@ -131,9 +133,10 @@ export async function renderTutorial(host) {
     <ul class="hp-list">
       <li class="hp-li"><strong>Plan first on anything you care about.</strong>
         A plan is cheap to reject and a wrong edit is not.</li>
-      <li class="hp-li"><strong>Read the rule, not the button.</strong> Every
-        <em>Always allow</em> is broader than the call in front of you — that is
-        the point of it — so the rule text is the thing to check.</li>
+      <li class="hp-li"><strong>Read the rule, not the button.</strong>
+        <em>Always allow</em> saves the exact commands in front of you, one rule
+        each, and lists them first — so the rule text, not the button, is the
+        thing to check.</li>
       <li class="hp-li"><strong>Give a denial a reason.</strong> The sentence you
         type into a denial reaches the agent. “No — use the existing helper in
         utils” gets you a better next attempt than a bare refusal.</li>

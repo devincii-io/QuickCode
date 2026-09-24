@@ -121,9 +121,12 @@ textarea, input { font: inherit; color: inherit; }
 .tool-body .lbl { font-size: 11px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .6px; margin: 8px 0 4px; }
 .tool-body .lbl:first-child { margin-top: 0; }
 
-/* diff coloring inside tool bodies */
+/* diff coloring (js/diff.js): tool bodies and the permission prompt */
 .diff-add { color: var(--success); }
 .diff-del { color: var(--error); }
+.diff-hunk { color: var(--primary); }
+.diff-file { color: var(--fg-dim); font-weight: 600; }
+.diff-note { color: var(--fg-faint); font-style: italic; }
 
 /* subagent cards */
 .agent-card {

@@ -146,7 +146,8 @@ quickcode/
     base.py registry.py command.py
     read.py write.py edit.py glob.py grep.py bash.py
     bash_jobs.py bash_job_tools.py  # background shell jobs, bash_output / bash_kill
-    fs/                   # textfile.py (encodings, line endings, staleness), walk.py, patterns.py
+    fs/                   # textfile.py (encodings, line endings, staleness), walk.py, patterns.py,
+                          # diffpreview.py (the capped diff a permission prompt shows)
     web_fetch.py web_search.py
     agent.py agent_jobs.py send_message.py task.py plan.py
   web/
@@ -380,7 +381,7 @@ Full design in docs/PERMISSIONS.md; core model:
 `dontask` used to sit here, which is how the one mode that silently *denies*
 went undocumented in the architecture overview.
 
-- Prompt choices: **allow once · always allow (persist rules) · deny with message** (deny text returns as the tool result so the model adapts). "Always allow" writes one exact rule per subcommand that asked (`PermissionEngine.suggest_rules`), and the prompt lists them.
+- Prompt choices: **allow once · always allow (persist rules) · deny with message** (deny text returns as the tool result so the model adapts). "Always allow" writes one exact rule per subcommand that asked (`PermissionEngine.suggest_rules`), and the prompt lists them, with the diff an edit or write would make and a *Why?* that asks the engine about the pending call.
 - Rules persist in `./.quickcode/settings.local.json` — "always allow" writes there; `./.quickcode/settings.json` is the shared, checked-in half (`allow`/`deny`/`ask` arrays, `bash(npm test*)`-style patterns). Deny beats allow.
 - A compound line is **split** on `;`, `&&`, `||`, `|` and `&`, and each subcommand is rule-matched on its own — that is the "parse, don't prefix-match" principle, and it means a rule whose pattern spans a splitter can never match. Substitution and redirection are the different case: a line containing `$(`, a backtick, `>` or `<` never matches an allow rule at all and never takes the read-only auto-allow — full-string deny rule or prompt.
 - The mode is chosen from the mode pill or `/mode`, per conversation; there is no cycling hotkey. Subagents inherit a *capped* mode (a yolo main agent does not imply yolo workers — see docs/AGENTS.md).

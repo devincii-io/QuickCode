@@ -7,6 +7,10 @@
 // dropping the rest left those futures pending forever: the tool calls hung and
 // the turn never ended. Every request is now either answered or still queued.
 
+import { api } from "./api.js";
+import { diffNode, unifiedLines } from "./diff.js";
+import { explainErrorHtml, explainHtml } from "./help/explain.js";
+import { offerSummary, SETTINGS_FILE } from "./permission_offer.js";
 import { store, subscribe } from "./store.js";
 import { closeModal, modal, modalRoot, onModalClose } from "./ui/modal.js";
 import { esc } from "./util.js";
@@ -124,22 +128,104 @@ function armed(m) {
   return () => m.isConnected && performance.now() - shownAt >= REVIEW_ARM_MS;
 }
 
+// Built from nodes and text rather than markup: every string here — the
+// command, the diff, the rules, a hook's reason — came from the model, a file
+// or a hook script, not from us.
+function node(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function permissionBody(ev) {
+  const lead = node("div", "perm-lead", "The agent wants to run ");
+  lead.append(node("span", "perm-tool", ev.tool));
+  if (ev.agent && ev.agent !== "main") lead.append(` (subagent ${ev.agent})`);
+  const parts = [lead];
+  if (ev.hook_reason) {
+    const hook = node("div", "perm-hook", "A PreToolUse hook asked for this: ");
+    hook.append(node("span", "perm-hook-reason", ev.hook_reason));
+    parts.push(hook);
+  }
+  parts.push(node("div", "perm-preview", ev.preview || ev.arg));
+  if (ev.diff) {
+    const box = node("div", "perm-diff");
+    box.append(diffNode(unifiedLines(ev.diff)));
+    parts.push(box);
+  }
+  parts.push(offerNode(offerSummary(ev)), ...whyNodes(ev));
+  return parts;
+}
+
+// The exact rules "Always allow" writes, shown before anyone clicks it — and
+// the parts of the call no rule can cover, so nobody expects a rule to.
+function offerNode(offer) {
+  const box = node("div", "perm-offer");
+  if (offer.canSave) {
+    box.append(node("div", null, offer.rules.length === 1
+      ? "Always allow saves this rule to " : "Always allow saves these rules to "));
+    box.firstChild.append(node("code", null, SETTINGS_FILE), ":");
+    const list = node("ul", "perm-rules");
+    for (const rule of offer.rules) list.appendChild(node("li")).append(node("code", null, rule));
+    box.append(list);
+  } else {
+    box.append(node("div", null, offer.empty));
+  }
+  if (offer.kept.length) {
+    box.append(node("div", "perm-kept-head", "Still asks next time, whatever is saved:"));
+    const list = node("ul", "perm-kept");
+    for (const k of offer.kept) {
+      list.appendChild(node("li")).append(node("code", null, k.part), ` — ${k.why}`);
+    }
+    box.append(list);
+  }
+  return box;
+}
+
+// "Why?" asks the permission engine about this very prompt — the pending call,
+// the gate of the agent that raised it (server/permissions_api.py) — and draws
+// the same trace the Help sandbox does.
+function whyNodes(ev) {
+  const toggle = node("button", "ghost-btn perm-why-toggle", "Why am I being asked?");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", "false");
+  const out = node("div", "perm-why hidden");
+  let asked = false;
+  toggle.addEventListener("click", async () => {
+    const open = out.classList.toggle("hidden") === false;
+    toggle.setAttribute("aria-expanded", String(open));
+    if (!open || asked) return;
+    asked = true;
+    out.textContent = "Asking the permission engine…";
+    try {
+      out.innerHTML = explainHtml(
+        await api.explainPermission({ conv: store.convId, review: ev.req_id }));
+    } catch (err) {
+      asked = false;
+      out.innerHTML = explainErrorHtml(err);
+    }
+  });
+  return [toggle, out];
+}
+
 function permissionModal(ev) {
+  const offer = offerSummary(ev);
   const m = modal(
     "Permission required",
-    `${WAITING_NODE}
-     <div>The agent wants to run
-       <span class="perm-tool">${esc(ev.tool)}</span>
-       ${ev.agent && ev.agent !== "main" ? `(subagent ${esc(ev.agent)})` : ""}</div>
-     <div class="perm-preview">${esc(ev.preview || ev.arg)}</div>
-     <div style="font-size:12px;color:var(--fg-dim)">Always-allow saves the rule
-       <code>${esc(ev.rule_suggestion)}</code> to .quickcode/settings.local.json</div>
+    `${WAITING_NODE}<div data-perm-body></div>
      <input class="deny-input hidden" placeholder="Why not? (optional — steers the agent)">`,
     `<button class="btn danger" data-act="deny">Deny</button>
      <button class="btn" data-act="always">Always allow</button>
      <button class="btn primary" data-act="allow">Allow once</button>`,
     { dismissible: false }
   );
+  m.querySelector("[data-perm-body]").append(...permissionBody(ev));
+  if (!offer.canSave) {
+    const always = m.querySelector('[data-act="always"]');
+    always.disabled = true;
+    always.title = offer.empty;
+  }
   const denyInput = m.querySelector(".deny-input");
   const ready = armed(m);
   m.querySelector(".modal-foot").addEventListener("click", (e) => {

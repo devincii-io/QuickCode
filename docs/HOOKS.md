@@ -191,7 +191,10 @@ call only if the engine did not deny it outright. A hook can then:
 
 - turn an allow or an ask into a refusal (`deny`, `block`, or exit 2);
 - turn an allow into a prompt (`ask`) — in `dontask` mode, which never waits
-  for a person, that prompt becomes a refusal instead;
+  for a person, that prompt becomes a refusal instead. The prompt says a hook
+  raised it and shows the hook's reason (`permissionDecisionReason`, or
+  `reason`), and **Always allow** has nothing to save: the rules already allow
+  the call, and the hook will ask again next time;
 - say `allow`, which is written to the log and does nothing else.
 
 A hook can never turn a prompt or a refusal into an allow. That is the whole

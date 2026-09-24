@@ -436,11 +436,41 @@ that can put words in front of the model. The description is still shown, beside
 the command rather than instead of it; a multi-line command is capped and marked
 with an ellipsis so a heredoc cannot hide its second line.
 
-Three buttons, in `js/reviews.js`:
+Below the preview, in this order (`js/reviews.js`, built from DOM nodes and
+text, never markup — every string in it came from the model, a file or a hook):
+
+- **A hook's reason**, when a `PreToolUse` hook is what raised the prompt (the
+  rules would have allowed the call). `tighten` in `core/hooks.py` returns it,
+  and the loop carries it on the request (`PermissionRequest.hook_reason`).
+- **The diff**, for `edit` and `write` — `Tool.render_diff`, a unified diff
+  built with `difflib` where the request is made (`tools/fs/diffpreview.py`),
+  capped at 200 lines and 400 characters a line with a marker. A new file shows
+  its head. It is built only from text the session already holds: the file's
+  current content is used when the session has read it (the tools refuse any
+  other existing file, so that is also when the diff is what will happen);
+  otherwise only the call's own `old_string`/`new_string` or `content` is shown,
+  so a prompt for a file nobody read is never the way its content reaches the
+  session log.
+- **What "Always allow" saves**: the exact rule or rules and the file, and the
+  parts that will ask again whatever is saved, each with its reason
+  (§Bash evaluation pipeline).
+- **Why am I being asked?** — opens the engine's own explanation inline
+  (§Why was I prompted?), asked about this very call.
+
+Three buttons:
 
 1. **Allow once**
-2. **Always allow** — the modal shows the exact rules (one per subcommand that asked, §Bash evaluation pipeline), and the file they go to, before they are written to `settings.local.json`
+2. **Always allow** — writes the rules listed above to `settings.local.json`; greyed out when there are none
 3. **Deny** — the first click reveals a free-text box and the button becomes *Confirm deny*; the text is returned to the model as the tool result (`is_error`), so denial is steering, not a dead end
+
+Answering puts the next queued prompt on screen in the same place, so a
+dialog ignores clicks on its buttons for 400 ms after it appears: the second
+click of a double-click cannot approve a request nobody has read.
+
+The request on the wire (`permission_request`, also logged) carries
+`rule_suggestion` (the rules on one line, as it always has), `rules`, `kept`
+(`{part, reason}`), `diff` and `hook_reason`; `permission_resolved` carries
+`saved`, the rules that were written.
 
 There are no `y / a / n` keyboard shortcuts on this modal — the buttons are the only way to answer it. Earlier text here promised them; they are **not implemented**.
 
@@ -473,6 +503,12 @@ no hook is executed. Three ways in, one answer:
   which exist only once the app has connected to them, are not known to it.
 - **`POST /api/permissions/explain`** (and `/api/projects/{pid}/…`),
   `server/permissions_api.py`.
+- **"Why am I being asked?"** in the permission prompt, which sends
+  `{"conv": …, "review": <req_id>}`: the pending call itself, asked of the
+  gate that raised it — the engine of the agent that asked (a subagent's is
+  capped and holds none of the session's allow rules) and where its shell
+  stood (`permission_posture.for_review`). Nothing else may be combined with
+  `review`, and a prompt that is no longer waiting is a 404.
 
 **It is the engine, not a model of it.** The answer comes from
 `PermissionEngine.evaluate_tool` — the call the agent loop makes before every
@@ -532,10 +568,6 @@ profile, what-if or session answer it came from.
 | `inner_command`, `nesting_limit` | a command another command runs, judged as its own line (its own `steps`); nested too deep |
 | `circuit_breaker`, `most_restrictive` | the line-wide checks and the final fold |
 
-A "Why?" link from the permission prompt itself, which would ask the same
-question with the pending call and the conversation filled in, is **not
-implemented** yet.
-
 ## Plan mode
 
 - Entry: the mode pill, `/mode plan`, or `--mode plan`. (There is no `Shift+Tab` binding and no bare `/plan` command.) The system prompt gains a `<plan_mode>` section: *investigate, don't mutate; produce a plan; call the `plan` tool when ready*.
@@ -564,7 +596,8 @@ or a deny, and an ask into a deny; it can never turn either back into an allow,
 so a hook that says "allow" skips no prompt, no protected path and no circuit
 breaker (`docs/HOOKS.md#hooks-and-permissions`). A call the engine denies is
 not shown to the hooks, and in `dontask` a hook's ask becomes a refusal like
-the engine's own.
+the engine's own. A prompt a hook raised says so, with the
+hook's reason, and offers nothing to "Always allow" (§The prompt).
 
 ## Headless mode
 
