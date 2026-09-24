@@ -5,6 +5,7 @@ import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
 import { markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
 import { CardRegistry, MAIN } from "./chat/registry.js";
+import { RewindMarks } from "./chat/rewind.js";
 import { Follower } from "./chat/scroll.js";
 import { LiveBubble } from "./chat/stream.js";
 import { REVEAL_PX, TranscriptWindow } from "./chat/window.js";
@@ -22,6 +23,8 @@ const agentsDirty = new Set();  // subagents whose live text changed since the l
 // Every card by the ids events refer to it with (tool calls per agent, agent
 // cards by agent_id), so no event has to search the transcript for its card.
 const cards = new CardRegistry();
+// User turns by number, for the "Rewind files" button checkpoints put on them.
+const rewinds = new RewindMarks();
 let onOpenTrace = () => {};
 // The open step: consecutive tool calls collect into one titled block instead
 // of stacking as loose cards. Closed by anything that is not a tool call.
@@ -159,6 +162,7 @@ function clear() {
   step = null;
   openPerms = new Map();
   cards.clear();
+  rewinds.clear();
   taskStrip = null;
 }
 
@@ -219,6 +223,8 @@ function flushStream() {
 // ---- logged events ----
 
 function renderEvent(ev) {
+  // File checkpoints and rewinds are chat/rewind.js's.
+  if (rewinds.observe(ev, addNode)) return;
   switch (ev.type) {
     case "user_message": return addUser(ev);
     case "assistant_message": return addAssistant(ev);
@@ -298,7 +304,9 @@ function bumpStepCount(s, name) {
 }
 
 function addUser(ev) {
-  addNode(el(`<div class="msg msg-user"><div class="bubble">${esc(ev.text)}</div></div>`));
+  const node = el(`<div class="msg msg-user"><div class="bubble">${esc(ev.text)}</div></div>`);
+  addNode(node);
+  rewinds.user(ev, node);
 }
 
 function addAssistant(ev) {

@@ -59,6 +59,9 @@ change reaches every open pane without a reload.
   blocks are attached; scrolling to the top, or *show N earlier items*, brings
   back 80 more at a time without moving the page. `scripts/bench_chat.js`
   times a 10k-event replay and live events against the workspace smoke server.
+  A user message whose turn changed files carries **↺ Rewind files**
+  (`chat/rewind.js`, found by turn number like a card by its id), and a rewind
+  leaves a note where it happened.
 - **Composer** (`js/composer.js`, with its commands, `@` completion, recall
   and pills in `js/composer/`) — `Enter` sends, `Shift+Enter` inserts a
   newline, `/` opens the slash menu, `@` completes a project path, `↑/↓` walks
@@ -66,9 +69,9 @@ change reaches every open pane without a reload.
   the agent is busy are queued. Beside it: the mode pill, the model pill, the
   composition and permission-profile pickers, *compact*, quick settings,
   Stop and Send.
-- **Side panel** — **Trajectory**, **Agents**, **Tasks**, **Files** and
-  **Usage** tabs (`js/panel.js`, `js/panels/`). The panel can be resized or
-  maximised.
+- **Side panel** — **Trajectory**, **Agents**, **Tasks**, **Files**,
+  **Checkpoints** and **Usage** tabs (`js/panel.js`, `js/panels/`). The panel
+  can be resized or maximised.
 - **Terminal drawer** (`Ctrl` + `` ` ``, `js/terminal/`) — a real shell in the
   project directory for *you* (`pty/interactive.py`, `server/terminal.py`),
   plus an *Agent* tab listing every command the agent ran with its output. The
@@ -139,6 +142,18 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 - **Project trust** (`js/trust.js`) — shown when a project's own files name
   programs to run (`mcpServers`, `kind: tool` plugins) or widen permissions;
   lists every command line before you grant it.
+
+## Rewinding files
+
+**Rewind files** under a user message, or **Rewind…** on a turn in the
+Checkpoints tab, opens `js/checkpoints/dialog.js` on the
+preview of putting files back to before that turn: each file with what would
+happen to it, its `+`/`−` counts and an expandable diff, a checkbox per file,
+conflicts in red behind an explicit **Overwrite anyway**, and the notice that
+bash changes are not tracked. It is refused, with the server's reason, while
+a turn runs, a prompt waits or a background job works. The rules it follows
+live in `js/checkpoints/model.js`. The whole of it:
+docs/CHECKPOINTS.md §In the app.
 
 ## Keyboard
 

@@ -36,7 +36,7 @@ export function slashRows() {
 }
 
 export const PANEL_NOTE =
-  "The right-hand panel holds Trajectory, Agents, Tasks, Files and Usage. Drag "
+  "The right-hand panel holds Trajectory, Agents, Tasks, Files, Checkpoints and Usage. Drag "
   + "its left edge to resize, press ⛶ to give it the whole window (Esc brings "
   + "the chat back), and use the ⌕ trace links in the transcript to jump "
   + "straight to an event.";

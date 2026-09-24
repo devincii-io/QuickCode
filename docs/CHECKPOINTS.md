@@ -5,11 +5,12 @@ held. A **rewind** puts files back to how they were before a chosen turn: all
 of them, or the ones picked. It is the undo for the agent's file edits, and it
 is a user action, not a tool the model can call.
 
-This document describes the backend and its HTTP API. There is no UI for it
-yet; the routes below are what one is built on.
+This document describes what is recorded, the rewind, its HTTP API and the
+part of the app that drives it (§In the app).
 
 The code is `quickcode/checkpoints/` (one module per concern: store, snapshot,
-recorder, hook, rewind, diff, paths, events) and `quickcode/server/checkpoints_api.py`.
+recorder, hook, rewind, diff, paths, events) and `quickcode/server/checkpoints_api.py`;
+the UI is `js/chat/rewind.js`, `js/checkpoints/` and `js/panels/checkpoints.js`.
 
 ## What is recorded
 
@@ -265,6 +266,60 @@ rest of its activity. A rewind of an open conversation goes through it, so
 attached windows receive `files_rewound` live; one of a conversation nobody has
 open is appended to its log directly.
 
+## In the app
+
+**In the transcript**, a user message whose turn changed files gets a small
+**↺ Rewind files** button under it (a real button, so `Tab` reaches it; its
+accessible name is "Rewind files to before turn N"). It appears when the
+turn's first `checkpoint` record arrives, live or in a replay, and goes once a
+rewind has undone every file that turn changed. The transcript finds the turn
+by its number, the way tool results find their card (`js/chat/rewind.js`,
+beside `chat/registry.js`), never by searching the page. A `files_rewound`
+record leaves a one-line note where it happened, which expands to the files
+and what was done to each.
+
+**The dialog** (`js/checkpoints/dialog.js`) opens on the preview and lists
+every file the rewind would touch:
+
+- what it would do (*restore*, *delete*, *re-create*, *already as before*),
+  the `+`/`−` line counts, and the unified diff behind a disclosure — `−` is
+  what is on disk now, `+` what the rewind writes. Binary files and files too
+  large to compare say so instead of showing a diff.
+- a checkbox per file. A file with a **conflict** is drawn in red with the
+  server's explanation, and starts unselected: rewinding it discards a change
+  nobody recorded. **Overwrite anyway** takes the conflicted files in and is
+  the API's `force`; it is only sent when a conflicted file is actually picked.
+- a file that cannot be put back (its copy was not kept, or its path now leads
+  through a link) is listed, disabled, with the reason.
+- the `untracked` notice, always: **bash changes are not tracked**.
+
+The rewind names the picked paths, so it does what was previewed and nothing
+a later turn added. While a turn runs or a permission prompt waits, Rewind is
+disabled with the same sentence the API would answer with; a background job
+the pane cannot see is refused by the server, and its words are shown as
+given. A conflict that appears between the preview and the click (the 409's
+`detail.conflicts`) marks those files and leaves them out rather than
+overwriting them. Afterwards the dialog shows what was restored, deleted,
+re-created or left alone and why. The Files panel refreshes on `files_rewound`.
+
+**The Checkpoints tab** of the side panel (`js/panels/checkpoints.js`) lists
+the listing route's answer, newest turn first: each file with what the turn
+did to it, its line counts, the subagent that changed it, and whether a rewind
+already undid it or its copy was not kept; the storage the checkpoints use;
+and a **Rewind…** button per turn that opens the same dialog. It is the way
+back to a turn whose message is far up the transcript, and it refreshes on
+the two records.
+
+**In the Trajectory**, both records read as a sentence: `checkpoint
+src/app.py · turn 3 · saved before its first change · edit`, and `files
+rewound to before turn 3 · 2 files: src/app.py restored, notes.md deleted`.
+
+What the dialog may send is decided in `js/checkpoints/model.js`, which has no
+DOM and is covered by `tests/js/checkpoints.test.mjs`. `scripts/smoke_rewind.js`
+drives the whole path in Chromium against `scripts/workspace_smoke_server.py
+<port> --edits`, whose preview model edits `README.md` and writes `notes.md` in
+each conversation's first turn, in auto-edit mode, and checks the files on disk.
+
 ## Why not a git snapshot for bash
 
 `git stash create` per turn was considered as a best-effort net for what `bash`
@@ -281,5 +336,3 @@ are most of what a build or a generator creates. Cheap and robust it is not.
 - **Undo a rewind** from the backups each rewind keeps.
 - **The limits as settings** rather than constants in
   `quickcode/checkpoints/store.py`.
-- **The UI**: a per-turn "rewind" affordance in the transcript, the preview's
-  diff and conflict list, and the live `checkpoint` / `files_rewound` events.

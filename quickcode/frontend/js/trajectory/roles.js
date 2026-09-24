@@ -81,8 +81,30 @@ export function previewOf(ev) {
       return `tokens in ${fmtTokens(inner.input_tokens)} / out ${fmtTokens(inner.output_tokens)}`;
     case "error": return oneLine(inner.message, 200);
     case "worktree": return worktreePreview(inner);
+    case "checkpoint": return checkpointPreview(inner);
+    case "files_rewound": return rewoundPreview(inner);
     default: return oneLine(JSON.stringify(inner), 160);
   }
+}
+
+// A file's contents saved before the turn's first change to it
+// (docs/CHECKPOINTS.md). Never the contents themselves: the log has only paths.
+function checkpointPreview(inner) {
+  const how = inner.created ? "new file, a rewind deletes it" : "saved before its first change";
+  const kept = inner.restorable === false ? ` · not kept (${inner.reason || "unknown"})` : "";
+  return `checkpoint ${oneLine(inner.path, 120)} · turn ${inner.turn} · ${how}${
+    inner.tool ? ` · ${inner.tool}` : ""}${kept}`;
+}
+
+function rewoundPreview(inner) {
+  const files = inner.files || [];
+  const total = inner.file_count ?? files.length;
+  const shown = files.slice(0, 3).map((f) => `${f.path} ${f.action}`).join(", ");
+  const more = total > 3 ? ` +${total - 3} more` : "";
+  const skipped = inner.skipped?.length ? ` · ${inner.skipped.length} skipped` : "";
+  return oneLine(`files rewound to before turn ${inner.to_turn} · ${total} file${
+    total === 1 ? "" : "s"}${shown ? `: ${shown}${more}` : ""}${skipped}${
+    inner.forced ? " · forced" : ""}`, 200);
 }
 
 // An isolated subagent's checkout: where it went, and where its work ended up.

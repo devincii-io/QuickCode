@@ -59,7 +59,13 @@ async function req(method, path, body) {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* keep */ }
-    throw new Error(`${res.status}: ${detail}`);
+    // Some refusals are structured ({message, conflicts, …}); the message still
+    // reads as text, and the caller that needs the rest finds it on `detail`.
+    const text = detail && typeof detail === "object" ? detail.message || res.statusText : detail;
+    const err = new Error(`${res.status}: ${text}`);
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
@@ -84,6 +90,14 @@ export const api = {
   removeSessions: (convIds) => req("POST", P("/sessions/delete"), { conv_ids: convIds }),
   cleanupSessions: (dryRun = false) => req("POST", P("/sessions/cleanup"), { dry_run: dryRun }),
   openConversation: (resume) => req("POST", P("/conversations"), resume ? { resume } : {}),
+  // File checkpoints (docs/CHECKPOINTS.md). A preview writes nothing; a
+  // rewind is refused (409) while the conversation works, or when a file
+  // changed since its checkpoint and `force` is not set — `err.detail.conflicts`.
+  checkpoints: (convId) => req("GET", P(`/sessions/${encodeURIComponent(convId)}/checkpoints`)),
+  previewRewind: (convId, body) =>
+    req("POST", P(`/sessions/${encodeURIComponent(convId)}/checkpoints/preview`), body),
+  rewindFiles: (convId, body) =>
+    req("POST", P(`/sessions/${encodeURIComponent(convId)}/checkpoints/rewind`), body),
   models: (refresh = false) => req("GET", P(`/models?refresh=${refresh}`)),
   // Install-wide, like the endpoint it asks about — never project-scoped.
   credits: () => req("GET", "/api/credits"),

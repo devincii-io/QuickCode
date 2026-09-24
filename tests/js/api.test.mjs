@@ -19,3 +19,30 @@ test("credits use the authenticated install endpoint even inside a project", asy
   assert.equal(call.path, "/api/credits");
   assert.equal(call.options.headers["x-quickcode-token"], "tab-token");
 });
+
+test("a structured refusal keeps its detail, and its message still reads as text", async () => {
+  setProject("alpha");
+  const conflicts = [{ path: "a.py", conflicts: [{ kind: "modified", detail: "changed" }] }];
+  let call;
+  globalThis.fetch = async (path, options) => {
+    call = { path, options };
+    return {
+      ok: false, status: 409, statusText: "Conflict",
+      json: async () => ({ detail: { message: "files changed since their checkpoints", conflicts } }),
+    };
+  };
+  const err = await api.rewindFiles("c0nv", { turn: 2, paths: ["a.py"] }).catch((e) => e);
+  assert.equal(call.path, "/api/projects/alpha/sessions/c0nv/checkpoints/rewind");
+  assert.deepEqual(JSON.parse(call.options.body), { turn: 2, paths: ["a.py"] });
+  assert.equal(err.message, "409: files changed since their checkpoints");
+  assert.equal(err.status, 409);
+  assert.deepEqual(err.detail.conflicts, conflicts);
+
+  globalThis.fetch = async () => ({
+    ok: false, status: 409, statusText: "Conflict",
+    json: async () => ({ detail: "conversation is busy (a turn is running); rewind once it is idle" }),
+  });
+  const busy = await api.rewindFiles("c0nv", { turn: 2 }).catch((e) => e);
+  assert.equal(busy.message, "409: conversation is busy (a turn is running); rewind once it is idle");
+  assert.equal(busy.detail, "conversation is busy (a turn is running); rewind once it is idle");
+});

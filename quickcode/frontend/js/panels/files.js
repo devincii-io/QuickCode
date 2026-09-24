@@ -111,6 +111,8 @@ export const panel = {
         return;
       }
       if (kind === "event" && ev.type === "tool_result" && WRITING_TOOLS.has(ev.name)) bump();
+      // A rewind writes files too, from the user's side rather than a tool's.
+      if (kind === "event" && ev.type === "files_rewound") bump();
     });
   },
 };

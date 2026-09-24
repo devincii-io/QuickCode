@@ -61,6 +61,27 @@ test("an isolated subagent's worktree record says where its work went", () => {
     "worktree kept → quickcode/x · in use");
 });
 
+test("checkpoint and rewind records read as what they did, by path and never by content", () => {
+  const saved = { type: "checkpoint", turn: 3, path: "src/app.py", call_id: "c1", tool: "edit",
+    created: false, restorable: true, reason: "" };
+  assert.equal(previewOf(saved), "checkpoint src/app.py · turn 3 · saved before its first change · edit");
+  assert.equal(previewOf({ ...saved, created: true, tool: "write" }),
+    "checkpoint src/app.py · turn 3 · new file, a rewind deletes it · write");
+  assert.equal(previewOf({ ...saved, restorable: false, reason: "too_large" }),
+    "checkpoint src/app.py · turn 3 · saved before its first change · edit · not kept (too_large)");
+  const sub = { type: "agent_event", agent_id: "general-1", ev: saved };
+  assert.equal(roleOf(sub), "AGENT");
+  assert.equal(previewOf(sub), previewOf(saved));
+  const rewound = { type: "files_rewound", rewind_id: "rw1", to_turn: 2, forced: true, file_count: 5,
+    files: [{ path: "a", action: "restored" }, { path: "b", action: "deleted" },
+      { path: "c", action: "created" }, { path: "d", action: "unchanged" }],
+    skipped: [{ path: "e", reason: "damaged" }] };
+  assert.equal(previewOf(rewound),
+    "files rewound to before turn 2 · 5 files: a restored, b deleted, c created +2 more · 1 skipped · forced");
+  assert.equal(previewOf({ type: "files_rewound", to_turn: 1, files: [{ path: "x", action: "restored" }],
+    skipped: [] }), "files rewound to before turn 1 · 1 file: x restored");
+});
+
 test("a subagent's event links to the definition it was spawned from", () => {
   const defs = new Map([["explore-1", "explore"]]);
   const ev = { type: "agent_event", agent_id: "explore-1", ev: { type: "assistant_message" } };
