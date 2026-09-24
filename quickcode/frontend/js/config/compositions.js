@@ -6,9 +6,11 @@
 // about when it applies: a running session keeps the composition it opened
 // with, so this changes the *next* one.
 //
-// The composition editor (agents as a dict of compositions, bindings, per-agent
-// prompt bodies) is Phase 6 work. What is here is the truthful read of what
-// each one does today plus the one action that already works.
+// What is edited where: the orchestrator's tool patterns in its workbench
+// (`#/config/agents/@orchestrator?preset=<id>`), a new composition from
+// `#/config/new/composition` or "Customise this…". Per-agent overlays and
+// bindings have no form yet and are written by hand in settings.json; the page
+// says so rather than offering an editor that cannot express them.
 
 import { esc } from "../util.js";
 import { chip, flash, splitError } from "../settings/ui.js";

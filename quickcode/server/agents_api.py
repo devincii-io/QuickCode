@@ -29,6 +29,7 @@ import and one call.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -854,6 +855,16 @@ def _composition_write(
     }
 
 
+def _composition_id(name: str) -> str:
+    """``"Review only"`` -> ``review-only``: the id a typed name is stored under,
+    by the same rules an authored plugin's file name follows."""
+    text = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower()).strip("-")
+    text = re.sub(r"-{2,}", "-", text)
+    if text and not text[0].isalpha():
+        text = f"c-{text}"
+    return text[:48]
+
+
 def _derive(manager: ConversationManager, preset_id: str, body: Any) -> dict[str, Any]:
     """Duplicate a composition into a project-scoped one you own.
 
@@ -867,12 +878,26 @@ def _derive(manager: ConversationManager, preset_id: str, body: Any) -> dict[str
     if source is None:
         raise HTTPException(404, f"no composition {preset_id!r}")
     wanted = str((body or {}).get("name") or "").strip() if isinstance(body, dict) else ""
-    new_id = wanted or f"{preset_id}-copy"
-    if new_id in presets:
-        n = 2
-        while f"{new_id}-{n}" in presets:
-            n += 1
-        new_id = f"{new_id}-{n}"
+    if wanted:
+        # A name somebody typed is a name they meant: it becomes the id, and a
+        # clash is refused rather than quietly numbered into a different one.
+        new_id = _composition_id(wanted)
+        if not new_id:
+            raise HTTPException(400, (
+                f"{wanted!r} is not a usable composition name: it needs at least "
+                "one letter or digit"))
+        if new_id in presets:
+            raise HTTPException(409, (
+                f"a composition called {new_id!r} already exists"
+                + (" and is built in" if presets[new_id].builtin else "")
+                + " — pick another name, or open that one"))
+    else:
+        new_id = f"{preset_id}-copy"
+        if new_id in presets:
+            n = 2
+            while f"{new_id}-{n}" in presets:
+                n += 1
+            new_id = f"{new_id}-{n}"
     copy = replace(
         source,
         id=new_id,

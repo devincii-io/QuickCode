@@ -30,6 +30,7 @@ import { problemsCardHtml } from "../problems.js";
 import { agentPanel } from "./agent.js";
 import { toolPanel } from "./tool.js";
 import { promptPanel } from "./prompt.js";
+import { renderNewComposition } from "./composition.js";
 
 export const APPLIES = "Takes effect in new sessions — a running session's "
   + "composition is frozen when it opens, and nothing hot-swaps into it.";
@@ -178,8 +179,8 @@ function showRefusal(btn, detail) {
 
 // ---- New… -----------------------------------------------------------------
 
-export function renderNew(host, ctx, kind) {
-  if (kind === "composition") { renderNewComposition(host); return; }
+export function renderNew(host, ctx, kind, query = {}) {
+  if (kind === "composition") { renderNewComposition(host, ctx, query); return; }
   const entry = AUTHORABLE.find(([k]) => k === kind) || AUTHORABLE[0];
   const [k, title, sigil, what] = entry;
   const dirs = ctx.dirs || {};
@@ -277,27 +278,6 @@ export function renderNew(host, ctx, kind) {
   nameEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !createEl.disabled) createEl.click();
   });
-}
-
-function renderNewComposition(host) {
-  host.innerHTML = `<div class="cfg-page-inner">
-    <header class="cfg-head">
-      <div class="cfg-crumbs">New composition</div>
-      <div class="cfg-head-main"><h2>New composition</h2></div>
-    </header>
-    <section class="cfg-soon">
-      <h4>Start from one that exists</h4>
-      <p>A composition is a named set: the orchestrator's tools and prompt, the
-        agents it may spawn, and the bindings that attach parts to them. It lives
-        in <code>.quickcode/settings.json</code> under <code>presets</code>, not
-        in <code>.quickcode/plugins/</code>, so it is not one of the file kinds
-        this page writes.</p>
-      <p class="cfg-note">Open any composition and press <b>Customise this…</b>:
-        it derives a project-scoped copy you can edit, which is the same
-        duplicate-to-customise move as everywhere else.
-        <a class="k-link" href="#/config/compositions">Compositions →</a></p>
-    </section>
-  </div>`;
 }
 
 // ---- the editor -----------------------------------------------------------

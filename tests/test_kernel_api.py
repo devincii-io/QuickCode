@@ -199,3 +199,36 @@ def test_a_tool_carries_the_signature_its_card_shows(tmp_path):
     for plugin in payload["plugins"]:
         if plugin["kind"] == "tool":
             assert plugin["metadata"]["signature"].startswith(plugin["title"] + "(")
+
+
+# --------------------------------------------------------------------------
+# a new composition, named
+# --------------------------------------------------------------------------
+
+def test_a_named_composition_is_stored_under_that_name(tmp_path):
+    with make_client(make_manager(tmp_path)) as client:
+        made = client.post("/api/kernel/compositions/explore/derive",
+                           json={"name": "Review only"})
+        again = client.post("/api/kernel/compositions/standard/derive",
+                            json={"name": "review only"})
+        builtin = client.post("/api/kernel/compositions/explore/derive",
+                              json={"name": "Standard"})
+        unusable = client.post("/api/kernel/compositions/explore/derive",
+                               json={"name": "???"})
+        listed = {p["id"]: p for p in client.get("/api/presets").json()["presets"]}
+
+    assert made.status_code == 200, made.text
+    assert made.json()["id"] == "review-only"
+    assert listed["review-only"]["title"] == "Review only"
+    assert listed["review-only"]["tools"] == ["read", "glob", "grep"]
+    # A typed name is a name somebody meant; a clash is refused, not renamed.
+    assert again.status_code == 409 and "review-only" in again.json()["detail"]
+    assert builtin.status_code == 409 and "built in" in builtin.json()["detail"]
+    assert unusable.status_code == 400
+
+
+def test_customise_without_a_name_numbers_its_copies(tmp_path):
+    with make_client(make_manager(tmp_path)) as client:
+        first = client.post("/api/kernel/compositions/standard/derive", json={}).json()
+        second = client.post("/api/kernel/compositions/standard/derive", json={}).json()
+    assert (first["id"], second["id"]) == ("standard-copy", "standard-copy-2")

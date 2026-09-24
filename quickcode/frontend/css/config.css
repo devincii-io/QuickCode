@@ -148,7 +148,7 @@
 }
 .cfg-lede.small { font-size: 12px; margin-bottom: 10px; }
 .cfg-lede em { color: var(--fg); font-style: normal; }
-.cfg-lede code, .cfg-note code, .cfg-soon code {
+.cfg-lede code, .cfg-note code {
   font-family: var(--mono); font-size: 11.5px; background: var(--panel);
   padding: 1px 5px; border-radius: 4px;
 }
@@ -338,19 +338,6 @@ a.k-fact { color: var(--accent); text-decoration: none; }
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 50%, transparent);
   border-radius: 8px;
 }
-
-/* ---------- placeholders for the next passes ---------- */
-
-.cfg-soon {
-  border: 1px dashed var(--line-strong); border-radius: var(--radius);
-  padding: 12px 14px; margin: 22px 0; max-width: 86ch; background: var(--panel);
-}
-.cfg-soon h4 {
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--fg-faint); margin-bottom: 8px;
-}
-.cfg-soon p { font-size: 12.5px; line-height: 1.6; color: var(--fg-dim); margin-bottom: 8px; }
-.cfg-soon p:last-child { margin-bottom: 0; }
 
 /* ---------- machine-room index ---------- */
 

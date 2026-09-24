@@ -197,7 +197,7 @@ export async function render() {
       return;
     } else if (head === "machine-room") renderMachineRoom(page, ctx);
     else if (head === "install") await renderInstall(page, ctx, a || "general");
-    else if (head === "new") renderNew(page, ctx, a || "agent");
+    else if (head === "new") renderNew(page, ctx, a || "agent", route.query);
     // The raw source editor. It has a URL because it is a page you link people
     // to — "the file that does this is here" — not a dialog over a list.
     else if (head === "edit" && a) await renderEditor(page, ctx, a, route.query);
