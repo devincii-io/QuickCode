@@ -143,22 +143,46 @@ class Rules:
             p = root / rel
             if not p.exists():
                 continue
-            try:
-                data = read_settings(p).get("permissions", {})
-            except Exception:
-                continue
+            lists = cls._rule_lists(p, read_settings(p).get("permissions"))
             if allowed:
-                merged.allow += data.get("allow", [])
+                merged.allow += lists["allow"]
             else:
-                refused += len(data.get("allow", []) or [])
-            merged.ask += data.get("ask", [])
-            merged.deny += data.get("deny", [])
+                refused += len(lists["allow"])
+            merged.ask += lists["ask"]
+            merged.deny += lists["deny"]
         if refused:
             log.warning(
                 "project %s is not trusted; %d permission allow rule(s) ignored",
                 root, refused,
             )
         return merged
+
+    @staticmethod
+    def _rule_lists(path: Path, block: object) -> dict[str, list[str]]:
+        """``allow``/``ask``/``deny`` out of one file's ``permissions`` block.
+
+        Whatever is not the shape of a rule list is left out and logged: a
+        hand-edited file must not fail every session open, and a string where
+        a list belongs must not be read one character per rule.
+        """
+        out: dict[str, list[str]] = {"allow": [], "ask": [], "deny": []}
+        if block is None:
+            return out
+        if not isinstance(block, dict):
+            log.warning('ignoring "permissions" in %s: it is %s, not an object',
+                        path, type(block).__name__)
+            return out
+        for kind in out:
+            rules = block.get(kind, [])
+            if not isinstance(rules, list):
+                log.warning('ignoring "permissions.%s" in %s: it is %s, not a list',
+                            kind, path, type(rules).__name__)
+                continue
+            out[kind] = [r for r in rules if isinstance(r, str)]
+            if len(out[kind]) != len(rules):
+                log.warning('ignoring %d entries of "permissions.%s" in %s that are not strings',
+                            len(rules) - len(out[kind]), kind, path)
+        return out
 
     def persist_allow(self, root: Path, rule: str) -> str | None:
         """Append a rule to settings.local.json (gitignored).
@@ -179,20 +203,23 @@ class Rules:
         # project trusted; one that was not stays untrusted.
         from quickcode.kernel.settings_file import (
             LOCAL_SETTINGS_FILENAME,
-            SettingsUnreadable,
             write_project_settings,
         )
 
         def add(data: dict) -> None:
             perms = data.setdefault("permissions", {})
-            allow = perms.setdefault("allow", [])
+            allow = perms.setdefault("allow", []) if isinstance(perms, dict) else None
+            if not isinstance(allow, list):
+                # Refused rather than replaced: the block is the user's, and
+                # "fixing" it would drop whatever they meant by it.
+                raise ValueError('its "permissions" is not an object with an "allow" list')
             if rule not in allow:
                 allow.append(rule)
 
         unsaved = None
         try:
             write_project_settings(root, add, filename=LOCAL_SETTINGS_FILENAME)
-        except (SettingsUnreadable, OSError) as exc:
+        except (ValueError, OSError) as exc:  # SettingsUnreadable is a ValueError
             unsaved = (f"'Always allow' for {rule} applies to this session only: "
                        f"it could not be saved to {LOCAL_SETTINGS_FILENAME} ({exc})")
             log.warning("%s", unsaved)
