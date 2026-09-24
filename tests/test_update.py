@@ -121,6 +121,31 @@ def test_is_newer_orders_releases_above_their_prereleases():
     assert update.is_newer("2.1.0", "whatever") is None
 
 
+@pytest.mark.parametrize(
+    "latest,installed,expected",
+    [
+        ("2.10.0", "2.9.0", True),                 # numbers, not strings
+        ("v2.9.0", "2.10.0", False),
+        # A post-release or a local build of 2.7.0 is not older than 2.7.0:
+        # offering 2.7.0 to it would be a downgrade.
+        ("2.7.0", "2.7.0.post1", False),
+        ("2.7.0", "2.7.0+local.3", False),
+        ("2.7.0.post1", "2.7.0", True),
+        ("2.7.0.1", "2.7.0", True),                # a fourth component is a hotfix
+        ("v2.7.0+build.9", "2.7.0", False),        # build metadata never orders
+        # Pre-release numbers are numbers, and PEP 440's phases have an order.
+        ("2.1.0-rc10", "2.1.0-rc2", True),
+        ("2.1.0a1", "2.1.0.dev3", True),
+        ("2.1.0rc1", "2.1.0b2", True),
+        # Tag spelling and metadata spelling of the same pre-release.
+        ("2.1.0rc1", "2.1.0-rc.1", False),
+        ("2.1.0-rc.1", "2.1.0rc1", False),
+    ],
+)
+def test_is_newer_compares_like_a_version(latest, installed, expected):
+    assert update.is_newer(latest, installed) is expected
+
+
 # ---------------------------------------------------------------------------
 # the check
 # ---------------------------------------------------------------------------

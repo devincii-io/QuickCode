@@ -158,22 +158,48 @@ class ChecksumMismatch(UpdateError):
 # Versions
 # --------------------------------------------------------------------------
 
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+.]?(.+))?$")
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(.*)$")
+# After the three numbers: ``.post1``, ``-r2``, or a bare fourth component
+# (``2.7.0.1``, PEP 440's implicit ``2.7.0-1``) all come *after* the release.
+_POST_RE = re.compile(r"(?:post|rev|r)[-._]?\d*|\d+(?:\.\d+)*", re.IGNORECASE)
+# PEP 440's pre-release phases, in order; spelling variants share a weight.
+_PHASES = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2,
+           "c": 3, "rc": 3, "pre": 3, "preview": 3}
 
 
 def parse_version(text: str) -> tuple[int, int, int, int, str] | None:
     """``"v2.1.0"`` → ``(2, 1, 0, 1, "")``; ``None`` when it is not a version.
 
-    The fourth element ranks a release above any pre-release of the same
-    numbers (0 for ``2.1.0-rc1``, 1 for ``2.1.0``), which is the whole reason
-    this is not a plain three-tuple.
+    The fourth element ranks the three numbers' variants: 0 for a pre-release
+    (``2.1.0-rc1``, ``2.1.0.dev3``), 1 for the release, 2 for anything after it
+    (``2.1.0.post1``, ``2.1.0.1``). Build metadata and local labels (``+…``)
+    are dropped: they name a build, not a place in the order.
     """
     match = _VERSION_RE.match((text or "").strip())
     if match is None:
         return None
-    major, minor, patch, suffix = match.groups()
-    suffix = (suffix or "").strip()
-    return (int(major), int(minor), int(patch), 0 if suffix else 1, suffix)
+    major, minor, patch, rest = match.groups()
+    suffix = rest.split("+", 1)[0].strip().lstrip("-._")
+    if not suffix:
+        rank = 1
+    elif _POST_RE.fullmatch(suffix):
+        rank = 2
+    else:
+        rank = 0
+    return (int(major), int(minor), int(patch), rank, suffix)
+
+
+def _order_key(parsed: tuple[int, int, int, int, str]) -> tuple:
+    """Compare suffixes piecewise: numbers as numbers, phases in PEP 440 order,
+    so ``rc10`` follows ``rc2`` and ``rc.1`` is ``rc1``."""
+    major, minor, patch, rank, suffix = parsed
+    pieces = tuple(
+        (1, int(tok), "") if tok.isdigit()
+        else (0, _PHASES[tok], "") if tok in _PHASES
+        else (0, len(_PHASES), tok)
+        for tok in re.findall(r"\d+|[a-z]+", suffix.lower())
+    )
+    return (major, minor, patch, rank, pieces)
 
 
 def is_newer(latest: str, installed: str) -> bool | None:
@@ -181,7 +207,7 @@ def is_newer(latest: str, installed: str) -> bool | None:
     a, b = parse_version(latest), parse_version(installed)
     if a is None or b is None:
         return None
-    return a > b
+    return _order_key(a) > _order_key(b)
 
 
 def installed_version() -> str:
