@@ -11,6 +11,7 @@ import { summaryOf } from "./explain.js";
 import { renderWorkbench } from "./agent.js";
 import { bodyHtml, sigilHtml } from "./kinds.js";
 import { duplicatePlugin } from "./create/scaffold.js";
+import { store } from "../store.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
@@ -54,6 +55,11 @@ export function renderAgentsIndex(host, ctx) {
               : "prompt unavailable"}</span>
           </div>
         </a>
+        ${store.convId ? `<div class="k-card-side">
+          <a class="ghost-btn" href="#/config/agents/${encodeURIComponent(ORCHESTRATOR)}?conv=${
+            encodeURIComponent(store.convId)}" title="What the open session runs —
+            frozen when it opened, whatever the files say now">This session</a>
+        </div>` : ""}
       </article>
       ${agents.map((p) => `
         <article class="k-card" data-kind="agent" data-tier="${esc(p.tier)}"

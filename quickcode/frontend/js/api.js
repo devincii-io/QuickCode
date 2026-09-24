@@ -108,8 +108,11 @@ export const api = {
   updatePlugin: (id, patch) => req("PUT", P(`/kernel/plugins/${encodeURIComponent(id)}`), patch),
   presets: () => req("GET", P("/presets")),
   setPreset: (preset) => req("PUT", P("/presets/active"), { preset }),
-  // The composed system prompt with each section's byte range.
-  prompt: () => req("GET", P("/prompt")),
+  // The composed system prompt with each section's range. Without `conv`, the
+  // prompt the next session starts from; with it, the bytes that session is
+  // being sent (`frozen: true`).
+  prompt: (conv = "") =>
+    req("GET", P(`/prompt${conv ? `?conv=${encodeURIComponent(conv)}` : ""}`)),
 
   // ---- permission profiles ----
   // A named permission posture: a starting mode plus allow/ask/deny lists.

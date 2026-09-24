@@ -978,6 +978,7 @@ textarea.tp-input { min-height: 0; }
 }
 .cfg-fchip:hover:not(:disabled) { background: var(--panel); color: var(--fg); }
 .cfg-fchip.on { background: var(--boost); color: var(--fg); border-color: var(--line-strong); }
+a.cfg-fchip { text-decoration: none; display: inline-block; }
 .cfg-fchip:disabled { cursor: default; }
 .cfg-fcount { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
 .cfg-filter-note-inline {

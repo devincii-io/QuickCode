@@ -25,6 +25,7 @@ import { mountPreview } from "./preview.js";
 import { openToolPicker } from "./toolpicker.js";
 import { duplicatePlugin } from "./create/scaffold.js";
 import { usedByHtml } from "./usedby.js";
+import { store } from "../store.js";
 
 export const ORCHESTRATOR = "@orchestrator";
 
@@ -241,6 +242,20 @@ function problemsHtml(d) {
   </section>`;
 }
 
+/** Live and frozen are two answers, and the header offers the other one: the
+ *  open session's own snapshot from a live view, the files as they are now
+ *  from a frozen one. */
+function sessionLinkHtml(d) {
+  const base = `#/config/agents/${encodeURIComponent(d.id)}`;
+  if (d.resolved_against?.conv) {
+    return `<a class="ghost-btn" href="${base}"
+      title="Resolve against the settings files as they are now">Show live</a>`;
+  }
+  if (!store.convId) return "";
+  return `<a class="ghost-btn" href="${base}?conv=${encodeURIComponent(store.convId)}"
+    title="What the open session runs — frozen when it opened">This session</a>`;
+}
+
 function headHtml(d) {
   const facts = [
     `${(d.resolved?.tools || []).length} tools`,
@@ -267,6 +282,7 @@ function headHtml(d) {
           : `<a class="ghost-btn" href="#/config/edit/${
               encodeURIComponent(`agent.${d.id}`)}">Edit file</a>`}
         ${d.id === ORCHESTRATOR ? "" : `<button class="ghost-btn" data-raw>Raw</button>`}
+        ${sessionLinkHtml(d)}
       </span>
     </div>
     <div class="wb-facts">${facts.map((f) => `<span class="k-fact">${esc(f)}</span>`).join("")}

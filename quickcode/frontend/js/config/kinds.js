@@ -202,7 +202,8 @@ function providerBody(plugin) {
     ${md.active ? `<span class="k-fact">active</span>` : `<span class="k-fact k-dim">available</span>`}
     ${md.endpoint ? `<span class="k-fact mono">${esc(md.endpoint)}</span>` : ""}
     ${md.model_count != null
-      ? `<span class="k-fact">${num(md.model_count)} models</span>` : ""}
+      ? `<span class="k-fact">${num(md.model_count)} model${
+          md.model_count === 1 ? "" : "s"}</span>` : ""}
   </div>`;
 }
 
