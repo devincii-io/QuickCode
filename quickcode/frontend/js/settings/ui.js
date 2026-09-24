@@ -3,7 +3,7 @@
 //
 // Settings itself lives in a modal, and several of its affordances (confirm a
 // risky change, read a plugin's raw definition) have to appear *over* it
-// without destroying it — modals.js `modal()` clears the whole modal root, so
+// without destroying it — ui/modal.js `modal()` clears the whole modal root, so
 // these open as their own layer inside it instead.
 
 import { el, esc } from "../util.js";
@@ -75,7 +75,7 @@ export function sheet(title, bodyHtml, footHtml = "", { wide = false } = {}) {
   return node;
 }
 
-/** True when a sheet is open — modals.js consults this so Escape peels the
+/** True when a sheet is open — ui/modal.js consults this so Escape peels the
  *  layers off one at a time instead of closing Settings from underneath. */
 export function sheetOpen() { return stack.length > 0; }
 

@@ -1,6 +1,6 @@
 // The keyboard and slash-command reference, in one place.
 //
-// Two surfaces show this list: the `?` modal (js/modals.js), which has to be
+// Two surfaces show this list: the `?` modal (js/help/quickref.js), which has to be
 // fast, and Help ▸ Keyboard & commands, which has room to explain. They read
 // the same array, because a shortcut list that exists twice is a shortcut list
 // that is wrong in one of the two places.

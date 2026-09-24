@@ -8,13 +8,10 @@
 // /api/projects/open first, which is idempotent and returns the same id.
 
 import { api } from "./api.js";
-import {
-  makeSelection,
-  openDirBrowser,
-  openPurgeProjects,
-  openRenameSession,
-  reportBulk,
-} from "./modals.js";
+import { openDirBrowser } from "./dirbrowser.js";
+import { openPurgeProjects } from "./purge.js";
+import { makeSelection, reportBulk } from "./selection.js";
+import { openRenameSession } from "./session_rename.js";
 import { toastError } from "./toast.js";
 import { armed, trustSummary } from "./trust.js";
 import { el, esc, oneLine, relTime, wireLogo } from "./util.js";

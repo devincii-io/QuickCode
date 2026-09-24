@@ -8,7 +8,7 @@
 // not disconnect the workspace socket: main.js's showHelp() never calls
 // disconnect(), exactly as showConfig() does not.
 //
-// The keyboard reference stays a modal as well (js/modals.js openHelp). That is
+// The keyboard reference stays a modal as well (js/help/quickref.js openHelp). That is
 // deliberate and not a duplicate: `?` is pressed mid-sentence to remember one
 // shortcut, and making that cost a view transition would be a regression. The
 // modal keeps the fast reference and links here; this view holds the same list

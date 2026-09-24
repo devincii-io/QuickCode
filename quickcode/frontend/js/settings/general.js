@@ -6,7 +6,8 @@
 // catalog read-only (the session model is switched from the composer pill),
 // Appearance applies a preset live and persists it.
 
-import { confirmModal, creditLine } from "../modals.js";
+import { creditLine } from "../quick_settings.js";
+import { confirmModal } from "../ui/modal.js";
 import { store } from "../store.js";
 import { applyTheme, esc, fmtTokens } from "../util.js";
 import { flash } from "./ui.js";

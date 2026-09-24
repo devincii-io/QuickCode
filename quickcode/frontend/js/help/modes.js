@@ -6,7 +6,7 @@
 // `quickcode/core/permissions.py` and against `PlanModeHook.visible_tools` in
 // `quickcode/core/hooks.py`.
 //
-// Deliberately not imported from js/modals.js: that list is one sentence per
+// Deliberately not imported from js/modes.js: that list is one sentence per
 // mode for a dropdown, and stretching it to carry four decision columns would
 // make the dropdown worse to make this page possible.
 //

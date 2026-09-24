@@ -16,7 +16,10 @@ import { initCopy } from "./copy.js";
 import { initChat } from "./chat.js";
 import { initComposer, refreshCompositionPill, refreshProfilePill } from "./composer.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
-import { initReviews, openHelp, openQuickSettings, openSessionMenu } from "./modals.js";
+import { openHelp } from "./help/quickref.js";
+import { openQuickSettings } from "./quick_settings.js";
+import { initReviews } from "./reviews.js";
+import { openSessionMenu } from "./sessions_menu.js";
 import {
   DEFAULT_ROUTE, initConfig, invalidate as invalidateConfig, isConfigRoute,
   lastConfigRoute, render as renderConfig,

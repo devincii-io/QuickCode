@@ -98,7 +98,7 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 
 ## Dialogs the agent waits on
 
-- **Permission prompt** (`js/modals.js`) — shows the tool and the call's own
+- **Permission prompt** (`js/reviews.js`) — shows the tool and the call's own
   preview (for `bash`, the command itself), then **Allow once**, **Always
   allow** (shows the exact rule and the file it goes to) and **Deny** (a
   second click confirms, with an optional message returned to the model).

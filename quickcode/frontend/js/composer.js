@@ -4,7 +4,8 @@
 
 import { api, currentProject } from "./api.js";
 import { HISTORY_MAX, parseHistory, serializeHistory } from "./input_history.js";
-import { openHelp, openModeMenu, openModelMenu } from "./modals.js";
+import { openHelp } from "./help/quickref.js";
+import { openModeMenu, openModelMenu } from "./menus.js";
 import { store, subscribe } from "./store.js";
 import { toast, toastError } from "./toast.js";
 import { debounce, esc } from "./util.js";
