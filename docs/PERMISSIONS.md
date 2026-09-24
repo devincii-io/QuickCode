@@ -331,7 +331,10 @@ as an allow rule is the supported way to get there.
   command as touching a protected path: after an approved `cd ..`, `ls` asks
   and `rm -rf *` is not covered by `bash(rm **)`. It used to resolve everything
   against the project root, so the one approved `cd` carried the rest of the
-  session out of the project unprompted.
+  session out of the project unprompted. Within one line the same holds for a
+  `cd` that names no directory: a bare `cd` goes home and `cd -` goes back, so
+  either counts as touching a protected path (`cd && cat .bash_history` used
+  to be two read-only builtins, auto-allowed in every mode).
 - **A recursive read is gated by what it reaches** (`security/sweep.py`).
   `grep -r KEY .` names `.`, which is not protected, and used to print `.env`
   and `.git/config` on the way through — the sweep the `grep` tool was fixed

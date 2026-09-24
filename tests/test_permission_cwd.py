@@ -96,3 +96,20 @@ async def test_the_loop_hands_the_engine_the_shell_it_moved(project):
     )
     assert asked == ["cat notes.txt"]
     assert is_error and "Permission denied" in content
+
+
+@pytest.mark.parametrize("command", [
+    "cd && cat .bash_history", "cd; cat .aws/credentials", "cd - && ls", "cd -- && ls",
+    "cd -P && ls", "cd",
+])
+def test_a_cd_that_names_no_directory_leaves_the_project(command, project):
+    """A bare `cd` goes home and `cd -` goes back; the rest of the line reads
+    there, while every relative path in it was resolved against the project.
+    Both builtins are read-only, so this ran unprompted in every mode."""
+    assert engine(root=project).evaluate("bash", command) == Decision.ask
+    assert engine(Mode.plan, root=project).evaluate("bash", command) == Decision.ask
+    assert engine(Mode.dontask, root=project).evaluate("bash", command) == Decision.deny
+
+
+def test_a_cd_into_the_project_stays_unprompted(project):
+    assert engine(root=project).evaluate("bash", "cd src && ls") == Decision.allow

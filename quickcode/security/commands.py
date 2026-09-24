@@ -12,9 +12,11 @@ from the first word was often the wrong one:
 - **it writes.** ``tree -o FILE`` and ``file -C`` write files; ``rg --pre``
   and ``rg --hostname-bin`` run programs. Each is on the read-only list, and
   each lost its auto-allow here (``Analysis.unsafe_read_only``).
-- **it rewrites git's own configuration** (``git config core.pager ...``),
-  which is how a later, innocent ``git log`` runs a program.
-  (``Analysis.writes_protected``)
+- **it touches a protected place without naming it.** ``git config
+  core.pager ...`` rewrites ``.git/config``, which is how a later, innocent
+  ``git log`` runs a program; a bare ``cd`` (or ``cd -``) moves the shell to
+  the home directory (or wherever it was before), where the rest of the line
+  then reads. (``Analysis.touches_protected``)
 - **it hides what git will run.** ``git -c <key>=<value>`` sets any of the
   dozens of configuration keys that name a program; ``--exec-path``,
   ``--git-dir`` and ``--work-tree`` point git at code or configuration that is
@@ -105,7 +107,7 @@ class Analysis:
     inner: list[str] = field(default_factory=list)
     opaque: bool = False
     unsafe_read_only: bool = False
-    writes_protected: bool = False
+    touches_protected: bool = False
     sweep: Sweep | None = None
 
 
@@ -301,6 +303,11 @@ def analyze(words: list[str], *, base: Path | None = None) -> Analysis:
         if any(a == "--recursive" or "r" in _short_cluster(a) for a in args):
             roots = tuple(a for a in args if not a.startswith("-"))
             result.sweep = Sweep(roots=roots, hidden=True, follow=True)
+    elif name == "cd":
+        # No directory is the home directory, `-` is the previous one: neither
+        # is the project, and the rest of the line runs there.
+        operands = [a for a in args if a == "-" or not a.startswith("-")]
+        result.touches_protected = not operands or "-" in operands
     elif name == "tree":
         result.unsafe_read_only = any(
             set(_short_cluster(a)) & {"o", "R"} for a in args
@@ -492,7 +499,7 @@ def _git(args: list[str], result: Analysis, base: Path | None) -> None:
         positional = [a for a in sub_args if not a.startswith("-")]
         reads = any(a in _GIT_CONFIG_READS for a in sub_args)
         writes = any(a in _GIT_CONFIG_WRITES for a in sub_args)
-        result.writes_protected = writes or (not reads and len(positional) >= 2)
+        result.touches_protected = writes or (not reads and len(positional) >= 2)
     elif sub in ("clone", "init") and any(
         a in ("-c", "--config") or _long(a, "--template", "--config") is not None
         for a in sub_args

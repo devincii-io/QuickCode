@@ -550,9 +550,10 @@ class PermissionEngine:
         #    dedicated read tool. Every argument is a potential path; ordinary
         #    words resolve inside the project and stay harmless.
         # `git config` writes `.git/config`, the file every later git command
-        # takes its pager, editor and hooks path from.
+        # takes its pager, editor and hooks path from; a bare `cd` moves the
+        # rest of the line to the home directory.
         if (
-            analysis.writes_protected
+            analysis.touches_protected
             or (scope.base != self.root and scope.boundary.is_protected(str(scope.base)))
             or self._names_protected(tokens[idx:], lexed, scope)
             or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep, scope))
