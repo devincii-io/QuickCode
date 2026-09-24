@@ -78,27 +78,39 @@ export function sheetOpen() { return stack.length > 0; }
 
 // ---- confirm dialog -------------------------------------------------------
 
-/** The `confirm` tier. `reason` is the server's own words about what breaks —
- *  never a bare "are you sure?". Resolves true when the user goes ahead. */
-export function confirmRisk({ title, what, reason, applyLabel = "Change it anyway" }) {
+// A sheet with a no and a yes; resolves true only for the yes. Every other way
+// out (the no, ✕, Escape, the backdrop) closes the sheet, which answers false.
+function ask(titleHtml, bodyHtml, { no, yes, yesClass }) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (ok) => { if (!done) { done = true; resolve(ok); } };
-    const s = sheet(
-      `<span class="tier tier-confirm">confirm</span> ${esc(title || "Confirm change")}`,
-      `<div class="cf-what">${what || ""}</div>
-       <div class="cf-reason"><span class="cf-reason-mark">!</span><div>${
-         esc(reason || "This changes how the agent behaves.")}</div></div>
-       <div class="cf-tail">Nothing has been saved yet. Going ahead applies the
-         change now and it takes effect for new turns.</div>`,
-      `<button class="btn" data-cancel>Keep it as it is</button>
-       <button class="btn primary" data-apply>${esc(applyLabel)}</button>`,
-    );
+    const s = sheet(titleHtml, bodyHtml,
+      `<button class="btn" data-cancel>${esc(no)}</button>
+       <button class="btn ${yesClass}" data-apply>${esc(yes)}</button>`);
     s.onSheetClose(() => finish(false));
     s.querySelector("[data-cancel]").addEventListener("click", () => { finish(false); s.closeSheet(); });
     s.querySelector("[data-apply]").addEventListener("click", () => { finish(true); s.closeSheet(); });
     s.querySelector("[data-apply]").focus();
   });
+}
+
+/** The `confirm` tier. `reason` is the server's own words about what breaks —
+ *  never a bare "are you sure?". Resolves true when the user goes ahead. */
+export function confirmRisk({ title, what, reason, applyLabel = "Change it anyway" }) {
+  return ask(
+    `<span class="tier tier-confirm">confirm</span> ${esc(title || "Confirm change")}`,
+    `<div class="cf-what">${what || ""}</div>
+     <div class="cf-reason"><span class="cf-reason-mark">!</span><div>${
+       esc(reason || "This changes how the agent behaves.")}</div></div>
+     <div class="cf-tail">Nothing has been saved yet. Going ahead applies the
+       change now and it takes effect for new turns.</div>`,
+    { no: "Keep it as it is", yes: applyLabel, yesClass: "primary" });
+}
+
+/** ui/modal.js confirmModal for a question asked from inside a sheet, which a
+ *  modal would wipe away with the rest of the modal root. `body` is HTML. */
+export function confirmSheet({ title, body, confirm = "Confirm", danger = true }) {
+  return ask(esc(title), body, { no: "Cancel", yes: confirm, yesClass: danger ? "danger" : "primary" });
 }
 
 // ---- the raw view ---------------------------------------------------------

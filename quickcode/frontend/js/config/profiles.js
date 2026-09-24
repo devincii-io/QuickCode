@@ -27,6 +27,7 @@
 import { MODE_IDS, MODES, modeLabel } from "../modes.js";
 import { esc } from "../util.js";
 import { flash } from "../settings/ui.js";
+import { confirmModal } from "../ui/modal.js";
 import { problemsCardHtml, wireProblems } from "./problems.js";
 import { explainErrorHtml, explainHtml, explainer } from "../help/explain.js";
 
@@ -463,10 +464,13 @@ function wireList(host, ctx) {
       return;
     }
     if (del) {
-      if (!window.confirm(
-        `Delete the profile “${del.dataset.delete}” from ${del.dataset.scope} `
-        + `settings? If it shadows a built-in of the same name, the built-in `
-        + `comes back.`)) return;
+      const sure = await confirmModal({
+        title: `Delete the profile “${del.dataset.delete}”?`,
+        body: `<p>It is removed from ${esc(del.dataset.scope)} settings. If it shadows a
+          built-in of the same name, the built-in comes back.</p>`,
+        confirm: "Delete",
+      });
+      if (!sure) return;
       try {
         await ctx.api.deleteProfile(del.dataset.delete, del.dataset.scope);
         await renderProfiles(host, ctx, "");
@@ -554,7 +558,11 @@ function wireEditor(host, ctx, { trusted }) {
       // the server spelled out what saving would do, so the confirmation is
       // about that sentence rather than about a generic "are you sure".
       if (/^409:/.test(err.message) || /built-in profile/.test(text)) {
-        if (!window.confirm(`${text}\n\nWrite the copy anyway?`)) {
+        const sure = await confirmModal({
+          title: "Write the copy anyway?", body: `<p>${esc(text)}</p>`,
+          confirm: "Write the copy", danger: false,
+        });
+        if (!sure) {
           btn.disabled = false;
           return;
         }

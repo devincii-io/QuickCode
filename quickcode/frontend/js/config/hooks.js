@@ -22,7 +22,8 @@
 import { renderJson } from "../json_view.js";
 import { flash } from "../settings/ui.js";
 import { h } from "../ui/dom.js";
-import { fmtMs } from "../util.js";
+import { confirmModal } from "../ui/modal.js";
+import { esc, fmtMs } from "../util.js";
 import { problemsCardHtml, wireProblems } from "./problems.js";
 import {
   EVENTS, PLACES, STATUS, checkDraft, defaultTool, draftBody, eventInfo, fileLabel,
@@ -213,8 +214,13 @@ function card(ctx, hook) {
 }
 
 async function remove(ctx, hook, btn) {
-  if (!window.confirm(`Delete this ${hook.event} hook from ${fileLabel(hook.scope, hook.file)}?`
-      + `\n\n${hook.command}`)) return;
+  const sure = await confirmModal({
+    title: `Delete this ${hook.event} hook?`,
+    body: `<p>It is removed from ${esc(fileLabel(hook.scope, hook.file))}:</p>
+      <p><code>${esc(hook.command)}</code></p>`,
+    confirm: "Delete",
+  });
+  if (!sure) return;
   btn.disabled = true;
   try {
     await ctx.api.deleteHook(hook.id, hook.file);
