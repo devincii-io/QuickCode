@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import ORCHESTRATOR_ID
-from quickcode.kernel.orchestrator import resolve_orchestrator
-from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.server.manager import ConversationManager
+from quickcode.server.workbench.resolution import live_inputs, resolve_under
 from quickcode.server.workbench.view import identity
 from quickcode.subagents.definitions import load_defs
 
@@ -24,13 +24,9 @@ def agents_payload(manager: ConversationManager) -> dict[str, Any]:
     cwd = Path(manager.cwd)
     preset = preset_module.resolve(cwd)
     defs = load_defs(cwd)
-    pool = session_pool(cwd, list(manager.registry_factory().tools.values()))
-    limits = runtime_limits(cwd)
-
-    orchestrator = resolve_orchestrator(
-        pool=pool, preset=preset, defs=defs, cwd=cwd, max_depth=limits.max_depth,
-        resolve_model=manager.resolve_role,
-    )
+    inputs = live_inputs(manager, preset=preset, defs=defs)
+    orchestrator, _, _ = resolve_under(manager, ORCHESTRATOR_ID, "", inputs)
+    under_orchestrator = replace(inputs, orchestrator=orchestrator)
     rows = [{
         **identity(ORCHESTRATOR_ID, None, preset),
         "tool_count": len(orchestrator.tools),
@@ -43,11 +39,7 @@ def agents_payload(manager: ConversationManager) -> dict[str, Any]:
         "problems": len(orchestrator.problems),
     }]
     for agent_id in sorted(k for k in defs if k != ORCHESTRATOR_ID):
-        child = resolve_composition(
-            agent_id, pool=pool, preset=preset, defs=defs, cwd=cwd,
-            parent=orchestrator, depth=0, max_depth=limits.max_depth,
-            resolve_model=manager.resolve_role,
-        )
+        child, _, _ = resolve_under(manager, agent_id, "", under_orchestrator)
         rows.append({
             **identity(agent_id, defs[agent_id], preset),
             "tool_count": len(child.tools),

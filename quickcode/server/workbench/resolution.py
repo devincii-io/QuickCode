@@ -15,7 +15,7 @@ from typing import Any
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import ORCHESTRATOR_ID, Resolved
 from quickcode.kernel.orchestrator import resolve_orchestrator
-from quickcode.kernel.resolve import resolve_composition
+from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
 from quickcode.server.manager import ConversationManager
 from quickcode.subagents.definitions import AgentDef
 
@@ -32,6 +32,20 @@ class Inputs:
     # "resolve it from ``preset``", which is what a live view does; a session
     # hands its frozen one.
     orchestrator: Resolved | None = None
+
+
+def live_inputs(
+    manager: ConversationManager, *, preset: Any, defs: dict[str, AgentDef],
+    max_depth: int | None = None,
+) -> Inputs:
+    """What an agent resolves against right now: the settings files as they
+    are, and this install's pool as a session opened now would see it."""
+    cwd = Path(manager.cwd)
+    return Inputs(
+        preset=preset, defs=defs,
+        pool=session_pool(cwd, list(manager.registry_factory().tools.values())),
+        max_depth=runtime_limits(cwd).max_depth if max_depth is None else max_depth,
+    )
 
 
 def session_inputs(conv: Any) -> Inputs | None:

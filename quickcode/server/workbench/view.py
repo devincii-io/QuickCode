@@ -15,11 +15,16 @@ from quickcode.core.permissions import Mode
 from quickcode.kernel import preset as preset_module
 from quickcode.kernel.composition import ORCHESTRATOR_ID, Resolved
 from quickcode.kernel.manifest import is_shipped_agent
-from quickcode.kernel.resolve import runtime_limits, session_pool
+from quickcode.kernel.resolve import runtime_limits
 from quickcode.server.manager import ConversationManager
 from quickcode.server.workbench.prompt_view import orchestrator_prompt, subagent_prompt
 from quickcode.server.workbench.provenance import last_prov, prov_json
-from quickcode.server.workbench.resolution import Inputs, resolve_under, session_inputs
+from quickcode.server.workbench.resolution import (
+    Inputs,
+    live_inputs,
+    resolve_under,
+    session_inputs,
+)
 from quickcode.server.workbench.tool_rows import (
     grant_footer,
     pool_rows,
@@ -78,18 +83,14 @@ def resolve_view(
     """
     cwd = Path(manager.cwd)
     limits = runtime_limits(cwd)
-    live_inputs = Inputs(
-        preset=preset, defs=defs,
-        pool=session_pool(cwd, list(manager.registry_factory().tools.values())),
-        max_depth=limits.max_depth,
-    )
+    now = live_inputs(manager, preset=preset, defs=defs, max_depth=limits.max_depth)
     is_orchestrator = agent_id == ORCHESTRATOR_ID
-    inputs = session or live_inputs
+    inputs = session or now
     defn = inputs.defs.get(agent_id)
     if not is_orchestrator and defn is None:
         raise HTTPException(404, f"no agent {agent_id!r} in this project")
 
-    live, parent, depth = resolve_under(manager, agent_id, parent_id, live_inputs)
+    live, parent, depth = resolve_under(manager, agent_id, parent_id, now)
     if session is not None and frozen is None:
         frozen, parent, depth = resolve_under(manager, agent_id, parent_id, session)
     pool = inputs.pool
