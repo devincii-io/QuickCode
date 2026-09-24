@@ -36,6 +36,9 @@ export function closeModal() {
 // Escape, the backdrop, or a ✕ — "no" is the Deny button, which the agent hears.
 export function modal(title, bodyHtml, footHtml = "", { dismissible = true } = {}) {
   closeModal();
+  // A dropdown or the command palette sits above the backdrop; a dialog that
+  // opens under one (a permission review arriving mid-menu) would be covered.
+  document.querySelectorAll(".menu").forEach((menu) => (menu.closeMenu ? menu.closeMenu() : menu.remove()));
   const m = el(`<div class="modal-backdrop"><div class="modal" tabindex="-1"
        role="dialog" aria-modal="true" aria-label="${esc(String(title))}">
     <div class="modal-head"><span>${title}</span>
