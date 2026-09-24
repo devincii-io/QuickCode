@@ -5,6 +5,17 @@ Phase 2 of `PLAN-AUTHORING-AND-COMPOSITION.md` landed in `kernel/spec.py` and
 own. Nothing here is blocking: the payload exists and is complete, it is simply
 not serialised or rendered yet.
 
+> **Status — verified against the tree on 2026-09-24.** The text below is the
+> original handoff, kept as the record of what was asked.
+>
+> | § | Item | Status |
+> |---|---|---|
+> | 1 | `plugin_json` emits `summary`/`affects`/`audience`/`consequence`/`locked_because`/`recourse`/`docs_anchor`, and per setting `affects`/`effect_detail`/`example` plus the `locked_because_for`/`recourse_for` pair | **Landed** — `kernel/registry.py:plugin_json` |
+> | 2 | Six questions rendered in fixed order, tier rules | **Landed** — `js/config/explain.js`, `detail.js`. The per-setting `effect_detail`, `affects` chips and `example` placeholder, and a DOCS row for `docs_anchor`, render as of 2026-09-24 (`js/settings/fields.js`, `explain.js`) |
+> | 3 | Six knobs rendered and never read | **Landed** — `kernel/resolve.py:runtime_limits` reads all six (and `max_parallel`); the loop, compactor and spawner run on the session's frozen `RuntimeLimits` |
+> | 4 | `audience` is `"orchestrator"` on all sections; `PromptSection.body()` override quirk | **Still true** — `_SECTION_AUDIENCE` is unchanged and `prompts/subagent.py` is still a template (plan §1.14 not done), so the prose remains accurate |
+> | 5 | Corrections inside `manifest.py` | Record only |
+
 ---
 
 ## 1. `kernel/registry.py` — emit the new fields (owner: kernel)

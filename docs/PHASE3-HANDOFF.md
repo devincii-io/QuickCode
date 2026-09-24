@@ -4,6 +4,31 @@ What landed, what the frontend needs from the backend that does not exist yet,
 and what the next passes should pick up. Written against
 `docs/PLAN-AUTHORING-AND-COMPOSITION.md` §4 Phase 3 and `docs/design/UX.md`.
 
+> **Status of "what the backend still owes the view" — verified against the
+> tree on 2026-09-24.** Everything listed below as owed has landed; the rest of
+> this document is the original handoff, kept as the record.
+>
+> | Owed item | Status | Where (tests) |
+> |---|---|---|
+> | Explanation fields on `plugin_json` | Landed | `kernel/registry.py` |
+> | `SettingSpec.affects`/`effect_detail`/`example`, `docs_anchor` rendered | Landed 2026-09-24 | `js/settings/fields.js`, `js/config/explain.js` |
+> | Disabled Duplicate "arrives in the next pass" | Gone — the button is Edit file, Duplicate, or a refusal with its reason and recourse (`explain.js:dupHtml`, `kinds.js:duplicateRefusal`) | |
+> | Recourse buttons | Landed; `settings` recourses now open the named plugin's page (they used to land on the Tools list) | `kinds.js:recourseHref` (`tests/js/config_routes.test.mjs`) |
+> | `GET /api/kernel/agents` | Landed (in `server/agents_api.py`, not `kernel_api.py`) | `tests/test_workbench.py` |
+> | `GET /api/kernel/agents/{id}/resolved` | Landed; `?conv=` for a subagent resolves against the session's snapshot since 2026-09-24 | `test_workbench.py`, `test_kernel_resolution.py` |
+> | `POST /api/kernel/agents/{id}/preview` | Landed | `test_workbench.py` |
+> | `GET /api/prompt?conv=` frozen vs live | Landed 2026-09-24 — `server/prompt_api.py`; live now resolves the active composition; the Prompt page has a Next session / This session switch and the workbench a This session / Show live link | `tests/test_kernel_api.py` |
+> | Authored CRUD (`/api/kernel/authored…`, validate, dry-run) | Landed | `server/authoring_api.py` (`tests/test_authoring.py`) |
+> | `POST /api/kernel/plugins/{id}/duplicate` | Landed; agents from `.quickcode/agents/` duplicate too since 2026-09-24 | `test_authoring.py`, `test_kernel_api.py` |
+> | `#/config/new/{agent,tool,prompt}` | Landed — create a real file and open the editor | `js/config/create/` |
+> | `#/config/new/composition` | Landed 2026-09-24 — a named copy of an existing composition | `js/config/create/composition.js`, `test_kernel_api.py` |
+> | `used_by` + USED BY block | Landed | `registry.used_by`, `js/config/usedby.js` (`tests/test_usedby.py`) |
+> | Provider model count / endpoint | Landed 2026-09-24 — `metadata.endpoint` (credentials stripped), `metadata.model_count` | `kernel/facts.py`, `test_kernel_api.py` |
+> | Tool `signature` on the payload | Landed 2026-09-24 — `metadata.signature`; the per-tool fetch is a fallback | `test_kernel_api.py` |
+> | Tools badging `locked` | Resolved — `SettingSpec.fact` keeps `read_only` out of `tier()` | `kernel/spec.py` |
+> | Delete `js/settings/{index,plugins,presets,prompt}.js` | Done — only `fields.js`, `general.js`, `ui.js` remain | |
+> | Live WebSocket surviving the config switch | Still not verified in a browser | |
+
 ## What landed
 
 - `#view-config` is a real third view, peer of `#view-home` and

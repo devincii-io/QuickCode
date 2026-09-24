@@ -9,6 +9,30 @@ this document wins; the design docs stay as the reasoning behind the choice.
 Written for an implementer who has not read the three sources. Every claim is
 grounded in the current tree.
 
+> **Status — verified against the tree on 2026-09-24.** The plan below is kept
+> as written; this block records what exists.
+>
+> - **Phases 1–6 landed.** `kernel/{problems,composition,resolve}.py`,
+>   the explanation fields and prose, the configuration view, the workbench
+>   (`/resolved`, `/preview`), `kernel/authoring/*` with command tools, and the
+>   creation and duplicate flows. The Phase 4 routes live in
+>   `server/agents_api.py` and the Phase 5/6 routes in `server/authoring_api.py`,
+>   not in one `kernel_api.py`.
+> - **Phase 7:** `used_by` and the header search landed; bundles, entry-point
+>   plugins and import/export stay out, as §7 says.
+> - **Routes beyond §3.2** that shipped: `PUT /api/kernel/agents/{id}/composition`,
+>   `POST /api/kernel/compositions/{id}/derive`,
+>   `POST /api/kernel/conversations/{id}/composition` (the addendum's switch),
+>   `POST /api/kernel/authored/dry-run`, and `GET /api/kernel/problems`, which
+>   §3.3 cut but which exists. `GET /api/prompt?conv=` landed on 2026-09-24
+>   (`server/prompt_api.py`).
+> - **Not landed:** `POST /api/projects/{pid}/mcp/reload`; §1.14 (the subagent
+>   prompt is still the `prompts/subagent.py` template, so no prompt section or
+>   `applies_to: [subagents]` reaches a subagent); `Composition.sections` and
+>   section-granting bindings are resolved and shown but not read by
+>   `prompts/sections.compose()`, which only consumes `section_bodies`; the
+>   headless CLI (`-p`) does not resolve a composition at all.
+
 **Already done, do not re-plan.** `SubagentDeps.child()` takes `tool_pool=`
 and `spawn_subagent` passes `tool_pool=list(registry.tools.values())` — the
 child's own granted tools — down to the grandchild (`subagents/runner.py:82`,
