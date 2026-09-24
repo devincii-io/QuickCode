@@ -94,7 +94,7 @@ heartbeat every 15 s so silence means the connection is gone.
 
 Client → server frames are `user_message`, `interrupt`, `set_mode`,
 `set_model`, `compact`, `permission_decision` and `plan_decision`
-(`server/app.py::_dispatch`).
+(`server/ws.py::_dispatch`).
 
 ## Dialogs the agent waits on
 

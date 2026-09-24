@@ -385,9 +385,9 @@ def _param_json(param: Param) -> dict[str, Any]:
 
 
 async def _json(request: Request) -> dict[str, Any]:
-    from quickcode.server.app import _read_json
+    from quickcode.server.http import read_json
 
-    body = await _read_json(request)
+    body = await read_json(request)
     if body in (None, ""):
         return {}
     if not isinstance(body, dict):

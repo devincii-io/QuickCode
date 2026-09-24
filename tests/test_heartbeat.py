@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quickcode.server import app as app_module
+from quickcode.server import ws as ws_module
 from tests.test_server import FakeProvider, make_client, make_manager, recv_until, ws_connect
 
 
 def test_a_quiet_socket_is_sent_a_heartbeat(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(app_module, "HEARTBEAT_S", 0.05)
+    monkeypatch.setattr(ws_module, "HEARTBEAT_S", 0.05)
     manager = make_manager(tmp_path, FakeProvider([]))
     with make_client(manager) as client:
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
@@ -31,7 +31,7 @@ def test_a_quiet_socket_is_sent_a_heartbeat(tmp_path: Path, monkeypatch) -> None
 def test_a_heartbeat_is_never_part_of_the_transcript(tmp_path: Path, monkeypatch) -> None:
     """The session log is what replays as a transcript, and a keep-alive is not
     something that happened in the conversation."""
-    monkeypatch.setattr(app_module, "HEARTBEAT_S", 0.05)
+    monkeypatch.setattr(ws_module, "HEARTBEAT_S", 0.05)
     manager = make_manager(tmp_path, FakeProvider([]))
     with make_client(manager) as client:
         conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
