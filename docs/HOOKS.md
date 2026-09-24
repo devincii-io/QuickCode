@@ -241,6 +241,7 @@ the existing ones:
   "hook_id": "hook.cmd.user.pre_tool_use.4e1f0a9c2b",
   "scope": "user",
   "tool": "bash",
+  "call_id": "call_01",
   "decision": "block",
   "exit_code": 2,
   "ms": 84,

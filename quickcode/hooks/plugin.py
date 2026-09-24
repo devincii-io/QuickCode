@@ -165,6 +165,7 @@ class CommandHooks(LoopHook):
             "agent_name": agent.name,
             **fields,
         }
+        call_id = str(fields.get("tool_use_id", ""))
 
         async def one(hook: HookCommand) -> Verdict:
             try:
@@ -172,14 +173,15 @@ class CommandHooks(LoopHook):
                                          timeout_s=hook.timeout_s)
             except asyncio.CancelledError:
                 agent.bus.emit(HookRun(event=event, outcome="interrupted", hook_id=hook.id,
-                                       scope=hook.scope, tool=tool))
+                                       scope=hook.scope, tool=tool, call_id=call_id))
                 raise
             verdict = interpret(event, exit_code=done.exit_code, stdout=done.stdout,
                                 stderr=done.stderr, timed_out=done.timed_out,
                                 timeout_s=hook.timeout_s, spawn_error=done.spawn_error)
             agent.bus.emit(HookRun(
                 event=event, outcome=verdict.outcome, hook_id=hook.id, scope=hook.scope,
-                tool=tool, decision=verdict.decision, exit_code=done.exit_code,
+                tool=tool, call_id=call_id, decision=verdict.decision,
+                exit_code=done.exit_code,
                 ms=done.ms, reason=verdict.reason,
                 notice=_notice(event, tool, verdict),
             ))

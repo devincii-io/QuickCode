@@ -200,8 +200,8 @@ def test_pre_tool_use_exit_2_blocks_the_call_and_tells_the_model_why(tmp_path):
     assert "not in this repo" in result
 
     [run] = runs(agent)
-    assert (run.event, run.outcome, run.tool, run.exit_code) == (
-        "PreToolUse", "block", "write", 2)
+    assert (run.event, run.outcome, run.tool, run.call_id, run.exit_code) == (
+        "PreToolUse", "block", "write", "c1", 2)
     [payload] = script.payloads()
     assert payload["hook_event_name"] == "PreToolUse"
     assert payload["tool_name"] == "write"

@@ -37,6 +37,8 @@ class HookRun:
     hook_id: str = ""
     scope: str = ""
     tool: str = ""
+    # The tool call this run was about, so a reader can put it beside the call.
+    call_id: str = ""
     # The decision the hook stated, verbatim ("allow" | "deny" | "ask" | "block").
     decision: str = ""
     exit_code: int | None = None
