@@ -144,7 +144,7 @@ Rules that matter:
 
 - **The loop is bounded, not `while True`.** The counter *is* the guard: the budget is a `range`, and the extra iteration at `round_no == max_rounds` exists to deliver the wrap-up reminder and take one last answer.
 - **All tool results for a round are pushed together** — splitting them across turns trains the model out of parallel calls. They go in as *consecutive* `role: "tool"` messages, one per `tool_call_id`, in call order, which is what the wire format requires; there is no single combined message.
-- **Read-only tools run concurrently** (`asyncio.gather`); mutating tools sequentially in call order.
+- **Consecutive read-only tools run concurrently** (`asyncio.gather`); any other call is a barrier that runs alone, in call order — so a `read` issued after a `write` in the same response sees the write.
 - **Failed tools still return a result** with `is_error: true` so the model can recover.
 - **Loop guard:** `runtime.agent_loop.max_rounds` tool rounds per turn, then a system reminder to wrap up. 50 is the default (`RuntimeLimits.max_rounds` in `kernel/composition.py`, declared as a setting in `kernel/manifest.py`), not a constant — it is resolved per session by `kernel/resolve.runtime_limits` and frozen for the turn, so editing the setting mid-turn cannot move the budget under a turn already counting.
 - **The loop knows no tool by name.** Which tools are offered is decided by hooks (`visible_tools`), a hook may answer a call itself (`intercept`, which is how plan review works), and how a call is gated comes from the tool's own `PermissionSpec`. Plan mode used to be an `if` in this file; it is now `PlanModeHook` in `core/hooks.py`.
