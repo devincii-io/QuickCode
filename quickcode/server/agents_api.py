@@ -46,6 +46,7 @@ from quickcode.kernel.composition import (
     Resolved,
 )
 from quickcode.kernel.manifest import is_shipped_agent
+from quickcode.kernel.orchestrator import resolve_orchestrator
 from quickcode.kernel.patterns import is_glob
 from quickcode.kernel.resolve import (
     expand_tool_pattern,
@@ -491,23 +492,19 @@ def _resolve_under(
     the spawner's depth. Depth 0 is where the pool carve-out lives, which is
     what makes "the orchestrator may not edit files, but its children may"
     expressible at all."""
-    cwd = Path(manager.cwd)
-
-    def resolve(target: str, parent: Resolved | None, depth: int) -> Resolved:
-        return resolve_composition(
-            target, pool=inputs.pool, preset=inputs.preset, defs=inputs.defs,
-            cwd=cwd, parent=parent, depth=depth, max_depth=inputs.max_depth,
-            resolve_model=manager.resolve_role,
-        )
-
+    shared: dict[str, Any] = {
+        "pool": inputs.pool, "preset": inputs.preset, "defs": inputs.defs,
+        "cwd": Path(manager.cwd), "max_depth": inputs.max_depth,
+        "resolve_model": manager.resolve_role,
+    }
     if agent_id == ORCHESTRATOR_ID:
-        return resolve(agent_id, None, 0), None, 0
-    parent = inputs.orchestrator or resolve(ORCHESTRATOR_ID, None, 0)
+        return resolve_orchestrator(**shared), None, 0
+    parent = inputs.orchestrator or resolve_orchestrator(**shared)
     depth = 0
     if parent_id and parent_id != ORCHESTRATOR_ID:
-        parent = resolve(parent_id, parent, 0)
+        parent = resolve_composition(parent_id, parent=parent, depth=0, **shared)
         depth = 1
-    return resolve(agent_id, parent, depth), parent, depth
+    return resolve_composition(agent_id, parent=parent, depth=depth, **shared), parent, depth
 
 
 def _resolve_view(
@@ -721,9 +718,8 @@ def _agents_payload(manager: ConversationManager) -> dict[str, Any]:
     pool = session_pool(cwd, list(manager.registry_factory().tools.values()))
     limits = runtime_limits(cwd)
 
-    orchestrator = resolve_composition(
-        ORCHESTRATOR_ID, pool=pool, preset=preset, defs=defs, cwd=cwd,
-        parent=None, depth=0, max_depth=limits.max_depth,
+    orchestrator = resolve_orchestrator(
+        pool=pool, preset=preset, defs=defs, cwd=cwd, max_depth=limits.max_depth,
         resolve_model=manager.resolve_role,
     )
     rows = [{
