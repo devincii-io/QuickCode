@@ -334,6 +334,10 @@ def _run_subprocess(
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            # POSIX: a process group of its own (pgid == pid), so _kill_tree
+            # reaches `cmd &` and not just the shell. Ignored on Windows,
+            # where taskkill /T walks the tree instead.
+            start_new_session=True,
         )
     except OSError as exc:
         return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
@@ -404,10 +408,16 @@ def _kill_tree(pid: int, ctx: ToolCtx) -> None:
         import os
         import signal
 
+        # The whole group the command runs in (see _run_subprocess). By id
+        # rather than via getpgid(pid): while any member lives the group id
+        # cannot be reused, whereas `pid` may already name somebody else.
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except Exception:
-            pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
 
 
 def _cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:

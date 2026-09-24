@@ -12,6 +12,7 @@ the tool kills the process tree on its way out.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 import pytest_asyncio
 
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.tools import bash as bash_mod
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.bash import BashTool
 from quickcode.tools.registry import default_registry
@@ -123,3 +125,71 @@ def test_a_protected_path_in_a_command_no_longer_stops_a_yolo_run(tmp_path: Path
     assert engine.evaluate("bash", 'find / -name "*nimocam*" -type f 2>/dev/null') == (
         Decision.allow
     )
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+@pytest.fixture(params=["pty", "pipes"])
+def command_path(request, monkeypatch):
+    """Both ways a command can run on POSIX: the pty, and the plain-pipe
+    fallback taken when the pty cannot be had."""
+    if request.param == "pipes":
+        monkeypatch.setattr(bash_mod, "_use_pty", lambda ctx: False)
+    return request.param
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX process groups")
+async def test_stopping_a_command_also_stops_what_it_started(tmp_path, command_path) -> None:
+    """The pipe fallback killed only the shell. `sleep 100 &` (or a dev
+    server) was reparented to init and kept running, and because it still
+    held the output pipe the worker thread sat in communicate() with it."""
+    pidfile = tmp_path / "bg.pid"
+    command = f'sleep 100 & echo $! > "{pidfile.as_posix()}"; wait'
+    tool = BashTool()
+    task = asyncio.create_task(
+        tool.run(tool.Input(command=command, timeout_ms=120_000), ctx_for(tmp_path))
+    )
+    assert await await_until(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
+    child = int(pidfile.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    try:
+        assert await await_until(lambda: not _alive(child), timeout_s=5), (
+            f"the background job outlived the interrupt ({command_path})"
+        )
+    finally:
+        if _alive(child):
+            os.kill(child, 9)
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX process groups")
+async def test_a_timed_out_command_takes_its_children_with_it(tmp_path, command_path) -> None:
+    pidfile = tmp_path / "bg.pid"
+    command = f'sleep 100 & echo $! > "{pidfile.as_posix()}"; wait'
+    tool = BashTool()
+    started = time.monotonic()
+    result = await tool.run(tool.Input(command=command, timeout_ms=1500), ctx_for(tmp_path))
+    took = time.monotonic() - started
+    child = int(pidfile.read_text())
+    try:
+        assert result.is_error and "timed out" in result.content
+        assert await await_until(lambda: not _alive(child), timeout_s=5), (
+            f"the background job outlived the timeout ({command_path})"
+        )
+        # A child still holding the pipe made the fallback wait out its own
+        # five-second grace on top of the timeout.
+        assert took < 4.5, f"the timeout took {took:.1f}s to come back"
+    finally:
+        if _alive(child):
+            os.kill(child, 9)
