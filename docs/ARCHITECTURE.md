@@ -330,6 +330,51 @@ No tool can reach it, and the agent never sees what is typed there.
 - **Spend vs. context.** Each AgentInstance owns a `Ledger`, so a child's tokens reach the session only through the recorder, which bridges every subagent bus. It rolls them in with `Ledger.add_subagent`: the cumulative fields (`input_tokens`, `output_tokens`, `cached_tokens`, `cost_usd`) take them, and `last_input_tokens` / `last_output_tokens` never do. That pair is the *live context footprint* — it drives `context_pct()`, the context meter and the compaction threshold — and a subagent fills a context window of its own, so counting its request there would show a short conversation as nearly full and could trip an auto-compaction the parent never needed. `Ledger.from_events` replays the same split from the log, reading the child's usage out of the `agent_event` wrapper it is logged inside.
 - Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py` through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
 
+## Headless runs (`-p`)
+
+`quickcode -p` runs one turn on the session the app would open on the same
+project. `ConversationManager.open()` and `cli._build_agent()` both call
+`session/assemble.py::build_session`, which is the only place a session is put
+together: the store (and the resume, when `--continue` names one), the task
+board, the preset (a resumed session keeps the one it started with), the
+session pool (`kernel/resolve.session_pool`: switched-off plugins removed, the
+project's authored command tools added), the composition
+(`kernel/orchestrator.resolve_orchestrator`, or the one the session recorded),
+the runtime limits, the starting mode and rules, the tool registry and the
+permission engine, the prompt rendered from the composition's section bodies,
+the command hooks and the `AgentInstance` with the user's generation settings.
+`Session.wire` then adds the tables the agent shares with its subagents — the
+background shell jobs and the `agent` tool's deps, which carry the pool, the
+parent composition, the definitions snapshot and the preset — and
+`Session.begin_log` queues the opening `meta` record with the preset and the
+composition, so `--continue` resumes on the composition the run started with.
+
+The starting mode is `--mode`, else the active permission profile's, else the
+composition's `default_mode`, else the `runtime.permissions` setting, capped at
+the composition's ceiling. Yolo that nothing armed (`--yolo`, `allow_yolo`)
+starts in ask instead and says so: `--mode yolo` alone is an argument error in
+`-p`, anything else is a note on stderr there and a system note in the app.
+
+Before this was one path, `-p` ran the unfiltered default registry — a disabled
+plugin, an authored tool and the whole composition, including its spawn list
+and model allow-lists, meant nothing there — rendered its prompt from other
+inputs, named the backend differently, ignored the user's `max_tokens` and
+`temperature`, recorded no composition, and resolved its subagents against no
+pool, parent or definitions.
+
+What still differs is what drives the session, not what it is:
+
+- **Tools in the pool.** The app adds entry-point plugin tools and the
+  project's MCP servers (`server/projects.py`); `-p` starts neither, so its pool
+  is the built-ins plus authored command tools.
+- **Prompts and plan review.** The app answers them over the WebSocket; `-p`
+  refuses every permission prompt (`docs/PERMISSIONS.md#headless-mode`) and
+  records a plan without review. The prompt gains `<headless_mode>`.
+- **Detached work.** Nothing outlives the one turn, so a `background: true`
+  delegation runs inline and `_run_headless` kills any shell job left running.
+- **Context window.** The app reads it off the catalog; `-p` fetches it
+  alongside the turn rather than in front of it.
+
 ## Efficiency checklist
 
 1. **Cache-stable prefix:** request order `tools → system → history`, byte-identical across turns. No timestamps/randomness in the system prompt; dynamic state travels as `<system-reminder>` blocks in user messages.

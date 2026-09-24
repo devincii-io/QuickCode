@@ -1,8 +1,8 @@
 """QuickCode CLI entry point.
 
-Parses arguments, assembles the agent (provider, registry, permissions,
-history), and either runs one headless turn (``-p/--print``) or launches the
-local web app (FastAPI on 127.0.0.1 in a native app window).
+Parses arguments and either runs one headless turn (``-p/--print``) on the
+session ``session/assemble.py`` builds -- the one the app would open -- or
+launches the local web app (FastAPI on 127.0.0.1 in a native app window).
 """
 
 from __future__ import annotations
@@ -16,13 +16,7 @@ from typing import TYPE_CHECKING
 
 from quickcode.config import Config, Environment
 from quickcode.core.agent import AgentInstance, PermissionOutcome, PermissionRequest
-from quickcode.core.history import History
-from quickcode.core.permissions import Mode, PermissionEngine, Rules
-from quickcode.kernel.resolve import runtime_limits
-from quickcode.kernel.state import prompt_overrides
-from quickcode.prompts.system import render_system_prompt
-from quickcode.tools.base import ReadRegistry, ToolCtx
-from quickcode.tools.registry import default_registry
+from quickcode.core.permissions import Mode
 
 if TYPE_CHECKING:
     from quickcode.session.recorder import TranscriptRecorder
@@ -140,103 +134,51 @@ def _build_agent(args: argparse.Namespace):
     cwd = _project_dir(args)
     env = Environment.detect(cwd)
     profile = config.profile
-
-    mode_str = args.mode or config.default_mode
-    try:
-        mode = Mode(mode_str)
-    except ValueError:
-        mode = Mode.ask
-
-    # The active permission profile, exactly as the server applies it: its rules
-    # merge with the project's own, and its mode is where the run starts unless
-    # `--mode` named one outright. `-c` makes no difference -- no per-session
-    # mode is stored for a resume to keep, so honouring the profile only there
-    # would mean a continued run came back wider than the one it continues.
-    # `manager.open()` draws the same two lines, at more length.
-    from quickcode.core.profiles import effective as effective_posture
-
-    posture_mode, rules, _posture = effective_posture(cwd, Rules.load(cwd), fallback=mode)
-    if not args.mode:
-        mode = posture_mode
-    mode = _armed_mode(mode, explicit=bool(args.mode), armed=args.yolo or config.allow_yolo)
+    armed = bool(args.yolo or config.allow_yolo)
+    _refuse_unarmed_yolo(args.mode, armed=armed)
 
     # Imported here rather than at module scope: this module is what `qc` and
     # the windowed entry point both load first, and a top-level import would
     # drag the provider SDKs in before anything is on screen. The same factory
     # the app uses, so `-p` talks to the backend the profile names.
+    from quickcode.kernel.resolve import session_pool
     from quickcode.plugins import loader
+    from quickcode.session import assemble
+    from quickcode.session.recorder import TranscriptRecorder
+    from quickcode.session.store import SessionStore
+    from quickcode.tools.registry import default_registry
 
     provider = loader.make_provider(profile.provider, profile.base_url, profile.api_key)
-
-    registry = default_registry()
-
-    # Session store + optional resume of the most recent conversation.
-    from quickcode.core.tasks import TaskBoard
-    from quickcode.session.store import SessionStore
 
     conv_id = None
     if args.continue_session:
         conv_id = SessionStore.most_recent(cwd)
         if conv_id is None:
             _note(f"no earlier session in {cwd}; starting a new one")
-    store = SessionStore(cwd, conv_id)
 
-    # Task board persisted per conversation.
-    board_path = cwd / ".quickcode" / "tasks" / store.conv_id / "board.json"
-    board = TaskBoard.load(board_path)
-
-    ctx = ToolCtx(
-        cwd=cwd,
-        read_registry=ReadRegistry(),
-        shell_name=env.shell_name,
-        platform=env.platform,
-        extra={"task_board": board},
+    # The session the app would open on this project -- its pool, its
+    # composition, its posture, its prompt -- assembled by the same code.
+    session = assemble.build_session(
+        cwd, config, env, provider,
+        pool=session_pool(cwd, default_registry().tools.values()),
+        conv_id=conv_id,
+        mode=args.mode,
+        model=args.model,
+        headless=True,
+        yolo_armed=armed,
+        permission_cb=_headless_permission_cb,
     )
-
-    permissions = PermissionEngine(
-        mode=mode,
-        rules=rules,
-        root=cwd,
-        yolo_accepted=bool(args.yolo),
-        specs=registry.permission_specs(),
-    )
-
-    # Subagent delegation: give the main agent (depth 0) everything the `agent`
-    # tool needs to spawn workers on the catalog's worker model.
-    from quickcode.subagents.runner import SubagentDeps
-
-    # Resolved once here, like the server does at session open, so the CLI
-    # obeys the same declared limits instead of a second set of constants.
-    limits = runtime_limits(cwd)
+    agent = session.agent
+    if session.unarmed_yolo:
+        _note("your settings, composition or permission profile ask for yolo mode, "
+              "which is not enabled (pass --yolo, or turn it on in Settings); "
+              f"running in {agent.permissions.mode.value} mode")
 
     # The trace: the same recorder the web path runs on, so a `-p` session log
     # is the same artefact a UI session leaves behind rather than a second,
     # thinner shape of one.
-    from quickcode.session.recorder import TranscriptRecorder
-
-    recorder = TranscriptRecorder(store)
-
-    # Background shell jobs work within the one turn a `-p` run has -- start a
-    # server, test against it, stop it -- and `_run_headless` kills whatever is
-    # left when that turn ends, because the process is about to.
-    from quickcode.tools.bash_jobs import BashJobs
-
-    bash_jobs = BashJobs(on_event=recorder.emit)
-    ctx.extra["bash_jobs"] = bash_jobs
-    # The same command hooks a UI session runs, on the same trust terms.
-    from quickcode.hooks import session_hooks
-
-    hooks = session_hooks(cwd, session_id=store.conv_id,
-                          transcript_path=str(store.path), resumed=bool(conv_id))
-
-    ctx.extra["subagent"] = SubagentDeps(
-        provider=provider,
-        profile=profile,
-        env=env,
-        mode_getter=lambda: permissions.mode,
-        rules_getter=lambda: permissions.rules,
-        cwd=cwd,
-        depth=0,
+    recorder = TranscriptRecorder(session.store)
+    session.wire(
         # Subagent activity belongs in the log for the same reason it does in
         # the UI: without it the trace shows a tool call and no worker. Both
         # brackets, or the trace shows a worker that starts and never stops --
@@ -244,49 +186,16 @@ def _build_agent(args: argparse.Namespace):
         # the turn to own a detached one.
         on_pane=recorder.on_subagent,
         on_done=recorder.on_subagent_done,
-        tool_pool=list(registry.tools.values()),
-        limits=limits,
-        bash_jobs=bash_jobs,
-        hooks=hooks,
+        # Background shell jobs work within the one turn a `-p` run has --
+        # start a server, test against it, stop it -- and `_run_headless`
+        # kills whatever is left when that turn ends, because the process is
+        # about to.
+        on_bash_event=recorder.emit,
     )
-
-    # Model precedence: explicit --model, then the last model picked via F2
-    # (persisted), then the catalog's orchestrator role, then the profile default.
-    model = args.model or config.last_model or profile.resolve("orchestrator")
-    provider_name = "OpenRouter" if "openrouter.ai" in profile.base_url else profile.base_url
-
-    history = History(
-        render_system_prompt(
-            env,
-            model=model,
-            provider=provider_name,
-            headless=args.print_mode,
-            plan=(mode == Mode.plan),
-            orchestration=True,
-            overrides=prompt_overrides(cwd),
-        )
-    )
-    if conv_id:
-        history.messages = store.load_messages()
-
-    agent = AgentInstance(
-        name="main",
-        provider=provider,
-        registry=registry,
-        history=history,
-        ctx=ctx,
-        permissions=permissions,
-        model=model,
-        permission_cb=_headless_permission_cb,
-        context_length=None,
-        hooks=hooks,
-        limits=limits,
-    )
-    if not conv_id:
-        store.append_meta(title="", model=model, cwd=str(cwd))
+    session.begin_log()
     # What the model already carries, so a resumed session re-persists nothing.
-    recorder.persisted = len(history.messages)
-    return agent, config, env, store, recorder
+    recorder.persisted = len(agent.history.messages)
+    return agent, config, env, session.store, recorder
 
 
 async def _warm_context_length(agent: AgentInstance) -> None:
@@ -354,23 +263,20 @@ def _project_dir(args: argparse.Namespace) -> Path:
     return path.resolve()
 
 
-def _armed_mode(mode: Mode, *, explicit: bool, armed: bool) -> Mode:
-    """``mode``, unless it is yolo and nothing armed yolo.
+def _refuse_unarmed_yolo(mode: str | None, *, armed: bool) -> None:
+    """``--mode yolo`` without ``--yolo`` (or Settings' allow_yolo) is an
+    argument error, raised before anything is built.
 
-    The rule the server applies (``manager.set_mode``/``apply_profile``): yolo
-    needs ``--yolo`` or Settings' allow_yolo, whoever asks for it. Asked for
-    outright it is an argument error; asked for by settings or a profile the
-    run falls back to ask and says so, as the server does in a system note.
+    The rule the server applies (``manager.set_mode``/``apply_posture``): yolo
+    needs arming, whoever asks for it. Asked for by settings, a composition or
+    a profile instead, the run starts in ask and says so -- the same fallback
+    ``session/assemble.py`` gives the app.
     """
-    if mode is not Mode.yolo or armed:
-        return mode
-    if explicit:
-        print("error: --mode yolo runs every tool without asking; it needs --yolo "
-              "(or allow_yolo in Settings)", file=sys.stderr)
-        raise SystemExit(2)
-    _note("your settings or permission profile ask for yolo mode, which is not "
-          "enabled (pass --yolo, or turn it on in Settings); running in ask mode")
-    return Mode.ask
+    if mode != Mode.yolo.value or armed:
+        return
+    print("error: --mode yolo runs every tool without asking; it needs --yolo "
+          "(or allow_yolo in Settings)", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def _main_headless(args: argparse.Namespace) -> int:

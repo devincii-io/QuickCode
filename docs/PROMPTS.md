@@ -294,7 +294,9 @@ triggered it. The summarization request's own usage is logged and counted.
 
 ## 5. Headless / print mode (`-p`)
 
-Same system prompt plus one appended section:
+The same system prompt the app would render for the session — the same
+composition's section bodies, and the delegation playbook only when that
+composition can spawn (`session/assemble.py`) — plus one appended section:
 
 ```xml
 <headless_mode>
