@@ -530,9 +530,21 @@ def resolve_composition(
         if not models:
             models = tuple(parent.models)
         else:
-            models = tuple(p for p in models if _admits(parent.models, p)) or tuple(
+            narrowed = tuple(p for p in models if _admits(parent.models, p)) or tuple(
                 p for p in parent.models if _admits(models, p)
             )
+            # An empty tuple means "unrestricted", so two lists that share
+            # nothing must not collapse into one: that dropped both.
+            if not narrowed:
+                problems.append(Problem(
+                    code="models_disjoint", severity="error",
+                    message=(f"agent '{agent_id}' may only run on {', '.join(models)} "
+                             f"and '{parent.id}' only on {', '.join(parent.models)}: "
+                             "no model satisfies both"),
+                    fix="Give the two allow-lists a model in common.",
+                    subject=agent_id, field="models",
+                ))
+            models = narrowed or models
         model_chain.append(Provenance(layer="parent", source=parent.id,
                                       rule=", ".join(parent.models)))
     if model_chain:

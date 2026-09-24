@@ -228,6 +228,7 @@ def builtin_defs() -> dict[str, AgentDef]:
 
 _PROJECT_DIR = Path(".quickcode") / "agents"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_BLOCK_ITEM = re.compile(r"(?:^|\s)-\s+")
 _USER_DIR = Path.home() / ".quickcode" / "agents"
 
 
@@ -380,7 +381,16 @@ def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 
 def _parse_list(raw: str) -> list[str]:
-    """Parse ``[read, glob, grep]`` or ``read, glob`` into a list."""
+    """Parse ``[read, glob, grep]``, ``read, glob`` or a YAML block list.
+
+    The frontmatter reader folds indented lines onto their key, so a block
+    list (``tools:`` then ``  - read`` / ``  - grep``) arrives as
+    ``- read - grep`` -- which ``parse_list`` took for one pattern matching
+    nothing, leaving the agent with no tools at all.
+    """
     from quickcode.kernel.authoring.format import parse_list
 
+    text = raw.strip()
+    if text.startswith("- "):
+        return [item.strip().strip("'\"") for item in _BLOCK_ITEM.split(text) if item.strip()]
     return parse_list(raw)
