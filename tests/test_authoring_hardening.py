@@ -167,3 +167,77 @@ def test_the_reserved_names_still_hold_if_the_registry_cannot_be_read(monkeypatc
     monkeypatch.setattr(registry, "core_tools", broken)
     for name in ("bash", "web_fetch", "web_search", "read"):
         assert reserved.reserved_reason(f"tool.{name}", "tool", name), name
+
+
+# ---- the store: writes that cannot half-happen ---------------------------
+
+_PROMPT = "---\nkind: prompt\nname: house\ndescription: x\n---\n\n<house>text</house>\n"
+
+
+def test_a_save_that_cannot_be_encoded_leaves_the_file_as_it_was(project):
+    """JSON can carry a lone surrogate. write_text truncated the file and then
+    failed to encode, so the plugin was replaced by an empty file."""
+    from quickcode.kernel.authoring import store
+
+    path = write(project, "house", _PROMPT)
+    with pytest.raises(store.AuthoringError) as info:
+        store.save_source(project, "prompt.house", "---\nkind: prompt\n\ud800\n")
+    assert info.value.status == 400
+    assert path.read_text(encoding="utf-8") == _PROMPT
+    assert [p.name for p in path.parent.iterdir() if p.is_file()] == ["house.md"]
+
+
+def test_two_deletes_of_one_name_in_one_second_keep_both(project, monkeypatch):
+    from quickcode.kernel.authoring import store
+
+    monkeypatch.setattr(store.time, "time", lambda: 1_700_000_000.0)
+    write(project, "house", _PROMPT)
+    store.delete(project, "prompt.house")
+    write(project, "house", _PROMPT.replace("text", "second"))
+    store.delete(project, "prompt.house")
+    trash = project / ".quickcode" / "plugins" / ".trash"
+    kept = sorted(p.read_text(encoding="utf-8") for p in trash.iterdir())
+    assert len(kept) == 2, "the second delete overwrote the first"
+
+
+@pytest.fixture
+def real_trust(tmp_path, monkeypatch):
+    """The real trust store, moved into tmp_path."""
+    import quickcode.config as config_module
+    from quickcode.security import trust
+
+    store = trust.TrustStore(tmp_path / "trust.json")
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr(trust, "default_store", lambda: store)
+    project = tmp_path / "proj"
+    (project / ".quickcode" / "plugins").mkdir(parents=True)
+    (project / ".quickcode" / "settings.json").write_text(json.dumps(
+        {"mcpServers": {"docs": {"command": "npx", "args": ["-y", "docs"]}}}),
+        encoding="utf-8")
+    return project, store
+
+
+def test_editing_a_projects_tool_in_the_app_keeps_the_project_trusted(real_trust):
+    """The trust hash covers command-tool files, so saving one from the editor
+    untrusted the project: its MCP servers went inert and its allow rules were
+    ignored, for having used the app's own editor."""
+    from quickcode.kernel.authoring import store
+
+    project, trust_store = real_trust
+    write(project, "echo-args", echo_tool(ECHO, []))
+    trust_store.grant(project)
+
+    store.save_source(project, "tool.echo-args", echo_tool([*ECHO, "x"], []))
+    assert trust_store.is_trusted(project)
+    store.create(project, kind="tool", name="second")
+    assert trust_store.is_trusted(project)
+    store.delete(project, "tool.second")
+    assert trust_store.is_trusted(project)
+
+    # An edit made outside the app still re-prompts, and an untrusted project
+    # is never trusted by a save.
+    (project / ".quickcode" / "plugins" / "echo-args.md").write_text(
+        echo_tool([*ECHO, "y"], []), encoding="utf-8")
+    assert not trust_store.is_trusted(project)
+    store.save_source(project, "tool.echo-args", echo_tool([*ECHO, "z"], []))
+    assert not trust_store.is_trusted(project)

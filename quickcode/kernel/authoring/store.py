@@ -13,6 +13,13 @@ trash directory is not scanned (the scan is not recursive, deliberately). Undo
 is a file move, and there is a strong need not to silently destroy a prompt
 somebody spent an hour on.
 
+**Every write is whole or not at all** -- encoded first, written beside the
+file and renamed over it -- and a write to the project scope keeps the
+project's trust (``trust.keep_trust``): the grant covers command-tool files,
+and editing one in the app's own editor is not a reason to switch off the
+project's MCP servers and allow rules. An edit made outside the app still
+re-prompts, and a project that was not trusted stays untrusted.
+
 **Duplicate materialises**, it does not inherit. A copy carries
 ``derived_from: <original id>`` as a breadcrumb and nothing else links the two.
 Live inheritance would recreate exactly the coupling that makes the locked tier
@@ -24,6 +31,8 @@ restricted, so it is offered at every tier including ``locked`` and
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import time
 from pathlib import Path
@@ -156,7 +165,7 @@ def create(
             status=409, code=schema.ID_DUPLICATE)
 
     body = text if text is not None else template(kind, slug, title)
-    path.write_text(body, encoding="utf-8")
+    _write(path, body, cwd, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems
 
@@ -173,18 +182,24 @@ def save_source(
 ) -> tuple[Path, AuthoredPlugin | None, list[Problem]]:
     """Write first, validate second, return the problems. Never refuses."""
     path, scope = locate(cwd, plugin_id)
-    path.write_text(text, encoding="utf-8")
+    _write(path, text, cwd, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems
 
 
 def delete(cwd: Path | str | None, plugin_id: str) -> tuple[Path, Path]:
     """Move the file to ``.trash/``. Returns ``(was, now)``."""
-    path, _scope = locate(cwd, plugin_id)
+    path, scope = locate(cwd, plugin_id)
     trash = path.parent / TRASH_DIRNAME
     trash.mkdir(parents=True, exist_ok=True)
-    target = trash / f"{path.stem}-{int(time.time())}.md"
-    path.replace(target)
+    stamp = int(time.time())
+    target = trash / f"{path.stem}-{stamp}.md"
+    n = 2
+    while target.exists():  # a second delete in the same second must not overwrite
+        target = trash / f"{path.stem}-{stamp}-{n}.md"
+        n += 1
+    with _keeping_trust(cwd, scope):
+        path.replace(target)
     return path, target
 
 
@@ -204,6 +219,42 @@ def locate(cwd: Path | str | None, plugin_id: str) -> tuple[Path, str]:
     raise AuthoringError(
         f"no authored plugin {plugin_id!r}",
         fix="Check the id, or list the authored plugins first.", status=404)
+
+
+def _write(path: Path, text: str, cwd: Path | str | None, scope: str) -> None:
+    try:
+        data = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise AuthoringError(
+            f"the text cannot be saved as UTF-8: {exc.reason} at position {exc.start}",
+            fix="Remove the character; it is usually a broken emoji or a pasted "
+                "control sequence.", status=400) from exc
+    with _keeping_trust(cwd, scope):
+        _atomic_write(path, data)
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Beside the file, then renamed over it: a crash leaves old or new, never
+    half. The temporary name starts with a dot, which no scan reads."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def _keeping_trust(cwd: Path | str | None, scope: str):
+    if scope != "project" or cwd is None:
+        return contextlib.nullcontext()
+    from quickcode.security.trust import keep_trust
+
+    return keep_trust(cwd)
 
 
 def _md_files(directory: Path) -> list[Path]:
@@ -449,7 +500,7 @@ def _write_copy(
         raise AuthoringError(f"{path.name} already exists",
                              fix="Pick another name.", status=409,
                              code=schema.ID_DUPLICATE)
-    path.write_text(text, encoding="utf-8")
+    _write(path, text, directory.parent.parent, scope)
     plugin, problems = _validate_file(path, scope)
     return path, plugin, problems
 
