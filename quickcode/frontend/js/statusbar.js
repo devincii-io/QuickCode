@@ -104,6 +104,18 @@ function refreshConnection() {
   }
 }
 
+// Logged events arrive in bursts (a long turn's tool calls, a whole replay),
+// and the counts only need to be right when the screen next paints.
+let metricsFrame = 0;
+
+function scheduleMetrics() {
+  if (metricsFrame) return;
+  metricsFrame = requestAnimationFrame(() => {
+    metricsFrame = 0;
+    if (store.state) refreshMetrics(store.state);
+  });
+}
+
 export function initStatusBar() {
   subscribe((kind, ev) => {
     if (kind === "state") refreshState();
@@ -111,10 +123,10 @@ export function initStatusBar() {
     if (kind === "queued") { queuedTexts.push(ev.text); renderQueue(); }
     // Counts accumulate while a session replays, but the state event that
     // drives the status bar arrives before the replay does — without this the
-    // bar reads "0 turns" over a fully rendered conversation.
-    if (kind === "replay_done" || kind === "event") {
-      if (store.state) refreshMetrics(store.state);
-    }
+    // bar reads "0 turns" over a fully rendered conversation. Mid-replay the
+    // counts are partial, so they are drawn once, when it is done.
+    if (kind === "replay_done" && store.state) refreshMetrics(store.state);
+    if (kind === "event" && !store.replaying) scheduleMetrics();
     if (kind === "connection") refreshConnection();
   });
 }
