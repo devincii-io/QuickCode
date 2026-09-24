@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING, Any
 from quickcode.core.compact import run_compaction, should_compact
 from quickcode.core.events import (
     AgentStatus,
+    Compacted,
     ReasoningDelta,
+    SystemNote,
     TextDelta,
     ToolCallEnd,
     ToolResultEvent,
@@ -156,6 +158,13 @@ class TranscriptRecorder:
             if ev.error:
                 self.emit({"type": "error", "message": ev.error})
             return
+        elif isinstance(ev, Compacted):
+            # The context guard compacted inside a turn: the same record the
+            # between-turn path writes, from the history as the guard left it.
+            self.record_compaction(ev.messages, wire)
+            if self.on_usage is not None:
+                self.on_usage()
+            return
         elif isinstance(ev, AgentStatus):
             if ev.state == "interrupted":
                 self.flush_assistant(finish="interrupted")
@@ -262,7 +271,9 @@ class TranscriptRecorder:
             # A child's usage is logged like its calls and results: a subagent
             # owns its own ``Ledger``, so its tokens reach this session only
             # here, and a fan-out that is not written down replays as free.
-            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent, Usage)) or plugin_logged(ev)
+            logged = isinstance(
+                ev, (ToolCallEnd, ToolResultEvent, Usage, Compacted, SystemNote)
+            ) or plugin_logged(ev)
             if isinstance(ev, TurnDone) and acc_text:
                 self.emit(
                     {
@@ -294,7 +305,22 @@ class TranscriptRecorder:
 
         return handle_child
 
-    # ---- compaction (the headless driver's half of it) ----
+    # ---- compaction ----
+    def record_compaction(self, messages: list, event: dict[str, Any]) -> None:
+        """Write a compaction down: the rebuilt history, then ``event``.
+
+        The rebuilt history goes into the log as well, or the work is undone
+        by the next resume: ``load_messages`` would replay every original
+        message and hand the model exactly the context compaction existed to
+        remove. ``persisted`` moves to its end, or the summary seed and the
+        kept tail would be appended a second time on the next persist.
+        """
+        self.store.append_compaction(messages)
+        self.persisted = len(messages)
+        self.emit(event)
+        what = "earlier rounds" if event.get("mid_turn") else "earlier turns"
+        self.emit({"type": "system_note", "text": f"(conversation compacted — {what} summarized)"})
+
     async def maybe_compact(self, agent: AgentInstance) -> bool:
         """Compact when the turn just ended above the declared threshold.
 
@@ -321,17 +347,9 @@ class TranscriptRecorder:
             # The pump is already cancelled here; the summary request's usage
             # is on the bus and reaches the log only through this.
             self.drain()
-        # History was rebuilt wholesale; without this the summary seed and the
-        # kept tail would be appended a second time on the next persist.
-        # The rebuilt history goes into the log as well, or the work is
-        # undone by the next resume: `load_messages` would replay every
-        # original message and hand the model exactly the context compaction
-        # existed to remove.
-        self.store.append_compaction(agent.history.messages)
-        self.persisted = len(agent.history.messages)
-        self.emit({"type": "compacted", "summary_chars": len(summary), "manual": False})
-        self.emit(
-            {"type": "system_note", "text": "(conversation compacted — earlier turns summarized)"}
+        self.record_compaction(
+            agent.history.messages,
+            {"type": "compacted", "summary_chars": len(summary), "manual": False},
         )
         return True
 

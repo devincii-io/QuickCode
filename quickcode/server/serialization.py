@@ -18,8 +18,10 @@ from typing import Any
 from quickcode.core.events import (
     AgentEvent,
     AgentStatus,
+    Compacted,
     ContextInjection,
     ReasoningDelta,
+    SystemNote,
     TextDelta,
     ToolCallDelta,
     ToolCallEnd,
@@ -41,7 +43,7 @@ LOG_RESULT_CAP = 64 * 1024
 _EXTRA: dict[type, Any] = {}
 _CORE_EVENT_TYPES: tuple[type, ...] = (
     TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd,
-    ToolResultEvent, Usage, TurnDone, ContextInjection, AgentStatus,
+    ToolResultEvent, Usage, TurnDone, ContextInjection, AgentStatus, Compacted, SystemNote,
 )
 
 
@@ -99,6 +101,15 @@ def event_to_json(ev: AgentEvent) -> dict[str, Any] | None:
         return {"type": "context_injection", "text": ev.text}
     if isinstance(ev, AgentStatus):
         return {"type": "status", "state": ev.state, "detail": ev.detail}
+    if isinstance(ev, Compacted):
+        # The between-turn record, widened by one field: the context guard
+        # compacted inside a turn, between two of its rounds.
+        return {
+            "type": "compacted", "summary_chars": ev.summary_chars,
+            "manual": False, "mid_turn": True,
+        }
+    if isinstance(ev, SystemNote):
+        return {"type": "system_note", "text": ev.text}
     return None
 
 
