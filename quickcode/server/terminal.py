@@ -32,7 +32,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
+import re
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -70,17 +73,76 @@ DEFAULT_COLS = 80
 shell_argv: Callable[[], list[str]] = interactive_shell_argv
 
 
+# Names QuickCode reads a credential from. The login shell re-reads the user's
+# own profile, so a key they export there is still theirs; what this stops is
+# the app handing its own copy to every program typed at the prompt.
+_SECRET_NAME = re.compile(r"^QUICKCODE_\w*(KEY|TOKEN|SECRET|PASSWORD)$")
+# The pty's size is the truth about the terminal's size. A COLUMNS inherited
+# from wherever QuickCode was launched would override it for every program
+# that checks the environment first, and they would wrap at the wrong width.
+_STALE = ("COLUMNS", "LINES")
+
+
+def _secret_names() -> set[str]:
+    from quickcode.search.resolve import provider_infos
+    from quickcode.secrets import API_KEY_ENV
+
+    return {API_KEY_ENV} | {i.api_key_env for i in provider_infos() if i.api_key_env}
+
+
 def _shell_env() -> dict[str, str]:
-    """The child's environment: the app's, plus the terminal's own promises.
+    """The child's environment: the app's, minus its secrets, plus the
+    terminal's own promises.
 
     ``TERM`` is what makes ls, git and grep emit colour at all — without it a
     program in a pty assumes a dumb terminal and helpfully turns everything
     off, which would leave the panel's ANSI renderer with nothing to render.
     """
-    env = dict(os.environ)
+    secrets = _secret_names()
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in secrets and not _SECRET_NAME.match(name) and name not in _STALE
+    }
+    if getattr(sys, "frozen", False):
+        _unfreeze(env)
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
     return env
+
+
+def _unfreeze(env: dict[str, str]) -> None:
+    """Undo what the PyInstaller bootloader did to the app's own environment.
+
+    It points the loader path at the bundle and leaves ``_PYI_*`` markers for
+    its own children. A shell is not one: a system binary must not load the
+    bundled libssl, and another frozen program started from the prompt must
+    not take the markers as its own.
+    """
+    for name in [n for n in env if n.startswith("_PYI_") or n == "_MEIPASS2"]:
+        del env[name]
+    for name in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        original = env.pop(name + "_ORIG", None)
+        if original is not None:
+            env[name] = original
+        else:
+            env.pop(name, None)
+
+
+def _dimension(value: Any, default: int) -> int:
+    """A size from the client, or ``default`` if it is not a finite number.
+
+    ``json.loads`` accepts ``Infinity``, and ``int(inf)`` raises
+    ``OverflowError`` — which nothing caught, so one resize frame ended the
+    whole terminal session.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    try:
+        number = float(value)
+    except ValueError:
+        return default
+    return int(number) if math.isfinite(number) else default
 
 
 class _Outbox:
@@ -131,13 +193,18 @@ async def serve_terminal(
     ws_allowed: Callable[[WebSocket], bool],
     token: str,
 ) -> None:
-    """Accept one terminal socket, run a shell in ``cwd`` until either ends."""
+    """Accept one terminal socket, run a shell in ``cwd`` until either ends.
+
+    An app built without a token serves no terminal at all. Everywhere else a
+    missing token means a local-only convenience; here it would mean any
+    process on the machine that can forge a Host header gets a shell.
+    """
     from quickcode.server import auth
 
-    if not ws_allowed(ws):
+    if not token or not ws_allowed(ws):
         await ws.close(code=4403)
         return
-    await ws.accept(subprotocol=(auth.SUBPROTOCOL_PREFIX + token) if token else None)
+    await ws.accept(subprotocol=auth.SUBPROTOCOL_PREFIX + token)
     if cwd is None:
         await ws.close(code=4404)
         return
@@ -240,9 +307,8 @@ async def _run(
                 if isinstance(count, int) and not isinstance(count, bool) and count > 0:
                     pty.ack(min(count, OUTPUT_WINDOW))
             elif kind == "resize":
-                with contextlib.suppress(TypeError, ValueError):
-                    pty.resize(int(msg.get("rows", DEFAULT_ROWS)),
-                               int(msg.get("cols", DEFAULT_COLS)))
+                pty.resize(_dimension(msg.get("rows"), DEFAULT_ROWS),
+                           _dimension(msg.get("cols"), DEFAULT_COLS))
 
     tasks = [asyncio.ensure_future(pump_out()), asyncio.ensure_future(pump_in())]
     try:

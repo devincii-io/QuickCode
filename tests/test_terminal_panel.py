@@ -19,6 +19,7 @@ assertion depend on the developer's ``.bashrc``.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 import time
@@ -71,10 +72,14 @@ def _no_terminal_outlives_a_test():
     registry.close_all()
 
 
+TOKEN = "t0ken"
+
+
 def terminal_socket(client: TestClient, path: str, **kw):
     # TestClient's handshake carries Host: testserver; the local guard wants the
     # loopback host the app was configured with.
     headers = {"host": "127.0.0.1:8642", **kw.pop("headers", {})}
+    kw.setdefault("subprotocols", ["qcauth." + TOKEN])
     return client.websocket_connect(path, headers=headers, **kw)
 
 
@@ -100,7 +105,7 @@ def app_for(tmp_path: Path, *dirs: Path):
     hub = make_hub(tmp_path / "reg", provider, dirs[0])
     for extra in dirs[1:]:
         asyncio.run(hub.open(extra))
-    app = create_app(hub, host="127.0.0.1", port=8642, token="")
+    app = create_app(hub, host="127.0.0.1", port=8642, token=TOKEN)
     return hub, TestClient(app, base_url="http://127.0.0.1:8642")
 
 
@@ -256,7 +261,7 @@ def test_a_terminal_socket_without_the_token_is_refused(tmp_path, fake_shell):
     client = TestClient(app, base_url="http://127.0.0.1:8642")
     with client:
         with pytest.raises(WebSocketDisconnect) as excinfo:
-            with terminal_socket(client, "/ws/terminal") as ws:
+            with terminal_socket(client, "/ws/terminal", subprotocols=[]) as ws:
                 ws.receive_json()
         assert excinfo.value.code == 4403
         # ...and the same socket with the token opens a shell.
@@ -326,6 +331,69 @@ def test_the_terminal_environment_promises_a_colour_terminal() -> None:
     # Without TERM a program in a pty assumes a dumb terminal and turns colour
     # off, which would leave the panel's ANSI renderer nothing to render.
     assert env["TERM"] == "xterm-256color"
+
+
+def test_the_shell_does_not_inherit_quickcodes_own_keys(monkeypatch) -> None:
+    """Every program typed at the prompt would otherwise get the app's API
+    keys in its environment — a `curl` to anywhere, an `npm install` script."""
+    monkeypatch.setenv("QUICKCODE_OPENROUTER_API_KEY", "sk-or-not-for-you")
+    monkeypatch.setenv("QUICKCODE_BRAVE_API_KEY", "brave-not-for-you")
+    monkeypatch.setenv("QUICKCODE_SOMEDAY_TOKEN", "tok-not-for-you")
+    monkeypatch.setenv("QUICKCODE_SEARCH_PROVIDER", "brave")
+    env = terminal._shell_env()
+    assert not any("not-for-you" in value for value in env.values())
+    assert env["QUICKCODE_SEARCH_PROVIDER"] == "brave"  # a choice, not a secret
+    assert env.get("PATH") == os.environ.get("PATH")
+
+
+def test_an_inherited_terminal_width_does_not_override_the_ptys(monkeypatch) -> None:
+    monkeypatch.setenv("COLUMNS", "300")
+    monkeypatch.setenv("LINES", "3")
+    env = terminal._shell_env()
+    assert "COLUMNS" not in env and "LINES" not in env
+
+
+def test_a_frozen_app_gives_the_shell_the_loader_path_it_was_started_with(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/QuickCode/_internal")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/local/lib")
+    monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", "/opt/QuickCode/_internal")
+    env = terminal._shell_env()
+    assert env["LD_LIBRARY_PATH"] == "/usr/local/lib"
+    assert "LD_LIBRARY_PATH_ORIG" not in env
+    assert not any(name.startswith("_PYI_") for name in env)
+
+
+def test_an_app_without_a_token_serves_no_terminal(tmp_path, fake_shell):
+    """Fail closed: without a token the only guard left is the Host header,
+    which any local process can forge, and behind this socket is a shell."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    hub = make_hub(tmp_path / "reg", FakeProvider([]), proj)
+    client = TestClient(create_app(hub, host="127.0.0.1", port=8642, token=""),
+                        base_url="http://127.0.0.1:8642")
+    with client:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with terminal_socket(client, "/ws/terminal", subprotocols=[]) as ws:
+                ws.receive_json()
+        assert excinfo.value.code == 4403
+    assert registry.count() == 0
+
+
+def test_a_resize_to_infinity_does_not_end_the_session(tmp_path, fake_shell):
+    """`json.loads` accepts `Infinity`, and `int(inf)` raises OverflowError,
+    which the resize handler did not catch: one frame killed the terminal."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        ws.receive_json()
+        read_until(ws, "READY ")
+        ws.send_text('{"type": "resize", "rows": Infinity, "cols": -Infinity}')
+        ws.send_text('{"type": "resize", "rows": NaN, "cols": 1e400}')
+        ws.send_json({"type": "resize", "rows": True, "cols": [80]})
+        ws.send_json({"type": "input", "data": "still here\r"})
+        assert "echo:still here" in read_until(ws, "echo:still here")
 
 
 # ------------------------------------------------------- flow control
