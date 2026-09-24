@@ -10,27 +10,11 @@
 
 import { api } from "../api.js";
 import { store, subscribe } from "../store.js";
+import { h } from "../ui/dom.js";
 import { modal, onModalClose } from "../ui/modal.js";
 import {
   RewindSelection, busyReason, diffLines, plannedText, reasonText, refusal, resultSummary,
 } from "./model.js";
-
-function h(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props || {})) {
-    if (value == null || value === false) continue;
-    if (key === "class") node.className = value;
-    else if (key === "text") node.textContent = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else if (value === true) node.setAttribute(key, "");
-    else node.setAttribute(key, String(value));
-  }
-  for (const child of children.flat()) {
-    if (child == null || child === false || child === "") continue;
-    node.append(child instanceof Node ? child : String(child));
-  }
-  return node;
-}
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 let serial = 0;   // ids for aria-controls, unique across openings
@@ -252,7 +236,7 @@ function refresh(view) {
   const { sel } = view;
   if (!sel || view.done || !view.go) return;
   const busy = busyReason(store.state);
-  view.busyNode.textContent = busy;
+  say(view.busyNode, busy);
   view.busyNode.hidden = !busy;
   for (const row of sel.rows) {
     const drawn = view.rows.get(row.path);
@@ -274,9 +258,13 @@ function refresh(view) {
   view.go.disabled = view.sending || !verdict.ok;
   view.go.classList.toggle("danger", sel.force && n > 0);
   view.go.classList.toggle("primary", !(sel.force && n > 0));
-  if (!view.msgSticky) {
-    view.msg.textContent = verdict.ok || verdict.why === busy ? "" : verdict.why;
-  }
+  if (!view.msgSticky) say(view.msg, verdict.ok || verdict.why === busy ? "" : verdict.why);
+}
+
+// The two live regions are rewritten on every refresh; writing the same words
+// again would have a screen reader announce them again.
+function say(node, text) {
+  if (node.textContent !== text) node.textContent = text;
 }
 
 // ---- the rewind ------------------------------------------------------------------

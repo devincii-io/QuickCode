@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  MAX_SELECTED, RewindSelection, TurnFiles, busyReason, countByAction, diffLines, refusal,
-  resultSummary, rewoundLine,
+  MAX_SELECTED, RewindSelection, TurnFiles, busyReason, countByAction, diffLines, fmtBytes,
+  listingRows, refusal, resultSummary, rewoundLine,
 } from "../../quickcode/frontend/js/checkpoints/model.js";
 import { RewindMarks } from "../../quickcode/frontend/js/chat/rewind.js";
 
@@ -173,6 +173,34 @@ test("a result and a logged rewind say what happened to each file", () => {
   assert.equal(rewoundLine({ to_turn: 2, files: [{ path: "a", action: "restored" }],
     file_count: 250, skipped: [{ path: "b", reason: "damaged" }], forced: true }),
   "files rewound to before turn 2 · 1 restored · 250 in all · 1 skipped · overwrote changes made since");
+});
+
+// ---- the checkpoint list ------------------------------------------------------
+
+test("the panel lists the newest turn first, with what became of each file", () => {
+  const rows = listingRows({
+    checkpoints: [
+      { turn: 1, time: "2026-09-24T10:00:00", restorable: false, files: [
+        { path: "a.py", change: "modified", added: 2, removed: 1, restorable: false,
+          rewound: "rw1", agent: "main" },
+      ] },
+      { turn: 3, time: "2026-09-24T10:05:00", restorable: true, files: [
+        { path: "big.bin", change: "created", added: null, removed: null, binary: true,
+          restorable: false, reason: "too_large", rewound: null, agent: "general-1" },
+        { path: "b.py", change: "deleted", added: 0, removed: 4, restorable: true, agent: "main" },
+      ] },
+    ],
+  });
+  assert.deepEqual(rows.map((r) => [r.turn, r.rewindable]), [[3, true], [1, false]]);
+  assert.deepEqual(rows[0].files, [
+    { path: "big.bin", change: "created", counts: "binary",
+      state: "not kept: too large to keep a copy of", agent: "general-1" },
+    { path: "b.py", change: "deleted", counts: "+0 −4", state: "", agent: "" },
+  ]);
+  assert.equal(rows[1].files[0].state, "rewound (rw1)");
+  assert.deepEqual(listingRows(null), []);
+  assert.deepEqual([0, 1023, 18_233, 134_217_728].map(fmtBytes),
+    ["0 B", "1023 B", "17.8 KB", "128.0 MB"]);
 });
 
 // ---- the diff ---------------------------------------------------------------

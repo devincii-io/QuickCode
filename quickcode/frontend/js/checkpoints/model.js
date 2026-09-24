@@ -256,6 +256,39 @@ export function rewoundLine(ev) {
   return parts.join(" · ");
 }
 
+// ---- the checkpoint list ------------------------------------------------------
+
+/** "18.2 KB": the checkpoint store's own sizes, not a token count. */
+export function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  const units = ["KB", "MB", "GB"];
+  let x = v / 1024;
+  let i = 0;
+  while (x >= 1023.95 && i < units.length - 1) { x /= 1024; i++; }
+  return `${x.toFixed(1)} ${units[i]}`;
+}
+
+/** A listing (GET …/checkpoints) as the panel shows it: newest turn first,
+ *  each file with one line of state. A turn with nothing left to put back
+ *  says so rather than offering a rewind that would do nothing of its own. */
+export function listingRows(listing) {
+  return [...(listing?.checkpoints || [])].sort((a, b) => b.turn - a.turn).map((cp) => ({
+    turn: cp.turn,
+    time: cp.time || "",
+    rewindable: !!cp.restorable,
+    files: (cp.files || []).map((f) => ({
+      path: f.path,
+      change: f.change,
+      counts: f.added == null && f.removed == null ? (f.binary ? "binary" : "")
+        : `+${f.added || 0} −${f.removed || 0}`,
+      state: f.rewound ? `rewound (${f.rewound})`
+        : f.restorable ? "" : `not kept: ${reasonText(f.reason)}`,
+      agent: f.agent && f.agent !== "main" ? f.agent : "",
+    })),
+  }));
+}
+
 // ---- the diff ---------------------------------------------------------------
 
 /** Each line of a unified diff with its kind: "meta" | "hunk" | "add" | "del"

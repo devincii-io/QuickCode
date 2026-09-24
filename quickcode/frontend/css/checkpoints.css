@@ -93,3 +93,39 @@
   font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--fg-faint);
   margin: 10px 0 4px;
 }
+
+/* ---------- the Checkpoints side panel (js/panels/checkpoints.js) ---------- */
+.panel-checkpoints { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.panel-checkpoints .pc-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+.panel-checkpoints .pc-sum { font-size: 12px; color: var(--fg-dim); }
+.panel-checkpoints .pc-refresh {
+  margin-left: auto; padding: 2px 8px; border-radius: 7px;
+  color: var(--fg-faint); font-size: 14px; line-height: 1;
+}
+.panel-checkpoints .pc-refresh:hover { background: var(--panel); color: var(--fg); }
+.panel-checkpoints .pc-list { flex: 1; overflow-y: auto; min-height: 0; padding: 6px 0; }
+.panel-checkpoints .pc-empty, .panel-checkpoints .pc-untracked {
+  padding: 10px 12px; color: var(--fg-faint); font-size: 12px;
+}
+.panel-checkpoints .pc-turn { padding: 6px 10px 8px; border-bottom: 1px solid var(--line); }
+.panel-checkpoints .pc-turn-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.panel-checkpoints .pc-time { font-size: 11px; color: var(--fg-faint); }
+.panel-checkpoints .pc-rewind { margin-left: auto; padding: 2px 10px; font-size: 12px; }
+.panel-checkpoints .pc-files { list-style: none; margin: 4px 0 0; padding: 0; }
+.panel-checkpoints .pc-file {
+  display: flex; gap: 8px; align-items: baseline; font-size: 12px; padding: 1px 0; min-width: 0;
+}
+.panel-checkpoints .pc-change { flex: none; width: 58px; color: var(--fg-faint); font-size: 11px; }
+.panel-checkpoints .pc-created { color: var(--success); }
+.panel-checkpoints .pc-deleted { color: var(--error); }
+.panel-checkpoints .pc-path {
+  font-family: var(--mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-checkpoints .pc-counts, .panel-checkpoints .pc-agent, .panel-checkpoints .pc-state {
+  flex: none; font-size: 11px; color: var(--fg-faint);
+}
+.panel-checkpoints .pc-counts { font-family: var(--mono); }
+.panel-checkpoints .pc-gone .pc-path { color: var(--fg-faint); text-decoration: line-through; }

@@ -4,7 +4,7 @@
 // turn, auto-allowed, and this script rewinds them from the transcript and
 // checks the files on disk.
 async (page) => {
-  const { readFileSync, writeFileSync, existsSync } = await import("node:fs");
+  const { readFileSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
   const { join } = await import("node:path");
   const base = "http://127.0.0.1:8769";
   const failures = [];
@@ -17,13 +17,18 @@ async (page) => {
   const project = projects.find((p) => p.name === "Website redesign");
   const readme = join(project.path, "README.md");
   const notes = join(project.path, "notes.md");
-  const original = readFileSync(readme, "utf8");
+  // The project as the server made it, whatever an interrupted run left behind.
+  const original = "# Website redesign\nUI review project.\n";
+  writeFileSync(readme, original);
+  rmSync(notes, { force: true });
 
   await page.setViewportSize({ width: 1300, height: 900 });
   await page.goto(`${base}/?pane=1&project=${project.id}#token=workspace-preview`);
   await page.locator("#input").fill("Tidy the readme and leave a note");
   await page.locator("#input").press("Enter");
-  const rewindTurn1 = page.getByRole("button", { name: "Rewind files to before turn 1" });
+  // The transcript's own button; the Checkpoints tab has one of the same name.
+  const rewindTurn1 = page.locator("#transcript")
+    .getByRole("button", { name: "Rewind files to before turn 1" });
   await rewindTurn1.waitFor();
   await page.locator(".msg-assistant").waitFor();
   check(readFileSync(readme, "utf8").includes("edited by the agent"), "turn 1 did not edit README.md");
@@ -81,9 +86,17 @@ async (page) => {
   check(await page.locator(".rewind-note").count() === 1, "a replay drew the rewind note wrong");
 
   // While a turn runs a rewind waits, and the dialog says so in the API's words.
+  // The Checkpoints tab lists what is left, and opens the same dialog.
+  await page.locator("#btn-panel-toggle").click();
+  await page.locator('.panel-tab[data-tab="checkpoints"]').click();
+  const turnCard = page.locator(".pc-turn").filter({ hasText: "Turn 1" });
+  await turnCard.locator(".pc-file").filter({ hasText: /rewound \(rw\d+\)/ }).waitFor();
+  check((await turnCard.locator(".pc-file").allInnerTexts()).join("|").includes("README.md"),
+    "the Checkpoints tab does not list README.md");
+
   await page.locator("#input").fill("One more thing");
   await page.locator("#input").press("Enter");
-  await rewindTurn1.click();
+  await turnCard.getByRole("button", { name: "Rewind files to before turn 1" }).click();
   await dialog.locator(".rw-busy").filter({ hasText: "a turn is running" }).waitFor();
   check(await go.isDisabled(), "rewind allowed while a turn runs");
   await dialog.locator(".rw-busy[hidden]").waitFor({ state: "attached" });
@@ -100,8 +113,9 @@ async (page) => {
   check((await page.locator(".rewind-note").nth(1).innerText()).includes("overwrote changes made since"),
     "the forced rewind's note does not say so");
   check(await rewindTurn1.count() === 0, "the button stayed after everything was rewound");
+  await turnCard.locator(".pc-rewind[disabled]").waitFor();
+  check(await turnCard.locator(".pc-gone").count() === 2, "the Checkpoints tab did not catch up");
 
-  await page.locator("#btn-panel-toggle").click();
   await page.locator('.panel-tab[data-tab="trajectory"]').click();
   const rows = await page.locator(".tj-row .preview").allInnerTexts();
   check(rows.some((t) => t.startsWith("checkpoint README.md · turn 1")), "trajectory has no checkpoint row");
@@ -110,5 +124,5 @@ async (page) => {
 
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "per-turn button (keyboard), preview, diff, conflict, deselect, rewind on disk, note, focus return, replay, busy refusal, force, trajectory", runtimeErrors: errors };
+  return { passed: true, checks: "per-turn button (keyboard), preview, diff, conflict, deselect, rewind on disk, note, focus return, replay, checkpoints tab, busy refusal, force, trajectory", runtimeErrors: errors };
 }
