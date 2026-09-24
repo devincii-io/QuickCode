@@ -13,11 +13,18 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from quickcode.security.protected import is_protected, is_subagent_artifact
+from quickcode.security.protected import (
+    is_protected,
+    is_subagent_artifact,
+    lexical_parts,
+    resolve,
+    written_tail,
+)
 
 log = logging.getLogger("quickcode.permissions")
 
@@ -35,6 +42,9 @@ _ENV_ASSIGNMENT = re.compile(r"\w+=.*")
 _SPLIT = re.compile(r"&&|\|\||\||;|&|\n")
 # Substitution markers that forbid prefix-matching a rule.
 _COMPOUND_MARKERS = ("$(", "`", ">", "<")
+# Whether deny and ask rules on paths ignore case: on these filesystems
+# `KEY.PEM` opens `key.pem`, so a rule against one must hold for the other.
+CASE_INSENSITIVE_PATHS = sys.platform in ("win32", "darwin")
 # Catastrophic patterns that prompt even in yolo.
 # The flag spelling was the whole of the check, so `rm -rf /` was caught while
 # `rm -fr /`, `rm -rf /*` and `rm --recursive --force /` -- the same command,
@@ -188,7 +198,7 @@ class Rules:
 _RULE_TOOL = r"[\w.:-]+"
 
 
-def _rule_matches(rule: str, tool: str, arg: str) -> bool:
+def _rule_matches(rule: str, tool: str, arg: str, *, fold: bool = False) -> bool:
     """Match a rule like ``bash(npm *)`` / ``edit(src/**)`` / bare ``write``."""
     m = re.fullmatch(rf"({_RULE_TOOL})\((.*)\)", rule)
     if not m:
@@ -196,10 +206,10 @@ def _rule_matches(rule: str, tool: str, arg: str) -> bool:
     rtool, pattern = m.group(1), m.group(2)
     if rtool != tool:
         return False
-    return _glob_match(pattern, arg)
+    return _glob_match(pattern, arg, fold=fold)
 
 
-def _glob_match(pattern: str, value: str) -> bool:
+def _glob_match(pattern: str, value: str, *, fold: bool = False) -> bool:
     """Whole-string glob match where only ``**`` crosses directories."""
     parts: list[str] = []
     i = 0
@@ -213,7 +223,36 @@ def _glob_match(pattern: str, value: str) -> bool:
         else:
             parts.append(re.escape(pattern[i]))
             i += 1
-    return re.fullmatch("".join(parts), value) is not None
+    return re.fullmatch("".join(parts), value, re.IGNORECASE if fold else 0) is not None
+
+
+def _path_rule_targets(arg: str, root: Path) -> tuple[list[str], list[str]]:
+    """The strings a path rule is matched against: (for deny/ask, for allow).
+
+    A path rule used to see only the string the tool was called with, so a
+    deny on `src/secret.py` missed `./src/secret.py`, the absolute spelling
+    and `lib/../src/secret.py` -- and an allow on `src/**` covered
+    `src/../pyproject.toml`, which is not under `src` at all. Both kinds of
+    rule now see where the path lands: root-relative and absolute.
+
+    The spelling itself stays visible to deny and ask, which only narrow. It
+    is offered to allow only when it names its location plainly -- no `..` and
+    no symlink between the root and the file -- because that is the one case
+    in which the spelling and the location are the same claim.
+    """
+    resolved = resolve(arg, root)
+    if resolved is None:
+        return [arg], []
+    located = [resolved.as_posix(), str(resolved)]
+    try:
+        located.insert(0, resolved.relative_to(root.resolve()).as_posix())
+    except ValueError:
+        pass
+    tail = written_tail(arg, root)
+    plain = ".." not in lexical_parts(arg) and root.resolve().joinpath(*tail) == resolved
+    restrict = list(dict.fromkeys([arg, *located]))
+    allow = list(dict.fromkeys([*located, *([arg] if plain else [])]))
+    return restrict, allow
 
 
 _SPEC_CACHE: dict[str, PermissionSpec] | None = None
@@ -285,13 +324,25 @@ class PermissionEngine:
         if spec.shell:
             return self._eval_bash(arg)
 
+        if spec.path_target:
+            restrict, permit = _path_rule_targets(arg, self.root)
+        else:
+            restrict, permit = [arg], [arg]
+        # Case is ignored where the filesystem ignores it, and only by the
+        # rules that narrow: an allow rule keeps meaning exactly what it says.
+        fold = spec.path_target and CASE_INSENSITIVE_PATHS
+
+        def matches(rules: list[str], targets: list[str], ignore_case: bool = False) -> bool:
+            return any(
+                _rule_matches(r, tool, t, fold=ignore_case) for r in rules for t in targets
+            )
+
         # 1. Deny rules first, before anything that could answer "ask". The
         #    protected-path prompt used to come first, so a `read(**.env)` deny
         #    was never consulted for `.env`: the user got a prompt, with an
         #    Allow button, for the one file they had said no to outright.
-        for r in self.rules.deny:
-            if _rule_matches(r, tool, arg):
-                return Decision.deny
+        if matches(self.rules.deny, restrict, fold):
+            return Decision.deny
 
         # 2. Plan mode structurally blocks mutation -- ahead of the protected
         #    prompt too, or a write to `.git/config` in plan mode was a prompt
@@ -314,12 +365,10 @@ class PermissionEngine:
                     return Decision.ask
 
         # 4. The rest of the rules: ask, then allow.
-        for r in self.rules.ask:
-            if _rule_matches(r, tool, arg):
-                return Decision.ask
-        for r in self.rules.allow:
-            if _rule_matches(r, tool, arg):
-                return Decision.allow
+        if matches(self.rules.ask, restrict, fold):
+            return Decision.ask
+        if matches(self.rules.allow, permit):
+            return Decision.allow
 
         # 5. Mode default.
         if not spec.mutates:

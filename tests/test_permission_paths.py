@@ -106,3 +106,63 @@ def test_a_project_under_a_protected_name_is_not_protected_wholesale(tmp_path):
     assert not is_protected(str(root / "src" / "a.py"), root)
     assert not is_protected("src/a.py", root)
     assert is_protected(str(root / ".env"), root)
+
+
+# --------------------------------------------------------------------------
+# path rules match where the path lands, not how it was spelled
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("spelling", [
+    "./src/secret.py", "src//secret.py", "src/./secret.py", "lib/../src/secret.py",
+])
+def test_a_deny_rule_holds_however_the_path_is_spelled(spelling, tmp_path):
+    e = engine(Mode.auto_edit, root=tmp_path, deny=["edit(src/secret.py)"])
+    assert e.evaluate("edit", spelling) == Decision.deny
+    assert e.evaluate("edit", str(tmp_path / "src" / "secret.py")) == Decision.deny
+
+
+def test_a_deny_rule_holds_through_a_symlink(tmp_path):
+    (tmp_path / "src").mkdir()
+    _link(tmp_path / "alias", tmp_path / "src")
+    e = engine(Mode.auto_edit, root=tmp_path, deny=["edit(src/**)"])
+    assert e.evaluate("edit", "alias/secret.py") == Decision.deny
+
+
+def test_an_allow_rule_does_not_reach_outside_its_directory_through_dotdot(tmp_path):
+    e = engine(root=tmp_path, allow=["edit(src/**)"])
+    assert e.evaluate("edit", "src/a.py") == Decision.allow
+    assert e.evaluate("edit", "src/../pyproject.toml") == Decision.ask
+
+
+def test_an_allow_rule_does_not_reach_outside_its_directory_through_a_symlink(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "src").mkdir()
+    _link(tmp_path / "src" / "cfg", tmp_path / "config")
+    e = engine(root=tmp_path, allow=["edit(src/**)"])
+    assert e.evaluate("edit", "src/cfg/settings.py") == Decision.ask
+
+
+def test_an_always_allow_rule_still_matches_the_call_it_was_written_for(tmp_path):
+    """"Always allow" persists the path as the tool spelled it; the next
+    identical call has to match it."""
+    e = engine(root=tmp_path)
+    for spelling in (str(tmp_path / "src" / "a.py"), "./src/a.py", "src/a.py"):
+        rule = e.suggest_rule("edit", spelling)
+        assert engine(root=tmp_path, allow=[rule]).evaluate("edit", spelling) == Decision.allow
+
+
+def test_an_absolute_allow_rule_covers_the_relative_spelling(tmp_path):
+    rule = f"edit({tmp_path.resolve().as_posix()}/src/**)"
+    assert engine(root=tmp_path, allow=[rule]).evaluate("edit", "src/a.py") == Decision.allow
+
+
+def test_deny_rules_ignore_case_where_the_filesystem_does(tmp_path, monkeypatch):
+    from quickcode.core import permissions
+
+    monkeypatch.setattr(permissions, "CASE_INSENSITIVE_PATHS", True)
+    e = engine(Mode.yolo, root=tmp_path, deny=["read(**.pem)"], allow=["edit(src/**)"])
+    assert e.evaluate("read", "keys/PROD.PEM") == Decision.deny
+    # Allow rules do not widen by case.
+    assert engine(root=tmp_path, allow=["edit(src/**)"]).evaluate("edit", "SRC/a.py") == (
+        Decision.ask
+    )

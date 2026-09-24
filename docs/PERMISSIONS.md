@@ -170,9 +170,16 @@ The matching is a **whole-string glob**, not gitignore semantics:
   `bash(uv run pytest*)` does not cover `uv run pytest tests/test_x.py`. Any
   rule whose argument may contain a path or a URL wants `**`. The examples above
   are written that way for exactly this reason.
-- Paths are matched as the *strings the tool was called with*. There is no
-  normalisation step, so an absolute call and a relative one are different
-  targets and a rule that means to cover both has to say so.
+- A path rule (on a tool that declares `path_target`) is matched against
+  where the path *lands*: its resolved location relative to the project root
+  (`src/a.py`) and absolute (`/home/me/proj/src/a.py`). So `edit(src/**)` covers
+  the absolute spelling of the same file, and a deny on `src/secret.py` holds for
+  `./src/secret.py`, `lib/../src/secret.py` and a symlink that points there.
+  `deny` and `ask` also see the string exactly as the tool was called with it;
+  `allow` sees that string only when it names its location plainly (no `..`, no
+  symlink on the way), so `edit(src/**)` does not cover `src/../pyproject.toml`.
+  On Windows and macOS `deny` and `ask` path rules ignore case, as those
+  filesystems do; `allow` rules never do.
 - `agent(researcher)` gates which subagent types may spawn.
 - A bare tool name (`write`) matches every use of that tool, in any of the three
   lists.

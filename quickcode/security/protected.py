@@ -95,7 +95,7 @@ def resolve(path: str, base: Path) -> Path | None:
         return None
 
 
-def _written_tail(path: str, root: Path) -> list[str]:
+def written_tail(path: str, root: Path) -> list[str]:
     """The written components below the project root.
 
     An absolute path spells the root's own components too, and those are not
@@ -121,7 +121,7 @@ def is_protected(path: str, root: Path, *, base: Path | None = None) -> bool:
     resolved = resolve(path, base or root)
     if resolved is None:
         return True
-    if any(is_protected_name(p) for p in _written_tail(path, root)):
+    if any(is_protected_name(p) for p in written_tail(path, root)):
         return True
     try:
         inside = resolved.relative_to(root.resolve())
