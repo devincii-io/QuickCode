@@ -78,6 +78,55 @@ def test_load_missing_file_returns_empty_board(tmp_path: Path):
     assert t1.id == "T1"
 
 
+def test_a_refused_update_changes_nothing():
+    """The model is told the call failed, so nothing it asked for may stick --
+    the edges added before the bad id used to stay, and the next save kept
+    them."""
+    board = TaskBoard()
+    board.create("one")
+    board.create("two")
+    board.create("three")
+
+    with pytest.raises(KeyError):
+        board.update("T3", add_blocked_by=["T1", "T99"])
+    with pytest.raises(ValueError):
+        board.update("T3", add_blocks=["T2"], status="bogus")
+
+    assert board.get("T3").blocked_by == [] and board.get("T3").blocks == []
+    assert board.get("T1").blocks == [] and board.get("T2").blocked_by == []
+
+
+def test_a_dependency_cycle_is_refused():
+    """There is no call that removes an edge, so a cycle could never start."""
+    board = TaskBoard()
+    board.create("one")
+    board.create("two")
+    board.create("three")
+    board.update("T2", add_blocked_by=["T1"])
+    board.update("T3", add_blocked_by=["T2"])
+
+    with pytest.raises(ValueError, match="cycle"):
+        board.update("T1", add_blocked_by=["T3"])
+    with pytest.raises(ValueError, match="cycle"):
+        board.update("T3", add_blocks=["T1"])
+
+    assert board.get("T1").blocked_by == []
+    assert board.get("T3").blocks == []
+
+
+def test_an_unreadable_board_does_not_stop_the_conversation_opening(tmp_path: Path):
+    path = tmp_path / "board.json"
+    path.write_text('{"counter": 2, "tasks": [', encoding="utf-8")
+
+    board = TaskBoard.load(path)
+
+    assert board.list() == []
+    # Kept aside rather than overwritten by the next save.
+    assert (tmp_path / "board.json.corrupt").read_text(encoding="utf-8").startswith("{")
+    board.create("fresh")
+    assert TaskBoard.load(path).get("T1").subject == "fresh"
+
+
 def test_claimable():
     board = TaskBoard()
     t1 = board.create("blocker")
