@@ -650,8 +650,13 @@ def create_app(
         """
         if not _valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
-        store = SessionStore(manager.cwd, conv_id)
-        if not store.path.exists():
+        # An open conversation is renamed through its own store. One nobody
+        # has spoken in yet has no log on disk -- its opening records are held
+        # -- and naming it is an act that writes them, where a second store
+        # would find no file and answer 404 for a pane the user can see.
+        conv = manager.get(conv_id)
+        store = conv.store if conv is not None else SessionStore(manager.cwd, conv_id)
+        if conv is None and not store.path.exists():
             raise HTTPException(404, "unknown conversation")
         body = await _read_json(request)
         title = body.get("title") if isinstance(body, dict) else None

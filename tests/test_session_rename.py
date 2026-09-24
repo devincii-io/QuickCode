@@ -149,3 +149,32 @@ def test_renaming_refuses_what_it_cannot_name(tmp_path):
         assert client.patch("/api/sessions/realsession1", json={"title": 7}).status_code == 400
         too_long = {"title": "y" * (MAX_TITLE + 1)}
         assert client.patch("/api/sessions/realsession1", json=too_long).status_code == 400
+
+
+def test_a_conversation_nobody_has_spoken_in_yet_can_be_named(tmp_path):
+    """A new pane holds its opening records instead of writing them, so its
+    log does not exist yet -- and the rename route looked only at the disk and
+    answered 404 "unknown conversation" to a pane the user could see. Naming
+    it is an act, like speaking in it: it makes the session real."""
+    hub, client = make_app(tmp_path, FakeProvider([[TextDelta("ok"), TurnDone("stop")]]))
+    with client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        resp = client.patch(f"/api/sessions/{conv_id}", json={"title": "Planned work"})
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Planned work"
+        assert [(s["conv_id"], s["title"]) for s in client.get("/api/sessions").json()] == [
+            (conv_id, "Planned work")
+        ]
+        # The held opening record went down first, so resume still finds the
+        # model and composition the session was opened with.
+        meta = SessionStore(tmp_path, conv_id).meta()
+        assert meta["model"] == "test/model" and meta["composition"]
+
+        # And the conversation carries on writing to the same log.
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_text(json.dumps({"type": "user_message", "text": "hello"}))
+            recv_until(ws, "assistant_message")
+        assert client.get("/api/sessions").json()[0]["title"] == "Planned work"
+        seqs = [e["seq"] for e in SessionStore(tmp_path, conv_id).load_events()]
+        assert seqs == sorted(set(seqs))
