@@ -31,9 +31,7 @@ repository on 2026-08-18, so that link will not open until the setting is
 turned on. Try it if you prefer it; fall back to email, and do not treat a
 non-opening form as a reason to file publicly.
 
-Security fixes are provided for the latest published release only. Note that
-`main` currently carries security fixes that no published release contains — see
-the second list below.
+Security fixes are provided for the latest published release only.
 
 ## Reports that are particularly welcome
 
@@ -58,13 +56,14 @@ the second list below.
 ## What is already known, and does not need reporting
 
 These are documented in `docs/COMPLIANCE.md` and are open, not secret. They are
-listed as they stand on `main`; the released 2.0.0 additionally carries
-everything under "fixed on `main`" below.
+listed as they stand in 2.7.0.
 
 **Open:**
 
-- The `yolo` circuit-breaker patterns are narrower than `docs/PERMISSIONS.md`
-  describes, and subagents are constructed without the parent's rule set.
+- The `yolo` circuit breakers are four patterns (`docs/PERMISSIONS.md`
+  §Modes); substitution forms such as `$(rm -rf /)` and recursive deletes
+  outside the project are not among them. Subagents are constructed without
+  the parent's rule set, so a project `deny` does not bind a child.
 - A plugin file whose frontmatter declares `kind:` twice is classified by its
   first declaration for the trust hash and by its last one when it is loaded,
   so a previously trusted repository can add a command tool without
@@ -82,14 +81,15 @@ everything under "fixed on `main`" below.
   in an `AGENTS.md`. They are git-ignored now, which is not the same as safe.
 - Stored API keys are protected by Windows DPAPI (user-bound), which does not
   defend against anything already running as that user — including QuickCode's
-  own shell tool. The `bash` tool, the PTY and MCP subprocesses all inherit the
+  own shell tool. On Linux and macOS the stored key is only base64-encoded in a
+  `0600` file; the file permission is the whole control. The `bash` tool, the PTY and MCP subprocesses all inherit the
   full environment.
 - The released Windows installer is not code-signed.
 - The local server sets no `Content-Security-Policy`, and the loopback token is
   persistent per install and printed to stdout in the launch URL.
 
-**Fixed on `main`, not yet in a published release** — still listed because the
-2.0.0 you can download has them, so a report against 2.0.0 is not news:
+**Fixed in 2.1.0** — still listed because 2.0.0 has them, so a report against
+2.0.0 is not news:
 
 - A leading environment assignment defeated the read-only bash auto-allow, so a
   read-only-looking command could execute in any mode including `plan`.
@@ -103,9 +103,10 @@ everything under "fixed on `main`" below.
   `git add -A` committed the transcripts.
 - `scripts/bootstrap.ps1` provisioned Git and Python by downloading vendor
   installers without verifying a hash or signature. It now Authenticode-verifies
-  both before executing them.
+  both before executing them — and since 2.3.0 the installer no longer runs it
+  at all: it copies a frozen build and downloads nothing.
 
 A concrete, working exploit of anything in the **open** list is still
 interesting — a report that turns "plausible from reading the code" into "here
 is the repro" is genuinely useful. A restatement of the bullet is not. A bypass
-of one of the fixes, on `main`, is very interesting indeed.
+of one of the fixes is very interesting indeed.

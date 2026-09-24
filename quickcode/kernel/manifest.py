@@ -6,7 +6,7 @@ definitions, MCP specs from the configured servers. That is deliberate: a
 manifest that restated the runtime from memory would drift, and the Settings
 UI would start describing an app that no longer exists.
 
-Tiers here are the contract from ``docs/PLAN-PLUGIN-UI-OVERHAUL.md``. The
+Tiers here are the contract from ``docs/archive/PLAN-PLUGIN-UI-OVERHAUL.md``. The
 short version: how tools are called, how events are logged and how subagent
 reports are sanitized are ``locked``; the knobs that move agent behaviour are
 ``confirm``; taste is ``free``.

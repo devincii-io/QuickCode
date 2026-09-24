@@ -10,6 +10,7 @@ class Tool[In: BaseModel]:
     description: str            # prompt copy — see style rules in PROMPTS.md §3
     Input: type[In]             # Pydantic model → strict JSON Schema on the wire
     is_read_only: bool          # True → parallel-safe
+    interruptible: bool         # True → Stop may cancel it mid-run (bash)
     permission: PermissionSpec  # how the permission engine should gate it
     source: str                 # internal | entrypoint | config (stamped, not guessed)
     async def run(self, input: In, ctx: ToolCtx) -> ToolResult: ...
@@ -39,30 +40,45 @@ without the server sniffing for a `task_` name prefix.
 
 ## read `[read-only]`
 
-> Reads a file from the local filesystem. Call this before editing any file, and when you need to see actual code rather than search matches. Returns numbered lines (`123→code`). Reads up to 2000 lines by default; for larger files pass offset/limit. Prefer this over `bash cat`.
+> Reads a file from the local filesystem and returns its contents as numbered
+> lines. Use this to view source files, configs, or logs before editing them —
+> Edit and Write both require the file to have been read first in this session.
+> file_path must be absolute. Defaults to the first 2000 lines; pass
+> offset/limit to page through larger files. Lines longer than 2000 characters
+> are cut with a marker, and total output is capped (use offset to read
+> further).
 
 ```json
 { "file_path": "string (absolute)", "offset": "number?", "limit": "number?" }
 ```
 
-- Lines longer than 2000 chars are cut with a marker.
+- Lines longer than 2000 chars are cut with a marker; the whole result is capped at 40 000 chars with a `<truncated …/>` marker that says to page on with `offset`.
 - Records `{path, mtime}` in the session's read-registry — the `edit` staleness check depends on it.
 - Re-reading a file supersedes the old copy in history (read-dedup, see ARCHITECTURE).
 
 ## write
 
-> Creates a new file, or fully replaces one that was already read this session. For any partial change to an existing file use `edit` instead — it is cheaper and reviewable as a diff.
+> Writes content to a file, creating it (and any parent directories) if it
+> doesn't exist, or overwriting it if it does. Use this for new files or
+> full-file rewrites; for small changes to an existing file prefer Edit.
+> file_path must be absolute. If the file already exists, it must have been read
+> with the Read tool earlier in this session, or the call is rejected.
 
 ```json
 { "file_path": "string (absolute)", "content": "string" }
 ```
 
 - Overwriting a file that was never `read` → error (forces the model to look before it leaps).
-- Renders as a diff against the previous content when overwriting.
+- Creates missing parent directories. The model gets a one-line confirmation (`Wrote N lines to <path>`); the UI shows the written content.
 
 ## edit
 
-> Performs an exact string replacement in a file. Call this for all modifications to existing files. `old_string` must match the file exactly (including whitespace) and be unique in the file — extend it with surrounding lines until it is. Use `replace_all` to rename a symbol everywhere.
+> Performs an exact string replacement in a file. Use this for targeted changes
+> instead of rewriting the whole file with Write. old_string must match exactly
+> (including whitespace) and, unless replace_all is set, must be unique in the
+> file — include enough surrounding context to make it so. The file must have
+> been read with the Read tool earlier in this session and must not have changed
+> on disk since.
 
 ```json
 {
@@ -73,26 +89,39 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- Errors (all returned as `is_error` with a actionable message): file not read this session · file changed on disk since read · 0 matches · >1 match without `replace_all`.
-- Renders as a colored unified diff; the tool result to the model is a short confirmation + patched region snippet, not the whole file.
+- Errors (all returned as `is_error` with an actionable message): file not read this session · file changed on disk since read · empty `old_string` · 0 matches · >1 match without `replace_all`.
+- The result is `Replaced N occurrence(s) in <path>` plus a unified diff of the change (2 lines of context, capped at 60 diff lines) — never the whole file. The UI renders the same diff.
 
 ## glob `[read-only]`
 
-> Fast file-pattern matching. Call this to find files by name or path (`src/**/*.ts`, `**/config.*`). Returns paths sorted by modification time, newest first. Prefer this over `bash find` or `ls -R`.
+> Finds files matching a glob pattern (supports ** for recursive matches). Use
+> this to locate files by name or extension when you know roughly what you're
+> looking for but not the exact path; for searching file contents use Grep
+> instead. Skips .git, node_modules, __pycache__, and .venv. Returns up to 200
+> matches, newest first, one path per line, after a marker declaring how many
+> came back.
 
 ```json
 { "pattern": "string", "path": "string? (default cwd)" }
 ```
 
-- Respects `.gitignore`; caps at 200 results with truncation marker.
+- Skips `.git`, `node_modules`, `__pycache__`, `.venv`, `venv`, `.mypy_cache` and `.pytest_cache`; it does **not** read `.gitignore`. Caps at 200 results with a truncation marker.
+- Gated on where it actually looks — `path` joined with `pattern` — so `glob(pattern="../*/*.txt")` meets the outside-the-project prompt rather than presenting an empty target.
 
 ## grep `[read-only]`
 
-> Content search built on ripgrep with full regex support. Call this to find where something is defined, used, or mentioned. Filter with `glob` (e.g. `*.ts`). Prefer this over `bash grep` — it is faster and its results are paginated.
+> Searches file contents for a regular expression pattern. Use this instead of
+> running grep/rg via Bash. Prefers ripgrep when installed, falling back to an
+> equivalent pure-Python search otherwise. output_mode='content' returns a TOON
+> table, matches{path,line,text}, whose header declares the row count.
+> output_mode='files_with_matches' (default) returns one path per line and
+> 'count' returns one path:count per line, each after a marker giving the number
+> of results. Filter with glob (e.g. '*.py'), narrow with path, and cap results
+> with head_limit (default 100).
 
 ```json
 {
-  "pattern": "string (rust regex)",
+  "pattern": "string (regex: ripgrep syntax, Python re in the fallback)",
   "path": "string?",
   "glob": "string?",
   "output_mode": "\"content\" | \"files_with_matches\" | \"count\" (default files_with_matches)",
@@ -106,11 +135,13 @@ without the server sniffing for a `task_` name prefix.
 
 ## bash
 
-> **Design target:** `run_in_background` and persistent background-task output
-> are not implemented in `0.1.0`; the tool returns an explicit error when that
-> flag is requested. Current status is tracked in [ROADMAP.md](ROADMAP.md).
-
-> Executes a command in ${shellName} on ${platform} and returns combined stdout+stderr. Use for builds, tests, git, package managers, and anything without a dedicated tool. Do NOT use for reading files or searching (use read/grep/glob). State persists via tracked cwd; quote paths containing spaces.
+> Executes a shell command and returns its combined stdout/stderr. Use this for
+> anything the other tools don't cover: running tests, git, build tools, package
+> managers, etc. Prefers Git Bash on Windows (falls back to PowerShell),
+> /bin/bash elsewhere. The working directory persists across calls in this
+> session. Output over 30000 characters is truncated (head and tail kept).
+> timeout_ms defaults to 120000 and caps at 600000. run_in_background is not yet
+> supported.
 
 ```json
 {
@@ -121,9 +152,11 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- Runs in a real PTY (`pty/session.py`, ConPTY on Windows — QuickTerm's reader/watcher/writer thread pattern, see ARCHITECTURE §PTY). Tracked cwd; persistent shell session per conversation.
-- Output cap 30k chars to the model (head+tail kept, middle truncated with marker); the UI pane keeps the full scrollback ring. Background tasks stream to the ring, readable via a follow-up call and surfaced as a toast on exit.
-- **Security:** commands are untrusted model output. The permission layer prompts unless the command matches a persisted allow-rule; commands with `;`, `&&`, `|`, `$()`, backticks never prefix-match a rule — full-string match or prompt. Process-tree kill on Esc/timeout.
+- **`run_in_background` is not implemented.** It is declared on the schema and a call that sets it is refused with an error telling the model to re-run without it. Background jobs are in progress (docs/ROADMAP.md).
+- One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
+- There is no persistent shell. A bare `cd <dir>` is handled without spawning anything and moves a tracked working directory that later calls start in; `cd` inside a longer command line affects that command only.
+- Output is decoded (UTF-8, then the system code page), stripped of ANSI escapes, and capped at 30 000 chars to the model (head and tail kept, middle elided with a marker). Every command and its output is listed in the terminal drawer's *Agent* tab.
+- **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree.
 
 ---
 
@@ -164,7 +197,7 @@ Both take `target_field`, so a rule can name what is being reached rather than o
 
 - A bare tool name (`web_fetch`) matches every use of that tool, in whichever list it appears.
 - **Not implemented:** a bare name in `deny` does *not* remove the tool from the model's tool list. Earlier text here said it did. It is an ordinary rule: the tool is still offered, the model still calls it, and the call comes back as an error it can read — correct, but one round trip more expensive than withholding it, and the model does see a capability it cannot use. The only thing that withholds a tool from a request is `PlanModeHook` (docs/PERMISSIONS.md §Plan mode); nothing consults `rules.deny` when building the tool list.
-- Deny beats allow **by rule kind, not by file**: every source is concatenated into one `deny` list and one `allow` list, and any deny match wins. Note that both sources are project files (docs/PERMISSIONS.md §Where rules come from) — there is no user-scope `permissions` block to write the rule above into. To carry a deny across projects, put it in a permission profile.
+- Deny beats allow **by rule kind, not by file**: every source is concatenated into one `deny` list and one `allow` list, and any deny match wins. Note that both sources are project files (docs/PERMISSIONS.md §Rules, "Where rules come from") — there is no user-scope `permissions` block to write the rule above into. To carry a deny across projects, put it in a permission profile.
 - `web_search(*)` matches any query without a `/` in it — `*` stops at a path separator, and a query like `asyncio gather/wait` needs `web_search(**)`. A narrower `web_search(python *)` is possible but rarely what anyone wants — the point of a rule on search is usually the quota, not the topic.
 
 ## web_fetch
@@ -324,7 +357,7 @@ The tool also **registers even with no key configured**, matching how the OpenRo
 | `task_create` / `task_update` / `task_list` / `task_get` | The task board — solo checklist *and* teammate coordination backbone (dependencies, file-locked claiming). No separate todo tool. |
 | `plan` | Present a plan for approval and exit plan mode (docs/PERMISSIONS.md §Plan mode). |
 
-All four are granted **by depth, never by allowlist** (`kernel/composition.py::DELEGATION_TOOLS`): an agent that may spawn receives the whole set, and an agent at the depth limit receives none of it. Granting `agent` without the collectors would make `background: true` a way to start work nobody can read.
+The four delegation tools (`agent`, `send_message`, `agent_status`, `agent_result`) are granted **by depth, never by allowlist** (`kernel/composition.py::DELEGATION_TOOLS`): an agent that may spawn receives the whole set, and an agent at the depth limit receives none of it. Granting `agent` without the collectors would make `background: true` a way to start work nobody can read.
 
 **Detached jobs, end to end.** `agent(background: true, …)` prepares the child synchronously — an unknown `agent_type`, an exhausted budget or a refused composition still comes back as a tool error — then runs it on a task the *conversation* owns and returns a one-row `agent_jobs{id,type,status,seconds,collected,description}` TOON table. The model keeps its turn. Every delegation, detached or blocking, emits an `agent_done` event (`{agent_id, definition, status, seconds}`, status `done | error | cancelled`) into the session log when the child stops — a detached one *additionally* queues a reminder that the spawner reads at the top of its next turn, because it ends at a moment nothing in the spawner's own transcript marks; `agent_result` returns the same sanitized, artifact-offloaded report a blocking call would have (a detached run and a blocking one share `_run_and_finish`). Turn end is not a way out: a turn that finishes with a job running or a report uncollected leaves both a transcript note and a queued reminder. Interrupt (`Esc`) and closing the conversation cancel every job still in flight; the record survives with status `cancelled` and a `[did not finish]` report, so a later `agent_result` on that id says what happened rather than failing to recognise it.
 

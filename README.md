@@ -17,9 +17,12 @@ replay operate on the same event stream.
 
 ## Status
 
-Complete rewrite of the former Textual TUI (v2). Persistent, permission-gated
-agent with streaming, plan review, tasks, compaction, concurrent subagent
-fan-out, usage tracking, session resume, and the trajectory inspector.
+A persistent, permission-gated agent with streaming, plan
+review, a task board, compaction, concurrent and background subagents, web
+fetch and search, usage tracking, session resume, the trajectory inspector, a
+terminal panel, and project workspaces with split agent panes. The web UI
+replaced the original Textual TUI in 1.0.0. What is shipped, in progress and
+planned is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Quickstart
 
@@ -28,8 +31,8 @@ uv venv --python 3.12
 uv sync --all-extras --dev
 export QUICKCODE_OPENROUTER_API_KEY=sk-...  # or save it in Settings (see below)
 uv run quickcode                        # start the web app  (qc also works)
-qc .                                    # open the app on this directory
-qc C:\proj "fix the build"              # open a project, with a first prompt
+uv run qc .                             # open the app on this directory
+uv run qc C:\proj "fix the build"       # open a project, with a first prompt
 uv run quickcode --no-browser           # print the URL instead of opening it
 uv run quickcode -p "explain this repo" # headless / print mode
 ```
@@ -55,8 +58,9 @@ width, pane positions, and split ratios are saved locally.
 In the app: `Enter` send · `Shift+Enter` newline · `Esc` interrupt · mode,
 model and composition pickers live on the composer · `⚙` opens
 **Configuration**, with application settings first, followed by agents,
-compositions, permission profiles, and tools ·
-messages sent while the agent is busy are queued. Tests: `uv run pytest -q`.
+compositions, permission profiles, and parts (tools, prompt sections, models,
+MCP servers, policies) · messages sent while the agent is busy are queued.
+The full keyboard reference is in [docs/UI.md](docs/UI.md#keyboard).
 
 ### Plugins (agent capabilities)
 
@@ -112,9 +116,10 @@ published on PyPI; install the wheel from a
 against the release's `SHA256SUMS.txt` first):
 
 ```bash
-uv pip install https://github.com/devincii-io/QuickCode/releases/download/v2.0.0/quickcode-2.0.0-py3-none-any.whl
-# or, for the interactive terminal tool on Windows:
-uv pip install "quickcode[pty] @ https://github.com/devincii-io/QuickCode/releases/download/v2.0.0/quickcode-2.0.0-py3-none-any.whl"
+# <version> is the release you picked, e.g. 2.7.0
+uv pip install https://github.com/devincii-io/QuickCode/releases/download/v<version>/quickcode-<version>-py3-none-any.whl
+# or, on Windows, with ConPTY support for the terminal panel:
+uv pip install "quickcode[pty] @ https://github.com/devincii-io/QuickCode/releases/download/v<version>/quickcode-<version>-py3-none-any.whl"
 ```
 
 **From source** — see the Quickstart above, or run
@@ -151,7 +156,7 @@ unauthenticated `GET` of the GitHub releases API to see whether a newer version
 exists, at most once every six hours. It carries no API key, no cookie, no
 identifier, no project path, no session or usage data and no version number —
 the whole request is printed verbatim on its Settings card so you can check
-that rather than take our word for it. Turn it off under Install → Updates and
+that rather than take our word for it. Turn it off under Settings → Updates and
 nothing is sent at all.
 
 **But your prompts, source code and shell output do go to your model provider**
@@ -167,22 +172,22 @@ honest list of the known gaps. `sbom.cdx.json` is a CycloneDX SBOM of the
 runtime dependency closure. Third-party attribution is in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
-### Design docs
+### Documentation
 
-The full plan lives in `docs/`:
+[docs/README.md](docs/README.md) indexes everything under `docs/`: the
+reference documents (architecture, permissions, tools, prompts, UI, subagents,
+compliance, roadmap), the design rationale behind the plugin system, and an
+archive of completed plans.
 
 | Doc | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, async agent loop, provider abstraction, PTY subsystem, efficiency techniques |
-| [docs/UI.md](docs/UI.md) | The web UI: chat/trajectory/split views, event log protocol, modals (partly historical — describes the retired TUI) |
-| [docs/AGENTS.md](docs/AGENTS.md) | Subagents, teammate mode, task board, orchestration playbook |
-| [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Permission modes (plan → yolo), rules engine, plan mode, bypass guardrails |
-| [docs/PROMPTS.md](docs/PROMPTS.md) | System prompt (XML-sectioned), dynamic reminders, compaction + delegation prompts |
-| [docs/TOOLS.md](docs/TOOLS.md) | Tool surface: schemas, description copy, safety rules |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones M0–M6 |
-| [docs/design/AUTHORING.md](docs/design/AUTHORING.md) | Writing plugins as files: the five kinds, argv-first command tools, ids, validation, the trust gate |
-| [docs/design/BINDING.md](docs/design/BINDING.md) | Compositions and bindings: how a capability is resolved, why intersection, and the pool-vs-grant split |
-| [docs/design/UX.md](docs/design/UX.md) | Configuration as a view: the visual grammar, and the six questions every plugin answers |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, repository layout, async agent loop, provider abstraction, the bash tool and PTYs, the event log |
+| [docs/PERMISSIONS.md](docs/PERMISSIONS.md) | Permission modes (plan → yolo), rules engine, protected paths, the trust gate, plan mode |
+| [docs/TOOLS.md](docs/TOOLS.md) | Tool surface: descriptions, schemas, limits, safety rules |
+| [docs/PROMPTS.md](docs/PROMPTS.md) | System prompt (XML-sectioned), dynamic reminders, compaction prompt |
+| [docs/UI.md](docs/UI.md) | The web UI: workspaces and agent panes, trajectory, event protocol, dialogs, keyboard |
+| [docs/AGENTS.md](docs/AGENTS.md) | Subagents, background jobs, task board; the teammate-mode design |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Shipped, in progress, next |
 
 ## Principles
 
@@ -196,7 +201,8 @@ The full plan lives in `docs/`:
 
 ```bash
 uv sync --all-extras --dev
-.venv\Scripts\python.exe scripts\release.py --check   # tests + ruff + JS syntax + clean-diff
+uv run --no-sync pytest -q                            # the test suite
+.venv\Scripts\python.exe scripts\release.py --check   # tests + ruff + byte-compile + JS checks + clean diff
 ```
 
 See [AGENTS.md](AGENTS.md) for the architecture conventions agents (and

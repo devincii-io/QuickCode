@@ -2,28 +2,29 @@
 
 ## Stack
 
-- **Runtime:** Python 3.12+, `uv` for env/packaging, `quickcode` console script (+ `qc` alias)
+- **Runtime:** Python 3.12+, `uv` for env/packaging, `quickcode` console script (+ `qc` alias, + the windowed `quickcode-app`)
 - **Server:** FastAPI + uvicorn on 127.0.0.1, WebSocket for the live event stream
-- **UI:** vanilla ES modules, no bundler and no build step, served as static files
-- **Window:** pywebview (WebView2 on Windows) — a native app window, not a browser tab
+- **UI:** vanilla ES modules, no bundler and no build step, served as static files (see docs/UI.md)
+- **Window:** pywebview (WebView2 on Windows) — a native app window, not a browser tab; the default browser when pywebview is unavailable
 - **Wire client:** `openai` package, `AsyncOpenAI(base_url=...)` — one client class, many backends (OpenRouter default)
 - **Schemas:** Pydantic models → strict JSON Schema for tools
 - **Search:** ripgrep (`rg` on PATH; pure-Python fallback so nothing breaks without it)
-- **PTY (bash tool):** `pywinpty` (ConPTY) on Windows, `pty` on POSIX — patterns lifted from QuickTerm (see below)
+- **PTY:** the POSIX `pty` module for `bash` commands off Windows; `pywinpty` (ConPTY) for the terminal panel on Windows — patterns lifted from QuickTerm (see below)
 
 ## Layer diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ Native window (pywebview) → frontend/ (ES modules)           │
-│  chat · trajectory · agents/tasks/files/usage panels         │
-│  settings: plugins, prompt, presets          (see docs/UI.md)│
+│  workspace shell → one iframe per agent pane                 │
+│  chat · trajectory · agents/tasks/files/usage · terminal     │
+│  configuration · help                        (see docs/UI.md)│
 └───────────▲──────────────────────────┬───────────────────────┘
             │ WebSocket events         │ input / approvals / steering
 ┌───────────┴──────────────────────────▼───────────────────────┐
 │ Server (FastAPI)                                             │
 │  ProjectHub → ConversationManager → Conversation             │
-│  REST: bootstrap, sessions, models, kernel, presets, prompt  │
+│  REST: bootstrap, sessions, models, kernel, trust, authoring │
 └───────────▲──────────────────────────┬───────────────────────┘
             │ AgentEvent (bus)         │
 ┌───────────┴──────────────────────────▼───────────────────────┐
@@ -38,13 +39,13 @@
 ┌──────┴────────┐   ┌─────────▼────────────────────────────────┐
 │ Provider layer│   │ Tool system                              │
 │ openai_compat │   │  registry · read/write/edit/glob/grep    │
-│ (OpenRouter,  │   │  bash(PTY) · task_* · agent · plan       │
-│  OpenAI,      │   │  PermissionSpec → gating, parallelism    │
-│  Ollama, …)   │   │  + entry-point plugins, + MCP tools      │
+│ (OpenRouter,  │   │  bash · web_fetch/web_search · task_*    │
+│  OpenAI,      │   │  agent · plan · PermissionSpec → gating  │
+│  Ollama, …)   │   │  + entry-point, authored and MCP tools   │
 └───────────────┘   └──────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────┐
 │ Plugin kernel: what exists, and what may be changed          │
-│  spec · registry · manifest · preset · state (settings.json) │
+│  spec · registry · manifest · composition · resolve · state  │
 └──────────────────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────┐
 │ Persistence: config.py · session store (JSONL) · task board  │
@@ -53,44 +54,76 @@
 
 ## Repo layout
 
+Every module under `quickcode/`, one line each. `tests/test_docs_accuracy.py`
+checks that every path here exists and that every package is listed.
+
 ```
 pyproject.toml            # [project.scripts] quickcode = "quickcode.cli:main"
 quickcode/
-  cli.py                  # args, config, web app vs headless (-p) dispatch
-  webapp.py               # uvicorn on a loopback port + the native window
-  ui/window.py            # pywebview window, browser fallback, single instance
-  frontend/               # index.html, css/, js/  (see docs/UI.md)
+  cli.py                  # args, config, web app vs headless (-p) dispatch, `quickcode doctor`
+  config.py               # profiles (base_url, model roles), project environment
+  secrets.py              # API keys at rest: DPAPI on Windows, a 0600 file elsewhere
+  doctor.py               # `quickcode doctor` environment checks
+  update.py               # the update check, download and verified install
+  webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
+  subproc.py              # every subprocess goes through here (no console window on Windows)
+  workspace.py            # the project's .quickcode/ directory and its .gitignore
+  ui/window.py            # pywebview window, browser fallback
+  frontend/               # index.html, css/, js/, assets/  (see docs/UI.md)
+  context/toon.py         # TOON, the table encoding structured tool results use
   core/
     agent.py              # AgentInstance: loop + history + ledger + event bus
     loop.py               # the agentic loop (single turn driver)
     hooks.py              # LoopHook: tool visibility, call interception
     events.py             # AgentEvent dataclasses (internal protocol)
-    history.py            # messages, serialization, read-registry
+    history.py            # messages, read-dedup, cache breakpoints
     compact.py            # threshold + summarization turn
     permissions.py        # modes, rules, PermissionSpec, bash decomposition
+    profiles.py           # permission profiles: named {mode, allow, ask, deny} bundles
     tasks.py              # task board
   kernel/                 # the plugin kernel (below)
-    spec.py registry.py manifest.py bootstrap.py preset.py state.py
+    spec.py registry.py manifest.py bootstrap.py state.py
+    composition.py        # what is attached to one agent, and the runtime limits
+    resolve.py            # what an agent actually gets, with provenance
+    preset.py             # presets: the composition a session's agents run
+    problems.py           # provenance and problem records
+    authoring/            # .quickcode/plugins/*.md → plugins
+      format.py schema.py model.py discovery.py store.py
+      argv.py reserved.py templates.py
+  security/trust.py       # the project trust gate
   server/
     app.py                # FastAPI routes + WebSocket attach
     manager.py            # ConversationManager / Conversation
     projects.py           # ProjectHub, project registry
-    serialization.py auth.py gitinfo.py
+    serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
+    agents_api.py authoring_api.py gitinfo.py paths.py terminal.py auth.py
+  session/
+    store.py              # JSONL transcripts + conversation registry
+    recorder.py           # TranscriptRecorder: what a session log contains
+  subagents/
+    definitions.py runner.py jobs.py artifacts.py
   providers/
-    base.py openai_compat.py
+    base.py openai_compat.py credits.py
   tools/
-    base.py registry.py
+    base.py registry.py command.py
     read.py write.py edit.py glob.py grep.py bash.py
-    agent.py send_message.py task.py plan.py
+    web_fetch.py web_search.py
+    agent.py agent_jobs.py send_message.py task.py plan.py
+  web/
+    fetch.py ssrf.py markdown.py
+  search/                 # web_search providers
+    base.py resolve.py brave.py serper.py tavily.py searxng.py exa.py google_cse.py
+    __main__.py           # python -m quickcode.search (set-key, list, status)
   plugins/
     loader.py             # quickcode.tools / quickcode.providers entry points
     mcp.py                # MCP client + tool adapter
   prompts/
     sections.py           # the system prompt, one section per block
     system.py compact.py subagent.py
-  pty/session.py          # ConPTY/posix PTY session (QuickTerm patterns)
-  config.py
-  session/store.py        # JSONL transcripts + conversation registry
+  pty/
+    session.py            # one PTY per bash command (QuickTerm patterns)
+    interactive.py        # the terminal panel's long-lived shell
+    registry.py           # live terminals, per project
 ```
 
 ## The plugin kernel
@@ -109,18 +142,21 @@ protocol, the event-log format, the subagent report sanitizer). **Locked never
 means hidden:** every plugin exposes a view of its raw definition at every
 tier.
 
-A **preset** is the plugin composition one session runs — its tools, its
-subagents, its prompt, its default mode. A session records the preset it
-started with and keeps it on resume: the conversation was already told what
-tools it had, and changing them underneath it would be a lie.
+A **preset** (shown in the UI as a *composition*) is the plugin composition one
+session runs — its tools, its subagents, its prompt, its default mode. A
+session records the composition it started with and keeps it on resume: the
+conversation was already told what tools it had. Switching one mid-session is
+an explicit act (`/composition`), refused while a turn is running, re-renders
+the system prompt, and is logged as `composition_changed` so the trajectory
+shows that the conversation had two different agents in it.
 
 ## Async model
 
-- Each **AgentInstance** runs as an asyncio task. No threads except the PTY reader/writer (below) and the server thread when the native window owns the main one.
+- Each **AgentInstance** runs as an asyncio task. Threads appear in three places only: the reader/watcher threads of a PTY session (below), the worker thread a blocking subprocess runs on (`asyncio.to_thread`), and the server thread when the native window owns the main one.
 - Agents emit `AgentEvent`s onto their own **event bus**; each attached WebSocket subscribes with a **bounded queue**. On overflow the client is dropped with a sentinel and reconnects, replaying from the log. (QuickTerm's pattern for fast producers + slow consumers — never unbounded buffering, never a frozen UI.)
 - The frontend batches bursts with `requestAnimationFrame`; streaming text patches one live node rather than re-rendering the transcript.
 - Permission and plan review round-trip over the WebSocket: the loop `await`s an `asyncio.Future` that a `permission_decision` / `plan_decision` message resolves — clean backpressure, no callback soup.
-- **Cancellation:** interrupt cancels the agent's task → aborts the in-flight HTTP stream, kills the PTY process tree, marks the partial turn `[interrupted]` in history.
+- **Cancellation:** interrupt cancels the agent's task → aborts the in-flight HTTP stream, kills the running command's process tree, and closes the round with `[interrupted]` in history.
 
 ## The agent loop
 
@@ -151,11 +187,11 @@ Rules that matter:
 
 ## Provider layer
 
-The core only speaks this; adapters translate wire formats:
+The core only speaks this (`providers/base.py`); adapters translate wire formats:
 
 ```python
 class Provider(Protocol):
-    def stream_chat(self, req: ChatRequest, cancel: CancelScope) -> AgentStream: ...
+    def stream_chat(self, req: ChatRequest) -> AsyncIterator[AgentEvent]: ...
     async def list_models(self) -> list[ModelInfo]: ...
 
 AgentEvent = (
@@ -166,18 +202,21 @@ AgentEvent = (
 )
 ```
 
+Cancellation is not a parameter: the stream is consumed inside the agent's
+task, and cancelling that task is what aborts the request.
+
 ### `openai_compat` (default)
 
-- `base_url` from the active profile; default `https://openrouter.ai/api/v1`, key from `OPENROUTER_API_KEY`. Any OpenAI-compatible endpoint works (OpenAI, Groq, Ollama at `localhost:11434/v1`, …).
+- `base_url` from the active profile; default `https://openrouter.ai/api/v1`, key from `QUICKCODE_OPENROUTER_API_KEY` or the encrypted value saved from Settings (`secrets.py`). Any OpenAI-compatible endpoint works (OpenAI, Groq, Ollama at `localhost:11434/v1`, …).
 - Streaming chat completions, OpenAI-style `tools`, buffered `tool_calls` argument deltas.
-- Usage in-stream (OpenRouter `usage: {include: true}`) feeds the ledger; model list from `GET /models` filtered to tool-capable feeds the picker.
+- Usage in-stream (`stream_options.include_usage`, plus OpenRouter's `usage: {include: true}`) feeds the ledger. The model list comes from `GET /models` and is not filtered: the picker shows the whole catalog with a search box and a custom-id entry.
 - `reasoning` param passthrough (OpenRouter normalizes effort across vendors); deltas surface as `ReasoningDelta`.
-- Prompt caching: `cache_control` breakpoints on system tail + last history block — forwarded to Anthropic models by OpenRouter; OpenAI-family caches automatically; harmless elsewhere.
+- Prompt caching: `cache_control` breakpoints on the system message and the last history block — forwarded to Anthropic models by OpenRouter; OpenAI-family caches automatically; harmless elsewhere.
 - **Per-agent model choice:** every AgentInstance carries its own model — expensive orchestrator, cheap workers (see docs/AGENTS.md).
 
-### `anthropic` (later)
-
-Native Messages API behind the same Protocol: adaptive thinking + effort, exact cache breakpoints, server-side compaction.
+A second provider is selected per profile through the `quickcode.providers`
+entry-point group (`plugins/loader.py`). A native Anthropic adapter is in
+progress (docs/ROADMAP.md).
 
 ## Permission system
 
@@ -189,7 +228,7 @@ Full design in docs/PERMISSIONS.md; core model:
 | `ask` (default) | ✅ auto | prompt | prompt | |
 | `auto-edit` | ✅ auto | ✅ auto | prompt | edits only; no file-op command allowlist |
 | `dontask` | ✅ auto | rule-matched, else auto-deny | rule-matched, else auto-deny | never prompts |
-| `yolo` | ✅ auto | ✅ auto | ✅ auto | explicit opt-in, red status bar |
+| `yolo` | ✅ auto | ✅ auto | ✅ auto | explicit opt-in; the mode pill turns red |
 
 `Mode` has these five members and no others. A four-mode summary that omits
 `dontask` used to sit here, which is how the one mode that silently *denies*
@@ -198,32 +237,43 @@ went undocumented in the architecture overview.
 - Prompt choices: **allow once · always allow (persist rule) · deny with message** (deny text returns as the tool result so the model adapts).
 - Rules persist in `./.quickcode/settings.local.json` — "always allow" writes there; `./.quickcode/settings.json` is the shared, checked-in half (`allow`/`deny`/`ask` arrays, `bash(npm test*)`-style patterns). Deny beats allow.
 - A compound line is **split** on `;`, `&&`, `||`, `|` and `&`, and each subcommand is rule-matched on its own — that is the "parse, don't prefix-match" principle, and it means a rule whose pattern spans a splitter can never match. Substitution and redirection are the different case: a line containing `$(`, a backtick, `>` or `<` never matches an allow rule at all and never takes the read-only auto-allow — full-string deny rule or prompt.
-- Mode cycling on a hotkey; per-conversation override; subagents/teammates inherit a *capped* mode (a yolo main agent does not imply yolo workers — see docs/AGENTS.md).
-- Edits outside the project root always prompt.
+- The mode is chosen from the mode pill or `/mode`, per conversation; there is no cycling hotkey. Subagents inherit a *capped* mode (a yolo main agent does not imply yolo workers — see docs/AGENTS.md).
+- Edits outside the project root always prompt (except in `yolo`).
 
-## PTY subsystem (QuickTerm lessons, applied)
+## The bash tool and PTYs (QuickTerm lessons, applied)
 
-The `bash` tool runs commands in a real PTY (`pty/session.py`) instead of pipe-only subprocesses — interactive-ish tools, colors, and correct Ctrl+C semantics come free. Direct imports from QuickTerm's battle-tested design:
+`tools/bash.py` runs one command per call and returns when it exits. How it
+runs depends on the platform:
 
-- **One ConPTY, three daemon threads:** reader (coalesces all immediately-available output into one callback, ≤128 KB), watcher (waits on the real process handle — winpty EOF lags ~8 s behind actual exit), writer (queue-drained; **PTY writes never run on the event loop** — a full stdin pipe blocks).
-- **Bytes on the hot path**, decode once at the UI/model boundary (UTF-8 + surrogateescape, never `errors="replace"`).
-- **Scrollback ring as a deque of chunks** (O(chunk) trim) for background-task buffers, not a flat bytearray.
-- **Process-tree kill** on Esc/timeout (Windows: `taskkill /T` semantics via the ConPTY handle).
-- Output to the model stays capped (30k chars, head+tail) with truncation markers; the *pane* can still show the full ring.
+- **POSIX:** inside a real pseudo-terminal (`pty/session.py`), so programs see a tty and take their tty code paths.
+- **Windows:** on plain pipes by default. Under a tty a command that reads stdin (`git commit` without `-m`, `ssh`, a pager) waits for a person who is not there; under a pipe it gets EOF and exits. `QUICKCODE_BASH_PTY=1` opts back into ConPTY.
+- Any PTY failure (backend missing, spawn error) falls back to the plain subprocess path, which is the same code either way.
+
+Patterns carried over from QuickTerm:
+
+- **Reader and watcher threads per PTY session:** the reader coalesces available output (64 KB reads) into the scrollback; the watcher waits on the real process rather than the PTY's EOF, which on ConPTY lags seconds behind the actual exit.
+- **Bytes on the hot path**, decoded once at the boundary by `tools/base.decode_output`: UTF-8 first, then the system code page, never `surrogateescape` — a lone surrogate used to kill the turn inside the recorder. Both paths then strip ANSI escapes and apply carriage returns the way a terminal would.
+- **Scrollback ring as a deque of chunks** (O(chunk) trim), capped at 16 MB.
+- **Process-tree kill** on Stop and on timeout (`taskkill /T /F` on Windows, the process group on POSIX).
+- Output to the model stays capped (30k chars, head + tail) with a truncation marker.
+
+The **terminal panel** is a separate thing: `pty/interactive.py` holds one
+long-lived shell per project for the *human*, served by `server/terminal.py`.
+No tool can reach it, and the agent never sees what is typed there.
 
 ## Multi-project, multi-conversation, multi-agent runtime
 
 - A **ProjectHub** holds one `ConversationManager` per open project; a project id is a stable hash of its resolved path, so it is the same id every run.
-- A **Conversation** = one main AgentInstance + its transcript + its spawned subagents. The manager holds a registry, and the topbar's session tabs and switcher jump between them. A conversation the browser is not attached to stays *open* server-side — its agent, task board and background jobs survive — but nothing streams to a client that is not there, and the browser holds exactly one socket (`frontend/js/ws.js` enforces it with a generation guard). The tabs are shortcuts into that registry, not concurrent live sessions.
+- A **Conversation** = one main AgentInstance + its transcript + its spawned subagents. A conversation nobody is attached to stays *open* server-side — its agent, task board and background jobs survive — but nothing streams to a client that is not there. In the browser each agent pane is its own iframe holding exactly one socket to one conversation (`frontend/js/ws.js` enforces the one with a generation guard); several panes make several concurrent live conversations.
 - Subagents and teammates are just more AgentInstances with different system prompts, models, and permission caps — one runtime, no special cases. Coordination (task board, teammate messaging, result hand-back) is specced in docs/AGENTS.md.
 - **Spend vs. context.** Each AgentInstance owns a `Ledger`, so a child's tokens reach the session only through the recorder, which bridges every subagent bus. It rolls them in with `Ledger.add_subagent`: the cumulative fields (`input_tokens`, `output_tokens`, `cached_tokens`, `cost_usd`) take them, and `last_input_tokens` / `last_output_tokens` never do. That pair is the *live context footprint* — it drives `context_pct()`, the context meter and the compaction threshold — and a subagent fills a context window of its own, so counting its request there would show a short conversation as nearly full and could trip an auto-compaction the parent never needed. `Ledger.from_events` replays the same split from the log, reading the child's usage out of the `agent_event` wrapper it is logged inside.
-- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, the permission/plan request-and-resolution pairs, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `system_note`, `error`). Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` / `--resume` rebuild conversations, including still-open task boards.
+- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `system_note`, `error`). Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
 
 ## Efficiency checklist
 
 1. **Cache-stable prefix:** request order `tools → system → history`, byte-identical across turns. No timestamps/randomness in the system prompt; dynamic state travels as `<system-reminder>` blocks in user messages.
 2. **Parallel tool calls** honored (gather) and encouraged in the prompt.
-3. **Cheap models for fan-out:** research/search subagents default to a configured `worker_model` (sonnet-tier), orchestrator stays on the big model.
+3. **Cheap models for fan-out:** both built-in subagent types (`explore`, `general`) default to the profile's `worker` model role; the orchestrator stays on its own model.
 4. **Diff-based edits**; output caps + pagination hints on every tool; read-dedup (superseded file reads stubbed out of the request).
 5. **Compaction at ~80%** of the model's context window; manual `/compact`. Both drivers check it after every turn — the web worker and `TranscriptRecorder.record_turn`, which is what a headless `-p` run goes through — off the one declared setting (`runtime.compaction`).
 6. **UI never blocks the loop, loop never blocks the UI** — bounded queues both directions.
@@ -234,10 +284,11 @@ The API answers the QuickCode window and nothing else: a Host allowlist
 defeats DNS rebinding, an Origin allowlist defeats cross-origin requests from
 other pages, and a per-install loopback token (`server/auth.py`) stops other
 local processes. The token reaches the frontend in the URL fragment, which is
-never sent to the server and never logged. Static frontend files carry no
-secrets and stay open so the shell can bootstrap.
+never sent to the server and never logged; WebSockets carry it as a
+`qcauth.<token>` subprotocol. Static frontend files carry no secrets and stay
+open so the shell can bootstrap.
 
 ## Windows notes
 
-- `bash` targets Git Bash when present, else PowerShell; the active shell is named in the tool description so the model writes matching syntax.
-- Paths normalized to forward slashes in tool results; `rg` resolved from PATH with a bundled-download helper (`quickcode doctor` offers to fetch it).
+- `bash` targets Git Bash when present, else PowerShell; the active shell is named in the `<environment>` block of the system prompt so the model writes matching syntax.
+- `glob` and `grep` report paths with forward slashes. `rg` is found on PATH; `quickcode doctor` reports whether it is there (it is optional — the pure-Python search is the fallback).

@@ -1,10 +1,14 @@
 # Multi-Agent Design — subagents, teammate mode, task board
 
-> **Design document:** this describes the intended end state. See
-> [ROADMAP.md](ROADMAP.md) for the exact implemented status. An `agent` call
-> blocks by default and multiple calls in one model turn run concurrently;
-> `background: true` detaches one and `agent_status` / `agent_result` collect
-> it (§1.1). Teammate mode is not implemented yet.
+> **What is built.** §1 (subagents, including detached jobs) and the
+> orchestration prompt of §4 describe shipped behaviour. §3's task board ships
+> as a solo board; its coordination features (file-locked claiming, dependents
+> surfaced when a blocker completes) do not. §2, teammate mode, is design
+> only. Each unbuilt piece is marked where it appears; [ROADMAP.md](ROADMAP.md)
+> tracks them.
+
+This is the product feature; the root `AGENTS.md` is a different document, for
+people and agents editing this repository.
 
 One runtime, three shapes. Every agent is the same `AgentInstance` (loop + history + ledger + event bus); the differences are prompt, model, permission cap, and who reads its results.
 
@@ -23,20 +27,20 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
   "description": "3-5 word label for the UI",
   "prompt": "full task description — the ONLY context the child receives from the parent",
   "agent_type": "explore | general | <custom name>",
-  "model": "optional override (worker_model default for explore)",
+  "model": "optional override (default: the definition's model — worker for both built-ins)",
   "background": "bool — default false; true returns a job handle and keeps your turn"
 }
 ```
 
-- **Fresh context.** The child gets: its definition's system prompt, an environment block, the delegation `prompt`, project instructions (except `explore`, which skips them for speed), and a git-status snapshot. It does **not** get the parent's history.
+- **Fresh context.** The child gets: its definition's system prompt, an environment block (cwd, platform, shell, date, git branch), the delegation `prompt`, and project instructions (except `explore`, which skips them for speed). It does **not** get the parent's history (`prompts/subagent.py::render_subagent_prompt`).
 - **Result = final message only.** Intermediate tool calls stay in the child's pane/transcript, never in the parent's context. The result includes the child's `agent_id`.
-- **Follow-ups without respawning:** `send_message(to=agent_id | name, message)` resumes a completed subagent with its context intact — same tool teammates use (§2).
-- **Report sanitization (security):** a subagent may have read untrusted content. Before its report enters the parent's context, neutralize anything impersonating harness syntax (`<system-reminder>`, fake role markers) and prefix a `[quickcode: sanitized]` marker. Never skip this.
+- **Follow-ups without respawning:** `send_message(agent_id, message)` resumes a completed subagent with its context intact. (Teammates, §2, would use the same tool.)
+- **Report sanitization (security):** a subagent may have read untrusted content. Before its report enters the parent's context, `sanitize_report` (`subagents/runner.py`) defuses anything impersonating harness syntax (`<system-reminder>` and the delegation tags become `‹…›`) and prefixes a `[quickcode: sanitized subagent report]` marker. Never skip this.
 - **Interrupted-child semantics:** a child killed mid-run returns its partial output tagged `[did not finish]` rather than vanishing.
 - **Every ending is an event.** However a child stops — finished, raised, cancelled by the user's interrupt — it emits one `agent_done` (`{agent_id, definition, status, seconds}`) into the session log, the closing bracket of the `agent_spawned` that opened it and always after the last `agent_event` that child produced. `status` is `done | error | cancelled`. Blocking delegations emit it too: the report reaches the *spawner* as a tool result, but the roster and anything replaying the log would otherwise have to infer the ending from the child's last `assistant_message` — and a child emits one of those per round, not per turn, so a busy agent looked finished several times before it was. A spawn refused before it starts (unknown type, exhausted budget, refused composition) emits neither event: no row is opened, so none needs closing. A resumed agent (`send_message`) emits a second one, correctly — it went terminal twice.
 - **Read-only by default (single-writer principle).** Subagents contribute *intelligence* — reading, searching, analyzing — in parallel; write access is a deliberate promotion requiring a bounded, non-overlapping file scope in the delegation. Parallel readers are free wins; parallel writers are how you get incoherent artifacts (Cognition's core argument, and why coding parallelizes worse than research).
-- **Artifacts to disk, references in reports.** Large outputs (generated code, long reports, logs) get written to files; the report carries the *path* plus a short summary — never the full content through the parent's context (Anthropic's "game of telephone" mitigation).
-- **Worktree isolation (later):** a write-promoted subagent can get its own git worktree so parallel edits can't collide by construction.
+- **Artifacts to disk, references in reports.** Large outputs (generated code, long reports, logs) get written to files; the report carries the *path* plus a short summary — never the full content through the parent's context (Anthropic's "game of telephone" mitigation). The harness enforces this for the report itself: one longer than 1500 characters or 40 lines is written to `.quickcode/artifacts/` and the parent receives its head plus the path (`subagents/artifacts.py`).
+- **Worktree isolation — not built:** a write-promoted subagent would get its own git worktree so parallel edits can't collide by construction.
 - **Limits:** depth 2 (a subagent may spawn subagents once; below that the `agent` tool is withheld), 50 per conversation, 4 background jobs in flight at once (all configurable under `runtime.subagents`). Cheap, predictable — revisit if real use hits the wall.
 
 ### 1.1 Detached jobs (`background: true`)
@@ -53,9 +57,20 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 
 ### Permission capping
 
-`effective_mode = min(parent_mode, definition_cap)` — a yolo parent does not produce yolo children unless the child's definition explicitly allows it. Background children's permission prompts surface in the **parent's conversation, attributed by name** ("`search1` wants to run `npm install`"), with the child's pane row glowing orange while blocked. Denying affects that call only, not the child's life.
+`effective_mode = min(parent_mode, definition_cap)` — a yolo parent does not produce yolo children unless the child's definition explicitly allows it.
 
-### Agent definitions (`.quickcode/agents/*.md`, user-level `~/.quickcode/agents/`)
+**A subagent never prompts.** Its permission callback denies anything its mode
+would ask about, and the model reads why: *"A subagent cannot prompt the user
+for permission. This action needs a mode that allows it without asking, or the
+parent must do it."* Denying affects that call only, not the child's life. So a
+child that must write needs a cap (and a parent mode) that allows the write
+outright — `general` is capped at `auto-edit`, `explore` at `ask`.
+
+**Known gap:** the child's engine is built with no rules (`Rules()`), so the
+project's `allow`/`ask`/`deny` lists do not reach it (docs/PERMISSIONS.md
+§Modes).
+
+### Agent definitions (`.quickcode/agents/*.md`, user-level `~/.quickcode/agents/`, or `kind: agent` in `plugins/`)
 
 ```markdown
 ---
@@ -70,7 +85,7 @@ color: cyan
 System prompt body for this agent…
 ```
 
-Built-ins: **`explore`** (read-only tools, worker model, lean prompt — the cheap fan-out unit) and **`general`** (full toolset, inherits model). Project definitions shadow user definitions by name. The parent model sees each definition's `description` in its `agent` tool docs — that's how it routes.
+Built-ins (`subagents/definitions.py::builtin_defs`): **`explore`** (`read`, `glob`, `grep`; worker model; capped at `ask`; skips project instructions — the cheap fan-out unit) and **`general`** (whatever tools the spawner holds; worker model; capped at `auto-edit`). Project definitions shadow user definitions by name. The parent model sees each definition's `description` in its `agent` tool docs — that's how it routes.
 
 ### Delegation prompt template (`prompts/subagent.py`)
 
@@ -89,6 +104,8 @@ The orchestrator is prompted to write delegations with this shape — vague dele
 
 ## 2. Teammate mode
 
+> **Not built.** Everything in this section is design.
+
 For work that outgrows report-and-return: long-running parallel builds, adversarial debugging, cross-layer features. Opt-in (`/team` or "spawn 3 teammates to…" → confirmation).
 
 - **Structure:** the focused conversation's agent becomes the **lead**; teammates are full peers with their own panes, models, and lifecycles. One team per conversation, no nested teams.
@@ -98,7 +115,7 @@ For work that outgrows report-and-return: long-running parallel builds, adversar
 - **Plan approval by lead:** optional per-team setting — teammates start in `plan` mode, submit plans to the lead, the lead approves/rejects with feedback per user-provided criteria. The lead can approve *plans*; it can never approve *permission prompts* — those always reach the user, attributed. A teammate claiming "the user said yes" is untrusted input, never consent.
 - **Conflict avoidance:** partition tasks by **file ownership** (one teammate per layer/dir) — stated in the lead's prompt and enforced softly via task `boundaries`. Later: optional git-worktree isolation per teammate for true parallel edits.
 - **Permissions:** teammates spawn at the lead's mode (capped by their definition); changeable per-teammate afterwards.
-- **UX (docs/UI.md):** teammates appear in the team roster + as panes; input routes to the focused teammate; `Esc` interrupts just that teammate; shutdown by request ("ask researcher to shut down") — graceful, teammate may refuse with a reason. Team dirs cleaned up on conversation close; task board persists.
+- **UX:** teammates would appear in the team roster + as panes; input routes to the focused teammate; `Esc` interrupts just that teammate; shutdown by request ("ask researcher to shut down") — graceful, teammate may refuse with a reason. Team dirs cleaned up on conversation close; task board persists.
 
 ## 3. Task board
 
@@ -112,11 +129,11 @@ task_list    { }
 task_get     { "task_id": "T3" }
 ```
 
-- IDs are assigned by the harness and returned in the `task_create` result.
-- **Dependencies:** a task with incomplete `blocked_by` cannot be claimed or set `in_progress`; completing a blocker surfaces its dependents as claimable (toast + reminder).
-- Claiming = `task_update{owner, status: in_progress}` under a file lock.
-- Persistence: `.quickcode/tasks/<conv-id>/board.json` — survives restarts and compaction (the board is *re-injected* as a system reminder after compaction, so task state never lives only in context).
-- UI: sidebar checklist (live), `Ctrl+T` full board view (owners, dependency edges, per-task cost). Solo usage guidance lives in the system prompt (`<task_management>` — use for 3+ step work, one `in_progress` at a time).
+- IDs (`T1`, `T2`, …) are assigned by the harness and returned in the `task_create` result.
+- **Dependencies:** a task with an incomplete `blocked_by` cannot be set `in_progress` — the call is refused naming the blockers. *Not built:* refusing an `owner` claim on a blocked task, and surfacing dependents when a blocker completes.
+- Claiming = `task_update{owner, status: in_progress}`. *Not built:* the file lock that would make a claim atomic between teammates.
+- Persistence: `.quickcode/tasks/<conv-id>/board.json` — survives restarts and compaction, because it is on disk rather than in context. It is *not* re-injected after compaction; the model sees the board when it calls `task_list` (a TOON table, one row per task).
+- UI: the **Tasks** tab of the side panel — live, grouped by status, with owner and dependency chips. Solo usage guidance lives in the system prompt (`<task_management>` — use for 3+ step work, one `in_progress` at a time).
 
 ## 4. Orchestration playbook (prompted patterns)
 
@@ -130,13 +147,13 @@ Encoded in the orchestrator's system prompt as heuristics, not hard rules:
 | **Adversarial debugging** | stubborn bugs, competing hypotheses | 2–3 teammates independently investigate and explicitly try to *disprove* each other; lead arbitrates |
 | **Cross-layer build** | feature touching frontend/backend/tests | teammates partitioned by file ownership, task board with dependencies |
 
-**Effort scaling — encoded literally in the orchestrator prompt** (Anthropic's production numbers; their fix for both "50 subagents on a trivial query" and "under-resourced complex query"):
+**Effort scaling** follows Anthropic's production heuristics (their fix for both "50 subagents on a trivial query" and "under-resourced complex query"), in the words of the orchestrator prompt (`prompts/subagent.py::ORCHESTRATION`):
 
-> *Simple fact-finding: no subagents — 3–10 tool calls yourself. Direct comparisons / multi-part lookups: 2–4 subagents, 10–15 tool calls each. Only genuinely complex, decomposable research justifies 10+ subagents with explicitly divided responsibilities. Multi-agent runs cost ~15× a plain chat — parallelism must buy wall-clock time or context isolation, otherwise don't spawn. Coding parallelizes worse than research: fan out reads freely, be conservative fanning out writes.*
+> *Simple fact-finding or a quick lookup: do it yourself with a few tool calls — do NOT spawn. Independent, read-only questions: fan out 2-4 `explore` subagents (worker model) with distinct, non-overlapping boundaries, then synthesize their reports yourself. […] Only genuinely complex, decomposable work justifies many subagents with explicitly divided responsibilities. Cost/latency reality: a multi-agent run costs far more than answering directly — parallelism must buy wall-clock time or context isolation, or don't spawn. Coding parallelizes worse than research: fan out reads freely; be conservative fanning out writes.*
 
 Two more prompt-level rules from Anthropic's production system: the lead **persists its plan (task board) before spawning** — plans must survive the lead's own compaction; and delegations follow the §1 XML template, because vague delegations are how three subagents research the same thing.
 
-Model economics: orchestrator/lead on the big model, `explore`/research workers on `worker_model` (sonnet-tier) by default — Anthropic measured a big-model lead with cheaper workers *beating* a single big-model agent by ~90% on research evals, at worker prices. Both roles configurable in the model picker (`F2`). The status bar's cost meter counts **all agents**, and spawning a team shows a cost notice first — the multiplier is visible, never a surprise.
+Model economics: orchestrator/lead on the big model, both built-in subagent types on the profile's `worker` model by default — Anthropic measured a big-model lead with cheaper workers *beating* a single big-model agent by ~90% on research evals, at worker prices. Both roles are set per profile (Settings → Models), and an `agent` call may name a model. The status bar's cost counts **all agents** — a child's usage is rolled into the session ledger — so the multiplier is visible, never a surprise.
 
 ## 5. What we're deliberately NOT building (yet)
 

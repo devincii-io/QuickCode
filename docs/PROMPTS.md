@@ -2,7 +2,7 @@
 
 All prompts are XML-sectioned. XML tags give the model unambiguous section boundaries, make individual sections greppable/testable, and let us splice dynamic content into fixed scaffolding without disturbing the cacheable prefix.
 
-**Prime directive:** everything in the system prompt must be *stable for the whole session*. Dynamic state (todo list, external file changes, mode switches) is injected as `<system-reminder>` blocks inside user messages instead — they land at the end of the prompt prefix, so they never invalidate the cache.
+**Prime directive:** everything in the system prompt must be *stable for the whole session*. Dynamic state (a mode switch, a finished compaction, a background job that needs collecting) is injected as `<system-reminder>` blocks inside user messages instead — they land at the end of the prompt prefix, so they never invalidate the cache. The one deliberate exception is a composition switch (`/composition`), which re-renders the system prompt and pays one uncached turn for it.
 
 ---
 
@@ -152,7 +152,7 @@ results are plain lines behind a marker with the same count: <files count="6"/>.
 
 <orchestration>
   ... the delegation playbook: when to spawn, cost/latency reality, the
-  <task><objective>/<context>/<boundaries>/<report> delegation shape.
+  <task><objective>/<context>/<boundaries>/<output_format> delegation shape.
   Abridged here on purpose — it is long, and it lives in
   quickcode/prompts/subagent.py as ORCHESTRATION.
 </orchestration>
@@ -205,8 +205,9 @@ Only these three sources exist today:
 | Turn iteration guard reached (`runtime.agent_loop.max_rounds`, 50 by default) | `You are over the iteration budget. Wrap up: report state and next steps.` |
 
 Anything else goes through `AgentInstance.queue_reminder`, which delivers each
-queued string once, in order, on the next turn. The server uses it for
-composition changes.
+queued string once, in order, on the next turn. It carries the background-job
+nudges: a detached subagent that finished (`subagents/runner.py`), and jobs
+still running or uncollected when a turn ends (`server/manager.py`).
 
 **Not implemented**, though earlier versions of this table listed them: there is
 no todo/task-state reminder — the task board reaches the *UI* through
@@ -276,7 +277,7 @@ Rebuilt history after compaction:
 
 ```
 [user: <compaction-summary>…model output…</compaction-summary> + post-compaction reminder]
-[last 2–4 turns verbatim, cut at a user-message boundary]
+[the last runtime.compaction.keep_turns user turns verbatim (default 2), cut at a user-message boundary]
 ```
 
 ## 5. Headless / print mode (`-p`)
@@ -293,5 +294,5 @@ the program's entire output: lead with the result.
 
 ## 6. Testing prompts
 
-- Prompt templates are pure functions (`render_system_prompt(env) -> str`) → snapshot-tested; any diff to the stable prefix shows up in review, since prefix bytes are the cache key.
-- Keep an `evals/` folder of scenario transcripts (task + expected tool behavior) to smoke-test prompt changes against a live model before shipping them.
+- `render_system_prompt(env, ...)` is a pure function of its inputs. `tests/test_history_prompt.py` asserts that two renders are byte-identical — the prefix bytes are the cache key — and `tests/test_docs_accuracy.py` compares every section quoted in §1 with `prompts/sections.py`, so a prompt change arrives in review as a change to this document too.
+- There is no eval harness: no `evals/` folder of scenario transcripts, and nothing that runs a prompt change against a live model before it ships. Worth building; not built.

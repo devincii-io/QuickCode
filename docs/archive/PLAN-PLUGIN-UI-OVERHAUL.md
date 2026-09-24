@@ -1,3 +1,5 @@
+> **Archived.** The plugin-kernel and configuration-UI overhaul plan; implemented in 2.0.0. Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Plan — everything is a plugin, and a UI worth looking at
 
 Companion to `REDESIGN-REQUIREMENTS.md` (the what). This is the how, in the
