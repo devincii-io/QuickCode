@@ -58,9 +58,6 @@ class PlanOutcome:
     feedback: str = ""
 
 
-PlanCallback = Callable[[str], Awaitable[PlanOutcome]]
-
-
 class EventBus:
     """Fan-out with bounded per-subscriber queues (drop-to-resync on overflow)."""
 

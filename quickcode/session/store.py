@@ -588,10 +588,6 @@ class SessionStore:
         """
         return self.summary().empty
 
-    def artifact_refs(self) -> set[str]:
-        """Names of subagent artifacts this session's log points at."""
-        return _artifact_refs_in(self.path)
-
     # ---- listing ----
     @classmethod
     def list_sessions(

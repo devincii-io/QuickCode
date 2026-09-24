@@ -26,12 +26,6 @@ DONE = "done"
 ERROR = "error"
 CANCELLED = "cancelled"
 
-# Everything that is not ``running``. A terminal job never becomes live again:
-# resuming one is ``send_message``, which starts a fresh turn on the same child.
-TERMINAL = (DONE, ERROR, CANCELLED)
-
-
-
 
 @dataclass
 class JobRecord:
