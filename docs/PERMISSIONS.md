@@ -153,6 +153,15 @@ today.
   deny holds for the work the orchestrator delegates, and a grant does not
   travel anywhere it was not given. Children used to start with no rules at
   all, so an `auto-edit` or `yolo` child did what the session was denied.
+  A child spawned with worktree isolation (docs/AGENTS.md §1.2) has its git
+  worktree as its project root. Everything in the spawner's checkout — its
+  files, `.git` and `.quickcode` included — is then *outside the project* for
+  that child, so it prompts, and a subagent cannot answer the prompt: the
+  child can edit its own copy and nothing else. `.git` inside the worktree
+  (a file pointing into the main repository's `.git`) is protected by name.
+  The exception is the one protected paths always have: a child whose
+  effective mode is `yolo` (a yolo session *and* a definition capped at
+  `yolo`) is not asked, so isolation does not confine it.
 
 ## Rules
 

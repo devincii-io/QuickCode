@@ -68,11 +68,14 @@ Being built now; not in any release. Each is ticked here when it merges.
 
 ## M5 — Teammate mode
 
-Designed in docs/AGENTS.md §2; none of it is built.
+Designed in docs/AGENTS.md §2. Only the worktree isolation is built, and for
+subagents rather than teammates.
 
 - [ ] Team lifecycle, peer mailbox, lead approval, and roster UI
 - [ ] Atomic task claiming (a file-locked claim) and idle notifications
-- [ ] Git-worktree isolation for parallel writers
+- [x] Git-worktree isolation for parallel writers — opt-in per subagent
+      (`isolation: worktree`, docs/AGENTS.md §1.2); its work comes back as a
+      `quickcode/*` branch
 
 ## M6 — Polish & depth
 
@@ -100,7 +103,8 @@ Not started. Roughly in order of value.
 
 1. A panel for background shell jobs: live output, exit state and a kill button (today
    they show only as tool calls and a transcript note on exit).
-2. Teammate mode (M5), once task claiming and worktree isolation are designed together.
+2. Teammate mode (M5), once task claiming is designed alongside the worktree isolation
+   subagents already have.
 3. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
 4. "Always allow" that writes one rule per subcommand instead of one for the first token
    (docs/PERMISSIONS.md §Bash evaluation pipeline).

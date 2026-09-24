@@ -1,6 +1,7 @@
 # Multi-Agent Design — subagents, teammate mode, task board
 
-> **What is built.** §1 (subagents, including detached jobs) and the
+> **What is built.** §1 (subagents, including detached jobs and worktree
+> isolation) and the
 > orchestration prompt of §4 describe shipped behaviour. §3's task board ships
 > as a solo board; its coordination features (file-locked claiming, dependents
 > surfaced when a blocker completes) do not. §2, teammate mode, is design
@@ -28,7 +29,8 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
   "prompt": "full task description — the ONLY context the child receives from the parent",
   "agent_type": "explore | general | <custom name>",
   "model": "optional override (default: the definition's model — worker for both built-ins)",
-  "background": "bool — default false; true returns a job handle and keeps your turn"
+  "background": "bool — default false; true returns a job handle and keeps your turn",
+  "isolation": "optional: \"worktree\" runs the child in its own git worktree (§1.2)"
 }
 ```
 
@@ -40,7 +42,7 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 - **Every ending is an event.** However a child stops — finished, raised, cancelled by the user's interrupt — it emits one `agent_done` (`{agent_id, definition, status, seconds}`) into the session log, the closing bracket of the `agent_spawned` that opened it and always after the last `agent_event` that child produced. `status` is `done | error | cancelled`. Blocking delegations emit it too: the report reaches the *spawner* as a tool result, but the roster and anything replaying the log would otherwise have to infer the ending from the child's last `assistant_message` — and a child emits one of those per round, not per turn, so a busy agent looked finished several times before it was. A spawn refused before it starts (unknown type, exhausted budget, refused composition) emits neither event: no row is opened, so none needs closing. A resumed agent (`send_message`) emits a second one, correctly — it went terminal twice.
 - **Read-only by default (single-writer principle).** Subagents contribute *intelligence* — reading, searching, analyzing — in parallel; write access is a deliberate promotion requiring a bounded, non-overlapping file scope in the delegation. Parallel readers are free wins; parallel writers are how you get incoherent artifacts (Cognition's core argument, and why coding parallelizes worse than research).
 - **Artifacts to disk, references in reports.** Large outputs (generated code, long reports, logs) get written to files; the report carries the *path* plus a short summary — never the full content through the parent's context (Anthropic's "game of telephone" mitigation). The harness enforces this for the report itself: one longer than 1500 characters or 40 lines is written to `.quickcode/artifacts/` and the parent receives its head plus the path (`subagents/artifacts.py`).
-- **Worktree isolation — not built:** a write-promoted subagent would get its own git worktree so parallel edits can't collide by construction.
+- **Worktree isolation (opt-in):** a writer can get its own git worktree, so parallel edits cannot collide by construction and its work comes back as a branch (§1.2).
 - **Limits:** depth 2 (a subagent may spawn subagents once; below that the `agent` tool is withheld), 50 per conversation, 4 background jobs in flight at once (all configurable under `runtime.subagents`). Cheap, predictable — revisit if real use hits the wall.
 
 ### 1.1 Detached jobs (`background: true`)
@@ -54,6 +56,94 @@ One runtime, three shapes. Every agent is the same `AgentInstance` (loop + histo
 - **Cancellation:** `Esc` (interrupt) and closing the conversation cancel every job in flight. The record survives with status `cancelled` and a `[did not finish]` report, so a later `agent_result` says what happened instead of 404-ing on an id the model was handed.
 - **The parallelism cap is a separate number.** `max_agents` bounds the lifetime total; `max_parallel` (default 4, max 16) bounds how many run together, which is only reachable at all once spawning stops blocking. Asking past it is an error naming the live jobs, never a silent queue.
 - **Headless (`-p`) runs it inline.** A `-p` process ends with its single turn, so nothing there can own a detached task. `background: true` runs the delegation to completion inline and says so in the result; the model gets the identical report, which is why this degrades rather than erroring.
+
+### 1.2 Worktree isolation (`isolation: "worktree"`)
+
+The single-writer principle asks parallel writers for non-overlapping scopes and
+trusts the orchestrator to write them. Isolation makes the scopes disjoint by
+construction instead: the child works in a git worktree of its own, and what it
+changed comes back as a branch the spawner reviews and merges. Nothing it does
+lands in the spawner's working tree (`subagents/worktree.py`).
+
+- **Who gets one.** The definition decides, with `isolation:` — `none` (the
+  default, and `explore`), `optional` (the spawner may pass
+  `isolation: "worktree"`; built-in `general`), or `worktree` (always, whatever
+  the spawner asks). Asking a `none` agent for a worktree is an error naming the
+  types that allow it, never a quiet fallback to the shared checkout the
+  spawner was trying to keep the writer out of.
+- **Refused synchronously.** Outside a git repository, or in one with no commit
+  yet, the spawn is refused before an agent id is minted — a background spawn
+  included, so the model gets a tool error rather than a job that fails.
+- **Where it lives.** `<project>/.quickcode/worktrees/<agent_id>-<4 hex>`. The
+  suffix is random because agent ids restart at 1 in every conversation, and
+  several conversations may share a project. `.quickcode/` is a protected path
+  for every agent, so nothing wanders in unprompted; a `.gitignore` of `*`
+  beside the worktrees keeps them out of the main checkout's `git status` and
+  out of `glob` (`grep` already skips `.quickcode`), so the parent's searches do
+  not find every file twice. A grandchild spawned by an isolated child still
+  gets its worktree here, under the session's project — never nested inside
+  its spawner's checkout, whose removal would take it along.
+- **What it starts from.** The spawner's HEAD commit, plus the spawner's
+  uncommitted changes to tracked files (staged and unstaged), so the child
+  starts where its spawner stands. They are read with `git diff <HEAD>
+  --binary` — which writes nothing in the spawner's checkout, unlike `git stash
+  create`, which refreshes its index — applied in the worktree, and committed
+  there as a commit of their own, so they are never counted as the child's
+  work. Untracked files are not carried; the report counts them. A patch that
+  does not apply fails the run with the reason instead of running the child in
+  a checkout its prompt misdescribes.
+- **What moves to the worktree:** the child's tool `cwd`, its shell and its
+  background shell jobs, and its permission root. The spawner's checkout — its
+  files, its `.git`, its `.quickcode` — is therefore *outside the project* to
+  the child, a protected path, and a subagent cannot answer that prompt. The
+  inherited `deny`/`ask` rules still bind, matched against paths inside the
+  worktree the way they matched inside the project. The child's
+  `<environment>` names the worktree as its `cwd`, and an `<isolation>` block
+  says where it is and where its work goes; anything it spawns starts there too.
+- **What does not move:** an MCP server or plugin tool with a process of its
+  own runs where the session started it, and user command hooks run as
+  configured. Isolation is a boundary for QuickCode's own tools, not a sandbox
+  — and it is the protected-path prompt that draws it, which `yolo` does not
+  raise. A child whose effective mode is `yolo` (a yolo session and a
+  definition capped at `yolo`) starts in its worktree but is not confined to it.
+- **When a run ends** — finished, errored, cancelled, interrupted, or cut off
+  by the conversation closing — whatever the child changed is committed and the
+  branch `quickcode/<name>` points at it: created on the first change, advanced
+  on later runs by compare-and-swap against the tip it last set. A branch the
+  user has since moved, deleted or checked out is left alone and the work goes
+  to `quickcode/<name>-2`. Commits carry the user's git identity, or
+  `QuickCode <quickcode@localhost>` where none is configured. Then the checkout
+  is removed: between runs the branch *is* the result. A child that changed
+  nothing leaves no branch. A checkout that cannot be removed (a file held open
+  on Windows) is kept, and the report says where.
+- **The report** ends with a `<worktree>` block the harness writes after
+  sanitizing — `branch`, `base`, `files`, `insertions`, `deletions`, the
+  `git diff --stat` of the child's own work, and how to bring it in. `worktree`
+  is one of the tags `sanitize_report` defuses, so a child cannot write one
+  naming some other branch.
+- **Bringing it in is the spawner's decision, through `bash`:** `git merge
+  quickcode/<name>`, or — when uncommitted changes were carried —
+  `git cherry-pick <base>..quickcode/<name>`, which takes the child's commits
+  without the carried one. There is no merge tool: `git` already prompts in
+  `ask` and `auto-edit`, and a tool would be a second spelling of the same
+  command with a second permission shape to get right.
+- **Resume.** `send_message` reopens the checkout at the branch tip, and the
+  branch advances when the turn ends.
+- **Conversation close** settles any checkout still on disk, then deletes the
+  `quickcode/*` branches the conversation created that are fully merged into
+  the project's HEAD — through `git branch -d`, which refuses an unmerged
+  branch — and keeps and logs the rest. A headless `-p` run has no close; it
+  leaves its branches, which is the point of running it.
+- **The session log** gets `worktree` records inside the child's `agent_event`
+  stream: `created`/`reopened` when the checkout is ready, then
+  `committed`/`unchanged`/`kept`/`failed` when the run ends, ahead of its
+  `agent_done`.
+- **The repository's own code never runs.** Every git call goes through
+  `quickcode/gitcmd.py`, the same hardening the git panel uses: no hooks
+  (`core.hooksPath` pointed at the null device, which covers `post-checkout`,
+  `pre-commit` and `reference-transaction`), no fsmonitor, no external diff or
+  textconv driver, no signing program. Content filters (Git LFS) still run;
+  disabling them would check an LFS repository out as pointer files.
 
 ### Permission capping
 
@@ -76,12 +166,13 @@ tools: [read, glob, grep, bash]        # allowlist; omit = inherit all
 model: worker                          # worker | orchestrator | explicit slug
 mode_cap: ask                          # max permission mode this agent can run at
 max_turns: 30
+isolation: none                        # none | optional | worktree (§1.2)
 color: cyan
 ---
 System prompt body for this agent…
 ```
 
-Built-ins (`subagents/definitions.py::builtin_defs`): **`explore`** (`read`, `glob`, `grep`; worker model; capped at `ask`; skips project instructions — the cheap fan-out unit) and **`general`** (whatever tools the spawner holds; worker model; capped at `auto-edit`). Project definitions shadow user definitions by name. The parent model sees each definition's `description` in its `agent` tool docs — that's how it routes.
+Built-ins (`subagents/definitions.py::builtin_defs`): **`explore`** (`read`, `glob`, `grep`; worker model; capped at `ask`; skips project instructions — the cheap fan-out unit) and **`general`** (whatever tools the spawner holds; worker model; capped at `auto-edit`; `isolation: optional`). Project definitions shadow user definitions by name. The parent model sees each definition's `description` in its `agent` tool docs — that's how it routes.
 
 ### Delegation prompt template (`prompts/subagent.py`)
 

@@ -40,6 +40,13 @@ log = logging.getLogger("quickcode.subagents.definitions")
 
 Role = Literal["orchestrator", "subagent"]
 
+# Whether a spawn of this agent runs in its own git worktree
+# (``subagents/worktree.py``). ``none``: never. ``optional``: when the spawner
+# asks for it (the ``agent`` tool's ``isolation`` argument). ``worktree``:
+# always, whatever the spawner asks.
+Isolation = Literal["none", "optional", "worktree"]
+ISOLATION_CHOICES: tuple[str, ...] = ("none", "optional", "worktree")
+
 
 class _Unset:
     """Distinguishes "said nothing" from "said null"."""
@@ -64,7 +71,7 @@ class AgentDef:
     """
 
     __slots__ = ("name", "description", "role", "composition", "source", "path",
-                 "prompt_body")
+                 "prompt_body", "isolation")
 
     def __init__(
         self,
@@ -76,6 +83,7 @@ class AgentDef:
         source: str = "internal",
         path: str = "",
         prompt_body: str = "",
+        isolation: Isolation = "none",
         # legacy scalars, folded into the composition
         tools: list[str] | None | Any = _UNSET,
         model: str | None = None,
@@ -95,6 +103,10 @@ class AgentDef:
         self.source = source
         self.path = path
         self.prompt_body = prompt_body
+        # An identity attribute rather than a composition field: it says where
+        # the agent works, not what it may do, and nothing in resolution
+        # narrows or widens it.
+        self.isolation: Isolation = isolation if isolation in ISOLATION_CHOICES else "none"
 
         comp = composition if composition is not None else Composition()
         stated: dict[str, Any] = {}
@@ -218,6 +230,7 @@ def builtin_defs() -> dict[str, AgentDef]:
             model="worker",
             mode_cap=Mode.auto_edit,
             prompt_body=_GENERAL_PROMPT,
+            isolation="optional",
         ),
     }
 
@@ -343,6 +356,14 @@ def agent_def_from_meta(
                 path, ORCHESTRATOR_ID,
             )
 
+    isolation = meta.get("isolation", "none").strip().lower() or "none"
+    if isolation not in ISOLATION_CHOICES:
+        log.warning(
+            "%s: isolation: %r is not one of %s; loading with isolation: none",
+            path or name, isolation, ", ".join(ISOLATION_CHOICES),
+        )
+        isolation = "none"
+
     spawns_raw = meta.get("spawns")
     sections_raw = meta.get("sections")
     return AgentDef(
@@ -362,6 +383,7 @@ def agent_def_from_meta(
         max_turns=max_turns,
         color=meta.get("color", "cyan"),
         prompt_body=body.strip(),
+        isolation=isolation,
     )
 
 

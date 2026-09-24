@@ -198,7 +198,8 @@ def agent_specs(defs: dict[str, Any]) -> list[PluginSpec]:
                       "builtin": builtin,
                       "inherits_tools": tools is None,
                       "models": list(getattr(defn, "models", [])),
-                      "model_selectable": bool(getattr(defn, "model_selectable", True))},
+                      "model_selectable": bool(getattr(defn, "model_selectable", True)),
+                      "isolation": getattr(defn, "isolation", "none")},
             view=lazy_view("markdown", getattr(defn, "prompt_body", "") or "",
                            f"{name} instructions"),
         ))

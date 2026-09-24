@@ -34,7 +34,7 @@ only context. Your final message is the entire result the spawner receives.
   <date>{session_date}</date>
   <is_git_repo>{is_git_repo}</is_git_repo>
   <git_branch>{git_branch}</git_branch>
-</environment>{project}"""
+</environment>{isolation}{project}"""
 
 _PROJECT_BLOCK = """
 
@@ -42,8 +42,17 @@ _PROJECT_BLOCK = """
 {project_instructions}
 </project_instructions>"""
 
+# Only for a child spawned into its own git worktree (subagents/worktree.py).
+_ISOLATION_BLOCK = """
 
-def render_subagent_prompt(defn: AgentDef, env: Environment, *, model: str) -> str:
+<isolation>
+{isolation}
+</isolation>"""
+
+
+def render_subagent_prompt(
+    defn: AgentDef, env: Environment, *, model: str, isolation: str = ""
+) -> str:
     project = ""
     if not defn.skip_project_instructions and env.project_instructions.strip():
         project = _PROJECT_BLOCK.format(
@@ -60,6 +69,7 @@ def render_subagent_prompt(defn: AgentDef, env: Environment, *, model: str) -> s
         session_date=env.session_date,
         is_git_repo=str(env.is_git_repo).lower(),
         git_branch=env.git_branch or "(none)",
+        isolation=_ISOLATION_BLOCK.format(isolation=isolation.strip()) if isolation else "",
         project=project,
     )
 

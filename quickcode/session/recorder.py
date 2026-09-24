@@ -30,6 +30,7 @@ from quickcode.core.events import (
     ToolResultEvent,
     TurnDone,
     Usage,
+    WorktreeEvent,
 )
 from quickcode.providers.base import ProviderError
 from quickcode.session.wire import event_to_json, loggable, plugin_logged
@@ -261,8 +262,11 @@ class TranscriptRecorder:
                 acc_text.append(ev.text)
             # A child's usage is logged like its calls and results: a subagent
             # owns its own ``Ledger``, so its tokens reach this session only
-            # here, and a fan-out that is not written down replays as free.
-            logged = isinstance(ev, (ToolCallEnd, ToolResultEvent, Usage)) or plugin_logged(ev)
+            # here, and a fan-out that is not written down replays as free. Its
+            # worktree events are what say where an isolated child's work went.
+            logged = isinstance(
+                ev, (ToolCallEnd, ToolResultEvent, Usage, WorktreeEvent)
+            ) or plugin_logged(ev)
             if isinstance(ev, TurnDone) and acc_text:
                 self.emit(
                     {

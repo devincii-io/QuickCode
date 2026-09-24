@@ -53,7 +53,7 @@ from quickcode.providers.choice import display_name
 from quickcode.session.recorder import TranscriptRecorder
 from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import load_defs
-from quickcode.subagents.runner import SubagentDeps
+from quickcode.subagents.runner import SubagentDeps, close_worktrees
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.bash_jobs import BashJobs
 from quickcode.tools.registry import ToolRegistry
@@ -236,6 +236,7 @@ class Conversation:
         shell_jobs = self._bash_jobs()
         if shell_jobs is not None:
             await asyncio.to_thread(shell_jobs.close)
+        await asyncio.to_thread(close_worktrees, self._subagent_deps())
 
     # ---- detached subagent jobs ----
     def adopt_job(self, task: asyncio.Task) -> None:

@@ -121,6 +121,27 @@ class AgentStatus:
     detail: str = ""
 
 
+@dataclass
+class WorktreeEvent:
+    """A subagent's isolated git worktree was prepared or settled.
+
+    Emitted on the child's own bus, so the log carries it inside the child's
+    ``agent_event`` stream, ahead of its ``agent_done`` (``subagents/worktree.py``).
+    ``action`` is ``created`` / ``reopened`` when the checkout is ready, and
+    ``committed`` / ``unchanged`` / ``kept`` / ``failed`` when a run ends.
+    """
+
+    action: Literal["created", "reopened", "committed", "unchanged", "kept", "failed"]
+    path: str = ""
+    branch: str = ""
+    base: str = ""
+    commit: str = ""
+    files: int = 0
+    insertions: int = 0
+    deletions: int = 0
+    detail: str = ""
+
+
 AgentEvent = (
     TextDelta
     | ReasoningDelta
@@ -133,6 +154,7 @@ AgentEvent = (
     | ToolResultEvent
     | ContextInjection
     | AgentStatus
+    | WorktreeEvent
 )
 
 

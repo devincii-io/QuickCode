@@ -16,6 +16,8 @@ garbage-collected before it finishes.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from quickcode.subagents.jobs import DONE
@@ -48,6 +50,19 @@ class AgentInput(BaseModel):
             "meanwhile; you MUST collect the report later with agent_result."
         ),
     )
+    isolation: Literal["worktree"] | None = Field(
+        default=None,
+        description=(
+            "'worktree' runs the subagent in its own git worktree (a separate "
+            "checkout of this repository at your current commit, plus your "
+            "uncommitted changes to tracked files), so parallel writers cannot "
+            "collide. Its changes come back as a branch named in the report, for "
+            "you to review and merge; your checkout is not touched. Allowed for "
+            "'general' and custom agents whose definition says isolation: optional; "
+            "an agent defined with isolation: worktree always gets one. Needs a git "
+            "repository with at least one commit."
+        ),
+    )
 
 
 class AgentTool(Tool[AgentInput]):
@@ -62,7 +77,8 @@ class AgentTool(Tool[AgentInput]):
         "returned agent id can be resumed later via send_message instead of "
         "respawning a fresh subagent. Set background=true to get a job handle "
         "back at once and keep working — then collect the report with "
-        "agent_result before you finish."
+        "agent_result before you finish. Set isolation='worktree' to give a "
+        "writer its own git checkout; its work comes back as a branch."
     )
     # Classified read-only so multiple spawns in one turn fan out CONCURRENTLY
     # (the loop batches read-only calls with asyncio.gather). Delegation is
@@ -74,11 +90,18 @@ class AgentTool(Tool[AgentInput]):
     # Spawning a subagent touches nothing from the parent -- the child's own
     # actions are gated by its capped mode -- and a modal per spawn would make
     # fan-out unusable. Cost stays visible in the status meter.
+    #
+    # Worktree isolation does not change that. It adds a checkout under the
+    # project's own `.quickcode/` and, once the child has changed something, a
+    # `quickcode/*` branch -- never the user's branch, index or working tree.
+    # Bringing the work in is `git merge` through bash, which is gated.
     permission = PermissionSpec(mutates=False, target_field="agent_type")
     Input = AgentInput
 
     def render_call(self, input: AgentInput) -> str:  # noqa: A002
-        suffix = " (background)" if input.background else ""
+        flags = [f for f, on in (("background", input.background),
+                                 ("worktree", input.isolation == "worktree")) if on]
+        suffix = f" ({', '.join(flags)})" if flags else ""
         return f"⏺ agent[{input.agent_type}]: {input.description}{suffix}"
 
     async def run(self, input: AgentInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
@@ -105,6 +128,7 @@ class AgentTool(Tool[AgentInput]):
                     prompt=input.prompt,
                     description=input.description,
                     model_override=input.model,
+                    isolation=input.isolation,
                 )
             except BackgroundUnavailable:
                 # Not an error the model can do anything about, and re-issuing
@@ -130,6 +154,7 @@ class AgentTool(Tool[AgentInput]):
                 agent_type=input.agent_type,
                 prompt=input.prompt,
                 model_override=input.model,
+                isolation=input.isolation,
             )
         except ValueError as e:
             return ToolResult(str(e), is_error=True)

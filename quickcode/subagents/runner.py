@@ -17,7 +17,10 @@ differs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import time
+from collections.abc import Callable
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -33,14 +36,18 @@ from quickcode.kernel.composition import (
 )
 from quickcode.kernel.resolve import resolve_composition
 from quickcode.prompts.subagent import render_subagent_prompt
+from quickcode.subagents import worktree
 from quickcode.subagents.artifacts import maybe_offload
 from quickcode.subagents.capping import ChildPermissions, deny_prompt
+from quickcode.subagents.definitions import AgentDef
 from quickcode.subagents.deps import SubagentDeps
 from quickcode.subagents.interrupts import close_unanswered_calls, partial_output
 from quickcode.subagents.jobs import CANCELLED, DONE, ERROR, JobRecord
 from quickcode.subagents.reports import neutralize, sanitize_report
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry, build_registry
+
+log = logging.getLogger("quickcode.subagents.runner")
 
 # The fallbacks, kept as module names because callers and tests import them.
 # What a session actually enforces is ``deps.limits``, resolved once at open
@@ -69,6 +76,7 @@ __all__ = [
     "JobRecord",
     "SubagentDeps",
     "cap_mode",
+    "close_worktrees",
     "resume_subagent",
     "sanitize_report",
     "spawn_subagent",
@@ -94,11 +102,35 @@ def _resolve_role(deps: SubagentDeps, spec: str) -> str:
     return deps.profile.resolve(spec) if spec in ROLES else spec
 
 
+def _isolation_origin(
+    deps: SubagentDeps, defn: AgentDef, requested: str | None, defs: dict[str, AgentDef]
+) -> worktree.Probe | None:
+    """Whether this spawn gets a worktree, and the checkout it would come from.
+
+    The definition decides what the spawner may ask for: ``worktree`` always
+    isolates, ``optional`` isolates on request, ``none`` refuses the request
+    rather than quietly running a writer in the shared checkout the spawner
+    asked it to stay out of.
+    """
+    if defn.isolation != "worktree" and requested != "worktree":
+        return None
+    if defn.isolation == "none":
+        spawnable = deps.parent.spawns if deps.parent is not None else tuple(defs)
+        allowing = [n for n in spawnable if n in defs and defs[n].isolation != "none"]
+        hint = f" Types that allow it: {', '.join(allowing)}." if allowing else ""
+        raise ValueError(
+            f"agent type '{defn.name}' does not allow worktree isolation (its "
+            f"definition says isolation: none).{hint}"
+        )
+    return worktree.probe(deps.cwd)
+
+
 def _prepare_child(
     deps: SubagentDeps,
     *,
     agent_type: str,
     model_override: str | None = None,
+    isolation: str | None = None,
 ) -> tuple[str, AgentInstance]:
     """Everything a spawn does before the child's first turn.
 
@@ -158,6 +190,8 @@ def _prepare_child(
 
     defn = defs[agent_type]
     model = _resolve_role(deps, resolved.model or defn.model)
+    # Refused here, with the rest, before an agent slot is spent on it.
+    origin = _isolation_origin(deps, defn, isolation, defs)
 
     child_depth = deps.depth + 1
     agent_id = f"{defn.name}-{next(deps.counter)}"
@@ -165,8 +199,23 @@ def _prepare_child(
     deps.spawners[agent_id] = deps.self_id
     deps.budgets[agent_id] = resolved.max_turns
     deps.turns[agent_id] = 0
+
+    # An isolated child lives in its worktree: its tools' cwd, its shell and
+    # background jobs, and its permission root are all the checkout, so the
+    # spawner's own checkout -- `.git` and `.quickcode` included -- is "outside
+    # the project" to it, and a subagent cannot answer that prompt. The
+    # checkout itself is made before the first run (``_open_worktree``).
+    tree: worktree.Worktree | None = None
+    child_cwd, child_env, isolation_text = deps.cwd, deps.env, ""
+    if origin is not None:
+        tree = worktree.plan(origin, home=deps.worktree_home or deps.cwd, agent_id=agent_id)
+        deps.worktrees[agent_id] = tree
+        child_cwd = tree.cwd
+        child_env = worktree.child_environment(deps.env, tree)
+        isolation_text = worktree.prompt_text(tree)
+
     permissions = ChildPermissions(
-        deps.cwd,
+        child_cwd,
         parent_mode=deps.mode_getter,
         ceiling=resolved.ceiling,
         parent_rules=deps.rules_getter,
@@ -185,7 +234,8 @@ def _prepare_child(
     # by what this child itself got -- never by what the session has.
     child_deps = (
         deps.child(child_depth, permissions, self_id=agent_id,
-                   tool_pool=list(registry.tools.values()), parent=resolved)
+                   tool_pool=list(registry.tools.values()), parent=resolved,
+                   cwd=child_cwd, env=child_env)
         if include_agent else None
     )
     # ``defn.name`` follows the child around: the pane, the done event and the
@@ -197,14 +247,16 @@ def _prepare_child(
     if deps.bash_jobs is not None:
         extra["bash_jobs"] = deps.bash_jobs
     child_ctx = ToolCtx(
-        cwd=deps.cwd,
+        cwd=child_cwd,
         read_registry=ReadRegistry(),
         shell_name=deps.env.shell_name,
         platform=deps.env.platform,
         extra=extra,
     )
 
-    system_prompt = render_subagent_prompt(defn, deps.env, model=model)
+    system_prompt = render_subagent_prompt(
+        defn, child_env, model=model, isolation=isolation_text
+    )
     child = AgentInstance(
         name=agent_id,
         provider=deps.provider,
@@ -243,6 +295,7 @@ async def spawn_subagent(
     agent_type: str,
     prompt: str,
     model_override: str | None = None,
+    isolation: str | None = None,
 ) -> tuple[str, str, str]:
     """Run one subagent to completion. Returns ``(agent_id, report, status)``.
 
@@ -251,11 +304,12 @@ async def spawn_subagent(
     came back because the child died — the text alone cannot be trusted for
     that, and the tool result has to say which it was.
 
-    Raises ValueError for an unknown agent_type or when a spawn limit is hit —
-    the tool wrapper turns those into an error ToolResult.
+    Raises ValueError for an unknown agent_type, when a spawn limit is hit, or
+    when worktree isolation is asked for and cannot be had — the tool wrapper
+    turns those into an error ToolResult.
     """
     agent_id, child = _prepare_child(
-        deps, agent_type=agent_type, model_override=model_override
+        deps, agent_type=agent_type, model_override=model_override, isolation=isolation
     )
     status, report = await _blocking_run(deps, agent_id, child, prompt)
     return agent_id, report, status
@@ -282,6 +336,16 @@ async def _blocking_run(
     return status, report
 
 
+def close_worktrees(deps: SubagentDeps | None) -> None:
+    """What a closing conversation does with its isolated children's worktrees:
+    settle any still on disk, delete branches already merged, keep and log the
+    rest (``worktree.close_all``). Blocking; call it off the event loop, after
+    the conversation's tasks have stopped. ``None`` (no delegation) is a no-op.
+    """
+    if deps is not None:
+        deps.close_worktrees()
+
+
 def _announce_done(
     deps: SubagentDeps, agent_id: str, status: str, seconds: float
 ) -> None:
@@ -301,6 +365,7 @@ def spawn_subagent_background(
     prompt: str,
     description: str = "",
     model_override: str | None = None,
+    isolation: str | None = None,
 ) -> JobRecord:
     """Start a subagent and hand back its job handle without waiting for it.
 
@@ -328,7 +393,7 @@ def spawn_subagent_background(
         )
 
     agent_id, child = _prepare_child(
-        deps, agent_type=agent_type, model_override=model_override
+        deps, agent_type=agent_type, model_override=model_override, isolation=isolation
     )
     job = JobRecord(
         agent_id=agent_id, agent_type=agent_type, description=description
@@ -410,7 +475,58 @@ def _cut_off_report(
     partial = partial_output(child.history)
     if partial:
         text += f"\nOutput before it stopped:\n{partial}"
-    return sanitize_report(maybe_offload(deps.cwd, agent_id, neutralize(text)))
+    report = sanitize_report(maybe_offload(deps.cwd, agent_id, neutralize(text)))
+    return _with_worktree(deps, agent_id, report)
+
+
+def _with_worktree(deps: SubagentDeps, agent_id: str, report: str) -> str:
+    """The report, plus where an isolated child's work went.
+
+    Appended after sanitizing and after the offload, so the block is the
+    harness's own words (the sanitizer defuses a ``<worktree>`` the child
+    wrote) and survives a long report being cut to its head.
+    """
+    tree = deps.worktrees.get(agent_id)
+    if tree is None or tree.last is None:
+        return report
+    return f"{report}\n{worktree.report_block(tree)}"
+
+
+async def _in_thread(fn: Callable[..., Any], *args: Any) -> Any:
+    """Blocking git work, seen through to the end even if the caller is
+    cancelled: a checkout or commit abandoned halfway leaves a worktree that
+    nothing settles. A second cancellation stops the waiting, not the work."""
+    work = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await work
+        raise
+
+
+async def _open_worktree(child: AgentInstance, tree: worktree.Worktree) -> None:
+    try:
+        action = await _in_thread(worktree.open_tree, tree)
+    except worktree.IsolationError as e:
+        child.bus.emit(worktree.event(tree, "failed", worktree.Settlement("failed", detail=str(e))))
+        raise
+    if action:
+        child.bus.emit(worktree.event(tree, action))
+
+
+async def _settle_worktree(child: AgentInstance, tree: worktree.Worktree | None) -> None:
+    """Commit and put away an isolated child's checkout, however its run ended."""
+    if tree is None or not tree.active:
+        return
+    try:
+        settled = await _in_thread(worktree.settle, tree)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- bookkeeping must not eat the report
+        log.exception("settling the worktree of %s failed", tree.agent_id)
+        return
+    child.bus.emit(worktree.event(tree, settled.action, settled))
 
 
 async def _run_and_finish(
@@ -428,16 +544,31 @@ async def _run_and_finish(
     that decision lived in ``_run_job``. An empty report stays ``done``: the
     "[did not finish]" tag says the model produced nothing, not that the
     machinery failed.
+
+    An isolated child's worktree is opened before the turn and settled after
+    it on every path -- done, errored, cancelled -- so its work is committed
+    to its branch whether or not anyone reads the report.
     """
     deps.turns[agent_id] = deps.turns.get(agent_id, 0) + 1
+    tree = deps.worktrees.get(agent_id)
     try:
+        if tree is not None:
+            try:
+                await _open_worktree(child, tree)
+            except worktree.IsolationError as e:
+                return ERROR, _with_worktree(deps, agent_id, sanitize_report(
+                    f"[did not finish] the subagent never started: {e}"
+                ))
         report = await child.run_turn(message)
     except asyncio.CancelledError:
         close_unanswered_calls(child.history)
+        await _settle_worktree(child, tree)
         raise
     except Exception as e:  # a child failure must not crash the parent's loop
         close_unanswered_calls(child.history)
+        await _settle_worktree(child, tree)
         return ERROR, _cut_off_report(deps, agent_id, child, f"subagent errored: {e}")
+    await _settle_worktree(child, tree)
 
     status = CANCELLED if child.cancelled else DONE
     if child.cancelled or not report.strip():
@@ -446,7 +577,7 @@ async def _run_and_finish(
     # Neutralized before the offload, so the file the parent is told to read
     # for the rest holds the same defused text the head does.
     report = maybe_offload(deps.cwd, agent_id, neutralize(report))
-    return status, sanitize_report(report)
+    return status, _with_worktree(deps, agent_id, sanitize_report(report))
 
 
 async def resume_subagent(

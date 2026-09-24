@@ -27,6 +27,7 @@ from quickcode.core.events import (
     ToolResultEvent,
     TurnDone,
     Usage,
+    WorktreeEvent,
 )
 
 # Trace log caps: results are stored in full up to this size so the trace stays
@@ -41,7 +42,7 @@ LOG_RESULT_CAP = 64 * 1024
 _EXTRA: dict[type, Any] = {}
 _CORE_EVENT_TYPES: tuple[type, ...] = (
     TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd,
-    ToolResultEvent, Usage, TurnDone, ContextInjection, AgentStatus,
+    ToolResultEvent, Usage, TurnDone, ContextInjection, AgentStatus, WorktreeEvent,
 )
 
 
@@ -99,6 +100,8 @@ def event_to_json(ev: AgentEvent) -> dict[str, Any] | None:
         return {"type": "context_injection", "text": ev.text}
     if isinstance(ev, AgentStatus):
         return {"type": "status", "state": ev.state, "detail": ev.detail}
+    if isinstance(ev, WorktreeEvent):
+        return {"type": "worktree", **asdict(ev)}
     return None
 
 

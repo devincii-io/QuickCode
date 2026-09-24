@@ -20,6 +20,7 @@ from quickcode.config import Environment, Profile
 from quickcode.core.permissions import Mode, PermissionEngine, Rules
 from quickcode.kernel.composition import Resolved, RuntimeLimits
 from quickcode.providers.base import Provider
+from quickcode.subagents import worktree
 from quickcode.subagents.definitions import AgentDef, load_defs
 from quickcode.subagents.jobs import JobRecord
 from quickcode.tools.registry import core_tools
@@ -133,10 +134,20 @@ class SubagentDeps:
     # own tool calls (``hooks.child_hooks``); a guard that stopped at the
     # orchestrator would be one delegation away from not being a guard.
     hooks: list | None = None
+    # Isolated children's git worktrees by agent id (``subagents/worktree.py``).
+    # Shared down the tree like the roster: a resume three levels down reopens
+    # the same checkout, and the conversation settles every one at close.
+    worktrees: dict[str, Any] = field(default_factory=dict)
+    # Where ``.quickcode/worktrees`` lives: the session's project. None means
+    # ``cwd``, which is the project at depth 0; below that ``cwd`` may be an
+    # isolated child's own worktree, and a worktree nested in another would be
+    # deleted along with it.
+    worktree_home: Path | None = None
 
     def child(self, depth: int, permissions: PermissionEngine,
               *, self_id: str, tool_pool: list | None = None,
-              parent: Resolved | None = None) -> SubagentDeps:
+              parent: Resolved | None = None, cwd: Path | None = None,
+              env: Environment | None = None) -> SubagentDeps:
         """A deps object for the next level down, sharing the counter/roster.
 
         A child's own spawns are capped by the child's live mode and rules --
@@ -145,14 +156,18 @@ class SubagentDeps:
         session's own composition down instead would make delegation an
         escalation: a read-only agent could spawn one whose definition says
         ``tools: null`` and have it inherit write, edit and bash.
+
+        ``cwd`` and ``env`` are where the child works when that is not where
+        its spawner does -- an isolated child's worktree -- so what it spawns
+        starts there too.
         """
         return SubagentDeps(
             provider=self.provider,
             profile=self.profile,
-            env=self.env,
+            env=env if env is not None else self.env,
             mode_getter=lambda: permissions.mode,
             rules_getter=lambda: permissions.rules,
-            cwd=self.cwd,
+            cwd=cwd if cwd is not None else self.cwd,
             depth=depth,
             counter=self.counter,
             spawned=self.spawned,
@@ -175,7 +190,15 @@ class SubagentDeps:
             limits=self.limits,
             bash_jobs=self.bash_jobs,
             hooks=self.hooks,
+            worktrees=self.worktrees,
+            worktree_home=self.worktree_home or self.cwd,
         )
+
+    def close_worktrees(self) -> None:
+        """Settle every isolated child's checkout still on disk and delete the
+        branches already merged. Blocking; the conversation runs it off the
+        event loop as it closes, after its tasks have stopped."""
+        worktree.close_all(self.worktrees.values())
 
     def owns(self, agent_id: str) -> bool:
         """Whether this level, or an agent it spawned, started ``agent_id``."""
