@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from quickcode.core.permissions import DEFAULT_SPEC
+from quickcode.kernel.composition import DELEGATION_TOOLS, SHELL_JOB_TOOLS
 from quickcode.kernel.manifest._text import (
     READ_ONLY_LOCKED_BECAUSE,
     READ_ONLY_RECOURSE,
@@ -14,20 +15,28 @@ from quickcode.kernel.manifest._text import (
 )
 from quickcode.kernel.spec import Effect, PluginSpec, Recourse, SettingSpec
 
+_FILE_TOOLS = ("read", "write", "edit", "glob", "grep")
 
-def _tool_group(tool: Any) -> str:
-    name = getattr(tool, "name", "")
+
+def tool_group(name: str, *, by_server: bool = False) -> str:
+    """The group a tool is filed under, decided by its name alone.
+
+    ``by_server`` files an MCP tool under its server (``MCP · docs``), for a
+    list that puts several servers' tools side by side; the plugin cards keep
+    every MCP tool in one ``MCP`` group.
+    """
     if name.startswith("mcp__"):
-        return "MCP"
-    if name in ("bash", "bash_output", "bash_kill"):
+        parts = name.split("__")
+        return f"MCP · {parts[1]}" if by_server and len(parts) >= 3 else "MCP"
+    if name == "bash" or name in SHELL_JOB_TOOLS:
         return "Shell"
-    if name in ("read", "write", "edit", "glob", "grep"):
+    if name in _FILE_TOOLS:
         return "Files"
     if name in ("web_fetch", "web_search"):
         return "Web"
     if name.startswith("task"):
         return "Tasks"
-    if name in ("agent", "send_message", "agent_status", "agent_result"):
+    if name in DELEGATION_TOOLS:
         return "Subagents"
     return "Tools"
 
@@ -281,7 +290,7 @@ def tool_specs(tools: Iterable[Any]) -> list[PluginSpec]:
             kind="tool",
             title=name,
             description=(getattr(tool, "description", "") or "").strip().split("\n")[0],
-            group=_tool_group(tool),
+            group=tool_group(name),
             source=source,
             summary=prose["summary"],
             affects=prose["affects"],

@@ -30,7 +30,7 @@ One module per family of plugin:
 ``core``       the runtime internals; their settings are declared in
                ``kernel/core_settings.py``, where the runtime reads them
 ``sections``   the system-prompt sections
-``tools``      the live tools
+``tools``      the live tools, and ``tool_group``
 ``agents``     subagent definitions, built-in and authored
 ``authored``   authored command tools and prompt sections
 ``providers``  model provider factories
@@ -45,7 +45,7 @@ from quickcode.kernel.manifest.core import core_specs
 from quickcode.kernel.manifest.mcp import REDACTED, mcp_specs
 from quickcode.kernel.manifest.providers import provider_specs
 from quickcode.kernel.manifest.sections import prompt_section_specs
-from quickcode.kernel.manifest.tools import tool_specs
+from quickcode.kernel.manifest.tools import tool_group, tool_specs
 
 __all__ = [
     "REDACTED",
@@ -59,6 +59,7 @@ __all__ = [
     "mcp_specs",
     "prompt_section_specs",
     "provider_specs",
+    "tool_group",
     "tool_signature",
     "tool_specs",
 ]
