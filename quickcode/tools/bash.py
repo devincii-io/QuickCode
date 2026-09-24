@@ -372,6 +372,9 @@ def _run_subprocess(
         proc = subproc.popen(
             argv,
             cwd=cwd,
+            # Not QuickCode's own stdin, which from a console is that console:
+            # a command reading it would sit there until the timeout.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             # POSIX: a process group of its own (pgid == pid), so _kill_tree

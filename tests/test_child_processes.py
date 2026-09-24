@@ -29,6 +29,7 @@ from tests.test_command_runtime import run as run_command_tool
 from tests.test_command_runtime import tool_for
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+LINUX_ONLY = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
 SECRETS = {
     "QUICKCODE_OPENROUTER_API_KEY": "sk-or-not-for-children-1",
@@ -185,3 +186,28 @@ async def test_a_frozen_app_hands_children_the_loader_path_it_was_started_with(
         ctx_for(tmp_path),
     )
     assert "lib=[/usr/local/lib] pyi=[]" in result.content, result.content
+
+
+# --------------------------------------------------------------------- stdin
+
+
+@LINUX_ONLY
+async def test_a_piped_command_reads_the_null_device_not_the_servers_stdin(
+    tmp_path, monkeypatch,
+):
+    """The pipe path handed the command QuickCode's own stdin. From a console
+    that is the console the server runs in: a command that reads stdin (`git
+    commit` without -m, a prompt) sat on it until the timeout."""
+    monkeypatch.setattr(bash_mod, "_use_pty", lambda ctx: False)
+    read_end, write_end = os.pipe()
+    saved = os.dup(0)
+    os.dup2(read_end, 0)
+    try:
+        tool = BashTool()
+        result = await tool.run(tool.Input(command="readlink /proc/self/fd/0",
+                                           timeout_ms=10_000), ctx_for(tmp_path))
+    finally:
+        os.dup2(saved, 0)
+        for fd in (saved, read_end, write_end):
+            os.close(fd)
+    assert result.content.strip() == "/dev/null", result.content
