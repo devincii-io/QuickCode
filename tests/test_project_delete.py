@@ -294,6 +294,32 @@ def test_an_idle_open_project_is_closed_when_it_is_removed_but_the_default_is_ke
 # ---- deleting QuickCode's data: the "completely" one ----
 
 
+def test_deleting_the_default_projects_data_closes_its_idle_conversations(tmp_path):
+    """The default project's manager stays -- this process is serving it --
+    but the conversations it holds in memory are the data that was just
+    deleted. Left open, one would replay an empty transcript while its model
+    still remembered the whole conversation, and its next message would
+    write a headless log back into the directory the user just emptied."""
+    from quickcode.core.events import TextDelta, TurnDone
+
+    root = tmp_path / "root"
+    root.mkdir()
+    hub, client = make_app(tmp_path, root)
+    hub.default.provider.scripts = [[TextDelta("noted"), TurnDone("stop")]]
+    with client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_json({"type": "user_message", "text": "remember the launch codes"})
+            recv_until(ws, "assistant_message")
+        assert SessionStore(root, conv_id).path.exists()
+
+        body = client.delete("/api/data").json()
+        assert body["data_deleted"] is True
+        assert conv_id not in hub.default.conversations
+        assert not (root / ".quickcode").exists()
+
+
 def test_deleting_quickcode_data_removes_that_directory_the_trust_grant_and_the_list_entry(tmp_path):
     root, alpha = tmp_path / "root", tmp_path / "alpha"
     root.mkdir()
