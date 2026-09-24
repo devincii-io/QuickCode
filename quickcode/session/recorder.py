@@ -72,6 +72,10 @@ class TranscriptRecorder:
         # How many of the agent's history messages are already on disk.
         self.persisted = persisted
         self.turn = 0
+        # A resumed session carries on from the turns already in its log. Read
+        # lazily, on the first emit, because the store scans the log for its
+        # sequence counter at that same moment.
+        self._turn_restored = False
         # Streaming accumulators for the main agent (assembled on flush).
         self.acc_text: list[str] = []
         self.acc_reasoning: list[str] = []
@@ -84,6 +88,11 @@ class TranscriptRecorder:
     # ---- the log ----
     def emit(self, ev: dict[str, Any], *, log_it: bool | None = None) -> dict[str, Any]:
         """Persist an event when it is loggable, then hand it to the fan-out."""
+        if not self._turn_restored:
+            # Numbering restarting at 1 after a reopen folded the new turn's
+            # spend into the old turn 1 in the Usage panel, which groups by it.
+            self._turn_restored = True
+            self.turn = max(self.turn, self.store.last_turn())
         if ev.get("type") == "user_message":
             self.turn += 1
         if log_it if log_it is not None else loggable(ev):

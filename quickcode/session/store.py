@@ -37,6 +37,7 @@ from typing import Any
 
 from quickcode.providers.base import ChatMessage
 from quickcode.session.records import parse
+from quickcode.session.repair import repair_history
 from quickcode.workspace import ensure_project_dir
 
 log = logging.getLogger("quickcode.session")
@@ -474,6 +475,9 @@ class SessionStore:
         compaction removed and must not come back. Messages appended after it
         are the turns that followed and are kept. The last such record wins,
         because a long session compacts more than once.
+
+        What comes back is repaired into a history a provider accepts (see
+        ``repair.repair_history``); the log itself is never rewritten.
         """
         messages: list[ChatMessage] = []
         for rec in self._iter_records():
@@ -491,7 +495,7 @@ class SessionStore:
                     messages.append(message_from_dict(rec["message"]))
                 except (KeyError, TypeError):
                     continue
-        return messages
+        return repair_history(messages)
 
     def load_events(self) -> list[dict[str, Any]]:
         """All trace events, oldest first, with ``seq``/``ts`` folded in."""
