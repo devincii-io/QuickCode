@@ -291,7 +291,9 @@ afterwards re-prompts, because the grant is bound to the values.
 by convention, and the convention is written in a file the repository also
 controls — so "local" says nothing about where the file came from. An "always
 allow" answer therefore holds for the rest of the session either way, and
-persists across sessions once the project is trusted.
+persists across sessions once the project is trusted. When the file cannot be
+written — a read-only checkout, a file that does not parse — the call still
+runs and the rule holds for this session only, which the log says.
 
 ## Bash evaluation pipeline
 

@@ -192,6 +192,56 @@ def test_a_save_over_a_broken_file_is_refused_with_the_reason_not_a_500(
     assert settings.read_text(encoding="utf-8") == BROKEN
 
 
+def _unwritable(project: Path) -> None:
+    """``.quickcode`` as a file: every write under it fails with an OSError, as
+    in a read-only checkout, whoever runs the test."""
+    (project / ".quickcode").rmdir()
+    (project / ".quickcode").write_text("", encoding="utf-8")
+
+
+def test_always_allow_in_a_project_that_cannot_be_written_allows_for_this_session(project):
+    from quickcode.core.permissions import Rules
+
+    _unwritable(project)
+    rules = Rules()
+
+    unsaved = rules.persist_allow(project, "bash(npm test)")
+
+    assert rules.allow == ["bash(npm test)"]
+    assert "bash(npm test)" in unsaved and "this session" in unsaved
+
+
+def test_always_allow_that_saves_has_nothing_to_report(project):
+    from quickcode.core.permissions import Rules
+
+    assert Rules().persist_allow(project, "bash(npm test)") is None
+
+
+async def test_a_rule_that_cannot_be_saved_does_not_fail_the_call_it_allowed(project):
+    """The user said yes, so the call runs: failing to keep the rule for next
+    time is no reason to refuse the call they just approved."""
+    from quickcode.core.agent import PermissionOutcome
+    from quickcode.core.events import TurnDone
+    from quickcode.core.permissions import Mode
+    from tests.test_loop import Scripted, _agent, _call, _tool_messages
+
+    _unwritable(project)
+    target = project / "notes.txt"
+    provider = Scripted([[_call("w", "write", file_path=str(target), content="kept"),
+                          TurnDone("tool_calls")]])
+    agent = _agent(project, provider, mode=Mode.ask)
+
+    async def always(_req):
+        return PermissionOutcome(allow=True, persist=True)
+    agent.permission_cb = always
+
+    await agent.run_turn("write it")
+
+    assert target.read_text(encoding="utf-8") == "kept"
+    assert "failed" not in _tool_messages(agent)["w"]
+    assert len(agent.permissions.rules.allow) == 1
+
+
 def _symlink(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)
