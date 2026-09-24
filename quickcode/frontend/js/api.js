@@ -129,6 +129,10 @@ export const api = {
   // one refusal is 409: selecting a profile that lets the agent act without
   // asking is gated on the project having been trusted.
   setActiveProfile: (id) => req("POST", P("/profiles/active"), { id }),
+  // "Why would this be allowed?" — a dry run of the real permission engine.
+  // {tool, input | command | target, mode?, conv?, rules?, project_rules?,
+  // profile?}; see server/permissions_api.py. Runs nothing, writes nothing.
+  explainPermission: (body) => req("POST", P("/permissions/explain"), body),
 
   // ---- the agent workbench ----
   // Every agent identity, `@orchestrator` first and first-class: an inventory

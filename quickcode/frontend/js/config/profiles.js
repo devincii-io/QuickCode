@@ -28,7 +28,7 @@ import { MODE_IDS, MODES, modeLabel } from "../modes.js";
 import { esc } from "../util.js";
 import { flash } from "../settings/ui.js";
 import { problemsCardHtml, wireProblems } from "./problems.js";
-import { characterToSpec, evaluate } from "../help/engine.js";
+import { explainErrorHtml, explainHtml, explainer } from "../help/explain.js";
 
 const LISTS = [
   ["allow", "Allow", "Runs without a prompt. This is the widening half — a "
@@ -49,7 +49,8 @@ const LAYER_NOTE = {
 // The same grammar `core/profiles._RULE_SHAPE` rejects on: a bare tool name, or
 // a tool name with a pattern in brackets. Anything else the engine silently
 // reads as a tool nothing is called, so it matches nothing, forever, quietly.
-const RULE_SHAPE = /^\w+(\([\s\S]*\))?$/;
+// The name half is wider than `\w`: `mcp__company-kb__search` is a tool name.
+const RULE_SHAPE = /^[\w.:-]+(\([\s\S]*\))?$/;
 
 const lines = (text) => String(text || "").split("\n")
   .map((s) => s.trim()).filter(Boolean);
@@ -256,17 +257,17 @@ function editorHtml(draft, { tools, scope, isNew, builtinIds }) {
 
 // ---- the live preview -----------------------------------------------------
 //
-// The one computed answer on this page. `help/engine.js` is a line-for-line
-// port of `core/permissions.py` and already backs the Help sandbox; reusing it
-// means a rule can be checked while it is being typed rather than by saving,
-// switching to it and running something. It is *modelled*, and says so in the
-// sandbox's own words — the honest caveat is the same one, so the two pages do
-// not appear to make different promises about the same code.
+// The one computed answer on this page, and it is not computed here: every
+// keystroke (debounced) asks this project's real permission engine through
+// POST …/permissions/explain, with the draft's lists added in place of the
+// active profile -- which is what a session would run with this profile
+// selected: the project's own rules, merged with the draft's. The rendering is
+// the Help sandbox's (js/help/explain.js), so the two pages cannot describe
+// one gate two ways.
 
 function previewHtml(tools, mode) {
   const opts = tools.map((t) =>
-    `<option value="${esc(t.name)}" data-character="${esc(t.character)}"
-      >${esc(t.name)}</option>`).join("");
+    `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
   return `<section class="cfg-sec pf-preview">
     <h3>What would this decide?</h3>
     <div class="pf-try">
@@ -287,32 +288,12 @@ function previewHtml(tools, mode) {
       </div>
     </div>
     <div class="pf-verdict" data-verdict aria-live="polite"></div>
-    <p class="hp-honesty">Modelled in the browser: the rule syntax, the glob
-      matching, the ordering and the bash decomposition are ported from
-      quickcode/core/permissions.py, and the tool list and each tool's declared
-      shape are read live from this install. The one thing the browser cannot
-      reproduce is real path resolution — the running engine resolves the target
-      against the project on disk, so it also catches a symlink pointing outside
-      it, which this cannot. It also sees only this profile's rules, not the
-      project's own that they merge with.</p>
+    <p class="hp-honesty live">Live: asked of this project's running permission
+      engine, with this draft merged over the project's own rules the way a
+      selected profile is — and without its allow rules while it is set to be
+      saved into a project nobody has trusted, since that is what such a
+      profile loses. Nothing is saved until you save.</p>
   </section>`;
-}
-
-const OUTCOME = { allow: "runs without asking", ask: "prompts you", deny: "refused" };
-
-function renderVerdict(node, { tools, rules, tool, target, mode }) {
-  const character = tools.find((t) => t.name === tool)?.character || "";
-  const result = evaluate({
-    mode, tool, spec: characterToSpec(character), target, rules,
-  });
-  node.innerHTML = `<div class="pf-outcome" data-outcome="${esc(result.decision)}">
-      <span class="pf-outcome-word">${esc(result.decision)}</span>
-      <span class="pf-outcome-say">${esc(tool)} on
-        <code>${esc(target || "(nothing)")}</code> ${esc(OUTCOME[result.decision])}</span>
-    </div>
-    <ol class="pf-trace">${result.trace.map((s) =>
-      `<li data-hit="${esc(String(s.hit))}"><b>${esc(s.name)}</b> ${esc(s.why)}</li>`
-    ).join("")}</ol>`;
 }
 
 // ---- page -----------------------------------------------------------------
@@ -417,7 +398,7 @@ export async function renderProfiles(host, ctx, selected = "", query = {}) {
   // screen from showing two different active profiles.
   ctx.profiles = data;
   ctx.railDirty?.();
-  if (editing) wireEditor(host, ctx, { tools });
+  if (editing) wireEditor(host, ctx, { trusted: !!data.trusted });
   else wireList(host, ctx);
 }
 
@@ -496,7 +477,7 @@ function wireList(host, ctx) {
   });
 }
 
-function wireEditor(host, ctx, { tools }) {
+function wireEditor(host, ctx, { trusted }) {
   const inner = host.querySelector(".cfg-page-inner");
   const $ = (sel) => inner.querySelector(sel);
   const flashNode = $("[data-flash]");
@@ -520,15 +501,22 @@ function wireEditor(host, ctx, { tools }) {
   };
 
   const verdict = $("[data-verdict]");
+  const ask = explainer((body) => ctx.api.explainPermission(body), (result, error) => {
+    verdict.innerHTML = error ? explainErrorHtml(error) : explainHtml(result);
+  });
   const repaint = () => {
     const rules = readLists();
     paintBad(rules);
     if (!verdict) return;
-    renderVerdict(verdict, {
-      tools, rules,
+    // A profile saved into a project nobody has trusted loses its allow rules
+    // (core/profiles.py), so the preview asks about the profile it would be.
+    if ($("#pf-scope").value === "project" && !trusted) rules.allow = [];
+    ask({
       tool: $("#pf-try-tool").value,
       target: $("#pf-try-target").value,
       mode: $("#pf-try-mode").value,
+      rules,
+      profile: false,
     });
   };
 
@@ -536,7 +524,7 @@ function wireEditor(host, ctx, { tools }) {
     if (e.target.closest(".pf-lists, .pf-try")) repaint();
   });
   inner.addEventListener("change", (e) => {
-    if (e.target.closest(".pf-try")) repaint();
+    if (e.target.closest(".pf-try") || e.target.id === "pf-scope") repaint();
     // The starting mode is the mode the preview asks about until you say
     // otherwise; two mode selectors that disagreed by default would be a
     // preview of a session nobody is going to run.
