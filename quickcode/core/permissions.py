@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from quickcode.security import commands, shellwords, sweep
+from quickcode.security import breakers, commands, shellwords, sweep
 from quickcode.security.protected import (
     glob_may_name_protected,
     is_protected,
@@ -47,6 +47,12 @@ _SPLIT = re.compile(r"&&|\|\||\||;|&|\n")
 # Substitution markers that forbid prefix-matching a rule. An unquoted `(` is
 # one too (``shellwords.has_unquoted_paren``): PowerShell runs `cat (rm x)`.
 _COMPOUND_MARKERS = ("$(", "`", ">", "<")
+# Commands run by other commands (`bash -c`, `xargs`, `find -exec`, `$(...)`)
+# are evaluated as if typed, to this depth; anything nested deeper asks.
+_MAX_NESTING = 4
+# Whether deny and ask rules on paths ignore case: on these filesystems
+# `KEY.PEM` opens `key.pem`, so a rule against one must hold for the other.
+CASE_INSENSITIVE_PATHS = sys.platform in ("win32", "darwin")
 # Commands run by other commands (`bash -c`, `xargs`, `find -exec`, `$(...)`)
 # are evaluated as if typed, to this depth; anything nested deeper asks.
 _MAX_NESTING = 4
@@ -416,7 +422,7 @@ class PermissionEngine:
         elif inner:
             decisions += [self._eval_bash(line, depth + 1) for line in inner]
         # Circuit breakers apply to the whole line even in yolo.
-        if any(cb.search(command) for cb in _CIRCUIT_BREAKERS):
+        if breakers.tripped(command):
             decisions.append(Decision.ask)
         # Most restrictive wins.
         if Decision.deny in decisions:

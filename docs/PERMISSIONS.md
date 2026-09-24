@@ -78,10 +78,22 @@ today.
   for a `Shift+Tab`-style hotkey, but **nothing calls it**: there is no key
   binding for mode cycling in the frontend.
 - **Yolo guardrails:** confirmation screen on entry (persisted acceptance), red
-  status bar, and a hard circuit breaker. Four patterns prompt **even in yolo**,
-  and this is the whole list (`_CIRCUIT_BREAKERS`): `rm -rf /`, `rm -rf ~`,
-  `git push … --force` (any remote, any branch — not only the default one), and
-  the `:(){` fork bomb. A breaker is also matched inside the commands another
+  status bar, and a hard circuit breaker. Three kinds of command prompt **even
+  in yolo**, and this is the whole list (`security/breakers.py`):
+  1. a recursive or forced delete (`rm`, `Remove-Item`, `rd /s`, `del /s`) of
+     the filesystem root, a drive root, a top-level system directory (`/usr`,
+     `/home`, `C:\Windows`…) or a home directory, however spelled — `rm -rf /`,
+     `rm -fr /*`, `rm -rf --no-preserve-root /`, `rm -rf -- /`,
+     `rm -rf build /`, `rm -rf ~/`, `rm -rf "$HOME"`, `rm -rf ${HOME:?}/`;
+  2. a forced `git push` to any remote and branch — `--force`, `-f` in any
+     cluster (`-uf`), `--force-with-lease`, `--force-if-includes`, `--mirror`,
+     a `+refspec`, with global options in front (`git -C . push -f`) or behind
+     a `-c alias.…` or a `-c remote.*.push=+…`;
+  3. a fork bomb, whatever its function is called (`:(){ :|:& };:`,
+     `f(){ f|f& };f`, `fork while fork`).
+
+  They are matched on the command's words, not on one spelling of it; the
+  regexes they replace knew one shape each. A breaker is also matched inside the commands another
   command runs (`$(rm -rf /)`, `bash -c "…"`, `xargs`, `find -exec`; see
   §Bash evaluation pipeline), since those are evaluated as if typed. There is
   no breaker for recursive deletes outside the project, and it is not caught in
@@ -110,7 +122,7 @@ today.
   token as a possible path, so the `/` was enough. The gate is entry to the
   mode (a confirmation screen, a persisted acceptance, a red status bar), not
   a second conversation per command. Deny rules still deny in yolo, and the
-  four circuit breakers still prompt. The prompt
+  circuit breakers still prompt. The prompt
   is the ordinary three-button one; there is no "allow self-config edits for
   this session" option — an always-allow on a `.quickcode/` path writes an
   ordinary persisted rule like any other.
