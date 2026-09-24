@@ -33,7 +33,7 @@
 │   · main agent per conversation                              │
 │   · subagents (spawned via the agent tool)  (see docs/AGENTS)│
 │  permissions.py (modes, rules, tool-declared specs)          │
-│  hooks.py (plan mode) · tasks.py · compact.py                │
+│  hooks.py (plan mode) · tasks.py · compact.py · context guard│
 └──────▲──────────────────────┬────────────────────────────────┘
        │ normalized stream    │ tool_use
 ┌──────┴────────┐   ┌─────────▼────────────────────────────────┐
@@ -80,6 +80,8 @@ quickcode/
     events.py             # AgentEvent dataclasses (internal protocol)
     history.py            # messages, read-dedup, cache breakpoints
     compact.py            # threshold + summarization turn
+    context_guard.py      # compaction between rounds; shrink and retry once when refused for length
+    context_size.py       # request estimates (ledger + chars/4), cutting tool results to fit
     permissions.py        # modes, rules, PermissionSpec, bash decomposition
     profiles.py           # permission profiles: named {mode, allow, ask, deny} bundles
     tasks.py              # task board
@@ -110,6 +112,7 @@ quickcode/
     definitions.py runner.py jobs.py artifacts.py
   providers/
     base.py openai_compat.py credits.py
+    overflow.py           # "context length exceeded", in each provider's words
     choice.py             # built-in providers' defaults, switching between them
     anthropic/            # native Messages API: wire, sse, stream, retry, models
   tools/
@@ -178,9 +181,11 @@ async def run_turn(agent, user_input):
     agent.history.push_user(user_input, reminders)
     max_rounds = agent.limits.max_rounds          # read once, per turn
     for round_no in range(max_rounds + 1):
+        compacted = await before_request(agent)   # context guard (below)
         if round_no == max_rounds:
             agent.history.push_user("", [wrap_up_reminder])
-        msg = await _stream_once(agent)           # streams, emits, assembles
+        msg = await _stream_once(agent, compacted=compacted)  # streams, emits, assembles;
+                                                  # refused for length: shrink, retry once
         agent.history.push_assistant(msg)
         if not msg.tool_calls: return msg.text
         results = await _execute_tools(agent, msg.tool_calls)  # permission-gated
@@ -195,6 +200,65 @@ Rules that matter:
 - **Failed tools still return a result** with `is_error: true` so the model can recover.
 - **Loop guard:** `runtime.agent_loop.max_rounds` tool rounds per turn, then a system reminder to wrap up. 50 is the default (`RuntimeLimits.max_rounds` in `kernel/composition.py`, declared as a setting in `kernel/manifest.py`), not a constant — it is resolved per session by `kernel/resolve.runtime_limits` and frozen for the turn, so editing the setting mid-turn cannot move the budget under a turn already counting.
 - **The loop knows no tool by name.** Which tools are offered is decided by hooks (`visible_tools`), a hook may answer a call itself (`intercept`, which is how plan review works), and how a call is gated comes from the tool's own `PermissionSpec`. Plan mode used to be an `if` in this file; it is now `PlanModeHook` in `core/hooks.py`.
+
+### Context guard
+
+Compaction between turns (the web worker, `TranscriptRecorder.record_turn`)
+cannot help a turn whose own tool results outgrow the window: the provider
+refuses the next request with "context length exceeded", and `/compact`, whose
+request carries the same history, used to overflow as well.
+`core/context_guard.py` works inside the turn, at two points of `run_turn`:
+
+- **Before every request.** The request is estimated as the ledger's last
+  measured one (`last_input_tokens + last_output_tokens`: that request plus the
+  reply now at the end of history) plus chars/4 of everything appended after
+  that reply (`core/context_size.py::request_estimate`). When it crosses
+  `runtime.compaction.threshold` of the window, the history is compacted there
+  and then — between rounds, after a round's results were pushed, so the same
+  `_select_tail` cut applies and no call is parted from its result — and the
+  turn continues. Only a *measured* estimate triggers it: right after a
+  compaction nothing is measured until the next request comes back, so the
+  guard never compacts two requests in a row.
+- **When the provider refuses anyway.** `providers/overflow.py` recognises the
+  refusal in OpenAI-compatible, OpenRouter, Anthropic, vLLM, llama.cpp, Mistral
+  and Gemini wording, raised as a `ProviderError` or reported as a `TurnDone`
+  error, and takes the window from it when the message names one — which is
+  how a subagent on an uncatalogued model, or `-p` before its catalog arrives,
+  learns its own. If nothing of the round was shown yet, the error is held
+  back; the history's largest tool results are cut to head + tail under a
+  `<truncated … hint="middle cut to fit the context window; …"/>` marker, all
+  to one cap (the highest that frees enough, so a single giant result is all
+  that goes when it alone is the problem); the history is compacted if cutting
+  could not free enough, unless the guard already compacted ahead of this very
+  request; and the request is sent once more. A second refusal surfaces the
+  way any provider error does. A refusal the retry recovered from leaves no
+  `error` in the log and is not a failure to `-p`.
+
+The summary request has to fit as well (`core/compact.py::_fit_for_summary`):
+before it is sent, the oldest tool results in it are cut first, then all of
+them to one cap, and if the history is still too long its oldest rounds are
+left out whole (the seed of an earlier compaction stays). Only the request is
+cut. Refused for length anyway, it is fitted once more, with a wider margin, to
+the window the refusal names.
+
+A compaction mid-turn is the between-turn one in every other respect: the same
+`compacted` record (widened with `"mid_turn": true`), the rebuilt history
+written to the log as a `compaction` record so a resume loads it, the ledger's
+context footprint reset. The core emits it as a `Compacted` event carrying the
+rebuilt history, and the recorder does the bookkeeping, so the web worker and
+`-p` get it without code of their own. The post-compaction reminder (with the
+mode, which the summary may have lost) cannot wait for the next user message,
+so it is pushed at once as a reminder-only user message, the way the wrap-up
+reminder is. The system prompt is not touched.
+
+`runtime.compaction.enabled: false` turns off the first point and the
+compacting half of the second; cutting tool results and retrying stays on,
+because without it the conversation cannot take another request at all.
+Subagents run the same loop and so the same guard: `SubagentDeps.context_window`
+hands each child the catalog's window for its own model (the spawner's, when it
+runs the same model). A cut rewrites the message in memory; a result persisted
+in an earlier turn keeps its full text on disk, so a resumed session that
+overflows is cut again by the same path.
 
 ## Provider layer
 
@@ -322,7 +386,7 @@ No tool can reach it, and the agent never sees what is typed there.
 - A **Conversation** = one main AgentInstance + its transcript + its spawned subagents. A conversation nobody is attached to stays *open* server-side — its agent, task board and background jobs survive — but nothing streams to a client that is not there. In the browser each agent pane is its own iframe holding exactly one socket to one conversation (`frontend/js/ws.js` enforces the one with a generation guard); several panes make several concurrent live conversations.
 - Subagents and teammates are just more AgentInstances with different system prompts, models, and permission caps — one runtime, no special cases. Coordination (task board, teammate messaging, result hand-back) is specced in docs/AGENTS.md.
 - **Spend vs. context.** Each AgentInstance owns a `Ledger`, so a child's tokens reach the session only through the recorder, which bridges every subagent bus. It rolls them in with `Ledger.add_subagent`: the cumulative fields (`input_tokens`, `output_tokens`, `cached_tokens`, `cost_usd`) take them, and `last_input_tokens` / `last_output_tokens` never do. That pair is the *live context footprint* — it drives `context_pct()`, the context meter and the compaction threshold — and a subagent fills a context window of its own, so counting its request there would show a short conversation as nearly full and could trip an auto-compaction the parent never needed. `Ledger.from_events` replays the same split from the log, reading the child's usage out of the `agent_event` wrapper it is logged inside.
-- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py` through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
+- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py` through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its mid-turn compactions and system notes, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
 
 ## Efficiency checklist
 
@@ -330,7 +394,7 @@ No tool can reach it, and the agent never sees what is typed there.
 2. **Parallel tool calls** honored (gather) and encouraged in the prompt.
 3. **Cheap models for fan-out:** both built-in subagent types (`explore`, `general`) default to the profile's `worker` model role; the orchestrator stays on its own model.
 4. **Diff-based edits**; output caps + pagination hints on every tool; read-dedup (superseded file reads stubbed out of the request).
-5. **Compaction at ~80%** of the model's context window; manual `/compact`. Both drivers check it after every turn — the web worker and `TranscriptRecorder.record_turn`, which is what a headless `-p` run goes through — off the one declared setting (`runtime.compaction`).
+5. **Compaction at ~80%** of the model's context window; manual `/compact`. Both drivers check it after every turn — the web worker and `TranscriptRecorder.record_turn`, which is what a headless `-p` run goes through — off the one declared setting (`runtime.compaction`), and the loop checks it before every request inside a turn (§Context guard above), where a refusal for length is also answered by cutting tool results and one retry.
 6. **UI never blocks the loop, loop never blocks the UI** — bounded queues both directions.
 
 ## Trust boundary
