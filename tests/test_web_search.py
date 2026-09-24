@@ -291,6 +291,64 @@ async def test_a_non_json_body_fails_rather_than_being_guessed_at():
         )
 
 
+@pytest.mark.parametrize(
+    ("status", "phrase"),
+    [(402, "credit"), (432, "plan"), (500, "try again"), (503, "try again")],
+)
+async def test_quota_and_outage_statuses_say_what_to_do(status, phrase):
+    transport, _ = capture("serper", status=status)
+    with pytest.raises(SearchError, match=phrase):
+        await run_search(make_provider("serper"), "q", transport=transport, guard=RateGuard())
+
+
+async def test_the_providers_own_explanation_is_passed_on_with_the_key_blanked():
+    """Google says exactly what is wrong ("API not enabled for this project") and
+    that beats any generic hint -- but it can also echo the request back."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": {
+            "message": f"Custom Search API has not been used in project 42 "
+                       f"(request key={FAKE_KEY}&cx=cx-123). Enable it first.",
+        }})
+
+    with pytest.raises(SearchError) as exc:
+        await run_search(make_provider("google_cse"), "q",
+                         transport=httpx.MockTransport(handler), guard=RateGuard())
+    message = str(exc.value)
+    assert "has not been used in project 42" in message
+    assert FAKE_KEY not in message
+
+
+async def test_a_keyless_provider_is_not_told_its_key_was_refused():
+    """A SearXNG instance answers 403 when its JSON output is switched off.
+    "The API key was refused" sends somebody looking for a key that does not
+    exist."""
+    transport, _ = capture("searxng", status=403)
+    with pytest.raises(SearchError) as exc:
+        await run_search(make_provider("searxng"), "q", transport=transport, guard=RateGuard())
+    assert "API key" not in str(exc.value)
+    assert "json" in str(exc.value)
+
+
+async def test_results_arrive_as_plain_text_without_duplicates():
+    """Brave highlights with <strong> and escapes quotes as entities; both
+    went to the model verbatim, costing tokens and reading as noise."""
+    body = {"web": {"results": [
+        {"title": "Tom &amp; Jerry", "url": "https://example.com/a",
+         "description": "The <strong>cat</strong> isn&#x27;t   here."},
+        {"title": "dup", "url": "https://example.com/a", "description": "again"},
+        {"title": "bad", "url": "javascript:alert(1)", "description": "x"},
+    ]}}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+
+    results = await run_search(make_provider("brave"), "q", transport=transport,
+                               guard=RateGuard())
+
+    assert [(r.title, r.url, r.snippet) for r in results] == [
+        ("Tom & Jerry", "https://example.com/a", "The cat isn't here."),
+    ]
+
+
 async def test_an_unexpected_shape_degrades_instead_of_crashing():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"web": {"results": [{"totally": "renamed"}]}})
@@ -432,6 +490,9 @@ def test_a_missing_key_names_the_env_var_and_the_signup_page():
     assert "QUICKCODE_BRAVE_API_KEY" in message
     assert BraveProvider.info.signup_url in message
     assert "set-key brave" in message
+    # The installed app has no `python -m`: the Settings page is the way in
+    # that works everywhere, so it is named first.
+    assert message.index("Settings → Web search") < message.index("set-key")
 
 
 def test_a_ready_alternative_is_named_but_never_used():

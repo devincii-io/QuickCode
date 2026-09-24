@@ -263,20 +263,21 @@ A security note that lists only what it catches is a security note that misleads
 
 **There is deliberately no `provider` argument.** Which engine answers is a *setting*, resolved from `search.provider` in `~/.quickcode/config.json`, then `QUICKCODE_SEARCH_PROVIDER`, then Brave. The model cannot shop between engines: a model that can pick its search backend will pick the one that answered last time, or the one whose name it saw in an error, and the user finds out at the end of the month. It is also not a knob the model has any grounds to turn — the quota, the terms and the bill are all the user's.
 
-**What it returns.** A numbered plain-text list, with a footer pointing at the other tool:
+**What it returns.** One TOON table, with a footer pointing at the other tool:
 
+````
+Results for "python 3.13 free threading" via Brave Search:
+```toon
+results[5]{title,url,snippet}:
+  What's New In Python 3.13,https://docs.python.org/3/whatsnew/3.13.html,"The biggest changes include a new interactive interpreter, and experimental…"
+  …
 ```
-5 results for "python 3.13 free threading" via Brave Search:
-
-1. What's New In Python 3.13
-   https://docs.python.org/3/whatsnew/3.13.html
-   The biggest changes include a new interactive interpreter, and experimental…
-   extract: …
-
 Use web_fetch on a URL above to read the full page.
-```
+````
 
-Snippets are clipped to 400 characters. The `extract:` line only appears for the agent-oriented providers (Tavily, Exa) that return extracted page text, and is clipped to 1200; it is printed when present rather than the renderer asking which provider it came from. `ui_meta` carries the provider name and label, the query, the count and a `[{title, url}]` list. No results is a normal answer, not an error.
+Snippets are clipped to 400 characters. An `extract` column appears only when a provider returned extracted page text (Tavily, Exa) — on every row or on none, since a table's rows must agree — and is clipped to 1200. Before rendering, every result is reduced to plain text (Brave's `<strong>` highlighting and HTML entities are stripped), results whose URL is not http(s) are dropped, and a URL listed twice is kept once, in rank order. `ui_meta` carries the provider name and label, the query, the count and a `[{title, url}]` list. No results is a normal answer, not an error.
+
+**Errors.** A failed search names the provider, the host and the status with a hint on what to do (401/403 key, 402/432 credit or plan limit, 429 rate limit, 5xx "try again later"; a provider can override a hint where the shared one misleads — SearXNG's 403 means JSON output is switched off, not a bad key). When the provider explains itself in the body, that explanation is appended, clipped, with every configured credential and anything shaped like `key=…` blanked first. An unconfigured provider's error names **Settings → Web search** before the environment variable and the `set-key` command, because the installed app has no Python to run `python -m` with.
 
 ### Providers
 

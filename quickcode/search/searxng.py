@@ -41,6 +41,12 @@ class SearxngProvider(HttpSearchProvider):
         needs_base_url=True,
         min_interval_s=0.5,
         free_tier="free; you host it, or you use somebody else's instance",
+        status_hints=(
+            (403, "the instance refused JSON output -- add `json` to `search: formats:` "
+                  "in its settings.yml (most public instances leave it off)"),
+            (429, "the instance's limiter refused the query -- self-hosted instances "
+                  "can relax `server: limiter` in settings.yml"),
+        ),
     )
 
     def build_request(self, query: str, count: int) -> httpx.Request:
