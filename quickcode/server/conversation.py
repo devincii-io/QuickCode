@@ -510,16 +510,9 @@ class Conversation:
             # a replayed ledger counts its spend and then resets the context
             # footprint -- in the order the live one did.
             self.rec.drain()
-        # History was rebuilt wholesale; future messages persist from here.
-        # The rebuilt history goes into the log as well, or the work is
-        # undone by the next resume: `load_messages` would replay every
-        # original message and hand the model exactly the context compaction
-        # existed to remove.
-        self.store.append_compaction(self.agent.history.messages)
-        self.rec.persisted = len(self.agent.history.messages)
-        self.emit({"type": "compacted", "summary_chars": len(summary), "manual": manual})
-        self.emit(
-            {"type": "system_note", "text": "(conversation compacted — earlier turns summarized)"}
+        self.rec.record_compaction(
+            self.agent.history.messages,
+            {"type": "compacted", "summary_chars": len(summary), "manual": manual},
         )
         self._emit_state()
 
