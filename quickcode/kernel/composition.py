@@ -258,7 +258,7 @@ class RuntimeLimits:
 
     The values below are the fallbacks used when nothing has been configured
     and no manifest is reachable. The declared defaults, and the minima and
-    maxima that clamp a configured value, live in ``kernel/manifest.py`` --
+    maxima that clamp a configured value, live in ``kernel/core_settings.py`` --
     ``resolve.runtime_limits`` reads them from there rather than restating
     them here.
     """

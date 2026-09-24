@@ -66,7 +66,7 @@ export const DECISIONS = ["allow", "ask", "deny"];
 
 /** Recover {mutates, pathTarget, shell} from the kernel's `metadata.character`.
  *
- *  `_tool_character` in kernel/manifest.py derives that string from the tool's
+ *  `_tool_character` in kernel/manifest/tools.py derives that string from the tool's
  *  real PermissionSpec, and the derivation is injective over the fields the
  *  gate consults, so this inverts it exactly. `read_only` and `internal_write`
  *  collapse to the same shape because the engine cannot tell them apart either:

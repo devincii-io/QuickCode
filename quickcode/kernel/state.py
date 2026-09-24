@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.config import CONFIG_DIR
-from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.problems import (
+    LOCAL_SETTINGS_IGNORED,
+    PROJECT_SETTINGS_IGNORED,
+    Problem,
+    Provenance,
+)
 
 log = logging.getLogger("quickcode.kernel.state")
 
@@ -53,7 +58,9 @@ def local_settings_path(cwd: Path) -> Path:
     return Path(cwd) / SETTINGS_DIRNAME / LOCAL_SETTINGS_FILENAME
 
 
-def _read(path: Path) -> dict[str, Any]:
+def read_settings(path: Path) -> dict[str, Any]:
+    """One settings file as a dict: ``{}`` when it is missing, unreadable or
+    not a JSON object."""
     if not path.exists():
         return {}
     try:
@@ -64,6 +71,10 @@ def _read(path: Path) -> dict[str, Any]:
         log.warning("ignoring unreadable settings at %s: %s", path, exc)
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+# The old private name, still imported from outside this module.
+_read = read_settings
 
 
 def _entries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -85,7 +96,7 @@ def _project_entries(cwd: Path, trusted: bool | None) -> dict[str, dict[str, Any
     """
     from quickcode.security import trust
 
-    entries = _entries(_read(project_settings_path(cwd)))
+    entries = _entries(read_settings(project_settings_path(cwd)))
     if trust.resolve_trust(cwd, trusted):
         return entries
 
@@ -126,7 +137,7 @@ def load_state(cwd: Path | None, *, trusted: bool | None = None) -> dict[str, di
     should not silently discard the user's setting for the others.
     """
     merged: dict[str, dict[str, Any]] = {}
-    layers = [_entries(_read(user_settings_path()))]
+    layers = [_entries(read_settings(user_settings_path()))]
     if cwd is not None:
         layers.append(_project_entries(cwd, trusted))
 
@@ -152,7 +163,7 @@ def layer_states(
     """
     out: list[tuple[str, Path, dict[str, dict[str, Any]]]] = []
     user = user_settings_path()
-    out.append(("user", user, _entries(_read(user))))
+    out.append(("user", user, _entries(read_settings(user))))
     if cwd is not None:
         project = project_settings_path(cwd)
         out.append(("project", project, _project_entries(cwd, trusted)))
@@ -202,13 +213,13 @@ def local_settings_problems(cwd: Path | None) -> list[Problem]:
     path = local_settings_path(cwd)
     if not path.exists():
         return []
-    raw = _read(path)
+    raw = read_settings(path)
     found = [key for key in (PLUGINS_KEY, PRESETS_KEY) if isinstance(raw.get(key), dict)]
     if not found:
         return []
     return [
         Problem(
-            code="local_settings_ignored",
+            code=LOCAL_SETTINGS_IGNORED,
             severity="info",
             message=(
                 f"{path.name} contains {' and '.join(found)}, which is not read "
@@ -242,7 +253,7 @@ def untrusted_project_problems(
         return []
     return [
         Problem(
-            code="project_settings_ignored",
+            code=PROJECT_SETTINGS_IGNORED,
             severity="warning",
             message=(
                 f"this project sets {len(keys)} permission "
@@ -288,7 +299,7 @@ def save_entry(cwd: Path, plugin_id: str, *, enabled: bool | None = None,
     it does not own.
     """
     path = project_settings_path(cwd)
-    raw = _read(path)
+    raw = read_settings(path)
     section = raw.get(PLUGINS_KEY)
     if not isinstance(section, dict):
         section = {}

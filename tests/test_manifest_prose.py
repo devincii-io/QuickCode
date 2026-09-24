@@ -92,3 +92,9 @@ def test_a_server_without_env_renders_unchanged():
     content = manifest.mcp_specs(cfg)[0].view().content
     assert "env" not in content
     assert "server.js" in content
+
+
+def test_mcp_tools_share_one_card_group_and_split_by_server_only_when_asked():
+    assert manifest.tool_group("mcp__docs__search") == "MCP"
+    assert manifest.tool_group("mcp__docs__search", by_server=True) == "MCP · docs"
+    assert manifest.tool_group("bash_output", by_server=True) == "Shell"

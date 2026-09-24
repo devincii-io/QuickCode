@@ -48,7 +48,8 @@ from typing import Any
 
 from quickcode.core.permissions import Mode, Rules
 from quickcode.kernel.problems import Layer, Problem, Provenance
-from quickcode.kernel.state import _read, project_settings_path, user_settings_path
+from quickcode.kernel.state import project_settings_path, user_settings_path
+from quickcode.kernel.state import read_settings as _read
 from quickcode.security import trust
 from quickcode.security.trust import project_may_state
 
