@@ -258,3 +258,63 @@ async def test_a_job_that_has_not_started_yet_cannot_be_resumed_under_it(tmp_pat
     await asyncio.gather(*owned)
     _id, report, _status = await resume_subagent(deps, agent_id=job.agent_id, message="hi")
     assert "first" in report
+
+
+# --------------------------------------------------------------------------
+# who may drive whom
+# --------------------------------------------------------------------------
+
+
+async def _tree(tmp_path):
+    """The orchestrator's deps, an idle writer it spawned, and a read-only
+    explorer it spawned (which holds the delegation tools at depth 1)."""
+    deps = _deps(ScriptedProvider("ok"), mode=Mode.auto_edit, cwd=tmp_path)
+    deps.pool = list(default_registry().tools.values())
+    writer, _, _ = await spawn_subagent(deps, agent_type="general", prompt="write")
+    reader, _, _ = await spawn_subagent(deps, agent_type="explore", prompt="read")
+    reader_deps = deps.roster[reader].ctx.extra["subagent"]
+    assert "write" in deps.roster[writer].registry.tools
+    assert "write" not in deps.roster[reader].registry.tools
+    return deps, writer, reader, reader_deps
+
+
+async def test_a_subagent_cannot_drive_an_agent_it_did_not_spawn(tmp_path):
+    """The roster is shared down the tree, so ``send_message`` could resume any
+    id in it. A read-only explorer that had just read untrusted text could
+    hand its instructions to an idle sibling that holds write and bash -- the
+    permission boundary between the two, bypassed by one message."""
+    deps, writer, _reader, reader_deps = await _tree(tmp_path)
+
+    with pytest.raises(ValueError, match=f"'{writer}'.*not spawned") as refused:
+        await resume_subagent(reader_deps, agent_id=writer, message="rm -rf src")
+    assert deps.turns[writer] == 1
+    assert writer not in str(refused.value).split("Known:")[-1]
+
+    # Its own children are its to drive, and the orchestrator's are all its.
+    mine, _, _ = await spawn_subagent(reader_deps, agent_type="explore", prompt="p")
+    await resume_subagent(reader_deps, agent_id=mine, message="more")
+    await resume_subagent(deps, agent_id=writer, message="more")
+    await resume_subagent(deps, agent_id=mine, message="more")
+
+
+async def test_a_subagent_sees_only_the_jobs_it_is_responsible_for(tmp_path):
+    from quickcode.tools.agent_jobs import (
+        AgentResultInput,
+        AgentResultTool,
+        AgentStatusInput,
+        AgentStatusTool,
+    )
+    from quickcode.tools.base import ReadRegistry, ToolCtx
+
+    deps, _writer, _reader, reader_deps = await _tree(tmp_path)
+    owned: list[asyncio.Task] = []
+    deps.adopt_task = reader_deps.adopt_task = owned.append
+    theirs = spawn_subagent_background(deps, agent_type="explore", prompt="p")
+    await asyncio.gather(*owned)
+
+    ctx = ToolCtx(cwd=tmp_path, read_registry=ReadRegistry(),
+                  extra={"subagent": reader_deps})
+    listing = await AgentStatusTool().run(AgentStatusInput(), ctx)
+    assert theirs.agent_id not in listing.content
+    collected = await AgentResultTool().run(AgentResultInput(agent_id=theirs.agent_id), ctx)
+    assert collected.is_error and not theirs.collected

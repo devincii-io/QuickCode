@@ -184,21 +184,28 @@ class SubagentDeps:
     # roster, so a resume three levels down can name the same definition in its
     # ``agent_done`` that the matching ``agent_spawned`` named.
     kinds: dict[str, str] = field(default_factory=dict)
+    # Who spawned each id ("" for the session's own agent), shared down the
+    # tree. The roster is shared so a resume can find a child from anywhere;
+    # this is what stops "from anywhere" meaning "anyone": an agent may drive
+    # and collect only what it, or an agent it spawned, started.
+    spawners: dict[str, str] = field(default_factory=dict)
+    # The id of the agent these deps belong to. Per level, never shared.
+    self_id: str = ""
     # The session's frozen runtime numbers, shared down the whole tree so every
     # depth counts against the same budget the session opened with.
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
 
     def child(self, depth: int, permissions: PermissionEngine,
-              *, tool_pool: list | None = None,
+              *, self_id: str, tool_pool: list | None = None,
               parent: Resolved | None = None) -> SubagentDeps:
         """A deps object for the next level down, sharing the counter/roster.
 
         A child's own spawns are capped by the child's live mode and rules --
         read off its ``permissions``, never copied -- and narrowed against
-        ``parent``, the composition this child was itself given. Passing the session's own composition down instead would make
-        delegation an escalation: a read-only agent could spawn one whose
-        definition says ``tools: null`` and have it inherit write, edit and
-        bash.
+        ``parent``, the composition this child was itself given. Passing the
+        session's own composition down instead would make delegation an
+        escalation: a read-only agent could spawn one whose definition says
+        ``tools: null`` and have it inherit write, edit and bash.
         """
         return SubagentDeps(
             provider=self.provider,
@@ -224,8 +231,24 @@ class SubagentDeps:
             turns=self.turns,
             budgets=self.budgets,
             kinds=self.kinds,
+            spawners=self.spawners,
+            self_id=self_id,
             limits=self.limits,
         )
+
+    def owns(self, agent_id: str) -> bool:
+        """Whether this level, or an agent it spawned, started ``agent_id``."""
+        seen: set[str] = set()
+        spawner = self.spawners.get(agent_id)
+        while spawner is not None and spawner not in seen:
+            if spawner == self.self_id:
+                return True
+            seen.add(spawner)
+            spawner = self.spawners.get(spawner)
+        return False
+
+    def visible_jobs(self) -> dict[str, JobRecord]:
+        return {aid: job for aid, job in self.jobs.items() if self.owns(aid)}
 
     def session_pool(self) -> list:
         """The pool to resolve against, with the legacy fallbacks in order."""
@@ -340,6 +363,7 @@ def _prepare_child(
     child_depth = deps.depth + 1
     agent_id = f"{defn.name}-{next(deps.counter)}"
     deps.spawned.append(agent_id)
+    deps.spawners[agent_id] = deps.self_id
     deps.budgets[agent_id] = resolved.max_turns
     deps.turns[agent_id] = 0
     permissions = ChildPermissions(
@@ -361,7 +385,7 @@ def _prepare_child(
     # Built after the registry, because what this child may delegate is bounded
     # by what this child itself got -- never by what the session has.
     child_deps = (
-        deps.child(child_depth, permissions,
+        deps.child(child_depth, permissions, self_id=agent_id,
                    tool_pool=list(registry.tools.values()), parent=resolved)
         if include_agent else None
     )
@@ -614,10 +638,15 @@ async def resume_subagent(
     Raises ValueError for an unknown agent_id or if the agent is still mid-turn
     — the tool wrapper turns those into an error ToolResult.
     """
+    known = ", ".join(a for a in deps.roster if deps.owns(a)) or "(none)"
     child = deps.roster.get(agent_id)
     if child is None:
-        known = ", ".join(deps.roster) or "(none)"
         raise ValueError(f"unknown agent_id '{agent_id}'. Known: {known}")
+    if not deps.owns(agent_id):
+        raise ValueError(
+            f"agent '{agent_id}' was not spawned by you or by an agent you spawned, "
+            f"so it is not yours to message. Known: {known}"
+        )
     # ``busy`` only flips once the child's turn starts; a detached job's record
     # is running from the moment it is spawned, before its task's first step.
     job = deps.jobs.get(agent_id)

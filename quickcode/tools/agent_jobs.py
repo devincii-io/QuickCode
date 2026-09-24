@@ -34,9 +34,11 @@ _UNAVAILABLE = (
 
 
 def _jobs(ctx: ToolCtx):
-    """The conversation's job registry, or None when there is no delegation."""
+    """The jobs this agent is responsible for -- the ones it, or an agent it
+    spawned, started -- or None when there is no delegation. The registry is
+    the conversation's; which rows of it an agent may read is not."""
     deps = ctx.extra.get("subagent")
-    return None if deps is None else deps.jobs
+    return None if deps is None else deps.visible_jobs()
 
 
 class AgentStatusInput(BaseModel):
