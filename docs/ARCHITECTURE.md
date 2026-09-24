@@ -86,6 +86,7 @@ quickcode/
     tasks.py              # task board
   hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
     config.py protocol.py runner.py plugin.py events.py specs.py
+    store.py trial.py     # the Hooks page: editing the settings files, test runs
   kernel/                 # the plugin kernel (below)
     spec.py registry.py bootstrap.py state.py
     manifest/             # the internal plugins we ship, one module per family
@@ -119,6 +120,7 @@ quickcode/
     workbench/            # the agent workbench behind agents_api.py's routes
       inventory.py view.py drafts.py compositions.py resolution.py
       prompt_view.py tool_rows.py provenance.py
+    hooks_api.py          # /api/hooks: list, add, change, remove, test-run
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains

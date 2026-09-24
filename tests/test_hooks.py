@@ -241,6 +241,17 @@ def test_a_missing_program_is_an_error_not_a_crash(tmp_path):
     assert verdict.outcome == "error"
 
 
+def test_a_command_that_cannot_be_spawned_at_all_fails_open(tmp_path):
+    """``"command": "guard\\u0000.sh"`` is valid JSON, and ``Popen`` answers it
+    with ``ValueError`` rather than ``OSError`` -- which used to escape the
+    runner and take the turn down instead of being reported as a failed hook."""
+    done = asyncio.run(run_command("echo a\0b", payload={}, ctx=_ctx(tmp_path), timeout_s=30))
+    assert done.exit_code is None and "null" in done.spawn_error
+    verdict = interpret("PreToolUse", exit_code=done.exit_code, stdout=done.stdout,
+                        stderr=done.stderr, spawn_error=done.spawn_error)
+    assert verdict.outcome == "error"
+
+
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="checks a grandchild's pid with POSIX signals")
 def test_a_timeout_kills_the_whole_process_tree(tmp_path):

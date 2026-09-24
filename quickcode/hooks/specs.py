@@ -60,7 +60,7 @@ def _spec(hook: HookCommand, *, disabled: bool) -> PluginSpec:
     scope = "your user settings" if hook.scope == "user" else "this project's settings"
     consequence = (
         f"Switched off, the command stops running for {hook.event}; it stays in "
-        f"{scope} ({where}), which is where it is edited."
+        f"{scope} ({where}), and is edited on the Hooks page or in that file."
     )
     if hook.scope == "project":
         consequence += " It runs only while this project is trusted."

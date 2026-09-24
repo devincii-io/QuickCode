@@ -6,6 +6,8 @@
 ``events``    the ``hook_run`` record the session log keeps
 ``plugin``    ``CommandHooks``, the ``LoopHook`` that ties them to the loop
 ``specs``     the Settings cards
+``store``     adding, changing and removing hooks in the settings files
+``trial``     a test run: one hook, a sample payload, no session
 
 docs/HOOKS.md is the user-facing description.
 """

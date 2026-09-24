@@ -1,0 +1,131 @@
+/* The Hooks page (js/config/hooks.js). Everything else it wears is borrowed:
+   k-card / k-facts from config.css, pf-layer / pf-note / pf-warn / pf-reduced
+   from the permission profiles, set-field from app.css. */
+
+.hk-trust {
+  margin: 0 0 14px; padding: 8px 11px; border-radius: 8px; max-width: 84ch;
+  font-size: 12px; line-height: 1.6; color: var(--fg-dim);
+  border: 1px solid var(--line-strong);
+}
+.hk-trust[data-trusted="false"] {
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+.hk-trust[data-trusted="false"] b { color: var(--warning); font-weight: 500; }
+.hk-trust[data-trusted="true"] b { color: var(--success); font-weight: 500; }
+
+/* ---------- the list, grouped by event ---------- */
+
+.hk-event { margin: 18px 0 22px; }
+.hk-event-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.hk-event-head h3 { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.hk-event-when { font-size: 11.5px; color: var(--fg-dim); flex: 1; min-width: 20ch; }
+.hk-event-head .ghost-btn { font-size: 11px; padding: 3px 8px; text-decoration: none; }
+.hk-none {
+  font-size: 11.5px; color: var(--fg-faint); padding: 8px 12px;
+  border: 1px dashed var(--line); border-radius: var(--radius);
+}
+
+.hk-card[data-status="disabled"], .hk-card[data-status="refused"] { opacity: .8; }
+.hk-card .k-card-main { min-width: 0; }
+.hk-card .k-card-side { align-items: flex-start; padding-top: 8px; }
+.hk-card .k-card-side a { text-decoration: none; }
+/* The command is the hook: shown whole, wrapped, never cut to one line. */
+.hk-command {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--fg);
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5;
+}
+
+.hk-status {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line-strong);
+  color: var(--fg-dim); white-space: nowrap;
+}
+.hk-status[data-status="active"] {
+  color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, transparent);
+}
+.hk-status[data-status="refused"] {
+  color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+/* ---------- the form ---------- */
+
+.hk-editor .set-field select, .hk-editor .set-field input { max-width: 60ch; }
+.hk-command-input { font-family: var(--mono); font-size: 12px; }
+.hk-where {
+  display: block; font-family: var(--mono); font-size: 11.5px; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.hk-editor [hidden] { display: none; }
+
+/* ---------- the test run ---------- */
+
+.hk-test-sec { max-width: 90ch; }
+.hk-refused { margin-left: 0; }
+.hk-test-slot:empty { display: none; }
+.hk-card .hk-test { margin: 10px 0 2px 30px; }
+.hk-test {
+  padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface);
+}
+.hk-test-row {
+  display: grid; grid-template-columns: minmax(150px, 190px) 1fr; gap: 10px 14px;
+  align-items: start;
+}
+.hk-test-fields { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.hk-test-field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
+.hk-test-field > span {
+  letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim);
+}
+.hk-test-field input, .hk-test-field select, .hk-test-field textarea {
+  width: 100%; font-size: 12px; padding: 5px 8px; border-radius: 7px;
+  color: var(--fg); background-color: var(--panel); border: 1px solid var(--line);
+}
+.hk-test-field textarea { font-family: var(--mono); resize: vertical; }
+.hk-test-field :focus { outline: none; border-color: var(--primary); }
+.hk-test-actions {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px;
+}
+.hk-test-actions .pf-note { margin-top: 0; }
+
+.hk-result:empty { display: none; }
+.hk-result { margin-top: 12px; }
+.hk-outcome { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hk-outcome-word {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line-strong); color: var(--fg-dim);
+}
+.hk-outcome[data-outcome="ok"] .hk-outcome-word {
+  color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+.hk-outcome[data-outcome="ask"] .hk-outcome-word {
+  color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.hk-outcome[data-outcome="block"] .hk-outcome-word,
+.hk-outcome[data-outcome="error"] .hk-outcome-word,
+.hk-outcome[data-outcome="timeout"] .hk-outcome-word {
+  color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+.hk-effect { font-size: 12.5px; color: var(--fg); line-height: 1.5; flex: 1; min-width: 30ch; }
+.hk-result .k-facts, .hk-result .pf-warn { margin-left: 0; }
+.hk-said { margin-top: 8px; font-size: 11.5px; color: var(--fg-dim); }
+.hk-said b { font-weight: 500; }
+.hk-said pre, .hk-stream pre {
+  margin-top: 4px; padding: 7px 9px; border-radius: 7px; max-height: 18em; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--fg);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.hk-stream { margin-top: 8px; }
+.hk-stream > summary {
+  cursor: pointer; font-family: var(--mono); font-size: 11.5px; color: var(--fg-dim);
+}
+.hk-stream > summary:hover { color: var(--fg); }
+
+@media (max-width: 720px) {
+  .hk-test-row { grid-template-columns: 1fr; }
+  .hk-card { flex-direction: column; }
+  .hk-card .k-card-side { padding: 0 12px 10px 14px; }
+}
