@@ -180,6 +180,7 @@ function openMenu(x, y, items) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "ctx-item";
+    b.setAttribute("role", "menuitem");
     b.textContent = item.label;
     b.addEventListener("click", () => { closeMenu(); item.run(); });
     menu.appendChild(b);

@@ -11,9 +11,10 @@
 
 import { renderJson, prettyJson } from "./json_view.js";
 import { toolResultFor } from "./store.js";
-import { clock, fmtDur, fmtRel } from "./trajectory/format.js";
+import { clock, fmtRel } from "./trajectory/format.js";
 import { configTarget, innerOf, roleOf } from "./trajectory/roles.js";
-import { fmtMs } from "./util.js";
+import { node } from "./ui/dom.js";
+import { fmtChars, fmtMs, plural } from "./util.js";
 
 const TABS = [
   ["summary", "Summary"], ["payload", "Payload"], ["result", "Result"], ["timing", "Timing"],
@@ -23,26 +24,11 @@ const TABS = [
 // small enough that a multi-megabyte tool result cannot stall the pane.
 const SHOW_LIMIT = 120000;
 
-function h(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = String(text);
-  return n;
-}
-
-const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
-
-function fmtSize(chars) {
-  if (chars < 1000) return `${chars} chars`;
-  if (chars < 1e6) return `${(chars / 1000).toFixed(1)}k chars`;
-  return `${(chars / 1e6).toFixed(2)}M chars`;
-}
-
 /** A `<pre>` that shows the first SHOW_LIMIT characters and offers the rest.
  *  JSON is highlighted; everything else is plain text. */
 function textBlock(text, { json = false, cls = "" } = {}) {
-  const wrap = h("div", "insp-block");
-  const pre = h("pre", cls || null);
+  const wrap = node("div", "insp-block");
+  const pre = node("pre", cls || null);
   const full = String(text ?? "");
   const paint = (all) => {
     const shown = all ? full : full.slice(0, SHOW_LIMIT);
@@ -51,8 +37,8 @@ function textBlock(text, { json = false, cls = "" } = {}) {
   paint(false);
   wrap.appendChild(pre);
   if (full.length > SHOW_LIMIT) {
-    const more = h("button", "ghost-btn insp-more",
-      `Show all ${fmtSize(full.length)} (${fmtSize(full.length - SHOW_LIMIT)} more)`);
+    const more = node("button", "ghost-btn insp-more",
+      `Show all ${fmtChars(full.length)} (${fmtChars(full.length - SHOW_LIMIT)} more)`);
     more.type = "button";
     more.addEventListener("click", () => { paint(true); more.remove(); });
     wrap.appendChild(more);
@@ -61,12 +47,12 @@ function textBlock(text, { json = false, cls = "" } = {}) {
 }
 
 function kvGrid(rows) {
-  const grid = h("div", "kv");
+  const grid = node("div", "kv");
   for (const [k, v, href] of rows) {
-    grid.appendChild(h("div", "k", k));
-    const cell = h("div", "v");
+    grid.appendChild(node("div", "k", k));
+    const cell = node("div", "v");
     if (href) {
-      const a = h("a", "k-link", `${v} ↗`);
+      const a = node("a", "k-link", `${v} ↗`);
       a.href = href;
       a.title = "Open it in configuration";
       cell.appendChild(a);
@@ -78,7 +64,7 @@ function kvGrid(rows) {
   return grid;
 }
 
-function section(label) { return h("div", "insp-label", label); }
+function section(label) { return node("div", "insp-label", label); }
 
 // What each tab says about an event, given the context the host can supply.
 // Separate from the component so a host with a richer model (the trajectory's
@@ -113,7 +99,7 @@ function summaryTab(ev, ctx) {
   ].filter(Boolean);
   const text = inner.text ?? inner.content ?? inner.arguments ?? inner.plan ?? inner.message ?? "";
   const body = String(text);
-  if (body) rows.push(["Size", `${fmtSize(body.length)} · ${plural(body.split("\n").length, "line")}`]);
+  if (body) rows.push(["Size", `${fmtChars(body.length)} · ${plural(body.split("\n").length, "line")}`]);
   const out = [kvGrid(rows)];
   if (body) {
     const pretty = inner.type === "tool_call" ? prettyJson(body) : null;
@@ -143,7 +129,7 @@ function resultTab(ev, ctx) {
   const pretty = prettyJson(content);
   const rows = [["Status", result.is_error ? "error" : "ok"]];
   if (result.ms != null) rows.push(["Duration", fmtMs(result.ms)]);
-  rows.push(["Size", fmtSize(content.length)]);
+  rows.push(["Size", fmtChars(content.length)]);
   return [kvGrid(rows), textBlock(pretty ?? content, {
     json: pretty != null, cls: result.is_error ? "is-error" : "",
   })];
@@ -158,7 +144,7 @@ function timingTab(ev, ctx) {
   else if (t && t.t1 > t.t0) rows.push(["Ended", clock(t.t1, { ms: true })]);
   const ms = inner.ms ?? ctx.result(ev)?.ms;
   if (ms != null) rows.push(["Duration", fmtMs(ms)]);
-  if (t && t.t1 > t.t0) rows.push(["Span", fmtDur(t.t1 - t.t0) + (t.inferred ? " (inferred)" : "")]);
+  if (t && t.t1 > t.t0) rows.push(["Span", fmtMs(t.t1 - t.t0) + (t.inferred ? " (inferred)" : "")]);
   if (t && t.tMin != null) rows.push(["Offset", fmtRel(t.t0 - t.tMin)]);
   rows.push(["Source", ev.agent_id ? `subagent ${ev.agent_id}` : "main agent"]);
   return [kvGrid(rows)];
@@ -180,21 +166,21 @@ export function createInspector(root, { onClose, context = {} } = {}) {
   let ev = null;
   let tab = "summary";
 
-  const head = h("div", "traj-detail-head insp-head");
-  const title = h("span", "insp-title", "—");
+  const head = node("div", "traj-detail-head insp-head");
+  const title = node("span", "insp-title", "—");
   head.appendChild(title);
   if (onClose) {
-    const close = h("button", "ghost-btn", "✕");
+    const close = node("button", "ghost-btn", "✕");
     close.type = "button";
     close.title = "Close the inspector";
     close.setAttribute("aria-label", "Close the inspector");
     close.addEventListener("click", () => onClose());
     head.appendChild(close);
   }
-  const tabs = h("nav", "detail-tabs");
+  const tabs = node("nav", "detail-tabs");
   tabs.setAttribute("role", "tablist");
   const buttons = TABS.map(([id, label]) => {
-    const b = h("button", id === tab ? "active" : "", label);
+    const b = node("button", id === tab ? "active" : "", label);
     b.type = "button";
     b.dataset.tab = id;
     b.setAttribute("role", "tab");
@@ -202,7 +188,7 @@ export function createInspector(root, { onClose, context = {} } = {}) {
     tabs.appendChild(b);
     return b;
   });
-  const body = h("div", "detail-body");
+  const body = node("div", "detail-body");
   body.setAttribute("role", "tabpanel");
   root.replaceChildren(head, tabs, body);
 
@@ -232,7 +218,7 @@ export function createInspector(root, { onClose, context = {} } = {}) {
     if (!ev) { title.textContent = "—"; body.replaceChildren(); return; }
     const role = roleOf(ev);
     const inner = innerOf(ev);
-    const chip = h("span", `chip chip-${role}`, role);
+    const chip = node("span", `chip chip-${role}`, role);
     title.replaceChildren(chip, document.createTextNode(` #${ev.seq} · ${inner.type || ev.type}`));
     body.replaceChildren(...RENDER[tab](ev, ctx));
     body.scrollTop = 0;

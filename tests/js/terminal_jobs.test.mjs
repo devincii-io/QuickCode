@@ -6,8 +6,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyJobEvent, jobChip, mergeJobs, mergeTail, orderJobs, pickJob, runningCount, upsertJob,
-  fmtBytes, fmtDuration,
+  fmtDuration,
 } from "../../quickcode/frontend/js/terminal/jobs_state.js";
+import { fmtBytes } from "../../quickcode/frontend/js/util.js";
 
 const row = (id, over = {}) => ({
   id, command: `echo ${id}`, description: "", label: "", status: "running",

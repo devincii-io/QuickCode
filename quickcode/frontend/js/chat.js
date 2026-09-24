@@ -10,6 +10,7 @@ import { Follower } from "./chat/scroll.js";
 import { LiveBubble } from "./chat/stream.js";
 import { REVEAL_PX, TranscriptWindow } from "./chat/window.js";
 import { setCopySource } from "./copy.js";
+import { perFrame } from "./frame.js";
 import { argSummary } from "./tool_args.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
@@ -18,7 +19,7 @@ let welcome = null;             // the empty-conversation greeting, until the fi
 let follower = null;            // keeps the newest line in view while the reader is there
 let win = null;                 // which blocks are in the document (chat/window.js)
 let live = null;                // the assistant message still streaming (chat/stream.js)
-let streamFrame = 0;            // a paint is queued for the next frame
+const paintSoon = perFrame(() => paint(true));   // the live text, once a frame
 const agentsDirty = new Set();  // subagents whose live text changed since the last frame
 // Every card by the ids events refer to it with (tool calls per agent, agent
 // cards by agent_id), so no event has to search the transcript for its card.
@@ -94,10 +95,10 @@ function onStoreChange(kind, ev) {
   }
   if (kind === "stream") {
     dropWelcome();
-    schedulePaint();
+    paintSoon();
     return;
   }
-  if (kind === "agent_stream") { agentsDirty.add(ev.agent_id); schedulePaint(); return; }
+  if (kind === "agent_stream") { agentsDirty.add(ev.agent_id); paintSoon(); return; }
   if (kind === "tasks") { renderTasks(ev.tasks); return; }
   if (kind === "state" && ev.tasks) { renderTasks(ev.tasks); return; }
 }
@@ -152,7 +153,7 @@ function unpresume(agentId, agent) {
 }
 
 function clear() {
-  if (streamFrame) { cancelAnimationFrame(streamFrame); streamFrame = 0; }
+  paintSoon.cancel();
   agentsDirty.clear();
   follower.reset();
   transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
@@ -194,15 +195,9 @@ function scrollBottom(force = false) {
 // A delta only marks the frame dirty; the frame's paint patches the live
 // bubble and the subagents' live text once, however many deltas landed.
 
-function schedulePaint() {
-  if (streamFrame) return;
-  streamFrame = requestAnimationFrame(() => paint(true));
-}
-
 // `inFrame`: this is the frame's own paint, which may follow the bottom right
 // away; flushed early by an event, it leaves that to the frame.
 function paint(inFrame = false) {
-  streamFrame = 0;
   live.render({
     text: store.streamText,
     reasoning: store.streamReasoning,
@@ -215,8 +210,8 @@ function paint(inFrame = false) {
 }
 
 function flushStream() {
-  if (!streamFrame) return;
-  cancelAnimationFrame(streamFrame);
+  if (!paintSoon.pending()) return;
+  paintSoon.cancel();
   paint();
 }
 

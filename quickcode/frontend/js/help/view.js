@@ -111,8 +111,6 @@ export async function getFacts() {
   return facts;
 }
 
-export function invalidate() { facts = null; loading = null; }
-
 // ---- rendering ------------------------------------------------------------
 
 export async function render() {

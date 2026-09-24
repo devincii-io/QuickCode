@@ -18,13 +18,15 @@
 
 import { api } from "../api.js";
 import { copyText } from "../copy.js";
+import { perFrame } from "../frame.js";
 import { store, subscribe } from "../store.js";
 import { toastError, toastOk } from "../toast.js";
+import { node } from "../ui/dom.js";
 import { confirmModal } from "../ui/modal.js";
-import { esc, fmtTime } from "../util.js";
+import { esc, fmtBytes, fmtTime } from "../util.js";
 import { renderAnsiBlock } from "./emulator.js";
 import {
-  applyJobEvent, elapsed, fmtBytes, fmtDuration, jobChip, mergeJobs, mergeTail,
+  applyJobEvent, elapsed, fmtDuration, jobChip, mergeJobs, mergeTail,
   orderJobs, pickJob, runningCount, upsertJob,
 } from "./jobs_state.js";
 
@@ -33,13 +35,6 @@ const TAIL_BYTES = 64 * 1024;
 // buffer (jobs_state.js caps that) and the ring (server) only.
 const DOM_LINES = 1500;
 const COLS = 200;
-
-function node(tag, className, text) {
-  const n = document.createElement(tag);
-  if (className) n.className = className;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
 
 export function initJobs(container, { onCount } = {}) {
   let jobs = new Map();
@@ -50,7 +45,6 @@ export function initJobs(container, { onCount } = {}) {
   let listGen = 0;
   let pulling = false;
   let pullAgain = false;
-  let paintQueued = false;
   let jumpToEnd = true;
   let ticker = null;
   const rows = new Map();      // job id -> row button
@@ -82,6 +76,16 @@ export function initJobs(container, { onCount } = {}) {
       "watcher, a long build — it is listed here with its live output and a Kill button."),
   );
   container.append(emptyEl, listEl, detail);
+  listEl.addEventListener("keydown", (e) => {
+    const items = [...listEl.children];
+    const at = items.indexOf(e.target);
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (at < 0 || to === undefined || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    const row = items[Math.max(0, Math.min(items.length - 1, to))];
+    select(row.dataset.id);
+    row.focus();
+  });
 
   // ---- data ----
 
@@ -174,6 +178,7 @@ export function initJobs(container, { onCount } = {}) {
     const on = job.id === selected;
     row.classList.toggle("active", on);
     row.setAttribute("aria-selected", on ? "true" : "false");
+    row.tabIndex = on ? 0 : -1;   // the list is one Tab stop; ↑/↓ move within it
   }
 
   function renderHead() {
@@ -202,24 +207,19 @@ export function initJobs(container, { onCount } = {}) {
     metaEl.textContent = bits.join(" · ");
   }
 
-  function paint() {
-    if (paintQueued) return;
-    paintQueued = true;
-    requestAnimationFrame(() => {
-      paintQueued = false;
-      const atEnd = outEl.scrollHeight - outEl.scrollTop - outEl.clientHeight < 24;
-      if (buf && buf.id === selected && buf.text) {
-        outEl.innerHTML = renderAnsiBlock(buf.text, COLS, DOM_LINES);
-      } else {
-        outEl.replaceChildren(node("div", "qt-cmd-empty",
-          jobs.get(selected)?.status === "running" ? "No output yet…" : "No output."));
-      }
-      // Follow the end unless the reader scrolled up to look at something.
-      if (jumpToEnd || atEnd) outEl.scrollTop = outEl.scrollHeight;
-      jumpToEnd = false;
-      renderHead();
-    });
-  }
+  const paint = perFrame(() => {
+    const atEnd = outEl.scrollHeight - outEl.scrollTop - outEl.clientHeight < 24;
+    if (buf && buf.id === selected && buf.text) {
+      outEl.innerHTML = renderAnsiBlock(buf.text, COLS, DOM_LINES);
+    } else {
+      outEl.replaceChildren(node("div", "qt-cmd-empty",
+        jobs.get(selected)?.status === "running" ? "No output yet…" : "No output."));
+    }
+    // Follow the end unless the reader scrolled up to look at something.
+    if (jumpToEnd || atEnd) outEl.scrollTop = outEl.scrollHeight;
+    jumpToEnd = false;
+    renderHead();
+  });
 
   // A different job on screen starts its output from scratch: the newest
   // TAIL_BYTES, with what came before marked as not shown.

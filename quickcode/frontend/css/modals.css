@@ -6,7 +6,7 @@
 /* ---------- the modal shell ---------- */
 .modal-backdrop {
   position: fixed; inset: 0; background: var(--scrim); display: grid;
-  place-items: center; z-index: 40; animation: fadein .12s ease-out;
+  place-items: center; z-index: var(--z-modal); animation: fadein .12s ease-out;
 }
 @keyframes fadein { from { opacity: 0; } }
 .modal {
@@ -62,7 +62,7 @@
 
 /* dropdown menus (mode / model) */
 .menu {
-  position: fixed; z-index: 50; background: var(--surface);
+  position: fixed; z-index: var(--z-menu); background: var(--surface);
   border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden;
   box-shadow: var(--shadow-2);
   min-width: min(300px, calc(100vw - 24px)); max-width: min(420px, calc(100vw - 24px));
@@ -245,7 +245,7 @@
 /* Bottom-right, above the composer's menus in z-order but out of the click
    path: the host itself never takes a pointer event, only the cards do. */
 .toast-host {
-  position: fixed; right: 16px; bottom: 16px; z-index: 90;
+  position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast);
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
   max-width: min(420px, calc(100vw - 32px)); pointer-events: none;
 }

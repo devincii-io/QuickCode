@@ -26,10 +26,39 @@ export function fmtCount(n) {
   return Number(n || 0).toLocaleString();
 }
 
+/** "734 ms", "3.2 s", "12m 34s", "3h 7m". Like fmtTokens, the rounded value
+ *  picks the unit, so nothing reads "1000 ms" or "60.0 s". */
 export function fmtMs(ms) {
-  if (ms == null) return "";
-  if (ms < 1000) return ms + " ms";
-  return (ms / 1000).toFixed(1) + " s";
+  if (ms == null || Number.isNaN(Number(ms))) return "";
+  const v = Math.max(0, Number(ms));
+  if (v < 999.5) return Math.round(v) + " ms";
+  if (v < 59_950) return (v / 1000).toFixed(1) + " s";
+  const tot = Math.round(v / 1000);
+  const h = Math.floor(tot / 3600), m = Math.floor((tot % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m ${tot % 60}s`;
+}
+
+/** "18.2 KB": a size on disk or on the wire. */
+export function fmtBytes(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v < 1024) return `${v} B`;
+  const units = ["KB", "MB", "GB"];
+  let x = v / 1024;
+  let i = 0;
+  while (x >= 1023.95 && i < units.length - 1) { x /= 1024; i++; }
+  return `${x.toFixed(1)} ${units[i]}`;
+}
+
+/** "45.6k chars": the length of a text, which is not its size in bytes. */
+export function fmtChars(n) {
+  if (n < 1000) return `${n} chars`;
+  if (n < 999_950) return `${(n / 1000).toFixed(1)}k chars`;
+  return `${(n / 1e6).toFixed(2)}M chars`;
+}
+
+/** "1 file", "3 files", "2 matches". */
+export function plural(n, one, many = `${one}s`) {
+  return `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
 }
 
 export function fmtCost(usd) {

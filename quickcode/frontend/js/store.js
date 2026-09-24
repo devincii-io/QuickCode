@@ -377,7 +377,3 @@ export function toolResultFor(callId, agentId = null) {
   }
   return undefined;
 }
-
-export function eventBySeq(seq) {
-  return store.events.find((e) => e.seq === seq);
-}

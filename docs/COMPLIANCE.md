@@ -307,7 +307,7 @@ server:
 - No `@import` of any remote stylesheet, no remote images, no source-map URLs.
 - **No vendored third-party JavaScript at all.** The markdown renderer and the
   JSON and TOON highlighters are hand-written in-house (`js/markdown.js`,
-  `js/settings/ui.js::highlightJson`, `js/toon.js::highlightToon`); the
+  `js/json_view.js::jsonTokens`, `js/toon.js::highlightToon`); the
   terminal panel's emulator (`js/terminal/`) is in-house too.
 - Runtime network primitives are `fetch()` with relative paths and
   `new WebSocket("ws://" + location.host + …)` — same-origin, loopback.

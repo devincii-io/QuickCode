@@ -2,6 +2,7 @@
 // events: the mode and model pills, the queue strip, Stop and the queued count.
 
 import { refreshCompositionPill, refreshProfilePill } from "./composer/pills.js";
+import { perFrame } from "./frame.js";
 import { store, subscribe } from "./store.js";
 import { esc, fmtCost, fmtMs, fmtTokens, oneLine } from "./util.js";
 
@@ -106,15 +107,9 @@ function refreshConnection() {
 
 // Logged events arrive in bursts (a long turn's tool calls, a whole replay),
 // and the counts only need to be right when the screen next paints.
-let metricsFrame = 0;
-
-function scheduleMetrics() {
-  if (metricsFrame) return;
-  metricsFrame = requestAnimationFrame(() => {
-    metricsFrame = 0;
-    if (store.state) refreshMetrics(store.state);
-  });
-}
+const scheduleMetrics = perFrame(() => {
+  if (store.state) refreshMetrics(store.state);
+});
 
 export function initStatusBar() {
   subscribe((kind, ev) => {

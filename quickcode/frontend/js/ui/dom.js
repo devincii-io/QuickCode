@@ -20,3 +20,12 @@ export function h(tag, props = {}, ...children) {
   }
   return node;
 }
+
+/** `node("span", "cls", "text")`: an element with a class and text, the case
+ *  most views need, without the props object. */
+export function node(tag, className, text) {
+  const n = document.createElement(tag);
+  if (className) n.className = className;
+  if (text != null) n.textContent = text;
+  return n;
+}

@@ -7,7 +7,7 @@
 // would otherwise have to import the panel shell and the trajectory module,
 // and those already import them back.
 
-import { clickable, esc } from "./util.js";
+import { clickable, esc, fmtChars } from "./util.js";
 
 let handler = null;
 
@@ -38,10 +38,6 @@ export function wireInspect(root) {
   });
 }
 
-function size(chars) {
-  return chars < 1000 ? `${chars} chars` : `${(chars / 1000).toFixed(1)}k chars`;
-}
-
 /** The system prompt's place in a transcript: one line saying the model was
  *  given its instructions here, and how much of them, that opens the inspector
  *  on the full text. The prompt itself is far too long to be a message. */
@@ -50,7 +46,7 @@ export function promptNote(ev) {
   node.className = "sys-note sys-prompt";
   node.title = "Open the full system prompt in the inspector";
   const label = document.createElement("span");
-  label.textContent = `system prompt · ${size(String(ev.text ?? "").length)}`;
+  label.textContent = `system prompt · ${fmtChars(String(ev.text ?? "").length)}`;
   const link = document.createElement("span");
   link.className = "trace-link";
   link.textContent = "⌕ inspect";

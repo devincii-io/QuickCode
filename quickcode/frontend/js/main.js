@@ -277,11 +277,13 @@ async function boot() {
   const wantsHelp = isHelpRoute(location.hash);
   const { token, project, resumeHint } = initAuth();
   if (embedded) {
+    // Escape closes Settings or Help last: in the bubble phase, after a sheet,
+    // a search box or a menu has had the key and kept it.
     if (utility) document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !document.querySelector(".modal-backdrop, .menu")) {
-        e.preventDefault(); e.stopImmediatePropagation(); tellWorkspace("utility-close");
-      }
-    }, true);
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector(".modal-backdrop, .menu, .set-sheet")) return;
+      e.preventDefault(); tellWorkspace("utility-close");
+    });
     window.addEventListener("pointerdown", () => tellWorkspace("focus"), true);
     window.addEventListener("focus", () => tellWorkspace("focus"));
     document.addEventListener("keydown", (e) => {

@@ -11,11 +11,10 @@
 // all because it is not rendered as a control. That machinery lives in
 // settings/fields.js and settings/ui.js and is reused verbatim.
 
+import { jsonHtml } from "../json_view.js";
 import { esc, fmtCount as num } from "../util.js";
 import { renderSettingsForm } from "../settings/fields.js";
-import {
-  chip, flash, highlightJson, openPluginView, splitError, tierBadge,
-} from "../settings/ui.js";
+import { chip, flash, openPluginView, splitError, tierBadge } from "../settings/ui.js";
 import { explainHtml, fixedBlockHtml, recourseHtml } from "./explain.js";
 import {
   bodyHtml, duplicateRefusal, kindLabel, recourseHref, sigilHtml, signatureOf,
@@ -241,7 +240,7 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
       const detail = await ctx.api.plugin(plugin.id);
       const content = detail.view?.content || "";
       ctx.facts.schemas[plugin.id] = signatureOf(content, plugin.title) || ctx.facts.schemas[plugin.id];
-      schemaSlot.innerHTML = `<pre class="raw json">${highlightJson(content)}</pre>
+      schemaSlot.innerHTML = `<pre class="raw json">${jsonHtml(content)}</pre>
         <div class="cfg-note">${num([...content].length)} characters of schema —
           this is what the model is told, verbatim.</div>`;
       const sig = ctx.facts.schemas[plugin.id];

@@ -106,7 +106,8 @@ change reaches every open pane without a reload.
   Stop and Send.
 - **Side panel** — **Trajectory**, **Agents**, **Tasks**, **Files**,
   **Checkpoints** and **Usage** tabs (`js/panel.js`, `js/panels/`). The panel
-  can be resized or maximised.
+  can be resized or maximised. Its tab strip, like the terminal drawer's, is a
+  set of ARIA tabs (`js/ui/tabs.js`): `←`/`→`, `Home` and `End` move between them.
 - **Terminal drawer** (`Ctrl` + `` ` ``, `js/terminal/`) — a real shell in the
   project directory for *you* (`pty/interactive.py`, `server/terminal.py`),
   plus an *Agent* tab listing every command the agent ran with its output. The
@@ -115,8 +116,9 @@ change reaches every open pane without a reload.
 - **Jobs** (a third tab in the terminal drawer, `js/terminal/jobs.js`) — the
   commands the agent started with `run_in_background`: each with a status chip
   (`running`, `exit 0`, `exit 1`, `killed`, `killed by you`), its duration and
-  output size, and for the one selected, its output tailing live through the
-  same terminal renderer as the Agent tab — colour and progress-bar redraws
+  output size (`↑`/`↓` move through the list), and for the one selected, its
+  output tailing live through the same terminal renderer as the Agent tab —
+  colour and progress-bar redraws
   intact, the newest 1,500 lines on the page. *Copy command* copies it; *Kill*
   asks first, then stops the whole process tree; the transcript notes it and
   the agent is told at the start of its next turn. Reading here never marks
@@ -166,6 +168,8 @@ workspace a conversation that already has a pane is focused rather than opened
 twice; otherwise a new pane opens with the event's `seq` in its URL (`at=`),
 which is never saved in the layout. `↑`/`↓` walk the list, `Enter` opens the
 first entry, and `Esc` clears the search before it closes the list.
+`scripts/smoke_search.js` drives all three cases against the workspace smoke
+server.
 
 ## The event protocol
 
@@ -189,13 +193,16 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 - **Permission prompt** (`js/reviews.js`) — shows the tool and the call's own
   preview (for `bash`, the command itself); a hook's reason when a hook raised
   it; for `edit` and `write` the diff the call would make (drawn by `js/diff.js`,
-  which the transcript's edit cards use too); the exact rules **Always allow**
+  which also draws the transcript's edit cards, the rewind dialog and the Files
+  panel); the exact rules **Always allow**
   would save and the parts that would still ask (`js/permission_offer.js`); and
   *Why am I being asked?*, the engine's own explanation inline
   (`js/help/explain.js`). Then **Allow once**, **Always allow** (greyed out when
   there is nothing to save) and **Deny** (a second click confirms, with an
   optional message returned to the model). The buttons ignore clicks for
   400 ms after a prompt appears. Details in docs/PERMISSIONS.md §The prompt.
+  `scripts/smoke_permissions.js` drives it in a browser against
+  `scripts/workspace_smoke_server.py --ask`.
 - **Plan review** — the plan as markdown, with **Approve · auto-edit**,
   **Approve · ask mode** and **Keep planning** (feedback returns to the
   model).
@@ -247,6 +254,8 @@ A command that moves focus keeps it; one that does not (a mode switch,
 *Show or hide the terminal*) gives it back to where it was, normally the
 composer. The palette does not open over a dialog, not in the Settings/Help
 dialog's own frame, and not in the terminal, whose shell keeps `Ctrl+K`.
+`scripts/smoke_palette.js` drives both palettes against the workspace smoke
+server.
 
 ## Keyboard
 

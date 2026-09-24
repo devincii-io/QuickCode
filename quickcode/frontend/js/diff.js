@@ -1,8 +1,9 @@
 // Diffs, drawn one way wherever they appear: an edit's card in the transcript
-// (the call's own old/new strings) and the permission prompt (the unified diff
-// the server built from the file, tools/fs/diffpreview.py). Both become the
-// same line records, and the same DOM — text nodes, never markup, so a line of
-// the file cannot turn into an element.
+// (the call's own old/new strings), the permission prompt (the unified diff
+// the server built from the file, tools/fs/diffpreview.py), the rewind dialog
+// and the Files panel (`git diff`). All become the same line records, and the
+// same DOM — text nodes, never markup, so a line of the file cannot turn into
+// an element.
 
 const CLASS = {
   add: "diff-add", del: "diff-del", hunk: "diff-hunk", file: "diff-file", note: "diff-note",
@@ -10,12 +11,16 @@ const CLASS = {
 
 /** Each line of a unified diff with its kind. `---`/`+++` are file headers
  *  only above the first hunk; below it they are a removed `--` line or an
- *  added `++` one. */
+ *  added `++` one. A `diff ` line (git's) opens a file's header block, where
+ *  `index`, `new file mode` and the like are header lines too. */
 export function unifiedLines(text) {
   let inHunk = false;
+  let gitHeader = false;
   return String(text ?? "").split("\n").map((line) => {
     let kind = "ctx";
-    if (line.startsWith("@@")) { inHunk = true; kind = "hunk"; }
+    if (line.startsWith("diff ")) { inHunk = false; gitHeader = true; kind = "file"; }
+    else if (line.startsWith("@@")) { inHunk = true; gitHeader = false; kind = "hunk"; }
+    else if (gitHeader) kind = "file";
     else if (!inHunk && (line.startsWith("--- ") || line.startsWith("+++ "))) kind = "file";
     else if (line.startsWith("… ")) kind = "note";
     else if (line.startsWith("+")) kind = "add";

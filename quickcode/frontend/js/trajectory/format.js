@@ -1,7 +1,8 @@
-// Clock and duration formatting for the time axis, the hover card and the
-// inspector's Timing tab. Clock times follow the reader's locale (12 or 24
-// hour); the formatters are built once because the axis relabels every frame
-// while zooming and `toLocaleTimeString` builds a new one per call.
+// Clock and offset formatting for the time axis, the hover card and the
+// inspector's Timing tab; durations are util.js fmtMs. Clock times follow the
+// reader's locale (12 or 24 hour); the formatters are built once because the
+// axis relabels every frame while zooming and `toLocaleTimeString` builds a
+// new one per call.
 
 const fmt = (opts) => new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", ...opts });
 const HM = fmt({});
@@ -43,12 +44,4 @@ export function fmtRel(ms) {
   const h = Math.floor(tot / 3600), m = Math.floor((tot % 3600) / 60), s = tot % 60;
   const p = (x) => String(x).padStart(2, "0");
   return h ? `+${h}:${p(m)}:${p(s)}` : `+${m}:${p(s)}`;
-}
-
-export function fmtDur(ms) {
-  if (ms < 1000) return Math.round(ms) + " ms";
-  if (ms < 60000) return (ms / 1000).toFixed(1) + " s";
-  const tot = Math.round(ms / 1000);
-  const h = Math.floor(tot / 3600), m = Math.floor((tot % 3600) / 60);
-  return h ? `${h}h ${m}m` : `${m}m ${tot % 60}s`;
 }

@@ -342,11 +342,11 @@ textarea, input { font: inherit; color: inherit; }
 /* ---------- the connection banner ----------
    Docked at the top of the window rather than inside the workspace: a server
    that has stopped is worth knowing about from Configuration and Help too, and
-   those views cover the workspace. It sits above everything except a modal
-   backdrop, and it takes pointer events only on the card itself so it can
-   never eat a click meant for the chrome underneath. */
+   those views cover the workspace. Its place among the overlays is in
+   css/tokens.css (--z-banner), and it takes pointer events only on the card
+   itself so it can never eat a click meant for the chrome underneath. */
 .conn-host {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 80;
+  position: fixed; top: 0; left: 0; right: 0; z-index: var(--z-banner);
   display: flex; justify-content: center; padding: 8px 12px;
   pointer-events: none;
 }
@@ -654,7 +654,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .copy-btn:focus-visible { opacity: 1; }
 
 .ctx-menu {
-  position: fixed; z-index: 200; min-width: 180px;
+  position: fixed; z-index: var(--z-ctx); min-width: 180px;
   display: flex; flex-direction: column; gap: 1px;
   padding: 4px; border: 1px solid var(--line-strong); border-radius: 8px;
   background: var(--surface);

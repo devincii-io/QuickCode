@@ -2,9 +2,9 @@
 // and how long it took in total. Built from text nodes — the preview is
 // whatever a tool or a model wrote.
 
-import { clock, fmtDur, fmtRel } from "./format.js";
+import { clock, fmtRel } from "./format.js";
 import { previewOf } from "./roles.js";
-import { oneLine } from "../util.js";
+import { fmtMs, oneLine } from "../util.js";
 
 function span(cls, text) {
   const n = document.createElement("span");
@@ -33,11 +33,11 @@ export function renderHoverCard(el, it, { tMin, target }) {
   const ms = Math.round(totalMs(it));
   const offset = ["at " + fmtRel(it.t0 - tMin)];
   if (it.running) offset.push("still running");
-  else if (dur) offset.push("spans " + fmtDur(dur) + (it.inferred ? " (inferred)" : ""));
+  else if (dur) offset.push("spans " + fmtMs(dur) + (it.inferred ? " (inferred)" : ""));
   // A call's span includes any wait for permission; the tool's own time is
   // the other half of that story.
   const ran = it.result?.ms;
-  if (ran != null && dur - ran > 50) offset.push("tool ran " + fmtDur(ran));
+  if (ran != null && dur - ran > 50) offset.push("tool ran " + fmtMs(ran));
   if (target) offset.push("governed by " + target.label);
   el.replaceChildren(
     div("hc-head",

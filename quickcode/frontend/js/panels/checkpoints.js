@@ -6,10 +6,10 @@
 
 import { api } from "../api.js";
 import { openRewindDialog } from "../checkpoints/dialog.js";
-import { fmtBytes, listingRows } from "../checkpoints/model.js";
+import { listingRows } from "../checkpoints/model.js";
 import { store, subscribe } from "../store.js";
 import { h } from "../ui/dom.js";
-import { debounce, fmtTime } from "../util.js";
+import { debounce, fmtBytes, fmtTime } from "../util.js";
 
 const TOUCHES = new Set(["checkpoint", "files_rewound"]);
 

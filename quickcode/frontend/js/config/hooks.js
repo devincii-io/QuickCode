@@ -21,7 +21,9 @@
 
 import { renderJson } from "../json_view.js";
 import { flash } from "../settings/ui.js";
-import { fmtMs } from "../util.js";
+import { h } from "../ui/dom.js";
+import { confirmModal } from "../ui/modal.js";
+import { esc, fmtMs } from "../util.js";
 import { problemsCardHtml, wireProblems } from "./problems.js";
 import {
   EVENTS, PLACES, STATUS, checkDraft, defaultTool, draftBody, eventInfo, fileLabel,
@@ -30,23 +32,6 @@ import {
 
 // A sentence for the page the next render shows, after a save navigates.
 let pendingFlash = null;
-
-function h(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props || {})) {
-    if (value == null || value === false) continue;
-    if (key === "class") node.className = value;
-    else if (key === "text") node.textContent = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else if (value === true) node.setAttribute(key, "");
-    else node.setAttribute(key, String(value));
-  }
-  for (const child of children.flat()) {
-    if (child == null || child === false || child === "") continue;
-    node.append(child instanceof Node ? child : String(child));
-  }
-  return node;
-}
 
 const detail = (err) => String(err?.message || err).replace(/^\d+:\s*/, "");
 
@@ -229,8 +214,13 @@ function card(ctx, hook) {
 }
 
 async function remove(ctx, hook, btn) {
-  if (!window.confirm(`Delete this ${hook.event} hook from ${fileLabel(hook.scope, hook.file)}?`
-      + `\n\n${hook.command}`)) return;
+  const sure = await confirmModal({
+    title: `Delete this ${hook.event} hook?`,
+    body: `<p>It is removed from ${esc(fileLabel(hook.scope, hook.file))}:</p>
+      <p><code>${esc(hook.command)}</code></p>`,
+    confirm: "Delete",
+  });
+  if (!sure) return;
   btn.disabled = true;
   try {
     await ctx.api.deleteHook(hook.id, hook.file);

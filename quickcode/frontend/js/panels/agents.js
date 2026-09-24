@@ -16,11 +16,11 @@
 //     `store` and re-renders on every relevant notification, so mounting it
 //     hidden and revealing it later needs no extra call.
 
+import { perFrame } from "../frame.js";
 import { inspectLink, wireInspect } from "../inspect.js";
 import { midTurn, store, subscribe } from "../store.js";
 import { argSummary } from "../tool_args.js";
 import { highlightToon, toon } from "../toon.js";
-import { fmtDur } from "../trajectory/format.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
 
 // The panel is narrower than the transcript, and so are its argument lines.
@@ -36,11 +36,15 @@ const scrollTops = new Map();  // agent_id -> body scrollTop, kept across rebuil
 const follow = new Map();      // agent_id -> stick this transcript to its newest line
 const index = new Map();       // agent_id -> agent, for the lazy-fill observer
 let ticker = null;
-let frame = 0;
+// Bursts of agent events cost one repaint.
+const schedule = perFrame(() => render());
 // Deltas outrun the screen, and a fan-out multiplies them: live text is
 // patched once per frame for the agents that changed, not once per delta.
 const streamDirty = new Set();
-let streamFrame = 0;
+const flushStreamsSoon = perFrame(() => {
+  for (const id of streamDirty) renderAgentStream(id);
+  streamDirty.clear();
+});
 let io = null;
 
 // Stacked reads better for one agent at a time; columns are the point when
@@ -156,20 +160,8 @@ function onStoreChange(kind, ev) {
   }
   if (kind === "agent_stream") {
     streamDirty.add(ev.agent_id);
-    if (!streamFrame) streamFrame = requestAnimationFrame(flushStreams);
+    flushStreamsSoon();
   }
-}
-
-function flushStreams() {
-  streamFrame = 0;
-  for (const id of streamDirty) renderAgentStream(id);
-  streamDirty.clear();
-}
-
-// Coalesce bursts of agent events into one repaint.
-function schedule() {
-  if (frame) return;
-  frame = requestAnimationFrame(() => { frame = 0; render(); });
 }
 
 // ---- model ----
@@ -275,7 +267,7 @@ function stamp(a) {
 // A live start against a replayed end can come out a hair negative; that
 // reads as nothing rather than as "-3 ms".
 function spanText(ms) {
-  return ms == null || ms < 0 ? "" : fmtDur(ms);
+  return ms == null || ms < 0 ? "" : fmtMs(ms);
 }
 
 function durText(a) {

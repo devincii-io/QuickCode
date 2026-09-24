@@ -161,7 +161,7 @@
 /* ---------- sheet (a layer over Settings) ---------- */
 
 .set-sheet {
-  position: fixed; inset: 0; z-index: 60; background: var(--scrim);
+  position: fixed; inset: 0; z-index: var(--z-sheet); background: var(--scrim);
   display: grid; place-items: center; animation: fadein .1s ease-out;
 }
 .set-sheet-card {
