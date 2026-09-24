@@ -45,6 +45,7 @@ from quickcode.subagents.capping import ChildPermissions, deny_prompt
 from quickcode.subagents.definitions import AgentDef, load_defs
 from quickcode.subagents.interrupts import close_unanswered_calls
 from quickcode.subagents.jobs import CANCELLED, DONE, ERROR, JobRecord
+from quickcode.subagents.reports import neutralize, sanitize_report
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry, build_registry, core_tools
 
@@ -269,28 +270,6 @@ ROLES = ("worker", "orchestrator")
 
 def _resolve_role(deps: SubagentDeps, spec: str) -> str:
     return deps.profile.resolve(spec) if spec in ROLES else spec
-
-
-def sanitize_report(text: str) -> str:
-    """Neutralize harness-impersonating syntax in untrusted subagent output
-    before it enters the parent's context, and mark it as sanitized.
-
-    TOON is deliberately *not* on the list. What this function mangles are
-    tags that carry no author -- a ``<system-reminder>`` in a report reads as
-    the harness speaking, and nothing in the surrounding text says otherwise.
-    A TOON table carries no such authority: it is data, it arrives inside the
-    ``[quickcode: sanitized subagent report]`` marker and the ``<subagent
-    id=... status=...>`` wrapper the collector adds, and a forged
-    ``matches[3]{path,line,text}:`` block is worth exactly what the sentence
-    "I found three matches" is worth from the same child. Mangling it would
-    cost more than it buys: the subagents most likely to emit a TOON block are
-    the search-and-report ones, whose findings *are* tool output they are
-    quoting back.
-    """
-    for tag in ("system-reminder", "task", "objective", "context", "boundaries"):
-        text = text.replace(f"<{tag}>", f"‹{tag}›").replace(f"</{tag}>", f"‹/{tag}›")
-    text = text.replace("<system-reminder", "‹system-reminder")
-    return "[quickcode: sanitized subagent report]\n" + text.strip()
 
 
 def _prepare_child(
@@ -620,7 +599,9 @@ async def _run_and_finish(
     if child.cancelled or not report.strip():
         report = report or "(no output)"
         report = f"[did not finish]\n{report}"
-    report = maybe_offload(deps.cwd, agent_id, report)
+    # Neutralized before the offload, so the file the parent is told to read
+    # for the rest holds the same defused text the head does.
+    report = maybe_offload(deps.cwd, agent_id, neutralize(report))
     return status, sanitize_report(report)
 
 

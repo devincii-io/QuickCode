@@ -10,12 +10,18 @@ and can read the file if it needs the rest.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from quickcode.workspace import ensure_project_dir
 
 ARTIFACT_CHAR_LIMIT = 1500
 ARTIFACT_HEAD_LINES = 40
+
+
+def _safe_stem(agent_id: str) -> str:
+    """``agent_id`` as a single file name: no separators, no leading dot."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", agent_id).lstrip(".") or "report"
 
 
 def write_artifact(cwd: Path, agent_id: str, text: str) -> Path | None:
@@ -33,13 +39,21 @@ def write_artifact(cwd: Path, agent_id: str, text: str) -> Path | None:
     work. Three reports in this repository were already lost that way. An
     existing file is never overwritten; the next free ``-2``, ``-3`` … is
     taken instead, and the caller quotes the path it gets back.
+
+    Neither half of the path is trusted. The id comes from a definition's
+    ``name:``, which a project file sets, so it is reduced to one plain file
+    name; and the directory is refused if it resolves outside the project's
+    ``.quickcode`` (a repository can commit it as a link to anywhere).
     """
     directory = Path(cwd) / ".quickcode" / "artifacts"
+    stem = _safe_stem(agent_id)
     try:
         ensure_project_dir(cwd)
         directory.mkdir(parents=True, exist_ok=True)
+        if not directory.resolve().is_relative_to((Path(cwd) / ".quickcode").resolve()):
+            return None
         for suffix in ("", *(f"-{n}" for n in range(2, 1000))):
-            path = directory / f"{agent_id}{suffix}.md"
+            path = directory / f"{stem}{suffix}.md"
             try:
                 # x: create-or-fail, so two subagents racing for the same name
                 # cannot both believe they got it.
