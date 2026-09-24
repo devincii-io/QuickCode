@@ -85,6 +85,8 @@ quickcode/
     context_size.py       # request estimates (ledger + chars/4), cutting tool results to fit
     permissions.py        # modes, rules, PermissionSpec, bash decomposition
     profiles.py           # permission profiles: named {mode, allow, ask, deny} bundles
+    permission_posture.py # the engine a new (or live) session would ask, built as open() builds it
+    permission_explain.py # "why was I prompted?": the engine's own trace, as prose + rule provenance
     tasks.py              # task board
   hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
     config.py protocol.py runner.py plugin.py events.py specs.py
@@ -123,6 +125,7 @@ quickcode/
       inventory.py view.py drafts.py compositions.py resolution.py
       prompt_view.py tool_rows.py provenance.py
     hooks_api.py          # /api/hooks: list, add, change, remove, test-run
+    permissions_api.py    # POST .../permissions/explain: a dry run of the permission gate
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains

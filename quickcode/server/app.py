@@ -34,6 +34,7 @@ from quickcode.server.http import DEFAULT, PROJECT, project
 from quickcode.server.kernel_api import register_kernel_routes
 from quickcode.server.manager import ConversationManager
 from quickcode.server.paths import register_path_routes
+from quickcode.server.permissions_api import register_permission_routes
 from quickcode.server.profiles_api import register_profile_routes
 from quickcode.server.projects import ProjectHub
 from quickcode.server.projects_api import register_project_routes
@@ -158,6 +159,8 @@ def create_app(
     # hub rather than the two lambdas because the session routes reach a
     # conversation by id, not only the default project.
     register_agent_routes(app, hub)
+    # The permission dry run ("why was I prompted?"), against the real engine.
+    register_permission_routes(app, hub)
     # The terminal panel's sockets. Handed `_ws_allowed` and the token rather
     # than re-deriving them, so there is exactly one WebSocket auth rule in
     # this app and the shell socket is behind that one, not a second copy.
