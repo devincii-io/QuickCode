@@ -30,7 +30,7 @@ def payload(cfg: Config) -> list[dict[str, Any]]:
             "orchestrator_model": defaults.orchestrator_model if defaults else "",
             "active": name == active,
             "api_key_env": secrets.provider_key_env(name),
-            "has_api_key": bool(secrets.load_provider_key(name)),
+            "has_api_key": secrets.has_provider_key(name),
         })
     return out
 

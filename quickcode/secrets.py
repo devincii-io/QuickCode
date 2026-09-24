@@ -193,3 +193,8 @@ def save_provider_key(provider: str, key: str) -> None:
 
 def has_saved_provider_key(provider: str) -> bool:
     return has_secret(provider) if provider in PROVIDER_KEY_ENV else has_saved_key()
+
+
+def has_provider_key(provider: str) -> bool:
+    """Whether a key is available, without decrypting it."""
+    return bool(os.environ.get(provider_key_env(provider))) or has_saved_provider_key(provider)
