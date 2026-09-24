@@ -1,6 +1,6 @@
 // Chat view: incremental transcript renderer over the event store.
 
-import { renderMarkdown } from "./markdown.js";
+import { markdownStream, renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
 import { renderAnsiBlock } from "./terminal/emulator.js";
 import { highlightToon, toon } from "./toon.js";
@@ -9,6 +9,11 @@ import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
 
 let transcript, taskStrip;
 let streamNode = null;          // live assistant bubble
+let streamMd = null;            // its incremental renderer (markdown.js)
+let streamTail = [];            // its nodes the next update replaces
+let reasoningText = null;       // the text node inside its <details>
+let streamFrame = 0;            // a paint is queued for the next frame
+const agentsDirty = new Set();  // subagents whose live text changed since the last frame
 let agentCards = new Map();     // agent_id -> {card, body, textNode}
 let onOpenTrace = () => {};
 // The open step: consecutive tool calls collect into one titled block instead
@@ -53,6 +58,9 @@ function onStoreChange(kind, ev) {
   }
   if (kind === "event") {
     transcript.querySelector(".chat-welcome")?.remove();
+    // A queued paint belongs before this event on the page: settle it first,
+    // so deferring deltas to the next frame never reorders the transcript.
+    flushStream();
     renderEvent(ev);
     // A report landing settles the child that wrote it (store.js
     // `settleFromReport`) — the only signal a blocking subagent that died
@@ -60,8 +68,12 @@ function onStoreChange(kind, ev) {
     if (ev.type === "tool_result") settleAgentCards();
     scrollBottom(); return;
   }
-  if (kind === "stream") { transcript.querySelector(".chat-welcome")?.remove(); renderStream(); scrollBottom(); return; }
-  if (kind === "agent_stream") { renderAgentStream(ev.agent_id); return; }
+  if (kind === "stream") {
+    transcript.querySelector(".chat-welcome")?.remove();
+    schedulePaint();
+    return;
+  }
+  if (kind === "agent_stream") { agentsDirty.add(ev.agent_id); schedulePaint(); return; }
   if (kind === "tasks") { renderTasks(ev.tasks); return; }
   if (kind === "state" && ev.tasks) { renderTasks(ev.tasks); return; }
 }
@@ -122,6 +134,8 @@ function unpresume(agentId, card) {
 }
 
 function clear() {
+  if (streamFrame) { cancelAnimationFrame(streamFrame); streamFrame = 0; }
+  agentsDirty.clear();
   transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
   streamNode = null;
   stepNode = null;
@@ -139,25 +153,75 @@ function scrollBottom(force = false) {
 }
 
 // ---- streaming ----
+//
+// Deltas arrive far faster than a screen refreshes, and each one used to
+// re-parse and re-insert the whole reply: quadratic in its length, with every
+// code block rebuilt (and re-decorated by copy.js) dozens of times a second.
+// Now a delta only marks the frame dirty, and the paint appends the blocks
+// markdown.js has finished and replaces just the open one.
+
+function schedulePaint() {
+  if (streamFrame) return;
+  streamFrame = requestAnimationFrame(paint);
+}
+
+function paint() {
+  streamFrame = 0;
+  renderStream();
+  for (const id of agentsDirty) renderAgentStream(id);
+  agentsDirty.clear();
+  scrollBottom();
+}
+
+function flushStream() {
+  if (!streamFrame) return;
+  cancelAnimationFrame(streamFrame);
+  paint();
+}
 
 function ensureStreamNode() {
   if (!streamNode) {
     streamNode = el(`<div class="msg msg-assistant">
         <div class="reasoning-slot"></div><div class="bubble"></div></div>`);
+    streamMd = markdownStream();
+    streamTail = [];
+    reasoningText = null;
     transcript.appendChild(streamNode);
   }
   return streamNode;
 }
 
+function fragment(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html;
+  return t.content;
+}
+
 function renderStream() {
   if (!store.streamText && !store.streamReasoning && !store.pendingCalls.size) return;
   const node = ensureStreamNode();
-  const slot = node.querySelector(".reasoning-slot");
   if (store.streamReasoning) {
-    slot.innerHTML = `<details class="reasoning" open><summary>thinking</summary>${
-      esc(store.streamReasoning)}</details>`;
+    // Built once and then only its text moves, so collapsing it mid-stream
+    // sticks instead of being re-opened by the next delta.
+    if (!reasoningText) {
+      const details = el(`<details class="reasoning" open><summary>thinking</summary></details>`);
+      reasoningText = details.appendChild(document.createTextNode(""));
+      node.querySelector(".reasoning-slot").appendChild(details);
+    }
+    if (reasoningText.data !== store.streamReasoning) reasoningText.data = store.streamReasoning;
   }
-  node.querySelector(".bubble").innerHTML = renderMarkdown(store.streamText);
+  const bubble = node.querySelector(".bubble");
+  const { reset, commit, tail } = streamMd.update(store.streamText);
+  if (reset) {
+    for (const child of [...bubble.childNodes]) {
+      if (!child.classList?.contains("copy-btn")) child.remove();
+    }
+  }
+  for (const n of streamTail) n.remove();
+  if (commit) bubble.appendChild(fragment(commit));
+  const rest = fragment(tail);
+  streamTail = [...rest.childNodes];
+  bubble.appendChild(rest);
 }
 
 // ---- logged events ----

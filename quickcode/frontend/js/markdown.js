@@ -73,3 +73,42 @@ export function renderMarkdown(src) {
   flushPara(); flushList();
   return out.join("");
 }
+
+// A buffer that is still growing. The renderer above is block-local: a blank
+// line outside a code fence, or the line that closes one, leaves no parser
+// state behind, so the text up to it renders the same whatever follows. Those
+// blocks are rendered once and handed out as final; only the open tail is
+// re-rendered on each update. Re-parsing the whole reply per delta was O(n²)
+// over a streamed answer.
+//
+// `update(text)` takes the whole buffer so far and returns `{reset, commit,
+// tail}`: `commit` is HTML to append after everything committed before, `tail`
+// replaces the previous tail, and `reset` means the buffer did not extend the
+// last one, so everything shown so far has to go.
+export function markdownStream() {
+  let seen = "";
+  let committed = 0;   // seen.slice(0, committed) has been handed out as final
+  let scanned = 0;     // start of the first line not yet classified
+  let inCode = false;
+  return {
+    update(text) {
+      const reset = !text.startsWith(seen);
+      if (reset) { committed = 0; scanned = 0; inCode = false; }
+      seen = text;
+      let boundary = committed;
+      for (let nl = text.indexOf("\n", scanned); nl !== -1; nl = text.indexOf("\n", scanned)) {
+        const line = text.slice(scanned, nl);
+        scanned = nl + 1;
+        if (line.startsWith("```")) {
+          inCode = !inCode;
+          if (!inCode) boundary = scanned;
+        } else if (!inCode && !line.trim()) {
+          boundary = scanned;
+        }
+      }
+      const commit = boundary > committed ? renderMarkdown(text.slice(committed, boundary)) : "";
+      committed = boundary;
+      return { reset, commit, tail: renderMarkdown(text.slice(committed)) };
+    },
+  };
+}

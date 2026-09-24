@@ -32,6 +32,10 @@ const follow = new Map();      // agent_id -> stick this transcript to its newes
 const index = new Map();       // agent_id -> agent, for the lazy-fill observer
 let ticker = null;
 let frame = 0;
+// Deltas outrun the screen, and a fan-out multiplies them: live text is
+// patched once per frame for the agents that changed, not once per delta.
+const streamDirty = new Set();
+let streamFrame = 0;
 let io = null;
 
 // Stacked reads better for one agent at a time; columns are the point when
@@ -126,7 +130,7 @@ export const panel = {
 function onStoreChange(kind, ev) {
   if (kind === "reset") {
     openIds.clear(); openCalls.clear(); autoOpened.clear(); times.clear();
-    shownCap.clear(); scrollTops.clear(); follow.clear();
+    shownCap.clear(); scrollTops.clear(); follow.clear(); streamDirty.clear();
     soloId = null;
     return schedule();
   }
@@ -145,7 +149,16 @@ function onStoreChange(kind, ev) {
     }
     return;
   }
-  if (kind === "agent_stream") return renderAgentStream(ev.agent_id);
+  if (kind === "agent_stream") {
+    streamDirty.add(ev.agent_id);
+    if (!streamFrame) streamFrame = requestAnimationFrame(flushStreams);
+  }
+}
+
+function flushStreams() {
+  streamFrame = 0;
+  for (const id of streamDirty) renderAgentStream(id);
+  streamDirty.clear();
 }
 
 // Coalesce bursts of agent events into one repaint.
@@ -596,7 +609,8 @@ function renderAgentStream(agentId) {
   const card = root.querySelector(`.pa-card[data-agent="${CSS.escape(String(agentId))}"]`);
   if (!card) return schedule();
   const last = card.querySelector(".pa-last");
-  if (last) last.textContent = oneLine(rec.streamText, 120);
+  // Only the head is shown, so only the head is normalised.
+  if (last) last.textContent = oneLine(rec.streamText.slice(0, 600), 120);
   const body = card.querySelector(".pa-body");
   // Not filled yet (collapsed, or scrolled out of view): nothing to paint, and
   // forcing a rebuild for an invisible agent is exactly what we are avoiding.

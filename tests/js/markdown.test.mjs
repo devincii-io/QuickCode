@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../../quickcode/frontend/js/markdown.js";
+import { markdownStream, renderMarkdown } from "../../quickcode/frontend/js/markdown.js";
 import { esc } from "../../quickcode/frontend/js/util.js";
 
 // Everything the renderer emits, as tag names and attribute names. A payload
@@ -95,4 +95,59 @@ test("a code span stays literal and never ends up inside a link", () => {
 test("a fence's info string is dropped rather than written into an attribute", () => {
   assert.equal(renderMarkdown('```js" onmouseover="alert(1)\nlet a = "<b>";\n```'),
     "<pre><code>let a = &quot;&lt;b&gt;&quot;;</code></pre>");
+});
+
+// ---- streaming ----
+
+const SAMPLE = [
+  "# Title\n\nFirst paragraph with **bold** and `code`.\nSecond line.\n\n",
+  "- one\n- two\n\n1. a\n2. b\n\n> quoted\n\n",
+  "```python\nx = 1\n\ny = 2\n```\nafter the fence\n\n",
+  "```\nunterminated fence\n\nstill code",
+];
+
+function streamed(text, chunk) {
+  const md = markdownStream();
+  let done = "";
+  let tail = "";
+  for (let i = chunk; ; i += chunk) {
+    const prefix = text.slice(0, Math.min(i, text.length));
+    const r = md.update(prefix);
+    if (r.reset) done = "";
+    done += r.commit;
+    tail = r.tail;
+    // At every step the page shows exactly what a full re-render would.
+    assert.equal(done + tail, renderMarkdown(prefix), `diverged at ${prefix.length}`);
+    if (i >= text.length) break;
+  }
+  return done + tail;
+}
+
+test("incremental rendering matches a full re-render at every step", () => {
+  const text = SAMPLE.join("");
+  for (const chunk of [1, 2, 3, 7, 16, 64, text.length]) {
+    assert.equal(streamed(text, chunk), renderMarkdown(text));
+  }
+  for (const payload of PAYLOADS) streamed(`${payload}\n\n${payload}\n`, 3);
+});
+
+test("incremental rendering commits finished blocks once and re-renders only the tail", () => {
+  const md = markdownStream();
+  let r = md.update("para one\n\npara t");
+  assert.equal(r.commit, "<p>para one</p>");
+  assert.equal(r.tail, "<p>para t</p>");
+  r = md.update("para one\n\npara two");
+  assert.equal(r.commit, "");
+  assert.equal(r.tail, "<p>para two</p>");
+  r = md.update("para one\n\npara two\n\n```\ncode\n\nmore");
+  assert.equal(r.commit, "<p>para two</p>");
+  assert.equal(r.tail, "<pre><code>code\n\nmore</code></pre>");
+});
+
+test("a buffer that does not extend the last one starts over", () => {
+  const md = markdownStream();
+  md.update("old text\n\nmore");
+  const r = md.update("new");
+  assert.equal(r.reset, true);
+  assert.equal(r.commit + r.tail, renderMarkdown("new"));
 });
