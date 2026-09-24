@@ -573,7 +573,8 @@ def test_every_doc_anchor_the_manifest_points_at_resolves():
     """`kernel/manifest/` sends the UI's 'read more' links into these files.
     A renamed heading turns one of them into a dead end nobody notices."""
     root = DOCS.parent
-    files = sorted((root / "quickcode" / "kernel" / "manifest").glob("*.py"))
+    kernel = root / "quickcode" / "kernel"
+    files = [*sorted((kernel / "manifest").glob("*.py")), kernel / "core_settings.py"]
     source = "\n".join(path.read_text(encoding="utf-8") for path in files)
     refs = sorted(set(re.findall(r"docs/[\w./-]+\.md(?:#[\w-]+)?", source)))
     assert len(refs) > 10, "the anchors stopped being extractable from kernel/manifest/"

@@ -27,7 +27,8 @@ do instead. Two rules govern the writing:
 
 One module per family of plugin:
 
-``core``       the runtime internals, and ``core_setting`` for their bounds
+``core``       the runtime internals; their settings are declared in
+               ``kernel/core_settings.py``, where the runtime reads them
 ``sections``   the system-prompt sections
 ``tools``      the live tools
 ``agents``     subagent definitions, built-in and authored
@@ -36,10 +37,11 @@ One module per family of plugin:
 ``mcp``        configured MCP servers
 """
 
+from quickcode.kernel.core_settings import core_setting
 from quickcode.kernel.facts import display_endpoint, tool_signature
 from quickcode.kernel.manifest.agents import SHIPPED_AGENTS, agent_specs, is_shipped_agent
 from quickcode.kernel.manifest.authored import authored_specs
-from quickcode.kernel.manifest.core import core_setting, core_specs
+from quickcode.kernel.manifest.core import core_specs
 from quickcode.kernel.manifest.mcp import REDACTED, mcp_specs
 from quickcode.kernel.manifest.providers import provider_specs
 from quickcode.kernel.manifest.sections import prompt_section_specs

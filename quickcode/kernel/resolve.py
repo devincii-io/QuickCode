@@ -56,7 +56,7 @@ from quickcode.kernel.composition import (
     narrower_mode,
     selector_matches,
 )
-from quickcode.kernel.manifest import core_setting
+from quickcode.kernel.core_settings import core_setting
 from quickcode.kernel.problems import Layer, Problem, Provenance
 
 # The fallback for callers that resolve without a session -- the runtime passes
