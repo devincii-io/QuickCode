@@ -45,8 +45,11 @@ without the server sniffing for a `task_` name prefix.
 { "file_path": "string (absolute)", "offset": "number?", "limit": "number?" }
 ```
 
-- Lines longer than 2000 chars are cut with a marker.
-- Records `{path, mtime}` in the session's read-registry — the `edit` staleness check depends on it.
+- Lines longer than 2000 chars are cut with a marker. Lines are numbered by LF only, as ripgrep numbers them — a form feed or U+2028 does not start a new line.
+- Whenever lines follow what was shown — the window ended, or the 40 000-character output cap dropped the rest of it — a `<truncated shown="N" total="T" hint="re-read with offset=K"/>` marker names the first line not shown.
+- Encoding is detected, not assumed: a BOM (UTF-8/16/32) wins, then strict UTF-8, then cp1252, then Latin-1. A non-UTF-8 file ends with `<file encoding="…"/>`. A NUL byte in the first 8 KB without a BOM means binary, and binary files are refused rather than dumped.
+- Files over 10 MB are streamed: the window is read line by line and the total is not counted.
+- Records `{path, mtime, sha256}` in the session's read-registry — the `edit`/`write` staleness check depends on it.
 - Re-reading a file supersedes the old copy in history (read-dedup, see ARCHITECTURE).
 
 ## write
@@ -57,7 +60,8 @@ without the server sniffing for a `task_` name prefix.
 { "file_path": "string (absolute)", "content": "string" }
 ```
 
-- Overwriting a file that was never `read` → error (forces the model to look before it leaps).
+- Overwriting a file that was never `read`, or that changed on disk since it was read → error (forces the model to look before it leaps).
+- An overwritten file keeps its encoding, BOM and line endings; a new file is written exactly as given (UTF-8, no newline translation on any platform).
 - Renders as a diff against the previous content when overwriting.
 
 ## edit
@@ -73,7 +77,9 @@ without the server sniffing for a `task_` name prefix.
 }
 ```
 
-- Errors (all returned as `is_error` with a actionable message): file not read this session · file changed on disk since read · 0 matches · >1 match without `replace_all`.
+- Errors (all returned as `is_error` with a actionable message): file not read this session · file changed on disk since read · 0 matches · >1 match without `replace_all` (the error lists the matching line numbers) · `old_string == new_string` · a character the file's encoding cannot store.
+- "Changed on disk" compares content when the whole file was read (a `touch` is not a change; a rewrite inside one mtime tick is), and mtime otherwise.
+- The file keeps its encoding, BOM and line endings. In a CRLF file both strings are matched and written with CRLF, since read only ever shows `\n`.
 - Renders as a colored unified diff; the tool result to the model is a short confirmation + patched region snippet, not the whole file.
 
 ## glob `[read-only]`

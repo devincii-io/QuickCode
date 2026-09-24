@@ -4,6 +4,10 @@ Replaces one occurrence of ``old_string`` with ``new_string`` (or all
 occurrences with ``replace_all=True``). Requires the file to have been read
 this session and to be unchanged on disk since that read, so the agent is
 always editing what it actually saw.
+
+The file keeps its encoding, BOM and line endings (``fs/textfile.py``). The
+model writes ``\\n`` because ``\\n`` is all read ever showed it, so in a CRLF
+file both strings are matched and written with CRLF.
 """
 
 from __future__ import annotations
@@ -15,9 +19,11 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult
+from quickcode.tools.fs import textfile
 
-MTIME_TOLERANCE = 1e-3
 MAX_DIFF_LINES = 60
+# How many of an ambiguous old_string's line numbers the error lists.
+MAX_LISTED_MATCHES = 10
 
 
 class EditInput(BaseModel):
@@ -52,85 +58,61 @@ class EditTool(Tool[EditInput]):
             path = ctx.cwd / path
 
         if not path.exists() or not path.is_file():
-            return ToolResult(
-                content=f"Error: file not found: {path}",
-                is_error=True,
-            )
-
+            return _error(f"file not found: {path}")
         if not ctx.read_registry.was_read(str(path)):
-            return ToolResult(
-                content=(
-                    f"Error: {path} has not been read in this session. "
-                    "Read it first with the Read tool before editing it."
-                ),
-                is_error=True,
+            return _error(
+                f"{path} has not been read in this session. "
+                "Read it first with the Read tool before editing it."
             )
-
-        try:
-            current_mtime = path.stat().st_mtime
-        except OSError as exc:
-            return ToolResult(content=f"Error: could not stat {path}: {exc}", is_error=True)
-
-        recorded_mtime = ctx.read_registry.mtime_at_read(str(path))
-        if recorded_mtime is not None and abs(current_mtime - recorded_mtime) > MTIME_TOLERANCE:
-            return ToolResult(
-                content=(
-                    f"Error: {path} has changed on disk since it was read. "
-                    "Read it again before editing."
-                ),
-                is_error=True,
-            )
-
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            return ToolResult(content=f"Error: could not read {path}: {exc}", is_error=True)
-
         if input.old_string == "":
-            return ToolResult(
-                content="Error: old_string must not be empty.",
-                is_error=True,
+            return _error("old_string must not be empty.")
+        if input.old_string == input.new_string:
+            return _error("old_string and new_string are identical; there is nothing to change.")
+
+        try:
+            raw = path.read_bytes()
+            mtime = path.stat().st_mtime
+        except OSError as exc:
+            return _error(f"could not read {path}: {exc}")
+        try:
+            encoding = textfile.detect(raw)
+        except textfile.NotText:
+            return _error(f"{path} is a binary file; edit changes text files only.")
+        if ctx.read_registry.changed_since_read(str(path), mtime, textfile.digest(raw)):
+            return _error(
+                f"{path} has changed on disk since it was read. Read it again before editing."
             )
 
-        count = text.count(input.old_string)
+        text = textfile.decode(raw, encoding)
+        old, new, count = _locate(text, input.old_string, input.new_string)
         if count == 0:
-            return ToolResult(
-                content=(
-                    "Error: old_string not found in file. Re-read the file to "
-                    "confirm the exact text (whitespace matters)."
-                ),
-                is_error=True,
+            return _error(
+                "old_string not found in file. Re-read the file to confirm the "
+                "exact text (whitespace matters)."
             )
         if count > 1 and not input.replace_all:
-            return ToolResult(
-                content=(
-                    f"Error: old_string matches {count} locations in the file. "
-                    "Provide more surrounding context to make it unique, or pass "
-                    "replace_all=True to replace every occurrence."
-                ),
-                is_error=True,
+            return _error(
+                f"old_string matches {count} locations in the file (lines "
+                f"{_lines_of(text, old)}). Provide more surrounding context to make "
+                "it unique, or pass replace_all=True to replace every occurrence."
             )
 
-        if input.replace_all:
-            new_text = text.replace(input.old_string, input.new_string)
-        else:
-            new_text = text.replace(input.old_string, input.new_string, 1)
+        new_text = text.replace(old, new) if input.replace_all else text.replace(old, new, 1)
+        try:
+            data = textfile.encode(new_text, encoding)
+        except textfile.Unencodable as exc:
+            return _error(f"{path}: {exc}")
 
         try:
-            path.write_text(new_text, encoding="utf-8")
+            path.write_bytes(data)
+            ctx.read_registry.record(str(path), path.stat().st_mtime, textfile.digest(data))
         except OSError as exc:
-            return ToolResult(content=f"Error: could not write {path}: {exc}", is_error=True)
-
-        try:
-            new_mtime = path.stat().st_mtime
-            ctx.read_registry.record(str(path), new_mtime)
-        except OSError:
-            pass
+            return _error(f"could not write {path}: {exc}")
 
         diff_lines = list(
             difflib.unified_diff(
-                text.splitlines(keepends=True),
-                new_text.splitlines(keepends=True),
+                [line + "\n" for line in textfile.split_lines(text)],
+                [line + "\n" for line in textfile.split_lines(new_text)],
                 fromfile=str(path),
                 tofile=str(path),
                 n=2,
@@ -144,3 +126,34 @@ class EditTool(Tool[EditInput]):
         summary = f"Replaced {replaced} occurrence(s) in {path}"
         content = f"{summary}\n{diff_snippet}" if diff_snippet else summary
         return ToolResult(content=content, ui_meta={"diff": diff_snippet})
+
+
+def _error(message: str) -> ToolResult:
+    return ToolResult(content=f"Error: {message}", is_error=True)
+
+
+def _locate(text: str, old: str, new: str) -> tuple[str, str, int]:
+    """The strings to replace with, in the file's own line endings.
+
+    In a CRLF file the model's LF strings are tried as CRLF first, so an edit
+    that spans lines matches and one that adds lines does not leave bare LFs
+    behind. Only if that finds nothing are they tried exactly as written --
+    which is what finds an LF stretch inside a mostly-CRLF file.
+    """
+    if textfile.newline_of(text) == "\r\n":
+        crlf_old = textfile.with_newlines(old, "\r\n")
+        count = text.count(crlf_old)
+        if count:
+            return crlf_old, textfile.with_newlines(new, "\r\n"), count
+    return old, new, text.count(old)
+
+
+def _lines_of(text: str, needle: str) -> str:
+    """The 1-based line numbers where ``needle`` starts, for the ambiguity error."""
+    found: list[str] = []
+    start = text.find(needle)
+    while start != -1 and len(found) < MAX_LISTED_MATCHES:
+        found.append(str(text.count("\n", 0, start) + 1))
+        start = text.find(needle, start + len(needle))
+    more = ", …" if start != -1 else ""
+    return ", ".join(found) + more
