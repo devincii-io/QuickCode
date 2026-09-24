@@ -29,10 +29,10 @@ node --test tests/js/*.test.mjs                      # frontend unit tests
 ```
 
 The commands are the same on Linux and macOS (`python scripts/release.py`
-instead of the `.venv\Scripts` path). The suite runs there too; CI
-(`.github/workflows/ci.yml`) covers Windows only, and a handful of tests are
-known to fail off it (symlink and junction handling, `WindowsPath`, the
-installer layout).
+instead of the `.venv\Scripts` path). The whole suite passes there too; the few
+Windows-only tests (console windows, directory junctions) skip themselves. CI
+(`.github/workflows/ci.yml`) runs the release gate on Ubuntu for Python
+3.12–3.14 and on Windows for 3.14.
 
 ## Architecture (the load-bearing pieces)
 
