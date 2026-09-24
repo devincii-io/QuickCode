@@ -18,8 +18,9 @@ rather than a long-lived interactive shell:
   so the writer degenerates to nothing, but the reader/watcher split is what
   keeps ``run`` responsive to real exit).
 
-Bytes stay on the hot path; the caller decodes once at the boundary
-(UTF-8 + ``surrogateescape``).
+Bytes stay on the hot path; the caller decodes once at the boundary with
+``tools.base.decode_output`` (UTF-8, then the system code page, never
+surrogates).
 
 On Windows the backend is ConPTY via ``pywinpty`` (``winpty.PtyProcess``); on
 POSIX it is the stdlib ``pty``/``os.openpty`` plus a process group. If the
