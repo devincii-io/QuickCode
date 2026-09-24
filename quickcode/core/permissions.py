@@ -258,6 +258,19 @@ def _path_rule_targets(arg: str, boundary: Boundary) -> tuple[list[str], list[st
     return restrict, allow
 
 
+def _traced(trace: list | None, decision: Decision | None, step: str, **detail) -> Decision | None:
+    """Record one step of an evaluation, when the caller asked for a trace.
+
+    Returns ``decision`` so that a deciding line reads ``return _traced(...)``:
+    the explanation is written by the line that decides, never reconstructed
+    beside it (``core/permission_explain.py`` renders it). ``None`` marks a
+    step that was looked at and did not decide.
+    """
+    if trace is not None:
+        trace.append({"step": step, "decision": decision.value if decision else None, **detail})
+    return decision
+
+
 _SPEC_CACHE: dict[str, PermissionSpec] | None = None
 
 
@@ -314,34 +327,39 @@ class PermissionEngine:
         return "" if value is None else str(value)
 
     def evaluate_tool(
-        self, tool, args: dict, *, cwd: Path | None = None
+        self, tool, args: dict, *, cwd: Path | None = None, trace: list | None = None
     ) -> tuple[Decision, str]:
         """Gate one call, given the tool object and its parsed arguments.
 
         Returns the decision and the target it was matched on, so the caller
         can show the user what they are approving. ``cwd`` is where a shell
         tool's session currently stands (``ToolCtx.extra["bash_cwd"]``), when
-        it has moved from the project root.
+        it has moved from the project root. ``trace``, when given, receives
+        the steps the decision took (see ``_traced``).
         """
         spec = getattr(tool, "permission", DEFAULT_SPEC)
         # A tool may know its effective location better than one field can say
         # (see Tool.permission_target). Its answer wins when it gives one.
         declared = getattr(tool, "permission_target", None)
         target = (declared(args) if callable(declared) else "") or self.target_for(spec, args)
-        decision = self.evaluate(tool.name, target, spec=spec, cwd=cwd)
+        decision = self.evaluate(tool.name, target, spec=spec, cwd=cwd, trace=trace)
         # A tool with several path arguments (an authored command tool) names
         # them all: a rule matches one target, but every path the call touches
         # gets the protected-path check that runs before any allow rule.
         paths = getattr(tool, "permission_paths", None)
         if callable(paths) and decision is Decision.allow and self.mode is not Mode.yolo:
             boundary = Boundary(self.root)
-            if any(boundary.is_protected(p) for p in paths(args)):
-                decision = Decision.deny if self.mode is Mode.dontask else Decision.ask
+            hit = next((p for p in paths(args) if boundary.is_protected(p)), None)
+            if hit is not None:
+                decision = _traced(
+                    trace, Decision.deny if self.mode is Mode.dontask else Decision.ask,
+                    "protected_path", target=hit,
+                )
         return decision, target
 
     def evaluate(
         self, tool: str, arg: str, spec: PermissionSpec | None = None, *,
-        cwd: Path | None = None,
+        cwd: Path | None = None, trace: list | None = None,
     ) -> Decision:
         """Decide for a single tool invocation. ``arg`` is the match target
         (a shell command line, or a path -- whichever the tool declares).
@@ -352,7 +370,7 @@ class PermissionEngine:
         # Shell tools get decomposed and evaluated per subcommand, through the
         # same order as below.
         if spec.shell:
-            return self._eval_bash(arg, _Scope(self._shell_base(cwd), boundary))
+            return self._eval_bash(arg, _Scope(self._shell_base(cwd), boundary), trace=trace)
 
         if spec.path_target:
             restrict, permit = _path_rule_targets(arg, boundary)
@@ -362,23 +380,25 @@ class PermissionEngine:
         # rules that narrow: an allow rule keeps meaning exactly what it says.
         fold = spec.path_target and CASE_INSENSITIVE_PATHS
 
-        def matches(rules: list[str], targets: list[str], ignore_case: bool = False) -> bool:
-            return any(
-                _rule_matches(r, tool, t, fold=ignore_case) for r in rules for t in targets
+        def matches(rules: list[str], targets: list[str], ignore_case: bool = False) -> str | None:
+            """The first rule that matches any of the targets, or None."""
+            return next(
+                (r for r in rules for t in targets if _rule_matches(r, tool, t, fold=ignore_case)),
+                None,
             )
 
         # 1. Deny rules first, before anything that could answer "ask". The
         #    protected-path prompt used to come first, so a `read(**.env)` deny
         #    was never consulted for `.env`: the user got a prompt, with an
         #    Allow button, for the one file they had said no to outright.
-        if matches(self.rules.deny, restrict, fold):
-            return Decision.deny
+        if rule := matches(self.rules.deny, restrict, fold):
+            return _traced(trace, Decision.deny, "deny_rule", rule=rule)
 
         # 2. Plan mode structurally blocks mutation -- ahead of the protected
         #    prompt too, or a write to `.git/config` in plan mode was a prompt
         #    the user could click through rather than a refusal.
         if self.mode == Mode.plan and spec.mutates:
-            return Decision.deny
+            return _traced(trace, Decision.deny, "plan_mode")
 
         # 3. Protected paths prompt before any allow rule -- except in yolo,
         #    which is the mode whose entire promise is that it does not ask.
@@ -390,20 +410,25 @@ class PermissionEngine:
         if spec.path_target and boundary.is_protected(arg):
             if spec.mutates or not is_subagent_artifact(arg, self.root):
                 if self.mode is Mode.dontask:
-                    return Decision.deny
+                    return _traced(trace, Decision.deny, "protected_path", target=arg)
                 if self.mode is not Mode.yolo:
-                    return Decision.ask
+                    return _traced(trace, Decision.ask, "protected_path", target=arg)
+                _traced(trace, None, "protected_path", target=arg, waived="yolo")
+            else:
+                _traced(trace, None, "protected_path", target=arg, waived="artifact")
 
         # 4. The rest of the rules: ask, then allow.
-        if matches(self.rules.ask, restrict, fold):
-            return Decision.ask
-        if matches(self.rules.allow, permit):
-            return Decision.allow
+        if rule := matches(self.rules.ask, restrict, fold):
+            return _traced(trace, Decision.ask, "ask_rule", rule=rule)
+        if rule := matches(self.rules.allow, permit):
+            return _traced(trace, Decision.allow, "allow_rule", rule=rule)
 
         # 5. Mode default.
         if not spec.mutates:
-            return Decision.allow
-        return self._mode_default_for_write(spec)
+            return _traced(trace, Decision.allow, "read_only")
+        return _traced(trace, self._mode_default_for_write(spec), "mode_default",
+                       mode=self.mode.value, path_target=spec.path_target,
+                       executes=spec.executes)
 
     def _mode_default_for_write(self, spec: PermissionSpec) -> Decision:
         if self.mode == Mode.yolo:
@@ -435,14 +460,19 @@ class PermissionEngine:
             return self.root
         return where
 
-    def _eval_bash(self, command: str, scope: _Scope, depth: int = 0) -> Decision:
+    def _eval_bash(
+        self, command: str, scope: _Scope, depth: int = 0, *, trace: list | None = None
+    ) -> Decision:
         subs = [s.strip() for s in _SPLIT.split(command) if s.strip()]
         has_substitution = any(
             m in command for m in _COMPOUND_MARKERS
         ) or shellwords.has_unquoted_paren(command)
+        _traced(trace, None, "shell", subcommands=len(subs) or 1, substitution=has_substitution)
         decisions: list[Decision] = []
         for sub in subs or [command]:
-            decisions.append(self._eval_bash_sub(sub, has_substitution, scope))
+            steps = None if trace is None else []
+            decision = self._eval_bash_sub(sub, has_substitution, scope, trace=steps)
+            decisions.append(_traced(trace, decision, "subcommand", command=sub, steps=steps))
         # A command another command runs is decided as if it had been typed:
         # `find . -exec rm {} +`, `xargs rm`, `sudo rm`, `bash -c 'rm ...'`,
         # `echo $(rm ...)` and `git -c alias.x='!rm ...' x` all run `rm`. A deny
@@ -450,20 +480,26 @@ class PermissionEngine:
         # it -- the most restrictive answer below makes both true.
         inner = commands.inner_lines(command)
         if inner and depth >= _MAX_NESTING:
-            decisions.append(Decision.ask)
+            decisions.append(_traced(trace, Decision.ask, "nesting_limit", depth=depth))
         elif inner:
-            decisions += [self._eval_bash(line, scope, depth + 1) for line in inner]
+            for line in inner:
+                steps = None if trace is None else []
+                decision = self._eval_bash(line, scope, depth + 1, trace=steps)
+                decisions.append(_traced(trace, decision, "inner_command", command=line,
+                                         steps=steps))
         # Circuit breakers apply to the whole line even in yolo.
         if breakers.tripped(command):
-            decisions.append(Decision.ask)
+            decisions.append(_traced(trace, Decision.ask, "circuit_breaker"))
         # Most restrictive wins.
         if Decision.deny in decisions:
-            return Decision.deny
+            return _traced(trace, Decision.deny, "most_restrictive")
         if Decision.ask in decisions:
-            return Decision.ask
-        return Decision.allow
+            return _traced(trace, Decision.ask, "most_restrictive")
+        return _traced(trace, Decision.allow, "most_restrictive")
 
-    def _eval_bash_sub(self, sub: str, has_sub: bool, scope: _Scope) -> Decision:
+    def _eval_bash_sub(
+        self, sub: str, has_sub: bool, scope: _Scope, *, trace: list | None = None
+    ) -> Decision:
         tokens = sub.split()
         lexed = shellwords.segments(sub)
         analysis = (
@@ -499,20 +535,23 @@ class PermissionEngine:
             read = read[1:]
         as_read = " ".join([first, *read[1:]]) if read else by_name
         restrictive = (sub, stripped, by_name, as_read)
+        _traced(trace, None, "parsed", name=first, stripped=stripped,
+                env_prefix=has_env_prefix, opaque=analysis.opaque)
 
         # 1. Deny rules first (against the substitution-free subcommand), for
         #    the same reason as in ``evaluate``: a protected path must not turn
         #    a deny into a prompt.
         for r in self.rules.deny:
             if any(_rule_matches(r, "bash", form) for form in restrictive):
-                return Decision.deny
+                return _traced(trace, Decision.deny, "deny_rule", rule=r)
         # A command word only the shell can finish -- `$CMD`, `rm${IFS}-rf`,
         # `$(echo rm)`, `/bin/r?` -- may be any command, the denied ones
         # included. Where a bash deny rule exists it cannot be ruled out.
         if (UNRESOLVABLE.search(spelled) or shellwords.has_glob(spelled)) and any(
             _rule_matches(r, "bash", "") or r.startswith("bash(") for r in self.rules.deny
         ):
-            return Decision.deny if self.mode is Mode.dontask else Decision.ask
+            return _traced(trace, Decision.deny if self.mode is Mode.dontask else Decision.ask,
+                           "unresolvable_command", name=spelled)
 
         # Builtin read-only commands auto-allow -- only when there is no
         # substitution smuggling and no rewritten environment.
@@ -539,12 +578,16 @@ class PermissionEngine:
             and not has_env_prefix
             and not analysis.unsafe_read_only
         )
+        if trace is not None and first in READONLY_BUILTINS and not read_only:
+            _traced(trace, None, "readonly_builtin", name=first, substitution=has_sub,
+                    env_prefix=has_env_prefix, unsafe_option=analysis.unsafe_read_only,
+                    local_program=not self._runs_from_path(spelled, scope.boundary))
 
         # 2. Plan mode runs the read-only builtins and nothing else -- decided
         #    before the protected-path prompt, which would otherwise offer to
         #    run `rm .git/index` in plan mode rather than refuse it.
         if self.mode == Mode.plan and not read_only:
-            return Decision.deny
+            return _traced(trace, Decision.deny, "plan_mode")
 
         # 3. Shell reads respect the same protected-path boundary as the
         #    dedicated read tool. Every argument is a potential path; ordinary
@@ -552,28 +595,36 @@ class PermissionEngine:
         # `git config` writes `.git/config`, the file every later git command
         # takes its pager, editor and hooks path from; a bare `cd` moves the
         # rest of the line to the home directory.
-        if (
-            analysis.touches_protected
-            or (scope.base != self.root and scope.boundary.is_protected(str(scope.base)))
-            or self._names_protected(tokens[idx:], lexed, scope)
-            or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep, scope))
-        ):
+        named: list[str] = []
+        if analysis.touches_protected:
+            protected = "command"
+        elif scope.base != self.root and scope.boundary.is_protected(str(scope.base)):
+            protected, named = "cwd", [str(scope.base)]
+        elif self._names_protected(tokens[idx:], lexed, scope, named):
+            protected = "argument"
+        elif self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep, scope):
+            protected = "sweep"
+        else:
+            protected = None
+        if protected:
+            detail = {"reason": protected, **({"target": named[0]} if named else {})}
             if self.mode is Mode.dontask:
-                return Decision.deny
+                return _traced(trace, Decision.deny, "protected_path", **detail)
             # Same exemption as the path tools, and this is where it was felt:
             # every argument is treated as a possible path, so `find / -name
             # "*x*"` prompted in yolo because of the `/`. A mode that promises
             # not to ask must not ask here.
             if self.mode is not Mode.yolo:
-                return Decision.ask
+                return _traced(trace, Decision.ask, "protected_path", **detail)
+            _traced(trace, None, "protected_path", waived="yolo", **detail)
 
         # 4. Read-only builtins run without a prompt, in every mode.
         if read_only:
-            return Decision.allow
+            return _traced(trace, Decision.allow, "readonly_builtin", name=first)
 
         for r in self.rules.ask:
             if any(_rule_matches(r, "bash", form) for form in restrictive):
-                return Decision.ask
+                return _traced(trace, Decision.ask, "ask_rule", rule=r)
         # Allow rules never prefix-match a compound/substitution line, and the
         # env-stripped form is not offered to them either: approving
         # `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule
@@ -585,13 +636,14 @@ class PermissionEngine:
                 if _rule_matches(r, "bash", sub) or (
                     not has_env_prefix and _rule_matches(r, "bash", stripped)
                 ):
-                    return Decision.allow
+                    return _traced(trace, Decision.allow, "allow_rule", rule=r)
 
+        mode = self.mode.value
         if self.mode == Mode.yolo:
-            return Decision.allow
+            return _traced(trace, Decision.allow, "mode_default", mode=mode, shell=True)
         if self.mode == Mode.dontask:
-            return Decision.deny
-        return Decision.ask
+            return _traced(trace, Decision.deny, "mode_default", mode=mode, shell=True)
+        return _traced(trace, Decision.ask, "mode_default", mode=mode, shell=True)
 
     def _runs_from_path(self, command: str, boundary: Boundary) -> bool:
         """Whether a command word names a program found on PATH (or installed
@@ -610,9 +662,11 @@ class PermissionEngine:
         return not resolved.is_relative_to(boundary.resolved_root)
 
     def _names_protected(
-        self, words: list[str], lexed: list[list[str]], scope: _Scope
+        self, words: list[str], lexed: list[list[str]], scope: _Scope,
+        hits: list[str] | None = None,
     ) -> bool:
-        """Whether any word of a subcommand may name a protected path.
+        """Whether any word of a subcommand may name a protected path. The word
+        that did is appended to ``hits``, when given, for the explanation.
 
         Each word is read every way the shell might read it
         (``shellwords.path_candidates``): quotes and escapes removed, braces
@@ -621,6 +675,11 @@ class PermissionEngine:
         are also taken from a quote-aware split, so a redirection glued to
         its target (`cat<.env`) is seen.
         """
+        def found(word: str) -> bool:
+            if hits is not None:
+                hits.append(word)
+            return True
+
         if not words:
             return False
         # The command word is where a program comes from, not what it reads:
@@ -628,14 +687,14 @@ class PermissionEngine:
         # *name* counts there (`.git/hooks/post-checkout`).
         for candidate in shellwords.path_candidates(words[0]) or []:
             if any(is_protected_name(p) for p in lexical_parts(candidate)):
-                return True
+                return found(words[0])
         arguments = [w for segment in lexed for w in segment[1:]]
         for word in [*words[1:], *arguments]:
             candidates = shellwords.path_candidates(word)
             if candidates is None:
-                return True
+                return found(word)
             if any(self._candidate_protected(c, scope) for c in candidates):
-                return True
+                return found(word)
         return False
 
     def _sweeps_protected(self, walk: commands.Sweep | None, scope: _Scope) -> bool:
