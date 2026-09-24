@@ -27,7 +27,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from quickcode import jsonfile
 from quickcode.core.permissions import (
     DEFAULT_SPEC,
     Decision,
@@ -74,10 +73,11 @@ class RuleSources:
 
 
 def _permissions_block(path: Path) -> dict[str, Any]:
-    try:
-        data = jsonfile.load(path).get("permissions", {})
-    except Exception:
-        return {}
+    # The reader ``Rules.load`` uses, so a rule is attributed to the file the
+    # engine actually read it from.
+    from quickcode.kernel.settings_file import read_settings
+
+    data = read_settings(path).get("permissions", {})
     return data if isinstance(data, dict) else {}
 
 
