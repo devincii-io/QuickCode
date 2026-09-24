@@ -63,12 +63,15 @@ Each milestone ends in something runnable. Checked items are present in the curr
 - [x] Mouse-first focus behavior, resizable subagent pane, and theme presets
 - [x] Toasts, prefix-filtered input history, and a fleet view that survives fifty subagents
       (grid layout, per-card follow, filters, solo view)
-- [ ] Native Anthropic adapter, hooks, and background bash
+- [x] Background shell jobs (`bash(run_in_background)`) with `bash_output` / `bash_kill`,
+      a per-conversation cap, bounded output, and process-tree cleanup on close
+- [ ] Native Anthropic adapter and hooks
 
 ## Next priorities
 
-1. Background shell jobs and a dedicated PTY panel (`bash(run_in_background)` is still a
-   declared-and-refused stub).
+1. A dedicated panel for background shell jobs: live output, exit state and a kill button.
+   The jobs themselves ship (`bash(run_in_background)`, `bash_output`, `bash_kill`); today
+   the UI shows them only as tool calls and a transcript note on exit.
 2. Native Anthropic adapter and provider-specific prompt-cache controls.
 3. Hooks.
 4. Teammate mode after task claiming and worktree isolation are designed together.
