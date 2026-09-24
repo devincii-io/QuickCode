@@ -171,6 +171,8 @@ class BashJob:
         except (OSError, ValueError):
             pass
         finally:
+            if stream is not None:
+                stream.close()
             self._reader_done.set()
 
     def _watch(self, on_finished: Callable[[BashJob], None]) -> None:
