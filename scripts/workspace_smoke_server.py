@@ -11,7 +11,11 @@ a second until it is killed -- the Jobs tab's subject, for
 
 ``--ask`` makes the preview agent act instead of only talking: every turn it
 reads README.md, edits it, then runs a shell command, so the permission prompt
-(its diff, the rules "Always allow" would save, "Why?") can be reviewed.
+(its diff, the rules "Always allow" would save, "Why?") can be reviewed
+(scripts/smoke_permissions.js).
+
+With no flag the preview agent only talks: scripts/smoke_workspaces.js,
+smoke_palette.js and smoke_search.js run against that.
 
 ``--edits`` makes the preview agent change files in each conversation's first
 turn -- read README.md, edit it, write notes.md -- in auto-edit mode, so those

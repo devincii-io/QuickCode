@@ -167,6 +167,8 @@ workspace a conversation that already has a pane is focused rather than opened
 twice; otherwise a new pane opens with the event's `seq` in its URL (`at=`),
 which is never saved in the layout. `↑`/`↓` walk the list, `Enter` opens the
 first entry, and `Esc` clears the search before it closes the list.
+`scripts/smoke_search.js` drives all three cases against the workspace smoke
+server.
 
 ## The event protocol
 
@@ -198,6 +200,8 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
   there is nothing to save) and **Deny** (a second click confirms, with an
   optional message returned to the model). The buttons ignore clicks for
   400 ms after a prompt appears. Details in docs/PERMISSIONS.md §The prompt.
+  `scripts/smoke_permissions.js` drives it in a browser against
+  `scripts/workspace_smoke_server.py --ask`.
 - **Plan review** — the plan as markdown, with **Approve · auto-edit**,
   **Approve · ask mode** and **Keep planning** (feedback returns to the
   model).
@@ -249,6 +253,8 @@ A command that moves focus keeps it; one that does not (a mode switch,
 *Show or hide the terminal*) gives it back to where it was, normally the
 composer. The palette does not open over a dialog, not in the Settings/Help
 dialog's own frame, and not in the terminal, whose shell keeps `Ctrl+K`.
+`scripts/smoke_palette.js` drives both palettes against the workspace smoke
+server.
 
 ## Keyboard
 
