@@ -17,10 +17,8 @@ shapes never diverge for a single-project run.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +39,7 @@ from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.headers import security_headers
+from quickcode.server.http import project, read_json, valid_conv_id, valid_profile_id
 from quickcode.server.manager import Client, Conversation, ConversationManager
 from quickcode.server.paths import register_path_routes
 from quickcode.server.projects import ProjectBusyError, ProjectHub, list_dirs
@@ -56,17 +55,6 @@ from quickcode.session.store import (
 log = logging.getLogger("quickcode.server")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-JSON_BODY_CAP = 1024 * 1024
-# Conversation ids are generated as hex; anything else in a path segment would
-# be a traversal attempt against the sessions directory.
-_CONV_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
-# A profile id is a key in a settings file and a path segment in these routes,
-# so it is held to the shape both can carry losslessly.
-_PROFILE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-
-
-def _valid_conv_id(conv_id: str) -> bool:
-    return _CONV_ID_RE.fullmatch(conv_id) is not None
 
 
 def _rejected_setting(provider: str, key: str, allowed: set[str]) -> str:
@@ -109,10 +97,7 @@ def create_app(
     hardening = security_headers(allowed_hosts)
 
     def _project(pid: str) -> ConversationManager:
-        manager = hub.get(pid)
-        if manager is None:
-            raise HTTPException(404, f"unknown project: {pid}")
-        return manager
+        return project(hub, pid)
 
     def _token_required(request: Request) -> bool:
         path = request.url.path
@@ -298,15 +283,15 @@ def create_app(
         Working in a session is the opposite of having filed it away, and a
         live-but-hidden conversation would be the worst of both.
         """
-        if _valid_conv_id(conv_id):
+        if valid_conv_id(conv_id):
             SessionStore(manager.cwd, conv_id).unarchive()
 
     async def _open_conversation(manager: ConversationManager, request: Request) -> dict:
-        body = await _read_json(request)
+        body = await read_json(request)
         conv_id = body.get("resume") if isinstance(body, dict) else None
         if conv_id is not None and not isinstance(conv_id, str):
             raise HTTPException(400, "resume must be a conversation id string")
-        if conv_id is not None and not _valid_conv_id(conv_id):
+        if conv_id is not None and not valid_conv_id(conv_id):
             raise HTTPException(400, "invalid conversation id")
         if conv_id:
             _revive(manager, conv_id)
@@ -365,7 +350,7 @@ def create_app(
     async def _update_plugin(
         manager: ConversationManager, plugin_id: str, request: Request
     ) -> dict:
-        body = await _read_json(request)
+        body = await read_json(request)
         if not isinstance(body, dict):
             raise HTTPException(400, "request body must be a JSON object")
         registry = _registry_for(manager)
@@ -408,7 +393,7 @@ def create_app(
         }
 
     async def _set_active_preset(manager: ConversationManager, request: Request) -> dict:
-        body = await _read_json(request)
+        body = await read_json(request)
         preset_id = body.get("preset") if isinstance(body, dict) else None
         if not isinstance(preset_id, str) or not preset_id.strip():
             raise HTTPException(400, "body must be {'preset': <id>}")
@@ -466,7 +451,7 @@ def create_app(
             raise HTTPException(400, "request body must be a JSON object")
         raw_id = body.get("id")
         profile_id = raw_id.strip() if isinstance(raw_id, str) else ""
-        if not _PROFILE_ID_RE.fullmatch(profile_id):
+        if not valid_profile_id(profile_id):
             raise HTTPException(400, (
                 f"{raw_id!r} is not a usable profile id: it must start with a "
                 "letter or digit and may then contain letters, digits, dots, "
@@ -529,7 +514,7 @@ def create_app(
 
         if scope not in ("user", "project"):
             raise HTTPException(400, f"scope must be 'user' or 'project', not {scope!r}")
-        if not _PROFILE_ID_RE.fullmatch(profile_id):
+        if not valid_profile_id(profile_id):
             raise HTTPException(400, f"{profile_id!r} is not a usable profile id")
         cwd = manager.cwd if scope == "project" else None
         if not profiles_module.delete_profile(profile_id, cwd=cwd):
@@ -576,7 +561,7 @@ def create_app(
         from quickcode.core import profiles as profiles_module
         from quickcode.security import trust
 
-        body = await _read_json(request)
+        body = await read_json(request)
         raw_id = body.get("id") if isinstance(body, dict) else None
         if not isinstance(raw_id, str):
             raise HTTPException(400, (
@@ -612,7 +597,7 @@ def create_app(
     # ---- session management: delete, archive, sweep ----
 
     async def _delete_session(manager: ConversationManager, conv_id: str) -> Response:
-        if not _valid_conv_id(conv_id):
+        if not valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
         # A conversation opened earlier in this run is not "live" -- nothing is
         # attached to it and nothing is running in it. It used to be refused
@@ -652,7 +637,7 @@ def create_app(
         response therefore carries the title the listings will now show, not
         the string that was sent.
         """
-        if not _valid_conv_id(conv_id):
+        if not valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
         # An open conversation is renamed through its own store. One nobody
         # has spoken in yet has no log on disk -- its opening records are held
@@ -662,7 +647,7 @@ def create_app(
         store = conv.store if conv is not None else SessionStore(manager.cwd, conv_id)
         if conv is None and not store.path.exists():
             raise HTTPException(404, "unknown conversation")
-        body = await _read_json(request)
+        body = await read_json(request)
         title = body.get("title") if isinstance(body, dict) else None
         if not isinstance(title, str):
             raise HTTPException(
@@ -682,7 +667,7 @@ def create_app(
     async def _set_archived(
         manager: ConversationManager, conv_id: str, archived: bool
     ) -> dict:
-        if not _valid_conv_id(conv_id):
+        if not valid_conv_id(conv_id):
             raise HTTPException(404, "unknown conversation")
         store = SessionStore(manager.cwd, conv_id)
         if not store.path.exists():
@@ -709,7 +694,7 @@ def create_app(
             raise HTTPException(400, "too many conversations in one request")
         out = []
         for raw in ids:
-            if not isinstance(raw, str) or not _valid_conv_id(raw):
+            if not isinstance(raw, str) or not valid_conv_id(raw):
                 raise HTTPException(400, f"invalid conversation id: {raw!r}")
             out.append(raw)
         return out
@@ -746,7 +731,7 @@ def create_app(
         }
 
     async def _bulk_delete(manager: ConversationManager, request: Request) -> dict:
-        body = await _read_json(request)
+        body = await read_json(request)
         return await _purge_many(manager, _selection(body))
 
     async def _cleanup_empty(manager: ConversationManager, request: Request) -> dict:
@@ -756,7 +741,7 @@ def create_app(
         they bury the real conversations. An interrupted turn does not qualify
         — its event log is the transcript — so it is never swept.
         """
-        body = await _read_json(request)
+        body = await read_json(request)
         dry_run = bool(body.get("dry_run")) if isinstance(body, dict) else False
         live = set(manager.live_conversations())
         candidates = [c for c in SessionStore.empty_sessions(manager.cwd) if c not in live]
@@ -833,7 +818,7 @@ def create_app(
 
     @app.post("/api/projects/open")
     async def open_project(request: Request) -> dict:
-        body = await _read_json(request)
+        body = await read_json(request)
         path = body.get("path") if isinstance(body, dict) else None
         if not isinstance(path, str) or not path.strip():
             raise HTTPException(400, "body must be {'path': <directory>}")
@@ -895,7 +880,7 @@ def create_app(
         either way. A bulk action that failed whole on the first live project
         would leave the user guessing which of ten rows went through.
         """
-        body = await _read_json(request)
+        body = await read_json(request)
         ids = body.get("ids") if isinstance(body, dict) else None
         if not isinstance(ids, list) or not ids:
             raise HTTPException(400, "body must be {'ids': [<project id>, …]}")
@@ -988,7 +973,7 @@ def create_app(
 
         # The hash the prompt showed, when the caller sends it: the grant is
         # then for that configuration or for nothing.
-        body = await _read_json(request)
+        body = await read_json(request)
         expected = body.get("hash") if isinstance(body, dict) else None
         try:
             return _with_tool_detail(pid, await hub.grant_trust(
@@ -1136,11 +1121,11 @@ def create_app(
 
     @app.post("/api/profiles")
     async def save_profile(request: Request) -> dict:
-        return _save_profile(hub.default, await _read_json(request))
+        return _save_profile(hub.default, await read_json(request))
 
     @app.post("/api/projects/{pid}/profiles")
     async def project_save_profile(pid: str, request: Request) -> dict:
-        return _save_profile(_project(pid), await _read_json(request))
+        return _save_profile(_project(pid), await read_json(request))
 
     @app.delete("/api/profiles/{profile_id}")
     def delete_profile(profile_id: str, scope: str = "user") -> dict:
@@ -1179,7 +1164,7 @@ def create_app(
 
     @app.put("/api/config")
     async def put_config(request: Request) -> Response:
-        body = await _read_json(request)
+        body = await read_json(request)
         if not isinstance(body, dict):
             raise HTTPException(400, "request body must be a JSON object")
         # Config is per install, not per project: the default manager's handle
@@ -1266,7 +1251,7 @@ def create_app(
     async def put_api_key(request: Request) -> Response:
         from quickcode import secrets
 
-        body = await _read_json(request)
+        body = await read_json(request)
         key = body.get("key") if isinstance(body, dict) else None
         if not isinstance(key, str) or not key.strip():
             raise HTTPException(400, "body must be {'key': <non-empty string>}")
@@ -1289,7 +1274,7 @@ def create_app(
         from quickcode import secrets
         from quickcode.search import PROVIDERS, secret_name
 
-        body = await _read_json(request)
+        body = await read_json(request)
         provider = body.get("provider") if isinstance(body, dict) else None
         key = body.get("key") if isinstance(body, dict) else None
         if not isinstance(provider, str) or provider not in PROVIDERS:
@@ -1326,7 +1311,7 @@ def create_app(
     async def update_settings(request: Request) -> dict:
         from quickcode import update as update_module
 
-        body = await _read_json(request)
+        body = await read_json(request)
         if not isinstance(body, dict) or not isinstance(
             body.get(update_module.AUTO_CHECK_KEY), bool
         ):
@@ -1371,7 +1356,7 @@ def create_app(
         """
         from quickcode import update as update_module
 
-        body = await _read_json(request)
+        body = await read_json(request)
         if not isinstance(body, dict):
             raise HTTPException(400, "request body must be a JSON object")
         if body.get("confirm") is not True:
@@ -1404,7 +1389,7 @@ def create_app(
         conv = manager.get(conv_id)
         if conv is None:
             # Attaching to an on-disk session revives it; unknown ids 404.
-            if not _valid_conv_id(conv_id):
+            if not valid_conv_id(conv_id):
                 await ws.close(code=4404)
                 return
             store = SessionStore(manager.cwd, conv_id)
@@ -1592,25 +1577,3 @@ def _dispatch(conv: Conversation, msg: dict[str, Any]) -> None:
                 feedback=str(msg.get("feedback") or ""),
             )
 
-
-async def _read_json(request: Request, maximum: int = JSON_BODY_CAP) -> Any:
-    """Read a bounded JSON body without buffering an unbounded request."""
-    content_length = request.headers.get("content-length")
-    if content_length:
-        with contextlib.suppress(ValueError):
-            if int(content_length) > maximum:
-                raise HTTPException(413, f"request body cannot exceed {maximum} bytes")
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > maximum:
-            raise HTTPException(413, f"request body cannot exceed {maximum} bytes")
-        chunks.append(chunk)
-    raw = b"".join(chunks)
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HTTPException(400, "request body must be valid JSON") from exc
