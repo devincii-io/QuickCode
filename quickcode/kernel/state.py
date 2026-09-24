@@ -22,7 +22,6 @@ trip through this one.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -34,12 +33,19 @@ from quickcode.kernel.problems import (
     Problem,
     Provenance,
 )
+from quickcode.kernel.settings_file import (
+    LOCAL_SETTINGS_FILENAME,
+    SETTINGS_DIRNAME,
+    SETTINGS_FILENAME,
+    read_settings,
+    write_project_settings,
+)
+
+# The old private name, still imported from outside this module.
+_read = read_settings
 
 log = logging.getLogger("quickcode.kernel.state")
 
-SETTINGS_DIRNAME = ".quickcode"
-SETTINGS_FILENAME = "settings.json"
-LOCAL_SETTINGS_FILENAME = "settings.local.json"
 PLUGINS_KEY = "plugins"
 PRESETS_KEY = "presets"
 
@@ -56,25 +62,6 @@ def local_settings_path(cwd: Path) -> Path:
     """The gitignored sibling. Permissions and MCP read it; plugin and preset
     state deliberately do not -- see ``local_settings_problems``."""
     return Path(cwd) / SETTINGS_DIRNAME / LOCAL_SETTINGS_FILENAME
-
-
-def read_settings(path: Path) -> dict[str, Any]:
-    """One settings file as a dict: ``{}`` when it is missing, unreadable or
-    not a JSON object."""
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        # A hand-edited settings file with a stray comma must not take the app
-        # down; the layer is skipped and the user is told once, in the log.
-        log.warning("ignoring unreadable settings at %s: %s", path, exc)
-        return {}
-    return raw if isinstance(raw, dict) else {}
-
-
-# The old private name, still imported from outside this module.
-_read = read_settings
 
 
 def _entries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -295,35 +282,26 @@ def save_entry(cwd: Path, plugin_id: str, *, enabled: bool | None = None,
     """Merge one plugin's state into the project settings file.
 
     Everything else in the file -- permissions, mcpServers, other plugins --
-    is read, updated in place and written back, so this never clobbers config
-    it does not own.
+    is left as it was, so this never clobbers config it does not own.
     """
-    path = project_settings_path(cwd)
-    raw = read_settings(path)
-    section = raw.get(PLUGINS_KEY)
-    if not isinstance(section, dict):
-        section = {}
-    entry = section.get(plugin_id)
-    if not isinstance(entry, dict):
-        entry = {}
+    def merge(raw: dict[str, Any]) -> None:
+        section = raw.get(PLUGINS_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        entry = section.get(plugin_id)
+        if not isinstance(entry, dict):
+            entry = {}
 
-    if enabled is not None:
-        entry["enabled"] = bool(enabled)
-    if settings:
-        current = entry.get("settings")
-        if not isinstance(current, dict):
-            current = {}
-        current.update(settings)
-        entry["settings"] = current
+        if enabled is not None:
+            entry["enabled"] = bool(enabled)
+        if settings:
+            current = entry.get("settings")
+            if not isinstance(current, dict):
+                current = {}
+            current.update(settings)
+            entry["settings"] = current
 
-    section[plugin_id] = entry
-    raw[PLUGINS_KEY] = section
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # The project settings file is covered by the trust hash, so saving a
-    # setting from the Settings page untrusted the project it was saved in --
-    # silently switching off its allow rules and its MCP servers. A change the
-    # user made here is not a reason to stop trusting the project.
-    from quickcode.security.trust import keep_trust
+        section[plugin_id] = entry
+        raw[PLUGINS_KEY] = section
 
-    with keep_trust(cwd):
-        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    write_project_settings(cwd, merge)

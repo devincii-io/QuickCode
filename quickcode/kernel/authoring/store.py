@@ -32,11 +32,11 @@ restricted, so it is offered at every tier including ``locked`` and
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 import time
 from pathlib import Path
 
+from quickcode.fsutil import atomic_write_bytes
 from quickcode.kernel.authoring import schema
 from quickcode.kernel.authoring.discovery import (
     TRASH_DIRNAME,
@@ -230,23 +230,7 @@ def _write(path: Path, text: str, cwd: Path | str | None, scope: str) -> None:
             fix="Remove the character; it is usually a broken emoji or a pasted "
                 "control sequence.", status=400) from exc
     with _keeping_trust(cwd, scope):
-        _atomic_write(path, data)
-
-
-def _atomic_write(path: Path, data: bytes) -> None:
-    """Beside the file, then renamed over it: a crash leaves old or new, never
-    half. The temporary name starts with a dot, which no scan reads."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        with open(tmp, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
+        atomic_write_bytes(path, data, fsync=True)
 
 
 def _keeping_trust(cwd: Path | str | None, scope: str):
@@ -550,10 +534,6 @@ def _rewrite_identity(text: str, slug: str, title: str, derived_from: str) -> st
             lines.insert(close, f"{key}: {replacements[key]}")
             close += 1
     return "\n".join(lines)
-
-
-def problems_json(problems: list[Problem]) -> list[dict]:
-    return [p.to_json() for p in problems]
 
 
 def plugin_json(plugin: AuthoredPlugin) -> dict:

@@ -154,10 +154,6 @@ def has_saved_key() -> bool:
     return _SECRET_PATH.exists()
 
 
-def clear_saved_key() -> None:
-    _SECRET_PATH.unlink(missing_ok=True)
-
-
 # --------------------------------------------------------------------------- #
 # Model-provider keys
 # --------------------------------------------------------------------------- #

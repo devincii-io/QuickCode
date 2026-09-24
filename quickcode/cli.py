@@ -27,14 +27,6 @@ from quickcode.tools.registry import default_registry
 if TYPE_CHECKING:
     from quickcode.session.recorder import TranscriptRecorder
 
-try:
-    from importlib.metadata import version as _pkg_version
-
-    __version__ = _pkg_version("quickcode")
-except Exception:  # not installed as a package (running from source)
-    __version__ = "0.1.0-dev"
-
-
 def _say(message: str) -> None:
     """Print a status line, unless there is nowhere to print it.
 
@@ -415,6 +407,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.version:
+        from quickcode import __version__
+
         _say(f"quickcode {__version__}")
         return
 

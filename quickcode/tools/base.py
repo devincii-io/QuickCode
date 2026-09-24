@@ -57,9 +57,6 @@ class ReadRegistry:
         else:
             self.digests[key] = digest
 
-    def mtime_at_read(self, path: str) -> float | None:
-        return self.seen.get(self._key(path))
-
     def was_read(self, path: str) -> bool:
         return self._key(path) in self.seen
 

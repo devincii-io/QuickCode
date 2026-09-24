@@ -68,6 +68,7 @@ quickcode/
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every subprocess goes through here (no console window on Windows)
+  fsutil.py               # atomic_write_text/bytes: temp file beside the target, renamed over it
   workspace.py            # the project's .quickcode/ directory and its .gitignore
   frontmatter.py          # the one frontmatter parser: plugin loader and trust gate read files the same way
   ui/window.py            # pywebview window, browser fallback
@@ -90,6 +91,7 @@ quickcode/
     manifest/             # the internal plugins we ship, one module per family
       core.py sections.py tools.py agents.py authored.py providers.py mcp.py _text.py
     core_settings.py      # the internals' declared settings and bounds, read by the runtime
+    settings_file.py      # the one settings.json reader/writer; project writes keep trust
     composition.py        # what is attached to one agent, and the runtime limits
     resolve.py            # what an agent actually gets, with provenance
     orchestrator.py       # resolve_orchestrator: the session's own agent, depth 0
@@ -106,7 +108,7 @@ quickcode/
     app.py                # FastAPI routes + WebSocket attach
     manager.py            # ConversationManager / Conversation
     projects.py           # ProjectHub, project registry
-    serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
+    serialization.py      # re-exports session/wire.py under its old import path
     agents_api.py authoring_api.py gitinfo.py paths.py terminal.py auth.py
     workbench/            # the agent workbench behind agents_api.py's routes
       inventory.py view.py drafts.py compositions.py resolution.py
@@ -114,6 +116,7 @@ quickcode/
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
+    wire.py               # AgentEvent → wire JSON, LOGGED_TYPES, register_event
   subagents/
     definitions.py runner.py jobs.py artifacts.py
   providers/
@@ -330,7 +333,7 @@ No tool can reach it, and the agent never sees what is typed there.
 - A **Conversation** = one main AgentInstance + its transcript + its spawned subagents. A conversation nobody is attached to stays *open* server-side — its agent, task board and background jobs survive — but nothing streams to a client that is not there. In the browser each agent pane is its own iframe holding exactly one socket to one conversation (`frontend/js/ws.js` enforces the one with a generation guard); several panes make several concurrent live conversations.
 - Subagents and teammates are just more AgentInstances with different system prompts, models, and permission caps — one runtime, no special cases. Coordination (task board, teammate messaging, result hand-back) is specced in docs/AGENTS.md.
 - **Spend vs. context.** Each AgentInstance owns a `Ledger`, so a child's tokens reach the session only through the recorder, which bridges every subagent bus. It rolls them in with `Ledger.add_subagent`: the cumulative fields (`input_tokens`, `output_tokens`, `cached_tokens`, `cost_usd`) take them, and `last_input_tokens` / `last_output_tokens` never do. That pair is the *live context footprint* — it drives `context_pct()`, the context meter and the compaction threshold — and a subagent fills a context window of its own, so counting its request there would show a short conversation as nearly full and could trip an auto-compaction the parent never needed. `Ledger.from_events` replays the same split from the log, reading the child's usage out of the `agent_event` wrapper it is logged inside.
-- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `server/serialization.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py` through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
+- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `session/wire.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py` through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
 
 ## Efficiency checklist
 

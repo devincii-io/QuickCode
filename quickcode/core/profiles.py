@@ -39,18 +39,17 @@ same trust gate, as ``presets``.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from quickcode.core.permissions import Mode, Rules
 from quickcode.kernel.problems import Layer, Problem, Provenance
+from quickcode.kernel.settings_file import read_settings, write_project_settings, write_settings
 from quickcode.kernel.state import project_settings_path, user_settings_path
-from quickcode.kernel.state import read_settings as _read
-from quickcode.security import trust
 from quickcode.security.trust import project_may_state
 
 log = logging.getLogger("quickcode.core.profiles")
@@ -460,7 +459,7 @@ def _load(cwd: Path | None, *, trusted: bool | None = None,
     problems: list[Problem] = []
 
     path = user_settings_path()
-    found, probs = _parse_layer(_read(path), layer="user", gated=False,
+    found, probs = _parse_layer(read_settings(path), layer="user", gated=False,
                                 path=path, existing=profiles)
     profiles.update(found)
     problems += probs
@@ -468,7 +467,7 @@ def _load(cwd: Path | None, *, trusted: bool | None = None,
     if cwd is not None:
         path = project_settings_path(cwd)
         found, probs = _parse_layer(
-            _read(path), layer="project",
+            read_settings(path), layer="project",
             gated=not trust.resolve_trust(cwd, trusted),
             path=path, existing=profiles,
         )
@@ -501,8 +500,8 @@ def active_profile_id(cwd: Path | None, *, trusted: bool | None = None) -> str:
     layers: list[tuple[bool, dict[str, Any]]] = []
     if cwd is not None:
         layers.append((not trust.resolve_trust(cwd, trusted),
-                       _read(project_settings_path(cwd))))
-    layers.append((False, _read(user_settings_path())))
+                       read_settings(project_settings_path(cwd))))
+    layers.append((False, read_settings(user_settings_path())))
 
     for gated, raw in layers:
         value = raw.get(ACTIVE_KEY)
@@ -570,39 +569,31 @@ def _settings_path(cwd: Path | None) -> Path:
     return project_settings_path(cwd) if cwd is not None else user_settings_path()
 
 
-def _write(path: Path, raw: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+def _write(cwd: Path | None, mutate: Callable[[dict[str, Any]], None]) -> None:
+    """A widening profile is part of the trust hash, so a project-scope write
+    goes through the writer that keeps a trusted project trusted -- and never
+    trusts one that was not."""
+    if cwd is not None:
+        write_project_settings(cwd, mutate)
+    else:
+        write_settings(user_settings_path(), mutate)
 
 
 def save_profile(profile: PermissionProfile, *, cwd: Path | None = None) -> None:
     """Write a profile into the project settings file, or the user's own.
 
-    Everything else in the file is read, updated in place and written back, the
-    way ``state.save_entry`` does it: this owns one key and must not clobber
-    permissions, presets or MCP servers on its way past them.
+    Everything else in the file is left as it was, the way ``state.save_entry``
+    does it: this owns one key and must not clobber permissions, presets or MCP
+    servers on its way past them.
     """
-    path = _settings_path(cwd)
-    raw = _read(path)
-    section = raw.get(PROFILES_KEY)
-    if not isinstance(section, dict):
-        section = {}
-    # A widening profile is part of the trust hash, so writing one moves the
-    # hash and would revoke the project's grant. That is right when a
-    # repository ships a profile and wrong when the user just wrote one
-    # here -- re-asking someone to trust a project because of an edit they
-    # made in this app teaches them to click through the prompt.
-    #
-    # Re-affirmed only if the project was *already* trusted before the write.
-    # Granting on save would turn "save a profile" into a way to trust a
-    # project without ever being asked, which is the bypass this gate exists
-    # to close.
-    was_trusted = bool(cwd) and trust.is_trusted(cwd)
-    section[profile.id] = profile.to_dict()
-    raw[PROFILES_KEY] = section
-    _write(path, raw)
-    if was_trusted and cwd:
-        trust.default_store().grant(cwd)
+    def put(raw: dict[str, Any]) -> None:
+        section = raw.get(PROFILES_KEY)
+        if not isinstance(section, dict):
+            section = {}
+        section[profile.id] = profile.to_dict()
+        raw[PROFILES_KEY] = section
+
+    _write(cwd, put)
 
 
 def delete_profile(profile_id: str, *, cwd: Path | None = None) -> bool:
@@ -611,23 +602,25 @@ def delete_profile(profile_id: str, *, cwd: Path | None = None) -> bool:
     A built-in cannot be deleted, only shadowed; this removes the shadow, at
     which point the built-in is back.
     """
-    path = _settings_path(cwd)
-    raw = _read(path)
-    section = raw.get(PROFILES_KEY)
+    section = read_settings(_settings_path(cwd)).get(PROFILES_KEY)
     if not isinstance(section, dict) or profile_id not in section:
         return False
-    section.pop(profile_id)
-    raw[PROFILES_KEY] = section
-    _write(path, raw)
+
+    def drop(raw: dict[str, Any]) -> None:
+        section = raw.get(PROFILES_KEY)
+        if isinstance(section, dict):
+            section.pop(profile_id, None)
+
+    _write(cwd, drop)
     return True
 
 
 def set_active(profile_id: str, *, cwd: Path | None = None) -> None:
     """Select a profile, or pass ``""`` to run without one."""
-    path = _settings_path(cwd)
-    raw = _read(path)
-    raw[ACTIVE_KEY] = profile_id
-    _write(path, raw)
+    def select(raw: dict[str, Any]) -> None:
+        raw[ACTIVE_KEY] = profile_id
+
+    _write(cwd, select)
 
 
 # What the trust gate needs in order to hash and report a project's profiles.

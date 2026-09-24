@@ -121,9 +121,6 @@ class PluginRegistry:
         # staleness that deliberate rebuild exists to avoid. See ``used_by``.
         self._used_by: dict[str, list[Use]] | None = None
 
-    def add_problem(self, problem: Problem) -> None:
-        self.problems.append(problem)
-
     def add_problems(self, problems: list[Problem]) -> None:
         self.problems.extend(problems)
 

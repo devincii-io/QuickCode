@@ -32,7 +32,7 @@ from quickcode.core.events import (
     Usage,
 )
 from quickcode.providers.base import ProviderError
-from quickcode.server.serialization import event_to_json, loggable, plugin_logged
+from quickcode.session.wire import event_to_json, loggable, plugin_logged
 
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance, EventBus, Ledger

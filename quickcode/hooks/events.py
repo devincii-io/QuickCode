@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, ClassVar
 
-from quickcode.server.serialization import register_event
+from quickcode.session.wire import register_event
 
 LOG_TEXT_CAP = 1000
 

@@ -42,7 +42,6 @@ contributes, so a reader is told rather than surprised.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -321,11 +320,3 @@ def agent_defs(cwd: Path | str | None, *, trusted: bool | None = None) -> dict:
         if defn is not None:
             out[defn.name] = defn
     return out
-
-
-def relative_to_home(path: Path) -> str:
-    """A path a person can read back: ``~/.quickcode/...`` where it applies."""
-    try:
-        return "~" + os.sep + str(path.relative_to(Path.home()))
-    except (ValueError, OSError):
-        return str(path)

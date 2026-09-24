@@ -51,22 +51,20 @@ from quickcode.session.store import (
     SESSIONS_DIRNAME,
     SessionStore,
     purge_sessions,
+    safe_conv_id,
 )
 
 log = logging.getLogger("quickcode.server")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 JSON_BODY_CAP = 1024 * 1024
-# Conversation ids are generated as hex; anything else in a path segment would
-# be a traversal attempt against the sessions directory.
-_CONV_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 # A profile id is a key in a settings file and a path segment in these routes,
 # so it is held to the shape both can carry losslessly.
 _PROFILE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
 def _valid_conv_id(conv_id: str) -> bool:
-    return _CONV_ID_RE.fullmatch(conv_id) is not None
+    return safe_conv_id(conv_id)
 
 
 def _rejected_setting(provider: str, key: str, allowed: set[str]) -> str:
@@ -163,7 +161,7 @@ def create_app(
 
     @app.get("/api/health")
     def health(challenge: str = "") -> dict:
-        from quickcode.cli import __version__
+        from quickcode import __version__
 
         out: dict[str, Any] = {"app": "quickcode", "version": __version__}
         # Unauthenticated like the rest of this route, and safe to be: the
@@ -176,7 +174,7 @@ def create_app(
     # ---- per-project payload builders (shared by both route shapes) ----
 
     def _bootstrap(manager: ConversationManager) -> dict:
-        from quickcode.cli import __version__
+        from quickcode import __version__
         from quickcode.config import THEME_PRESETS
 
         cfg = manager.config

@@ -91,9 +91,6 @@ def parse_mode(raw: Any, default: Mode = Mode.ask) -> Mode:
 # selectors
 # --------------------------------------------------------------------------
 
-SELECTORS = ("@orchestrator", "@subagents", "@all")
-
-
 def selector_matches(selector: str, agent_id: str, role: Role) -> bool:
     """Do the four surviving selectors reach this agent?
 
@@ -237,9 +234,6 @@ class Composition:
         return cls(**stated, explicit=frozenset(stated))
 
 
-EMPTY = Composition()
-
-
 # --------------------------------------------------------------------------
 # RuntimeLimits
 # --------------------------------------------------------------------------
@@ -351,9 +345,6 @@ class Resolved:
 
     def errors(self) -> tuple[Problem, ...]:
         return tuple(p for p in self.problems if p.severity == "error")
-
-    def advisories(self) -> tuple[Problem, ...]:
-        return tuple(p for p in self.problems if p.severity != "error")
 
     def refusal(self) -> str:
         """One message naming every error, for a spawn that must not happen."""

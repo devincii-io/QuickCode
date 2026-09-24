@@ -5,7 +5,7 @@ Lines are one of:
   - ``{"kind": "message", ...}`` — a serialized ``ChatMessage`` (model context)
   - ``{"kind": "meta", ...}``    — free-form session metadata (title/model)
   - ``{"kind": "event", ...}``   — a UI/trace event (the append-only event log
-    the web transcript replays; see server/serialization.py for shapes)
+    the web transcript replays; see session/wire.py for shapes)
 
 The event log is the source of truth for what the user *saw*; the message log
 is the source of truth for what the model *sees* on resume.
@@ -65,10 +65,10 @@ _REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTAL
 # would only be a paragraph on disk.
 MAX_TITLE = 200
 
-# The shape a conversation id is allowed to have. The server enforces the same
-# rule on the way in (server/app.py `_CONV_ID_RE`), but ids also come *off the
-# disk* -- `list_sessions` and `empty_sessions` derive them from filenames --
-# so the last line of defence belongs here, next to the code that deletes.
+# The shape a conversation id is allowed to have. The server checks ids on the
+# way in with `safe_conv_id`, but ids also come *off the disk* --
+# `list_sessions` and `empty_sessions` derive them from filenames -- so the
+# last line of defence belongs here, next to the code that deletes.
 _SAFE_CONV_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
 # Serializes appends within this process, so the newline check before a write
@@ -587,10 +587,6 @@ class SessionStore:
         can be swept up as abandoned; anything less would be data loss.
         """
         return self.summary().empty
-
-    def artifact_refs(self) -> set[str]:
-        """Names of subagent artifacts this session's log points at."""
-        return _artifact_refs_in(self.path)
 
     # ---- listing ----
     @classmethod

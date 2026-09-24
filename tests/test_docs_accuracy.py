@@ -837,7 +837,7 @@ def test_the_documented_logged_event_types_are_the_logged_set():
     """ARCHITECTURE.md lists what `loggable()` admits. The session log's
     schema is `locked`, so the list a reader trusts has to be the set."""
     import quickcode.hooks  # noqa: F401 -- registers `hook_run`, as the running app always has
-    from quickcode.server.serialization import LOGGED_TYPES
+    from quickcode.session.wire import LOGGED_TYPES
 
     doc = read(ARCHITECTURE)
     start = doc.index("`loggable()` admits only the assembled shapes (")

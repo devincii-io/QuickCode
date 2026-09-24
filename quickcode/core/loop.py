@@ -42,12 +42,6 @@ from quickcode.tools.base import clean_text
 if TYPE_CHECKING:
     from quickcode.core.agent import AgentInstance
 
-# The fallback budget, for an agent built without resolved limits. What a turn
-# actually spends is ``agent.limits.max_rounds``, resolved once per session
-# from ``runtime.agent_loop.max_rounds``; the number itself is declared in the
-# manifest and reaches here through ``RuntimeLimits``.
-MAX_ROUNDS = RuntimeLimits().max_rounds
-
 
 async def run_turn(agent: AgentInstance, user_input: str) -> str:
     # Refused before it is pushed: the model never sees a message a hook
