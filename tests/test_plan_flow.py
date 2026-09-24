@@ -98,6 +98,25 @@ async def test_plan_rejection_keeps_planning():
     assert any("add tests" in m.content for m in tool_msgs)
 
 
+async def test_a_plan_call_without_a_plan_is_refused_before_review():
+    """The hook answers before the tool's schema is checked, so a missing or
+    non-text plan went to the user's review modal as it was."""
+    agent = _agent(OneCallProvider(AssembledToolCall("1", "plan", json.dumps({"plan": 42}))))
+    reviewed = []
+
+    async def review(md):
+        reviewed.append(md)
+        return PlanOutcome(approved=True, mode_after=Mode.auto_edit)
+
+    agent.plan_cb = review
+    await agent.run_turn("make a plan")
+
+    assert reviewed == []
+    assert agent.mode == Mode.plan
+    result = next(m.content for m in agent.history.messages if m.role == "tool")
+    assert result.startswith("[error]") and "markdown" in result
+
+
 def test_the_plan_section_stays_true_once_the_plan_is_approved():
     """The system prompt is frozen for the session, so a session that opened
     in plan mode keeps its <plan_mode> block after approval switches the mode.
