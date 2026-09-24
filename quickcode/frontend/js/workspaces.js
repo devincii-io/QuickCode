@@ -4,7 +4,7 @@ import { openDirBrowser } from "./modals.js";
 import { applyTheme, el, esc } from "./util.js";
 import { toastError, toastOk } from "./toast.js";
 import { renderAppearanceControls } from "./appearance.js";
-import { dwindleDir, equalize, evenRatio, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
+import { dwindleDir, equalize, evenRatio, heirOf, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
 import { MAX_PANES, MAX_RATIO, MIN_RATIO, clampRatio, resizeKey, restoreWorkspace } from "./workspace_state.js";
 
 const KEY = "qc-workspaces-v1";
@@ -21,10 +21,13 @@ let chrome = { width: 232, collapsed: false };
 function saveChrome() {
   try { localStorage.setItem("qc-workspace-chrome", JSON.stringify(chrome)); } catch { /* current window keeps its layout */ }
 }
-function toggleSidebar() {
-  chrome.collapsed = !chrome.collapsed;
+function showSidebar() {
   shell.classList.toggle("ws-collapsed", chrome.collapsed);
   document.getElementById("ws-sidebar-toggle").setAttribute("aria-expanded", String(!chrome.collapsed));
+}
+function toggleSidebar() {
+  chrome.collapsed = !chrome.collapsed;
+  showSidebar();
   saveChrome();
 }
 
@@ -33,14 +36,14 @@ function initSidebarResize() {
     const saved = JSON.parse(localStorage.getItem("qc-workspace-chrome"));
     if (saved) chrome = { width: Math.max(160, Math.min(360, Number(saved.width) || 232)), collapsed: saved.collapsed === true };
   } catch { /* defaults */ }
-  shell.style.setProperty("--sidebar-width", `${chrome.width}px`);
-  shell.classList.toggle("ws-collapsed", chrome.collapsed);
+  showSidebar();
   const grip = shell.querySelector(".ws-sidebar-grip");
   const apply = (width) => {
     chrome.width = Math.max(160, Math.min(360, width));
     shell.style.setProperty("--sidebar-width", `${chrome.width}px`);
     grip.setAttribute("aria-valuenow", String(Math.round(chrome.width)));
   };
+  apply(chrome.width);
   grip.addEventListener("keydown", (e) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     const width = { ArrowLeft: chrome.width - 10, ArrowRight: chrome.width + 10, Home: 160, End: 360 }[e.key];
@@ -147,7 +150,7 @@ function addPane(ws = current(), dir = null, convId = null) {
 }
 
 function focus(ws, id, input = true) {
-  if (active !== ws.project.id) { activate(ws); }
+  if (active !== ws.project.id || home) activate(ws);
   ws.focused = id;
   if (zoomed && zoomed !== id) zoomed = null;
   render();
@@ -159,20 +162,28 @@ function closePane(ws, id) {
   const pane = ws.panes[id];
   if (!pane) return;
   undo = { ws, pane };
+  const heir = heirOf(ws.tree, id);
   ws.tree = removeLeaf(ws.tree, id);
   delete ws.panes[id];
   frames.get(id)?.element.remove();
   frames.delete(id);
-  if (ws.focused === id) ws.focused = leaves(ws.tree)[0] || null;
+  const wasFocused = ws.focused === id;
+  if (wasFocused) ws.focused = heir || leaves(ws.tree)[0] || null;
   zoomed = null;
   render();
   save();
+  // The close button left with its pane. Keyboard focus goes where the room went.
+  if (wasFocused && ws.focused) post(frames.get(ws.focused)?.iframe, { action: "focus" });
+  else if (wasFocused) document.querySelector("#ws-empty button")?.focus();
   toastOk("Pane closed. The conversation is kept in session history.");
 }
 
 function undoClose() {
   if (!undo) return;
   const { ws, pane } = undo;
+  // Reopened from history since it closed: one pane per conversation.
+  const open = pane.convId && Object.values(ws.panes).find((p) => p.convId === pane.convId);
+  if (open) { undo = null; focus(ws, open.id); return; }
   if (leaves(ws.tree).length >= MAX_PANES) { toastError("Close a pane before restoring another."); return; }
   undo = null;
   ws.panes[pane.id] = pane;
@@ -184,9 +195,9 @@ function undoClose() {
 
 function mount(ws, pane) {
   if (frames.has(pane.id)) return;
-  const element = el(`<section class="ws-pane" aria-label="Agent pane">
+  const element = el(`<section class="ws-pane" aria-label="Agent: ${esc(pane.title)}">
     <header class="ws-pane-head" draggable="true">
-      <span class="ws-dot"></span><button class="ws-pane-name" title="Rename conversation">${esc(pane.title)}</button>
+      <span class="ws-dot" aria-hidden="true"></span><button class="ws-pane-name" title="Rename conversation">${esc(pane.title)}</button>
       <span class="ws-pane-status">Connecting</span>
       <button class="ws-icon" data-action="h" title="Split right" aria-label="Split right">◫</button>
       <button class="ws-icon" data-action="v" title="Split below" aria-label="Split below">⬒</button>
@@ -204,7 +215,9 @@ function mount(ws, pane) {
   element.id = `ws-pane-${pane.id}`;
   frames.set(pane.id, { element, iframe, ws, pane });
   grid.appendChild(element); // Never reparent a mounted iframe: it would reload.
-  element.addEventListener("pointerdown", () => focus(ws, pane.id, false));
+  const select = () => { if (home || active !== ws.project.id || ws.focused !== pane.id) focus(ws, pane.id, false); };
+  element.addEventListener("pointerdown", select);
+  element.addEventListener("focusin", select);
   element.querySelector(".ws-pane-head").addEventListener("dblclick", (e) => {
     if (!e.target.closest("button")) toggleZoom(pane.id);
   });
@@ -214,7 +227,7 @@ function mount(ws, pane) {
       const action = button.dataset.action;
       if (action === "close") closePane(ws, pane.id);
       else if (action === "zoom") toggleZoom(pane.id);
-      else addPane(ws, action);
+      else { ws.focused = pane.id; addPane(ws, action); } // Keyboard activation has no pointerdown.
     };
   });
   element.addEventListener("dragstart", (e) => {
@@ -357,7 +370,7 @@ function render() {
     const pid = workspace.project.id;
     let group = [...sidebar.children].find((n) => n.dataset.project === pid);
     if (!group) {
-      group = el(`<section class="ws-group"><div class="ws-project-row"><button class="ws-project"><span>▱</span><span class="ws-project-name"></span><span class="ws-count"></span></button><button class="ws-icon ws-manage" aria-label="Manage workspace" title="Manage workspace">⋯</button></div><div class="ws-agents"></div></section>`);
+      group = el(`<section class="ws-group"><div class="ws-project-row"><button class="ws-project"><span aria-hidden="true">▱</span><span class="ws-project-name"></span><span class="ws-count"></span></button><button class="ws-icon ws-manage" aria-label="Manage workspace" title="Manage workspace">⋯</button></div><div class="ws-agents"></div></section>`);
       group.dataset.project = pid; sidebar.appendChild(group);
       group.querySelector(".ws-project").onclick = () => { if (active !== pid || home) activate(workspace); };
       group.querySelector(".ws-manage").onclick = () => manageWorkspace(workspace);
@@ -373,13 +386,15 @@ function render() {
       const pane = workspace.panes[id];
       let row = [...list.children].find((n) => n.dataset.id === id);
       if (!row) {
-        row = el(`<button class="ws-agent"><span class="ws-dot"></span><span class="ws-agent-name"></span><span class="ws-agent-state"></span></button>`);
+        row = el(`<button class="ws-agent"><span class="ws-dot" aria-hidden="true"></span><span class="ws-agent-name"></span><span class="ws-agent-state"></span></button>`);
         row.dataset.id = id; list.appendChild(row);
         row.onclick = () => focus(workspace, id);
       }
       row.querySelector(".ws-agent-name").textContent = pane.title;
       row.title = pane.title;
-      row.classList.toggle("active", !home && active === pid && workspace.focused === id);
+      const selected = !home && active === pid && workspace.focused === id;
+      row.classList.toggle("active", selected);
+      row.setAttribute("aria-current", String(selected));
     });
   }
   layout();
@@ -417,6 +432,7 @@ function updateTitle(pane) {
   const f = frames.get(pane.id);
   if (!f) return;
   f.element.querySelector(".ws-pane-name").textContent = pane.title;
+  f.element.setAttribute("aria-label", `Agent: ${pane.title}`);
   f.iframe.title = pane.title;
 }
 
@@ -478,13 +494,13 @@ export async function bootWorkspaces() {
   const launch = initAuth();
   document.body.classList.add("workspace-shell");
   shell = el(`<div id="workspace-shell" class="ws-home">
-    <aside class="ws-sidebar"><div class="ws-brand"><img src="assets/icon.svg" width="25" height="25" alt=""><strong>QuickCode</strong><span>Workspace</span></div>
+    <aside id="ws-sidebar" class="ws-sidebar"><div class="ws-brand"><img src="assets/icon.svg" width="25" height="25" alt=""><strong>QuickCode</strong><span>Workspace</span></div>
       <button class="ws-open btn" id="ws-open">＋ Open folder</button>
       <div class="ws-section-label">Workspaces</div><nav id="ws-list" aria-label="Workspaces and agents"></nav>
       <div class="ws-sidebar-bottom"><button id="ws-projects">All projects</button><button id="ws-appearance">Appearance</button><button id="ws-settings">Settings</button><button id="ws-help">Help & shortcuts</button></div>
       <div class="ws-sidebar-grip" role="separator" tabindex="0" aria-label="Resize workspace sidebar" aria-orientation="vertical" aria-valuemin="160" aria-valuemax="360" aria-valuenow="232"></div>
     </aside>
-    <div class="ws-content"><header class="ws-toolbar"><button id="ws-sidebar-toggle" class="ws-icon" title="Toggle sidebar (Alt+B)" aria-label="Toggle sidebar">☰</button><div class="ws-location"><strong id="ws-title">Projects</strong><span id="ws-path"></span></div><button id="ws-undo" class="btn" hidden>Reopen closed pane</button><button id="ws-new-agent" class="btn primary" title="New agent pane (Alt+N)">＋ New agent</button></header>
+    <div class="ws-content"><header class="ws-toolbar"><button id="ws-sidebar-toggle" class="ws-icon" title="Toggle sidebar (Alt+B)" aria-label="Toggle sidebar" aria-controls="ws-sidebar">☰</button><div class="ws-location"><strong id="ws-title">Projects</strong><span id="ws-path"></span></div><button id="ws-undo" class="btn" hidden>Reopen closed pane</button><button id="ws-new-agent" class="btn primary" title="New agent pane (Alt+N)">＋ New agent</button></header>
       <main id="ws-grid" aria-label="Agent workspace"><div id="ws-empty" hidden><h2>Your workspace is ready</h2><p>Open an agent to start a conversation in this folder.</p><button class="btn primary">New agent</button></div></main>
     </div></div>`);
   document.body.appendChild(shell);

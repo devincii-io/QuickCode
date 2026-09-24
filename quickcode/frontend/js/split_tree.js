@@ -90,6 +90,16 @@ export function removeLeaf(root, payload) {
   return root;
 }
 
+// The pane that inherits the room `payload` leaves behind: the leaf of its
+// sibling subtree that sat next to it. null when it has no sibling.
+export function heirOf(root, payload) {
+  const hit = findLeaf(root, payload);
+  if (!hit?.parent) return null;
+  const index = hit.parent.children.indexOf(hit.node);
+  const ids = leaves(hit.parent.children[1 - index]);
+  return index === 0 ? ids[0] : ids[ids.length - 1];
+}
+
 const axis = (node) => (node.dir === "v" ? "v" : "h");
 
 // How many panes line up along `dir` inside `node`: a split along that axis

@@ -66,8 +66,23 @@ async (page) => {
   await ready(2);
   check(await second.locator("#input").inputValue() === "An unsent draft to recover", "workspace switch lost draft");
   check((await page.locator(".ws-pane iframe").evaluateAll((nodes) => nodes.slice(0, 2).map((f) => f.contentWindow.__workspaceSmokeMarker))).every((n, i) => n === documents[i]), "workspace switching reloaded an agent");
+  await page.locator("#ws-projects").click();
+  await page.locator(`.ws-agent[data-id="${ids[1]}"]`).click();
+  const leftHome = () => !document.getElementById("workspace-shell").classList.contains("ws-home");
+  await page.waitForFunction(leftHome, null, { timeout: 3000 }).catch(() => {});
+  if (!await page.evaluate(leftHome)) {
+    failures.push("an agent in the sidebar did not open from Home");
+    await page.locator(".ws-project").filter({ hasText: "Website redesign" }).click();
+  }
+  await ready(2);
+  const composerFocused = (id) => {
+    const f = document.activeElement;
+    return f?.tagName === "IFRAME" && f.closest(".ws-pane")?.dataset.pane === id && f.contentDocument.activeElement?.id === "input";
+  };
   await pane(ids[1]).locator('[data-action="close"]').click();
   await ready(1);
+  await page.waitForFunction(composerFocused, ids[0], { timeout: 3000 }).catch(() => {});
+  check(await page.evaluate(composerFocused, ids[0]), "closing a pane left keyboard focus nowhere");
   await page.locator("#ws-undo").click();
   await ready(2);
   check(await frame(ids[1]).locator("#input").inputValue() === "An unsent draft to recover", "reopening pane lost its draft");
@@ -89,6 +104,8 @@ async (page) => {
   await settings.locator('.theme-card[data-theme="light"]').click();
   await settings.locator("#theme-msg").filter({ hasText: "Saved" }).waitFor();
   check(await page.evaluate(() => document.documentElement.dataset.theme) === "light", "theme did not reach parent workspace");
+  await frame(ids[1]).locator('html[data-theme="light"]').waitFor({ timeout: 3000 }).catch(() => {});
+  check(await frame(ids[1]).locator("html").getAttribute("data-theme") === "light", "theme did not reach another agent pane");
   await settings.locator('select[name="spacing"]').selectOption("compact");
   await settings.locator('select[name="width"]').selectOption("full");
   await settings.locator('input[name="fontSize"]').fill("17");
@@ -126,7 +143,7 @@ async (page) => {
   await page.getByRole("button", { name: "Equalize pane sizes" }).click();
   const columns = await page.locator(".ws-pane:not([hidden])").evaluateAll((nodes) => nodes.map((n) => n.getBoundingClientRect().width));
   check(Math.max(...columns) - Math.min(...columns) <= 6, `equalize left uneven columns: ${columns.join(", ")}`);
-  const stored =await page.evaluate(() => Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)]));
+  const stored = await page.evaluate(() => Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)]));
   check(stored.every(([, v]) => !v.includes("workspace-preview")), "the auth token reached localStorage");
   check(!stored.some(([k]) => k.startsWith("qc-draft")), "a draft left the tab's sessionStorage");
   // A layout this browser can no longer trust must open a fresh conversation, not a dead pane.
@@ -137,5 +154,5 @@ async (page) => {
   await ready(1);
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "independent streams, drafts, resize, divider focus, drag, zoom, workspaces, close/undo, reload, rename, settings, themes, shortcuts, narrow layout, equalize, storage hygiene, corrupted layout", runtimeErrors: errors };
+  return { passed: true, checks: "independent streams, drafts, resize, divider focus, drag, zoom, workspaces, close/undo, focus after close, reload, rename, settings, themes, shortcuts, narrow layout, equalize, storage hygiene, corrupted layout", runtimeErrors: errors };
 }
