@@ -62,12 +62,18 @@ _stdlib_socketpair = socket.socketpair
 
 
 def _socketpair_that_cannot_hang(
-    family: int = socket.AF_INET,
+    family: int | None = None,
     type: int = socket.SOCK_STREAM,  # matches the stdlib signature we replace
     proto: int = 0,
 ) -> tuple[socket.socket, socket.socket]:
-    if not sys.platform.startswith("win") or family not in (socket.AF_INET, socket.AF_INET6):
+    if not sys.platform.startswith("win"):
         # Everywhere else this is a real socketpair(2) syscall, which cannot hang.
+        # `family=None` keeps the stdlib default (AF_UNIX): Linux has no AF_INET
+        # socketpair, so defaulting to it here broke every event loop off Windows.
+        return _stdlib_socketpair(family, type, proto)
+    if family is None:
+        family = socket.AF_INET
+    if family not in (socket.AF_INET, socket.AF_INET6):
         return _stdlib_socketpair(family, type, proto)
 
     host = "127.0.0.1" if family == socket.AF_INET else "::1"
