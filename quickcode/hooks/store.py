@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -227,7 +228,10 @@ def _atomic_write(path: Path, raw: dict[str, Any]) -> None:
 
 def _save(cwd: Path, scope: str, path: Path, raw: dict[str, Any]) -> None:
     if scope != "project":
-        _atomic_write(path, raw)
+        # Written through a symlink, as ``settings_file.write_settings`` writes
+        # the same file: a settings file kept in a dotfiles repository stays
+        # linked. A project's link is replaced instead -- it is the repository's.
+        _atomic_write(Path(os.path.realpath(path)), raw)
         return
     from quickcode.workspace import ensure_project_dir
 

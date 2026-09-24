@@ -288,6 +288,26 @@ def test_the_users_own_settings_file_is_written_through_a_symlink(tmp_path):
     assert json.loads(dotfiles.read_text("utf-8")) == {"active_preset": "x"}
 
 
+def test_saving_a_hook_writes_through_the_users_settings_symlink(tmp_path):
+    from quickcode.hooks import store as hook_store
+    from quickcode.kernel import state as state_store
+
+    dotfiles = tmp_path / "dotfiles" / "settings.json"
+    dotfiles.parent.mkdir()
+    dotfiles.write_text('{"theme": "kept"}', encoding="utf-8")
+    link = state_store.user_settings_path()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.unlink(missing_ok=True)
+    _symlink(link, dotfiles)
+
+    hook_store.add(tmp_path, hook_store.Draft(event="Stop", command="echo done"), scope="user")
+
+    assert link.is_symlink()
+    saved = json.loads(dotfiles.read_text("utf-8"))
+    assert saved["theme"] == "kept"
+    assert saved["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo done"
+
+
 def test_a_projects_settings_symlink_cannot_redirect_the_write(project, tmp_path):
     """The link is the repository's: following it would let a cloned project
     point the app's next save at any file the user can write."""
