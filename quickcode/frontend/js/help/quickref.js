@@ -14,7 +14,7 @@
 import { MODES } from "../modes.js";
 import { closeModal, modal } from "../ui/modal.js";
 import { esc } from "../util.js";
-import { KEYS, PANEL_NOTE, SLASH } from "./shortcuts.js";
+import { KEYS, PANEL_NOTE, slashRows } from "./shortcuts.js";
 
 export function openHelp({ onFull } = {}) {
   const row = ([k, d]) =>
@@ -27,7 +27,7 @@ export function openHelp({ onFull } = {}) {
     </div>
     <div class="help-sec">
       <h4>Slash commands</h4>
-      ${SLASH.map(([cmd, arg, d]) =>
+      ${slashRows().map(([cmd, arg, d]) =>
         row([esc(cmd) + (arg ? " " + esc(arg) : ""), esc(d)])).join("")}
     </div>
     <div class="help-sec">
