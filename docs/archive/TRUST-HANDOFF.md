@@ -1,3 +1,5 @@
+> **Archived.** Frontend handoff for the project trust gate; the prompt it asks for shipped in 2.0.0 as `frontend/js/trust.js`. Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Trust gate — frontend handoff (Phase 3/6)
 
 The backend trust gate is live (fixes the silent MCP RCE, finding F of

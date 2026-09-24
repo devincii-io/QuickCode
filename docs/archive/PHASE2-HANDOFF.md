@@ -1,3 +1,5 @@
+> **Archived.** Handoff notes for Phase 2 (the explanation layer) of the authoring and composition plan, shipped in 2.0.0. Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Phase 2 handoff — the explanation layer
 
 Phase 2 of `PLAN-AUTHORING-AND-COMPOSITION.md` landed in `kernel/spec.py` and

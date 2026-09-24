@@ -1,3 +1,5 @@
+> **Archived.** The plan that reconciled `docs/design/`; implemented in 2.0.0 (see the PHASE*-HANDOFF notes beside it). Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Plan — authoring and composition
 
 One implementable plan reconciling `design/AUTHORING.md`, `design/BINDING.md`

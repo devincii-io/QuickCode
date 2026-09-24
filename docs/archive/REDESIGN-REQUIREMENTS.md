@@ -1,3 +1,5 @@
+> **Archived.** Requirements captured for the plugin/UI overhaul; delivered in 2.0.0. Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Redesign requirements (source of truth for the plugin/UI overhaul)
 
 Captured from Devin's feedback + reference screenshots of the DeepSeek Harness.

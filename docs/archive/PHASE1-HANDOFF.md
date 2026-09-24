@@ -1,3 +1,5 @@
+> **Archived.** Handoff notes for Phase 1 of the authoring and composition plan, shipped in 2.0.0. Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Phase 1 handoff
 
 What landed, what other owners need to do, and where this deviates from

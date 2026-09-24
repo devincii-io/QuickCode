@@ -1,6 +1,12 @@
 # Authoring — how a human creates a plugin
 
-Companion to `../PLAN-PLUGIN-UI-OVERHAUL.md`. That document made the internals
+> **Design rationale.** Shipped in 2.0.0 with three authorable kinds —
+> `tool`, `agent` and `prompt` (`kernel/authoring/schema.py::KINDS`). The `mcp`
+> and `preset` kinds designed below were deferred: a file declaring either is
+> refused with a message naming where that configuration lives instead
+> (`settings.json`). Where this document and the code disagree, the code wins.
+
+Companion to `../archive/PLAN-PLUGIN-UI-OVERHAUL.md`. That document made the internals
 enumerable: 37 plugins, one registry, three tiers. It stopped one step short of
 the point. Today every plugin is declared in `kernel/manifest.py`, which means
 the only way to add a capability is to edit QuickCode's source. The kernel can

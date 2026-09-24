@@ -1,8 +1,10 @@
+> **Archived.** Handoff notes for Phase 3 (configuration as a top-level view) of the authoring and composition plan, shipped in 2.0.0. Kept as a historical record; the code and the reference docs in `docs/` are authoritative.
+
 # Phase 3 handoff — configuration as a top-level view
 
 What landed, what the frontend needs from the backend that does not exist yet,
 and what the next passes should pick up. Written against
-`docs/PLAN-AUTHORING-AND-COMPOSITION.md` §4 Phase 3 and `docs/design/UX.md`.
+`docs/archive/PLAN-AUTHORING-AND-COMPOSITION.md` §4 Phase 3 and `docs/design/UX.md`.
 
 ## What landed
 
@@ -39,7 +41,7 @@ and what the next passes should pick up. Written against
 
 Phase 2 wrote these fields onto `PluginSpec`/`SettingSpec` and filled them in
 `manifest.py`, but `kernel/registry.py:plugin_json()` does not serialise them
-yet (see `docs/PHASE2-HANDOFF.md` §1), so the payload the browser receives is
+yet (see `docs/archive/PHASE2-HANDOFF.md` §1), so the payload the browser receives is
 still the pre-Phase-2 shape. **Nothing needs to change in the frontend when
 that lands** — `js/config/explain.js` already reads every field by name and
 falls back only when it is absent:

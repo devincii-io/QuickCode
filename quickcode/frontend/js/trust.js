@@ -1,4 +1,4 @@
-// Project trust — the visible half of the gate (docs/TRUST-HANDOFF.md).
+// Project trust — the visible half of the gate (docs/archive/TRUST-HANDOFF.md).
 //
 // A project can name programs for QuickCode to run in two places: `mcpServers`
 // in its `.quickcode/settings.json`, and `kind: tool` files in

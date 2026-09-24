@@ -941,7 +941,7 @@ def create_app(
     # A project's MCP servers (executable-bearing project-scope config) are
     # inert until the project is explicitly trusted once. These routes let the
     # UI report what was refused and grant/revoke that trust. See
-    # docs/TRUST-HANDOFF.md and quickcode/security/trust.py.
+    # docs/archive/TRUST-HANDOFF.md and quickcode/security/trust.py.
 
     def _with_tool_detail(pid: str, status: dict) -> dict:
         """Add each command tool's argv to the report.
