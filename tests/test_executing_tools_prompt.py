@@ -76,6 +76,34 @@ def test_edits_and_read_only_tools_keep_their_auto_edit_behaviour(project):
     assert e.evaluate_tool(_mcp_tool(read_only=True), {})[0] == Decision.allow
 
 
+def _copy_tool(project: Path, target: str):
+    write(project, "copy-it", echo_tool(
+        [*ECHO, "{src}", "{dst}"],
+        [{"name": "src", "type": "path"}, {"name": "dst", "type": "path"},
+         {"name": "note", "type": "string"}],
+        permission_target=target).replace("name: echo-args", "name: copy-it"))
+    return discovery.discover(project).plugins[0].to_tool()
+
+
+@pytest.mark.parametrize("target", ["src", "note"])
+@pytest.mark.parametrize("dst", [".git/hooks/pre-commit", ".quickcode/settings.local.json",
+                                 "../outside.txt"])
+def test_every_path_a_command_tool_touches_is_protected_not_just_the_target(
+        project, target, dst):
+    """Protected paths prompt before any allow rule -- for ``write`` that is its
+    one path. A command tool has several, and only the rule target was checked,
+    so an allow rule for the tool let the model point another path parameter
+    at .git/hooks or the project's own permission file, unasked."""
+    tool = _copy_tool(project, target)
+    args = {"src": "a.txt", "dst": dst, "note": "x"}
+    e = _engine(Mode.ask, project, allow=["copy-it"])
+    assert e.evaluate_tool(tool, args)[0] == Decision.ask
+    assert _engine(Mode.dontask, project, allow=["copy-it"]).evaluate_tool(
+        tool, args)[0] == Decision.deny
+    safe = {"src": "a.txt", "dst": "b.txt", "note": "x"}
+    assert e.evaluate_tool(tool, safe)[0] == Decision.allow
+
+
 def test_yolo_still_runs_them(project):
     e = _engine(Mode.yolo, project)
     assert e.evaluate_tool(_command_tool(project), {"path": "src/a.py"})[0] == Decision.allow

@@ -90,6 +90,10 @@ class CommandTool(Tool[BaseModel]):
             executes=True,
         )
 
+    def permission_paths(self, args: dict) -> list[str]:
+        """Every path this call names, for the engine's protected-path check."""
+        return [raw for _name, raw in _path_values(self.plugin, args)]
+
     # -- transcript -------------------------------------------------------
 
     def render_call(self, input: BaseModel) -> str:  # noqa: A002

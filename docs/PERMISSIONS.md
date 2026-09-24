@@ -47,7 +47,9 @@ MCP tools declare `mutates=not read_only`, honouring the server's
 `annotations.readOnlyHint` and defaulting to prompting when it says nothing.
 MCP tools and authored command tools also declare `executes=True`: they run a
 program rather than edit a file, so `auto-edit` prompts for them the way it
-prompts for a shell command.
+prompts for a shell command. A command tool with several `path` parameters
+has every one of them protected-path checked, not only the one its rules
+match on (`Tool.permission_paths`).
 
 ## Modes
 

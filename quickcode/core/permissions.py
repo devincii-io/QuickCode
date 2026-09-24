@@ -328,7 +328,15 @@ class PermissionEngine:
         # (see Tool.permission_target). Its answer wins when it gives one.
         declared = getattr(tool, "permission_target", None)
         target = (declared(args) if callable(declared) else "") or self.target_for(spec, args)
-        return self.evaluate(tool.name, target, spec=spec), target
+        decision = self.evaluate(tool.name, target, spec=spec)
+        # A tool with several path arguments (an authored command tool) names
+        # them all: a rule matches one target, but every path the call touches
+        # gets the protected-path check that runs before any allow rule.
+        paths = getattr(tool, "permission_paths", None)
+        if callable(paths) and decision is Decision.allow and self.mode is not Mode.yolo:
+            if any(_protected(p, self.root) for p in paths(args)):
+                decision = Decision.deny if self.mode is Mode.dontask else Decision.ask
+        return decision, target
 
     def evaluate(self, tool: str, arg: str, spec: PermissionSpec | None = None) -> Decision:
         """Decide for a single tool invocation. ``arg`` is the match target
