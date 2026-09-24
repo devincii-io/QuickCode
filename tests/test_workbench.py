@@ -245,6 +245,28 @@ def test_a_draft_tool_pattern_changes_the_grant_and_the_schemas(tmp_path):
     assert rows["glob"]["reason"]
 
 
+def test_a_draft_body_is_bounded_whether_or_not_it_declares_its_length(tmp_path):
+    too_big = b" " * (1024 * 1024 + 1)
+
+    def chunked():
+        for start in range(0, len(too_big), 64 * 1024):
+            yield too_big[start:start + 64 * 1024]
+
+    with make_client(make_manager(tmp_path)) as client:
+        url = "/api/kernel/agents/explore/preview"
+        declared = client.post(url, content=too_big)
+        streamed = client.post(url, content=chunked())
+        malformed = client.post(url, content=b"{nope")
+        empty = client.post(url, content=b"")
+
+    assert declared.status_code == 413
+    assert streamed.status_code == 413
+    assert malformed.status_code == 400
+    assert malformed.json()["detail"].startswith("malformed JSON")
+    # An empty body is an empty draft, which is the saved agent.
+    assert empty.status_code == 200 and empty.json()["draft"] is True
+
+
 def test_a_glob_pattern_is_reported_as_glob_matched_not_frozen(tmp_path):
     with make_client(make_manager(tmp_path)) as client:
         preview = client.post(

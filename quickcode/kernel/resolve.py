@@ -38,7 +38,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +56,7 @@ from quickcode.kernel.composition import (
     selector_matches,
 )
 from quickcode.kernel.manifest import core_setting
+from quickcode.kernel.patterns import is_glob, pattern_matches
 from quickcode.kernel.problems import Layer, Problem, Provenance
 
 # The fallback for callers that resolve without a session -- the runtime passes
@@ -64,19 +64,8 @@ from quickcode.kernel.problems import Layer, Problem, Provenance
 # ``runtime.subagents.max_depth`` reaches the resolver.
 DEFAULT_MAX_DEPTH = RuntimeLimits().max_depth
 
-_GLOB_CHARS = ("*", "?", "[")
-
-
-def _is_pattern(text: str) -> bool:
-    return any(ch in text for ch in _GLOB_CHARS)
-
-
-def _matches(pattern: str, name: str) -> bool:
-    return pattern == name or fnmatchcase(name, pattern)
-
-
 def _admits(patterns: Iterable[str], candidate: str) -> bool:
-    return any(_matches(p, candidate) for p in patterns)
+    return any(pattern_matches(p, candidate) for p in patterns)
 
 
 def expand_tool_pattern(pattern: str) -> str:
@@ -275,8 +264,8 @@ def _intersect_named(
         matched: set[str] = set()
         for pattern in patterns:
             wanted = expand(pattern) if expand else pattern
-            hits = [name for name in candidates if _matches(wanted, name)]
-            if not _is_pattern(wanted):
+            hits = [name for name in candidates if pattern_matches(wanted, name)]
+            if not is_glob(wanted):
                 literals.add(wanted)
             if not hits:
                 empty_patterns.append((layer, pattern))
@@ -433,7 +422,7 @@ def resolve_composition(
         layers, "tools", selectable, expand=expand_tool_pattern
     )
     for pattern in revoked["tools"]:
-        for name in [n for n in asked if _matches(pattern, n)]:
+        for name in [n for n in asked if pattern_matches(pattern, n)]:
             asked.discard(name)
             tool_chains[name].append(
                 preset_layer.prov(rule=pattern, note="revoked by a binding")
@@ -517,7 +506,7 @@ def resolve_composition(
         spawn_asked &= allowed_by_parent
 
     for pattern in revoked["spawns"]:
-        for name in [n for n in spawn_asked if _matches(pattern, n)]:
+        for name in [n for n in spawn_asked if pattern_matches(pattern, n)]:
             spawn_asked.discard(name)
             spawn_chains[name].append(
                 preset_layer.prov(rule=pattern, note="revoked by a binding")

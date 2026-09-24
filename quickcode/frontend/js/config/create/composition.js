@@ -11,7 +11,7 @@
 import { esc } from "../../util.js";
 import { flash, splitError } from "../../settings/ui.js";
 
-/** `_composition_id` in server/agents_api.py, so the preview is the id that lands. */
+/** `composition_id` in server/workbench/compositions.py, so the preview is the id that lands. */
 export function compositionId(raw) {
   let text = String(raw || "").trim().toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-");

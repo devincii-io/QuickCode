@@ -89,6 +89,8 @@ quickcode/
     spec.py registry.py manifest.py bootstrap.py state.py
     composition.py        # what is attached to one agent, and the runtime limits
     resolve.py            # what an agent actually gets, with provenance
+    orchestrator.py       # resolve_orchestrator: the session's own agent, depth 0
+    patterns.py           # a tools:/spawns:/models: entry: literal name or glob
     preset.py             # presets: the composition a session's agents run
     problems.py           # provenance and problem records
     authoring/            # .quickcode/plugins/*.md → plugins
@@ -103,6 +105,9 @@ quickcode/
     projects.py           # ProjectHub, project registry
     serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
     agents_api.py authoring_api.py gitinfo.py paths.py terminal.py auth.py
+    workbench/            # the agent workbench behind agents_api.py's routes
+      inventory.py view.py drafts.py compositions.py resolution.py
+      prompt_view.py tool_rows.py provenance.py
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
