@@ -202,6 +202,9 @@ export function retryNow() {
   backoff = 500;
   health.fatal = "";
   open();                     // the mirror is cleared on the first frame, above
+  // teardown() stopped the watchdog, and a revived socket needs it most: the
+  // wake from sleep that triggers this is exactly when zombies are made.
+  watch();
 }
 
 // Waking from sleep, coming back online and returning to the window are the
