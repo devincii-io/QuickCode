@@ -45,9 +45,9 @@ change reaches every open pane without a reload.
 
 ## Inside an agent pane
 
-- **Top bar** — project and session chips, session tabs, the update chip,
-  new conversation, and toggles for the side panel, the terminal, Help and
-  Settings.
+- **Top bar** — project and session chips, session tabs (`js/sessionbar.js`),
+  the update chip, new conversation, and toggles for the side panel, the
+  terminal, Help and Settings.
 - **Transcript** (`js/chat.js`) — streaming markdown, reasoning, tool calls
   with their results, diffs, and system notes. Rendering is batched per
   animation frame and a streaming message patches one live node rather than
@@ -67,8 +67,9 @@ change reaches every open pane without a reload.
   plus an *Agent* tab listing every command the agent ran with its output. The
   agent cannot type into this shell and never sees it; no tool can reach the
   terminal route.
-- **Status bar** — state, model, context use, time, speed, cache hits,
-  tokens, cost and connection.
+- **Status bar** (`js/statusbar.js`) — state, model, context use, time, speed,
+  cache hits, tokens, cost and connection. A connection that stays down past
+  a moment gets a banner as well (`js/connbanner.js`).
 
 ## Trajectory
 
