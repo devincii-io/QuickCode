@@ -1220,7 +1220,9 @@ class ConversationManager:
     def live_conversations(self) -> dict[str, str]:
         """Open conversations that are genuinely in use, id -> why."""
         out = {}
-        for conv_id, conv in self.conversations.items():
+        # A snapshot: the session list asks from a worker thread while the
+        # event loop may be opening a conversation into this dict.
+        for conv_id, conv in list(self.conversations.items()):
             reason = conv.busy_reason()
             if reason:
                 out[conv_id] = reason

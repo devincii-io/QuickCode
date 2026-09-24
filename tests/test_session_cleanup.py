@@ -360,6 +360,26 @@ def test_api_bulk_delete_reports_a_log_it_could_not_remove_as_failed(tmp_path, m
     assert [(s["conv_id"], s["reason"]) for s in body["skipped"]] == [("conv-a", "failed")]
 
 
+def test_the_live_flag_survives_a_conversation_opening_while_the_list_is_built(tmp_path):
+    # GET /api/sessions is a sync route, so it runs on a worker thread while
+    # the event loop keeps opening conversations. Iterating the live dict
+    # directly raised "dictionary changed size during iteration" -- a 500 on
+    # the session list whenever a pane opened at the wrong moment.
+    manager = make_manager(tmp_path, FakeProvider([]))
+
+    class OpensAnotherMidIteration:
+        def busy_reason(self):
+            manager.conversations["opened-meanwhile"] = Idle()
+            return "a turn is running"
+
+    class Idle:
+        def busy_reason(self):
+            return None
+
+    manager.conversations["running"] = OpensAnotherMidIteration()
+    assert manager.live_conversations() == {"running": "a turn is running"}
+
+
 def test_api_bulk_delete_closes_an_idle_conversation_instead_of_refusing_it(tmp_path):
     # Opened earlier in this run, nothing attached, nothing running: the single
     # delete closes it and goes ahead, and the bulk one has to agree -- it used
