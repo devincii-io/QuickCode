@@ -18,6 +18,7 @@
 
 import { api } from "../api.js";
 import { copyText } from "../copy.js";
+import { perFrame } from "../frame.js";
 import { store, subscribe } from "../store.js";
 import { toastError, toastOk } from "../toast.js";
 import { confirmModal } from "../ui/modal.js";
@@ -50,7 +51,6 @@ export function initJobs(container, { onCount } = {}) {
   let listGen = 0;
   let pulling = false;
   let pullAgain = false;
-  let paintQueued = false;
   let jumpToEnd = true;
   let ticker = null;
   const rows = new Map();      // job id -> row button
@@ -202,24 +202,19 @@ export function initJobs(container, { onCount } = {}) {
     metaEl.textContent = bits.join(" · ");
   }
 
-  function paint() {
-    if (paintQueued) return;
-    paintQueued = true;
-    requestAnimationFrame(() => {
-      paintQueued = false;
-      const atEnd = outEl.scrollHeight - outEl.scrollTop - outEl.clientHeight < 24;
-      if (buf && buf.id === selected && buf.text) {
-        outEl.innerHTML = renderAnsiBlock(buf.text, COLS, DOM_LINES);
-      } else {
-        outEl.replaceChildren(node("div", "qt-cmd-empty",
-          jobs.get(selected)?.status === "running" ? "No output yet…" : "No output."));
-      }
-      // Follow the end unless the reader scrolled up to look at something.
-      if (jumpToEnd || atEnd) outEl.scrollTop = outEl.scrollHeight;
-      jumpToEnd = false;
-      renderHead();
-    });
-  }
+  const paint = perFrame(() => {
+    const atEnd = outEl.scrollHeight - outEl.scrollTop - outEl.clientHeight < 24;
+    if (buf && buf.id === selected && buf.text) {
+      outEl.innerHTML = renderAnsiBlock(buf.text, COLS, DOM_LINES);
+    } else {
+      outEl.replaceChildren(node("div", "qt-cmd-empty",
+        jobs.get(selected)?.status === "running" ? "No output yet…" : "No output."));
+    }
+    // Follow the end unless the reader scrolled up to look at something.
+    if (jumpToEnd || atEnd) outEl.scrollTop = outEl.scrollHeight;
+    jumpToEnd = false;
+    renderHead();
+  });
 
   // A different job on screen starts its output from scratch: the newest
   // TAIL_BYTES, with what came before marked as not shown.

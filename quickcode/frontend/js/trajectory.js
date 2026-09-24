@@ -13,6 +13,7 @@
 // windowing (what the viewport needs), and the painters (lanes, table, hover
 // card). None of them keeps a DOM node per event.
 
+import { perFrame } from "./frame.js";
 import { createInspector } from "./inspector.js";
 import { store, subscribe } from "./store.js";
 import { clock } from "./trajectory/format.js";
@@ -63,7 +64,7 @@ let playV = null;            // playhead position, in virtual ms
 let plotW = 0, laneH = 20, rowH = 24, tableH = 0;
 
 let dirty = 0;               // 1 = model, 2 = lanes, 4 = rows
-let frame = 0;
+const paintSoon = perFrame(paintFrame);
 let liveTimer = 0;
 
 function isLive() {
@@ -391,14 +392,12 @@ function syncLiveTicker() {
 
 function invalidate(bits) {
   dirty |= bits;
-  if (frame) return;
-  frame = requestAnimationFrame(paintFrame);
+  paintSoon();
 }
 
 function paintFrame() {
   const d = dirty;
   dirty = 0;
-  frame = 0;
   if (d & 1) {
     const wasFit = isFitted(view, model.totalV);
     rebuild();
