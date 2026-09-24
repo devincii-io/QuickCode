@@ -52,6 +52,7 @@ def provider_factories() -> dict[str, Callable[[str, str | None], Provider]]:
 
     factories: dict[str, Callable[[str, str | None], Provider]] = {
         "openai-compat": lambda base_url, api_key: OpenAICompatProvider(base_url, api_key),
+        "anthropic": _anthropic,
     }
     for ep in entry_points(group=PROVIDERS_GROUP):
         try:
@@ -59,6 +60,13 @@ def provider_factories() -> dict[str, Callable[[str, str | None], Provider]]:
         except Exception as e:
             log.warning("provider plugin %s failed to load: %s", ep.name, e)
     return factories
+
+
+def _anthropic(base_url: str, api_key: str | None) -> Provider:
+    # Imported on use: listing the factories for Settings must not load it.
+    from quickcode.providers.anthropic import AnthropicProvider
+
+    return AnthropicProvider(base_url, api_key)
 
 
 def make_provider(name: str, base_url: str, api_key: str | None) -> Provider:

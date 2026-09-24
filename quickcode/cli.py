@@ -131,10 +131,11 @@ def _build_agent(args: argparse.Namespace):
 
     # Imported here rather than at module scope: this module is what `qc` and
     # the windowed entry point both load first, and a top-level import would
-    # drag the OpenAI SDK in before anything is on screen.
-    from quickcode.providers.openai_compat import OpenAICompatProvider
+    # drag the provider SDKs in before anything is on screen. The same factory
+    # the app uses, so `-p` talks to the backend the profile names.
+    from quickcode.plugins import loader
 
-    provider = OpenAICompatProvider(profile.base_url, profile.api_key)
+    provider = loader.make_provider(profile.provider, profile.base_url, profile.api_key)
 
     registry = default_registry()
 
