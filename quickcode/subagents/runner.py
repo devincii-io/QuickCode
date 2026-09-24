@@ -43,6 +43,7 @@ from quickcode.providers.base import Provider
 from quickcode.subagents.artifacts import maybe_offload
 from quickcode.subagents.capping import ChildPermissions, deny_prompt
 from quickcode.subagents.definitions import AgentDef, load_defs
+from quickcode.subagents.interrupts import close_unanswered_calls
 from quickcode.subagents.jobs import CANCELLED, DONE, ERROR, JobRecord
 from quickcode.tools.base import ReadRegistry, ToolCtx
 from quickcode.tools.registry import ToolRegistry, build_registry, core_tools
@@ -608,7 +609,11 @@ async def _run_and_finish(
     deps.turns[agent_id] = deps.turns.get(agent_id, 0) + 1
     try:
         report = await child.run_turn(message)
+    except asyncio.CancelledError:
+        close_unanswered_calls(child.history)
+        raise
     except Exception as e:  # a child failure must not crash the parent's loop
+        close_unanswered_calls(child.history)
         return ERROR, sanitize_report(f"[did not finish] subagent errored: {e}")
 
     status = CANCELLED if child.cancelled else DONE
@@ -632,7 +637,10 @@ async def resume_subagent(
     if child is None:
         known = ", ".join(deps.roster) or "(none)"
         raise ValueError(f"unknown agent_id '{agent_id}'. Known: {known}")
-    if child.busy:
+    # ``busy`` only flips once the child's turn starts; a detached job's record
+    # is running from the moment it is spawned, before its task's first step.
+    job = deps.jobs.get(agent_id)
+    if child.busy or (job is not None and job.running):
         raise ValueError(f"agent '{agent_id}' is still running")
 
     # ``max_turns`` is the child's delegation budget: one turn for the spawn,
