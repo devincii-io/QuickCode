@@ -528,8 +528,24 @@ def spawn_subagent_background(
     )
     deps.jobs[agent_id] = job
     job.task = asyncio.ensure_future(_run_job(deps, job, child, prompt))
+    job.task.add_done_callback(lambda _task: _settle_unstarted(deps, job))
     deps.adopt_task(job.task)
     return job
+
+
+def _settle_unstarted(deps: SubagentDeps, job: JobRecord) -> None:
+    """The one ending ``_run_job`` cannot see for itself.
+
+    A task cancelled before its first step never enters its coroutine, so an
+    interrupt that lands between the spawn and that step skips every handler
+    below. Every other ending has already finished the record by the time a
+    done-callback runs, which makes this a no-op for them.
+    """
+    if job.running:
+        job.finish(CANCELLED, sanitize_report(
+            "[did not finish] the background job was cancelled before it started."
+        ))
+        _announce(deps, job)
 
 
 async def _run_job(

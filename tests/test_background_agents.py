@@ -351,6 +351,31 @@ async def test_cancelling_a_job_keeps_what_the_child_managed(tmp_path):
     assert "[did not finish]" in result.content
 
 
+async def test_a_job_cancelled_before_it_ever_ran_still_ends(tmp_path):
+    """An interrupt can land between the spawn and the job task's first step.
+
+    A task cancelled before it starts never enters its coroutine, so none of
+    ``_run_job``'s handlers run: the record stayed ``running`` for ever, held a
+    parallelism slot for the rest of the conversation, and the roster row its
+    ``agent_spawned`` opened was never closed.
+    """
+    provider = GatedProvider()
+    deps, tasks = _deps(provider, cwd=tmp_path)
+    ended: list[tuple] = []
+    deps.on_done = lambda *args: ended.append(args)
+
+    await _start(deps, tmp_path)
+    assert deps.cancel_jobs() == 1
+    await _drain(tasks)
+
+    job = deps.jobs["explore-1"]
+    assert job.status == CANCELLED
+    assert "[did not finish]" in job.report
+    assert deps.running_jobs() == []
+    assert [(e[0], e[2]) for e in ended] == [("explore-1", CANCELLED)]
+    assert not provider.started.is_set()
+
+
 async def test_a_session_that_cannot_detach_runs_the_delegation_inline(tmp_path):
     """Headless ``-p``: the process ends with its single turn, so there is
     nothing to own a task. The model gets the identical report, and is told
