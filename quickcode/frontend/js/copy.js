@@ -189,10 +189,18 @@ function openMenu(x, y, items) {
   const r = menu.getBoundingClientRect();
   menu.style.left = `${Math.min(x, window.innerWidth - r.width - 8)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - r.height - 8)}px`;
-  setTimeout(() => {
-    document.addEventListener("pointerdown", closeMenu, { once: true });
-    document.addEventListener("keydown", onEsc, true);
-  }, 0);
+  // Registered now, not on a timer: the press that opened the menu has already
+  // been dispatched, and a timer left a window in which Escape or a click away
+  // arrived before anything was listening for it.
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("keydown", onEsc, true);
+}
+
+// A press on one of the menu's own items must survive until its click lands:
+// closing on that pointerdown removed the button before the click reached it.
+function onPointerDown(e) {
+  if (e.target instanceof Element && e.target.closest(".ctx-menu")) return;
+  closeMenu();
 }
 
 function onEsc(e) {
@@ -203,6 +211,7 @@ function onEsc(e) {
 
 function closeMenu() {
   document.querySelector(".ctx-menu")?.remove();
+  document.removeEventListener("pointerdown", onPointerDown, true);
   document.removeEventListener("keydown", onEsc, true);
 }
 

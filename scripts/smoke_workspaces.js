@@ -28,6 +28,10 @@ async (page) => {
   await first.locator(".msg-assistant").waitFor();
   await second.locator(".msg-assistant").waitFor();
   check(!(await first.locator("#transcript").innerText()).includes("Review settings independently"), "transcripts crossed between panes");
+  await first.locator(".msg-user .bubble").click({ button: "right" });
+  await first.locator(".ctx-menu .ctx-item", { hasText: "Copy message" }).click();
+  await first.locator(".toast", { hasText: /Copied message|Could not copy/ }).waitFor({ timeout: 3000 })
+    .catch(() => failures.push("a right-click menu item did nothing when clicked"));
   await second.locator("#input").fill("An unsent draft to recover");
   const documents = await page.locator(".ws-pane iframe").evaluateAll((nodes) => nodes.map((f) => {
     f.contentWindow.__workspaceSmokeMarker = Math.random();
@@ -154,5 +158,5 @@ async (page) => {
   await ready(1);
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "independent streams, drafts, resize, divider focus, drag, zoom, workspaces, close/undo, focus after close, reload, rename, settings, themes, shortcuts, narrow layout, equalize, storage hygiene, corrupted layout", runtimeErrors: errors };
+  return { passed: true, checks: "independent streams, context menu, drafts, resize, divider focus, drag, zoom, workspaces, close/undo, focus after close, reload, rename, settings, themes, shortcuts, narrow layout, equalize, storage hygiene, corrupted layout", runtimeErrors: errors };
 }
