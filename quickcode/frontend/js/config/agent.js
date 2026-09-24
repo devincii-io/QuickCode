@@ -17,7 +17,7 @@
 //   denied and a missing prompt section with the reason it is missing. An
 //   omitted key answers nothing.
 
-import { esc } from "../util.js";
+import { esc, fmtCount as num } from "../util.js";
 import { chip, flash, openPluginView, splitError, tierBadge } from "../settings/ui.js";
 import { renderSettingsForm } from "../settings/fields.js";
 import { editableFile, sigilHtml } from "./kinds.js";
@@ -28,8 +28,6 @@ import { usedByHtml } from "./usedby.js";
 import { store } from "../store.js";
 
 export const ORCHESTRATOR = "@orchestrator";
-
-const num = (n) => Number(n || 0).toLocaleString();
 
 // ---- provenance -----------------------------------------------------------
 

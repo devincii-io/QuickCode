@@ -18,8 +18,13 @@
 
 import { inspectLink, wireInspect } from "../inspect.js";
 import { midTurn, store, subscribe } from "../store.js";
+import { argSummary } from "../tool_args.js";
 import { highlightToon, toon } from "../toon.js";
+import { fmtDur } from "../trajectory/format.js";
 import { el, esc, fmtMs, oneLine } from "../util.js";
+
+// The panel is narrower than the transcript, and so are its argument lines.
+const ARG_WIDTHS = { width: 100, wide: 100, each: 32 };
 
 let root = null;
 const openIds = new Set();     // agent_id -> card expanded
@@ -209,7 +214,7 @@ function buildAgents() {
       if (e.type === "tool_call") {
         toolCount++;
         ended = false;
-        lastLine = `${e.name} ${argSummary(e.name, e.arguments)}`;
+        lastLine = `${e.name} ${argSummary(e.name, e.arguments, ARG_WIDTHS)}`;
       } else if (e.type === "tool_result") {
         lastResult = e;
         ended = false;
@@ -267,17 +272,16 @@ function stamp(a) {
   }
 }
 
-function fmtDur(ms) {
-  if (ms == null || ms < 0) return "";
-  if (ms < 60000) return fmtMs(Math.round(ms));
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+// A live start against a replayed end can come out a hair negative; that
+// reads as nothing rather than as "-3 ms".
+function spanText(ms) {
+  return ms == null || ms < 0 ? "" : fmtDur(ms);
 }
 
 function durText(a) {
   const t = times.get(a.id);
   if (!t) return "";
-  return fmtDur((t.end ?? Date.now()) - t.start);
+  return spanText((t.end ?? Date.now()) - t.start);
 }
 
 // ---- rendering ----
@@ -525,21 +529,6 @@ function fillBody(body, a) {
   }
 }
 
-// One-line argument preview, mirroring the chat view's tool summaries.
-function argSummary(name, argsRaw) {
-  let a;
-  try { a = JSON.parse(argsRaw || "{}"); } catch { return oneLine(argsRaw, 100); }
-  if (!a || typeof a !== "object") return oneLine(argsRaw, 100);
-  if (name === "bash") return oneLine(a.command, 100);
-  if (name === "read" || name === "write" || name === "edit")
-    return oneLine(a.file_path || a.path, 100);
-  if (name === "grep") return oneLine(`${a.pattern ?? ""}  ${a.path || ""}`, 100);
-  if (name === "glob") return oneLine(a.pattern, 100);
-  if (name === "agent") return oneLine(a.definition || a.prompt, 100);
-  return oneLine(
-    Object.entries(a).map(([k, v]) => `${k}: ${oneLine(String(v), 32)}`).join(", "), 100);
-}
-
 // Arguments are shown in the encoding the model reads them in, not re-rendered
 // as JSON. The model's own tool-call arguments arrive as a JSON string on the
 // wire; what a subagent's context actually looks like is TOON, and a panel that
@@ -561,7 +550,7 @@ function toolNode(agentId, ev) {
     <div class="pa-tool-head" role="button" tabindex="0" aria-expanded="${open}">
       <span class="pa-dot pa-running pa-live"></span>
       <span class="pa-tool-name">${esc(ev.name)}</span>
-      <span class="pa-tool-args">${esc(argSummary(ev.name, ev.arguments))}</span>
+      <span class="pa-tool-args">${esc(argSummary(ev.name, ev.arguments, ARG_WIDTHS))}</span>
       <span class="pa-tool-ms"></span>
     </div>
     <div class="pa-tool-body">
@@ -635,7 +624,7 @@ function tick() {
   for (const node of root.querySelectorAll(".pa-dur")) {
     const t = times.get(node.dataset.dur);
     if (!t) continue;
-    if (t.end == null) { running = true; node.textContent = fmtDur(Date.now() - t.start); }
+    if (t.end == null) { running = true; node.textContent = spanText(Date.now() - t.start); }
   }
   if (!running) setTicking(false);
 }

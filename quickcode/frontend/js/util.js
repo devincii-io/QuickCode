@@ -21,6 +21,11 @@ export function fmtTokens(n) {
   return String(n);
 }
 
+/** A count with the reader's thousands separator; missing reads as 0. */
+export function fmtCount(n) {
+  return Number(n || 0).toLocaleString();
+}
+
 export function fmtMs(ms) {
   if (ms == null) return "";
   if (ms < 1000) return ms + " ms";
