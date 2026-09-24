@@ -10,10 +10,11 @@ almost no body. The batch one owns a deadline, a bounded ring and a
 drain-before-close dance; none of those mean anything here (there is no
 deadline, the browser holds the scrollback, and "drain" is simply what the
 reader does forever). Threading an ``interactive=True`` flag through it would
-have produced one function with two disjoint halves. What the two *do* share is
-process-tree kill, and that is imported rather than copied: ``_kill_tree``
-stays the single place that knows how to end a shell and its children on each
-platform.
+have produced one function with two disjoint halves.
+
+They also end differently. A one-shot ``bash -lc`` keeps everything in one
+process group, so ``_kill_tree`` is enough there; an interactive shell has job
+control, and ending it means ending its whole session (``pty.teardown``).
 
 **Why a PTY here at all**, when ``tools/bash.py`` deliberately stopped using
 one on Windows: that decision was measured per *command* — ConPTY costs a flat
@@ -34,13 +35,18 @@ from __future__ import annotations
 
 import codecs
 import os
-import sys
 import threading
 import time
 from collections.abc import Callable
 
 from quickcode import subproc
-from quickcode.pty.session import IS_WINDOWS, PtyError, _kill_tree
+from quickcode.pty.session import IS_WINDOWS, PtyError
+from quickcode.pty.teardown import end_session
+
+if not IS_WINDOWS:
+    import fcntl
+    import struct
+    import termios
 
 READ_SIZE = 65536
 POLL_INTERVAL = 0.05  # watcher poll granularity (s)
@@ -146,6 +152,10 @@ class InteractivePty:
         except Exception as exc:  # noqa: BLE001
             raise PtyError(f"openpty failed: {exc}") from exc
         try:
+            # Sized before the child exists, so its first look at the
+            # terminal (bash's checkwinsize, a banner that centres itself)
+            # sees the real geometry rather than 0x0.
+            _set_winsize(master_fd, self.rows, self.cols)
             proc = subproc.popen(
                 self.argv,
                 cwd=self.cwd,
@@ -153,8 +163,9 @@ class InteractivePty:
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                start_new_session=True,  # own process group, so tree-kill works
+                start_new_session=True,  # its own session: see pty.teardown
                 close_fds=True,
+                preexec_fn=_take_controlling_tty,
             )
         except Exception as exc:  # noqa: BLE001
             os.close(master_fd)
@@ -165,7 +176,6 @@ class InteractivePty:
         self._proc = proc
         self._master_fd = master_fd
         self.pid = proc.pid
-        self.resize(self.rows, self.cols)
 
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
@@ -241,15 +251,7 @@ class InteractivePty:
             if IS_WINDOWS:
                 self._proc.setwinsize(rows, cols)
             elif self._master_fd is not None:
-                import fcntl
-                import struct
-                import termios
-
-                fcntl.ioctl(
-                    self._master_fd,
-                    termios.TIOCSWINSZ,
-                    struct.pack("HHHH", rows, cols, 0, 0),
-                )
+                _set_winsize(self._master_fd, rows, cols)
         except Exception:  # noqa: BLE001 - a resize is never worth an exception
             pass
 
@@ -263,7 +265,7 @@ class InteractivePty:
             return False
 
     def close(self) -> None:
-        """Kill the shell and everything it started, then drop the pty.
+        """End the shell's whole session, then drop the pty.
 
         Idempotent, and safe to call from any thread — which matters, because
         the socket closing and the project closing are two different threads of
@@ -272,8 +274,14 @@ class InteractivePty:
         if self._closed.is_set():
             return
         self._closed.set()
-        _kill_tree(self.pid)
         proc, self._proc = self._proc, None
+        try:
+            running = proc is not None and (
+                proc.isalive() if IS_WINDOWS else proc.poll() is None
+            )
+        except Exception:  # noqa: BLE001
+            running = False
+        end_session(self.pid, leader_alive=running)
         if proc is not None:
             try:
                 if IS_WINDOWS:
@@ -290,26 +298,20 @@ class InteractivePty:
             self._master_fd = None
 
 
-def interactive_shell_argv() -> list[str]:
-    """The argv for a shell a person can sit in front of.
+def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
-    Deliberately not ``-c``: ``tools/bash.py`` builds ``bash -lc "<command>"``
-    because it has exactly one command to run and wants the process to exit
-    afterwards. Here the shell *is* the session, so it is invoked the way a
-    terminal emulator invokes it — a login, interactive shell that reads the
-    user's profile and prints a prompt.
 
-    Shell discovery is ``tools/bash.py``'s, so the panel and the agent land in
-    the same shell and the user is not debugging two different environments.
+def _take_controlling_tty() -> None:
+    """Make the pty the new session's controlling terminal (runs in the child).
+
+    ``start_new_session`` leaves the child a session leader with no terminal
+    at all, and without one the line discipline has nobody to deliver
+    ``Ctrl+C`` to: ``\\x03`` became a printed ``^C`` and nothing stopped. bash
+    happens to claim the tty itself; dash, a program run as the shell, and
+    anything else that does not, got no signals and no job control.
     """
-    if sys.platform.startswith("win"):
-        # Imported here rather than at module scope: the tools package pulls in
-        # pydantic and the tool registry, which a pty has no business needing.
-        from quickcode.tools.bash import _find_git_bash
-
-        found = _find_git_bash()
-        if found:
-            return [found, "-i", "-l"]
-        # No Git Bash: PowerShell, minus the -NonInteractive the tool passes.
-        return ["powershell", "-NoLogo", "-NoExit"]
-    return ["/bin/bash", "-i", "-l"]
+    try:
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    except OSError:
+        pass

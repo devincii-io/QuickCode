@@ -40,8 +40,9 @@ from fastapi import FastAPI, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from quickcode.pty import registry
-from quickcode.pty.interactive import InteractivePty, interactive_shell_argv
+from quickcode.pty.interactive import InteractivePty
 from quickcode.pty.session import PtyError
+from quickcode.pty.shells import interactive_shell_argv
 
 log = logging.getLogger("quickcode.server.terminal")
 

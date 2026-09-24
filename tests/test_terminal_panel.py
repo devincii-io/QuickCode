@@ -27,7 +27,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from quickcode.pty import registry
-from quickcode.pty.interactive import InteractivePty, interactive_shell_argv
+from quickcode.pty.interactive import InteractivePty
+from quickcode.pty.shells import interactive_shell_argv
 from quickcode.server import terminal
 from quickcode.server.app import create_app
 from quickcode.server.projects import project_id
