@@ -217,7 +217,7 @@ file — it cannot be set by the model or by a repository.
 ### 3.3 MCP servers — local subprocesses only
 
 MCP servers are spawned as **local child processes over stdio**
-(`asyncio.create_subprocess_exec`, `quickcode/plugins/mcp.py`). There is **no
+(`subproc.spawn_async`, `quickcode/plugins/mcp_process.py`). There is **no
 remote MCP transport in the codebase** — no HTTP, no SSE, no URL field in the
 server specification.
 
@@ -367,19 +367,27 @@ in the repository hardens the ACL. `quickcode/server/auth.py`'s docstring
 asserts the directory "is restricted to the current user" — that is an
 assumption about the environment, not something the code enforces.
 
-**Environment-variable caveat.** Three subprocess paths spawn with the **full
-inherited environment**: the built-in `bash` tool, the PTY session, and MCP
-server processes (`quickcode/plugins/mcp.py` passes `env = dict(os.environ)`).
-If you supply the key via environment variable, any agent-run command — and any
-trusted project-declared MCP server — can read it with
-`echo $QUICKCODE_OPENROUTER_API_KEY`. The *authored command tool* path
-(`quickcode/tools/command.py`) does scrub the environment to a fixed allowlist
-and reasons about exactly this in its comments; the other three do not get the
-same treatment. The inconsistency looks unintentional.
+**Environment-variable caveat — FIXED after 2.7.0 (unreleased).** The audit
+found three subprocess paths spawning with the **full inherited environment**:
+the built-in `bash` tool, the PTY session, and MCP server processes
+(`quickcode/plugins/mcp.py` passed `env = dict(os.environ)`). A key supplied by
+environment variable was readable by any agent-run command, and by any trusted
+project-declared MCP server, with `echo $QUICKCODE_OPENROUTER_API_KEY`. Every
+child process is now started through `quickcode/subproc.py`, whose
+`child_env()` removes the model and search API keys (`QUICKCODE_*_KEY`,
+`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, and every key name a provider declares)
+before anything is added: the `bash` tool on both its paths, background jobs,
+hooks, the terminal panel, the git panel and ripgrep, and MCP servers, which
+get their configured `env` on top of that base. Authored command tools keep
+their allowlist, and `env_from` can no longer name one of those keys. A
+source-level test (`tests/test_no_console_window.py`) fails on any spawn
+outside that module.
 
-**Practical consequence:** prefer the encrypted store over the environment
-variable. It does not stop a determined local attacker (see above), but it does
-stop a casual `env` dump in a tool result from landing in the session log.
+**Practical consequence:** the environment variable is no longer handed to
+what the agent runs, but the encrypted store is still the better home for a
+key: the variable is visible to everything else started from the same shell,
+and a command the agent runs can read the store as easily as QuickCode can
+(see above).
 
 **Search keys may also sit in plaintext** in `~/.quickcode/config.json` under
 `search.providers.<name>.api_key`. The code refuses to *write* one there but
@@ -1331,10 +1339,10 @@ should be able to line them up item for item. Each item keeps the severity it
 was found at and carries its status.
 
 **Fixed since the audit, all on `main` and none in a published release:** 1, 2,
-3, 4, 10, 11, 32.
+3, 4, 10, 11, 19, 32.
 
 **Still open, and this is the list that matters for a decision:** 5, 6, 7, 8, 9,
-12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31.
+12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31.
 
 **Critical — the permission and trust boundary (all reproduced)**
 
@@ -1399,9 +1407,10 @@ was found at and carries its status.
 18. **[OPEN]** `os.chmod(0o600)` is a no-op for ACLs on Windows; the key file
     and the plaintext loopback token rely on inherited profile permissions
     (§4.1).
-19. **[OPEN]** The built-in `bash` and PTY tools — and MCP server subprocesses —
-    inherit the full environment, exposing `QUICKCODE_*_API_KEY` to them, while
-    the authored-command path correctly scrubs it (§4.1).
+19. **[FIXED — after 2.7.0, unreleased]** The built-in `bash` and PTY tools —
+    and MCP server subprocesses — inherited the full environment, exposing
+    `QUICKCODE_*_API_KEY` to them. Every child now starts from
+    `subproc.child_env()`, which removes them (§4.1).
 20. **[OPEN]** Install-time dependency resolution is unpinned and unhashed; the
     committed `uv.lock` is not used by the installer (§6.1).
 21. **[OPEN]** The `quickcode-app` shortcut opens `$HOME` as a project,
@@ -1488,8 +1497,8 @@ Both are real for a coding agent; neither is a drive-by. Findings 5 and 13
    only thing standing there.
 5. **Assume anything readable by the user account is readable by the agent.**
    Gap 2 is fixed and `grep`/`glob` now prompt outside the project root, but
-   the shell tool is still a shell: it inherits the full environment (gap 19)
-   and a user who approves a command approves what it can reach. If developer
+   the shell tool is still a shell: it no longer inherits QuickCode's own keys
+   (gap 19), but a user who approves a command approves what it can reach. If developer
    machines hold cloud credentials or SSH keys that would matter, that is still
    the exposure to reason about — not the project directory.
 6. **Classify `~/.quickcode` and `<project>/.quickcode` at the level of your
@@ -1504,7 +1513,7 @@ Both are real for a coding agent; neither is a drive-by. Findings 5 and 13
    comply — and it is the only way, because sending code to the model is the
    product.
 8. **Configure API keys in the encrypted store, not environment variables**
-   (gap 19), and treat `yolo` mode as prohibited by policy.
+   (§4.1), and treat `yolo` mode as prohibited by policy.
 
 **A reasonable position** for most organisations: pilot it on internal
 first-party repositories, on machines without production credentials, with

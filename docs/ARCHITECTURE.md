@@ -67,7 +67,7 @@ quickcode/
   doctor.py               # `quickcode doctor` environment checks
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
-  subproc.py              # every subprocess goes through here (no console window on Windows)
+  subproc.py              # every child process starts here: no console window, no API keys in its env, killable tree
   workspace.py            # the project's .quickcode/ directory and its .gitignore
   frontmatter.py          # the one frontmatter parser: plugin loader and trust gate read files the same way
   ui/window.py            # pywebview window, browser fallback
@@ -163,7 +163,7 @@ shows that the conversation had two different agents in it.
 
 ## Async model
 
-- Each **AgentInstance** runs as an asyncio task. Threads appear in three places only: the reader/watcher threads of a PTY session (below), the worker thread a blocking subprocess runs on (`asyncio.to_thread`), and the server thread when the native window owns the main one.
+- Each **AgentInstance** runs as an asyncio task. Threads appear in three places only: the reader/watcher threads of a PTY session and of a background shell job (below), the worker thread a blocking call runs on (`asyncio.to_thread`: a PTY command, `taskkill`), and the server thread when the native window owns the main one. A command on plain pipes, a hook, an authored command tool and an MCP server are asyncio subprocesses (`subproc.spawn_async`).
 - Agents emit `AgentEvent`s onto their own **event bus**; each attached WebSocket subscribes with a **bounded queue**. On overflow the client is dropped with a sentinel and reconnects, replaying from the log. (QuickTerm's pattern for fast producers + slow consumers — never unbounded buffering, never a frozen UI.)
 - The frontend batches bursts with `requestAnimationFrame`; streaming text patches one live node rather than re-rendering the transcript.
 - Permission and plan review round-trip over the WebSocket: the loop `await`s an `asyncio.Future` that a `permission_decision` / `plan_decision` message resolves — clean backpressure, no callback soup.
@@ -303,6 +303,7 @@ runs depends on the platform:
 - **POSIX:** inside a real pseudo-terminal (`pty/session.py`), so programs see a tty and take their tty code paths.
 - **Windows:** on plain pipes by default. Under a tty a command that reads stdin (`git commit` without `-m`, `ssh`, a pager) waits for a person who is not there; under a pipe it gets EOF and exits. `QUICKCODE_BASH_PTY=1` opts back into ConPTY.
 - Any PTY failure (backend missing, spawn error) falls back to the plain subprocess path, which is the same code either way.
+- Either way the command is started through `quickcode/subproc.py`, like every child process: its environment is QuickCode's minus the app's API keys (and, in a frozen build, minus PyInstaller's loader path), its stdin on the pipe path is the null device, and it leads a process group of its own so Stop and timeouts kill everything it started (`subproc.kill_tree`).
 
 Patterns carried over from QuickTerm:
 

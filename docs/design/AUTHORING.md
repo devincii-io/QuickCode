@@ -300,7 +300,7 @@ Common to all kinds:
 | `on_nonzero` | enum | `error` (default) \| `content`. `content` is for tools where a non-zero exit *is* the answer (a linter, a test run). |
 | `read_only` | bool | Default `false`. Your assertion, `confirm`-tier to set: it removes the permission prompt and allows parallel execution. |
 | `permission_target` | string | Name of the parameter a rule like `pytest-failed(tests/**)` matches on. |
-| `env_from` | list | Ambient env var names passed through. |
+| `env_from` | list | Ambient env var names passed through (never QuickCode's own API keys). |
 
 Body blocks: ` ```json params ` (required, may be `[]`), ` ```json argv `
 (required unless `shell`), ` ```sh command ` (shell mode only),
