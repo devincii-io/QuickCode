@@ -693,7 +693,8 @@ def test_they_prompt_in_ask_mode_and_match_on_their_own_target(tmp_path):
 
     decision, target = engine.evaluate_tool(fetch, {"url": "https://example.com/a"})
     assert (decision, target) == (Decision.ask, "https://example.com/a")
-    assert engine.suggest_rule("web_fetch", "https://example.com/a")
+    offer = engine.suggest_rules(fetch, {"url": "https://example.com/a"})
+    assert offer.rules == ("web_fetch(https://example.com/a)",)
 
 
 def test_a_rule_can_allow_one_site_and_deny_another(tmp_path):

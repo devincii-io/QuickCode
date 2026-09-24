@@ -10,10 +10,10 @@ provenance around that trace:
   print the same words instead of each keeping its own copy;
 * which settings file or profile each matched rule came from -- the engine
   holds one merged list and cannot say;
-* what "Always allow" would write, and whether that rule would actually stop
-  the next prompt (it does not for a protected path, nor for the second half of
-  a compound command) -- answered by asking the engine again with the rule
-  added, not by reasoning about it here;
+* what "Always allow" would write (``PermissionEngine.suggest_rules``), and
+  whether those rules would actually stop the next prompt (they do not for a
+  protected path or a circuit breaker) -- answered by asking the engine again
+  with the rules added, not by reasoning about it here;
 * the things that change the answer without being part of the gate: allow
   rules an untrusted project's files state and the loader ignored, command
   hooks that may tighten it afterwards, and a tool the session never offers.
@@ -415,17 +415,20 @@ def explain(posture: Any, tool_name: str, args: dict[str, Any], *,
 
     suggestion = None
     if decision is Decision.ask:
-        rule = engine.suggest_rule(tool.name, target)
+        offer = engine.suggest_rules(tool, args, cwd=shell_cwd)
         after_trace: list[dict[str, Any]] = []
-        after, _ = _engine_with(engine, allow=[rule]).evaluate_tool(
+        after, _ = _engine_with(engine, allow=list(offer.rules)).evaluate_tool(
             tool, args, cwd=shell_cwd, trace=after_trace)
         _, still = _summarize(_render_all(after_trace, sources, {"shell": spec.shell}), after)
         suggestion = {
-            "rule": rule,
+            # The rules on one line, as the payload has always carried them.
+            "rule": ", ".join(offer.rules),
+            "rules": list(offer.rules),
+            "kept": [{"part": part, "reason": reason} for part, reason in offer.kept],
             "file": ALWAYS_ALLOW_FILE,
             "persists": trusted,
             "next_time": after.value,
-            "text": _suggestion_text(rule, after, trusted, still),
+            "text": _suggestion_text(offer.rules, after, trusted, still),
         }
 
     return {
@@ -475,14 +478,20 @@ def _summarize(steps: list[dict[str, Any]],
     return decided, summary
 
 
-def _suggestion_text(rule: str, after: Decision, trusted: bool, still: str) -> str:
-    where = (f"{ALWAYS_ALLOW_FILE}, and applies to later sessions" if trusted else
-             f"{ALWAYS_ALLOW_FILE}; the project is not trusted, so it applies for the "
+def _suggestion_text(rules: tuple[str, ...], after: Decision, trusted: bool,
+                     still: str) -> str:
+    if not rules:
+        return f"Always allow would save nothing: no rule can stop this {after.value}. {still}"
+    one = len(rules) == 1
+    it = "it applies" if one else "they apply"
+    where = (f"{ALWAYS_ALLOW_FILE}, and {it} to later sessions" if trusted else
+             f"{ALWAYS_ALLOW_FILE}; the project is not trusted, so {it} for the "
              "rest of this session only")
-    text = f"Always allow would write {rule} to {where}."
+    text = f"Always allow would write {', '.join(rules)} to {where}."
     if after is Decision.allow:
-        return text + " With it, this exact call runs without asking next time."
-    return text + f" It would not stop the next {after.value} for this call: {still}"
+        return text + f" With {'it' if one else 'them'}, this exact call runs without asking next time."
+    return text + (f" {'It' if one else 'They'} would not stop the next {after.value} "
+                   f"for this call: {still}")
 
 
 def _hook_notes(cwd: Path, tool_name: str, *, trusted: bool) -> list[str]:

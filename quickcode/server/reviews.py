@@ -62,6 +62,8 @@ class ReviewDesk:
             "preview": req.preview,
             "agent": req.agent_name,
             "call_id": req.call_id,
+            "rules": list(req.rules),
+            "kept": list(req.kept),
         }
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[req_id] = PendingReview(req_id, "permission", payload, fut)
@@ -79,6 +81,8 @@ class ReviewDesk:
                 "tool": req.tool,
                 "arg": req.arg,
                 "call_id": req.call_id,
+                # What "Always allow" wrote: the offered rules, or nothing.
+                "saved": list(req.rules) if outcome.allow and outcome.persist else [],
             }
         )
         return outcome

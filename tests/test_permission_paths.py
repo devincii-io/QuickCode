@@ -145,9 +145,11 @@ def test_an_allow_rule_does_not_reach_outside_its_directory_through_a_symlink(tm
 def test_an_always_allow_rule_still_matches_the_call_it_was_written_for(tmp_path):
     """"Always allow" persists the path as the tool spelled it; the next
     identical call has to match it."""
-    e = engine(root=tmp_path)
+    from quickcode.tools.registry import default_registry
+
+    e, edit = engine(root=tmp_path), default_registry().get("edit")
     for spelling in (str(tmp_path / "src" / "a.py"), "./src/a.py", "src/a.py"):
-        rule = e.suggest_rule("edit", spelling)
+        [rule] = e.suggest_rules(edit, {"file_path": spelling}).rules
         assert engine(root=tmp_path, allow=[rule]).evaluate("edit", spelling) == Decision.allow
 
 

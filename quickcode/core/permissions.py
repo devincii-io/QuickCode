@@ -743,12 +743,92 @@ class PermissionEngine:
             if shellwords.has_glob(p)
         )
 
-    def suggest_rule(self, tool: str, arg: str) -> str:
-        """The rule text an 'always allow' would persist."""
-        if self.spec_for(tool).shell:
-            first = arg.split()[0] if arg.split() else arg
-            return f"bash({first} *)"
-        return f"{tool}({arg})"
+    def suggest_rules(self, tool, args: dict, *, cwd: Path | None = None) -> RuleOffer:
+        """What "Always allow" persists for this call: the narrowest rules that
+        cover exactly what was approved.
+
+        Read off the engine's own evaluation of the call (its trace), not a
+        second parse of it: one rule per subcommand -- and per command another
+        command runs -- that asked only because nothing allowed it, spelled
+        exactly as the allow rules are matched against it. It used to be
+        ``bash(<first word> *)`` for the whole line, and `*` spans spaces, so
+        approving `FOO=1 make` allowed `FOO=1 rm -rf build` (COMPLIANCE W7).
+        """
+        trace: list = []
+        decision, target = self.evaluate_tool(tool, args, cwd=cwd, trace=trace)
+        if decision is not Decision.ask:
+            return RuleOffer()
+        if getattr(tool, "permission", DEFAULT_SPEC).shell:
+            rules: list[str] = []
+            kept: list[tuple[str, str]] = []
+            _shell_offer(trace, target, rules, kept)
+            if any(reason == "circuit_breaker" for _, reason in kept):
+                rules = []
+            return RuleOffer(tuple(dict.fromkeys(rules)), tuple(kept))
+        return _single_offer(tool.name, target, trace)
+
+
+@dataclass(frozen=True)
+class RuleOffer:
+    """``suggest_rules``' answer. ``kept`` holds the parts no saved rule would
+    stop asking, with the step that holds each: a protected path, an ask rule,
+    a circuit breaker, a line allow rules are never consulted for. A rule for
+    one of those would be dead weight at best, and the first thing to widen if
+    the check ahead of it ever moved, so none is written."""
+
+    rules: tuple[str, ...] = ()
+    kept: tuple[tuple[str, str], ...] = ()
+
+
+def _deciding_step(steps: list[dict]) -> str:
+    return next((s["step"] for s in reversed(steps) if s.get("decision")), "")
+
+
+def _exact_rule(tool: str, part: str) -> str | None:
+    """``tool(part)``, when the pattern can only match ``part`` itself. A `*`
+    in it is a wildcard with no escape: `bash(rm *.pyc)` would also allow
+    `rm -rf src x.pyc`."""
+    return None if "*" in part else f"{tool}({part})"
+
+
+def _single_offer(tool: str, target: str, trace: list[dict]) -> RuleOffer:
+    step = _deciding_step(trace)
+    if step != "mode_default":
+        return RuleOffer(kept=((target, step),))
+    rule = _exact_rule(tool, target)
+    return RuleOffer(rules=(rule,)) if rule else RuleOffer(kept=((target, "wildcard"),))
+
+
+def _shell_offer(steps: list[dict], line: str, rules: list[str],
+                 kept: list[tuple[str, str]]) -> None:
+    """Walk one line's trace: an asking subcommand that only the mode default
+    decided gets its exact rule; everything else that asked is ``kept``."""
+    # A substitution or redirection anywhere keeps every allow rule off the
+    # whole line, so it is named once rather than once per piece of `2>&1`.
+    substituted = next((s for s in steps if s["step"] == "shell"), {}).get("substitution")
+    for s in steps:
+        kind = s["step"]
+        if kind in ("circuit_breaker", "nesting_limit"):
+            kept.append((line, kind))
+        elif s.get("decision") != Decision.ask.value:
+            continue
+        elif kind == "inner_command":
+            _shell_offer(s["steps"], s["command"], rules, kept)
+        elif kind == "subcommand":
+            part, inner = s["command"], s["steps"]
+            parsed = next((p for p in inner if p["step"] == "parsed"), {})
+            step = _deciding_step(inner)
+            if step != "mode_default":
+                kept.append((part, step))
+            elif substituted:
+                if (line, "substitution") not in kept:
+                    kept.append((line, "substitution"))
+            elif parsed.get("opaque"):
+                kept.append((part, "opaque"))
+            elif rule := _exact_rule("bash", part):
+                rules.append(rule)
+            else:
+                kept.append((part, "wildcard"))
 
 
 CYCLE = [Mode.plan, Mode.ask, Mode.auto_edit]

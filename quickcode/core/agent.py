@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from quickcode.config import DEFAULT_MAX_TOKENS
 from quickcode.core.events import AgentEvent, Usage
@@ -33,6 +33,12 @@ class PermissionRequest:
     # card, and parallel read-only calls mean several requests can be open at
     # once — "the most recent card" would attach the wrong one.
     call_id: str = ""
+    # What "Always allow" saves: one exact rule per part of the call that asked
+    # (``PermissionEngine.suggest_rules``), and the parts that would ask again
+    # whatever is saved, as ``{"part", "reason"}``. ``rule_suggestion`` is the
+    # same rules on one line, for readers that predate the list.
+    rules: list[str] = field(default_factory=list)
+    kept: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

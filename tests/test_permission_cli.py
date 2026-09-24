@@ -54,7 +54,7 @@ def test_permissions_explain_is_the_same_command(project, capsys):
 
     assert payload["decision"] == "ask"
     assert payload["decided_by"]["step"] == "protected_path"
-    assert payload["suggestion"]["rule"] == "read(.env)"
+    assert payload["suggestion"]["rules"] == []
 
 
 def test_a_rule_can_be_tried_before_it_is_written(project, capsys):

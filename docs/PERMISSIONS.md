@@ -135,8 +135,9 @@ today.
   conversation per command. Deny rules still deny in yolo, and the
   circuit breakers still prompt. The prompt
   is the ordinary three-button one; there is no "allow self-config edits for
-  this session" option — an always-allow on a `.quickcode/` path writes an
-  ordinary persisted rule like any other.
+  this session" option, and **Always allow** writes no rule for a protected
+  path — the prompt would come back whatever was saved, so it is greyed out
+  and says so (§Bash evaluation pipeline).
 - **One exception, read-only:** a tool declaring `mutates=False` may *read*
   under `<project>/.quickcode/artifacts/` without the protected-path prompt.
   That directory is where a subagent's oversized report is offloaded
@@ -420,7 +421,8 @@ there.
   `set`, `--global`…) is treated as a write to a protected path, because
   `.git/config` is where every later git command takes its pager, editor and
   hooks path from. Reads (`--get`, `--list`, `git config k`) are unaffected.
-- "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**. The dry run below says, for any call, whether its suggested rule would stop the next prompt.
+- **"Always allow" saves exactly what was approved** (`PermissionEngine.suggest_rules`). The rules are read off the engine's own evaluation of the call — its trace, not a second parse — and there is one per part that asked only because nothing allowed it: each subcommand, and each command another command runs, spelled exactly as the allow rules are matched against it. Approving `npm test && git push` writes `bash(npm test)` and `bash(git push)`; approving `FOO=1 make` writes `bash(FOO=1 make)`, which does not cover `FOO=1 rm -rf build`; approving `sudo rm x` writes `bash(sudo rm x)` and `bash(rm x)`, because the engine judges the wrapper line and the command it runs separately. A part already allowed (`ls`, a part an existing rule covers) gets no rule. A part that would ask again **whatever** is saved gets none either, and the dialog lists it with the reason: a protected path, an ask rule, a line with a substitution or redirection (allow rules never see those, so `npm test 2>&1` can only be allowed once), a program pointed at unseen code (`git -c …`), a command word only the shell can finish, or a `*` — a rule has no way to spell a literal `*`, so `bash(rm *.pyc)` would also allow `rm -rf src x.pyc`. A line that trips a **circuit breaker** saves nothing at all. When nothing can be saved, the **Always allow** button is greyed out. A path or URL target is saved as spelled (`edit(src/a.py)`), with the same `*` exception, and a protected path is saved not at all.
+  It used to save `bash(<first word> *)` for the whole line, and `*` spans spaces, so approving `FOO=1 make` allowed `FOO=1 rm -rf build` and approving `git status && rm -rf x` allowed every `git` command (docs/COMPLIANCE.md, W7). Pinned by `tests/test_always_allow_rules.py`.
 - Windows: PowerShell runs through the same pipeline, but **alias canonicalization is not implemented**. `gci`, `dir` and `Get-ChildItem` are three unrelated strings to the engine — none of them is in `READONLY_BUILTINS` either, so on PowerShell the read-only auto-allow effectively never fires and a rule has to name the exact spelling the model used. `bash` prefers Git Bash where it exists (docs/ARCHITECTURE §Windows notes), which is why this has not bitten harder.
 
 ## The prompt (UI in docs/UI.md)
@@ -437,7 +439,7 @@ with an ellipsis so a heredoc cannot hide its second line.
 Three buttons, in `js/reviews.js`:
 
 1. **Allow once**
-2. **Always allow** — the modal shows the exact rule text, and the file it goes to, before it is written to `settings.local.json`
+2. **Always allow** — the modal shows the exact rules (one per subcommand that asked, §Bash evaluation pipeline), and the file they go to, before they are written to `settings.local.json`
 3. **Deny** — the first click reveals a free-text box and the button becomes *Confirm deny*; the text is returned to the model as the tool result (`is_error`), so denial is steering, not a dead end
 
 There are no `y / a / n` keyboard shortcuts on this modal — the buttons are the only way to answer it. Earlier text here promised them; they are **not implemented**.
@@ -500,11 +502,12 @@ Request body — the call, in whichever shape is handy, plus options:
 
 The answer: `decision`; `summary`, one sentence for the step that decided;
 `decided_by`, that step; `steps`, the whole trace; `suggestion` (only for
-`ask`) — the rule "Always allow" would write, the file, whether it persists
+`ask`) — `rules`, what "Always allow" would write (`rule` is the same on one
+line), `kept`, the parts no rule covers and why, the file, whether it persists
 past this session (it does once the project is trusted), and `next_time`, the
-engine's answer *with that rule added*: `ask` means the rule would not stop the
-next prompt (a protected path, a circuit breaker, an ask rule, or another
-subcommand the rule does not cover), and the text says which; `hints`, the
+engine's answer *with those rules added*: `ask` means they would not stop the
+next prompt (a protected path, a circuit breaker, an ask rule), and the text
+says which; `hints`, the
 allow rules an untrusted project's own files state and the loader ignored,
 when trusting it would change the answer; `notes`, for a tool the composition
 never gives the agent, a mutating tool plan mode withholds, and PreToolUse

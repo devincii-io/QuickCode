@@ -102,10 +102,8 @@ Not started. Roughly in order of value.
    they show only as tool calls and a transcript note on exit).
 2. Teammate mode (M5), once task claiming and worktree isolation are designed together.
 3. An `ask_user` tool: a structured question rendered as a dialog (docs/TOOLS.md).
-4. "Always allow" that writes one rule per subcommand instead of one for the first token
-   (docs/PERMISSIONS.md §Bash evaluation pipeline).
-5. A `deny` rule on a bare tool name that withholds the tool from the request instead of
+4. A `deny` rule on a bare tool name that withholds the tool from the request instead of
    refusing the call (docs/PERMISSIONS.md §Rules).
-6. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
+5. Plan mode follow-through: pin the approved plan as a reminder and seed the task board from it
    (docs/PERMISSIONS.md §Plan mode).
-7. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).
+6. Redaction for session logs, and a code-signed installer (docs/COMPLIANCE.md §8).
