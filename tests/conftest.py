@@ -66,11 +66,10 @@ def _socketpair_that_cannot_hang(
     type: int = socket.SOCK_STREAM,  # matches the stdlib signature we replace
     proto: int = 0,
 ) -> tuple[socket.socket, socket.socket]:
-    # ``None`` is the stdlib's own default and means AF_UNIX where it exists;
-    # asyncio's self-pipe relies on that, and AF_INET socketpair(2) is
-    # EOPNOTSUPP on Linux.
     if not sys.platform.startswith("win"):
         # Everywhere else this is a real socketpair(2) syscall, which cannot hang.
+        # `family=None` keeps the stdlib default (AF_UNIX): Linux has no AF_INET
+        # socketpair, so defaulting to it here broke every event loop off Windows.
         return _stdlib_socketpair(family, type, proto)
     if family is None:
         family = socket.AF_INET
