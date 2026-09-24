@@ -19,7 +19,9 @@ assertion depend on the developer's ``.bashrc``.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -326,20 +328,108 @@ def test_the_terminal_environment_promises_a_colour_terminal() -> None:
     assert env["TERM"] == "xterm-256color"
 
 
+# ------------------------------------------------------- flow control
+
+FLOOD_SHELL = '''
+import sys
+progress, count = sys.argv[1], int(sys.argv[2])
+for i in range(count):
+    sys.stdout.write("line %07d\\n" % i)
+    if i % 500 == 0:
+        with open(progress, "w") as fh:
+            fh.write(str(i))
+sys.stdout.flush()
+with open(progress, "w") as fh:
+    fh.write("done")
+print("DONE", flush=True)
+'''
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="timing of a POSIX pty")
+def test_output_waits_for_the_browser_to_catch_up(tmp_path, monkeypatch):
+    """`yes` must not outrun the browser.
+
+    The server used to read as fast as the program wrote, keep the newest
+    megabyte and drop the rest, so a long `cat` arrived with a hole in it and
+    a tab that could not keep up queued frames until it fell over. Now the
+    pty stops being read until the browser acknowledges what it has drawn,
+    and the program waits on its own write, as it would in any terminal.
+    """
+    window = 32 * 1024
+    lines = 60_000
+    monkeypatch.setattr(terminal, "OUTPUT_WINDOW", window)
+    script = tmp_path / "flood.py"
+    script.write_text(FLOOD_SHELL, encoding="utf-8")
+    progress = tmp_path / "progress"
+    monkeypatch.setattr(terminal, "shell_argv", lambda: [
+        sys.executable, "-u", str(script), str(progress), str(lines)])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    parts: list[str] = []
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        assert ws.receive_json()["type"] == "terminal_ready"
+        received = 0
+        while received < window:
+            ev = ws.receive_json()
+            if ev["type"] == "output":
+                parts.append(ev["data"])
+                received += len(ev["data"])
+        # Nothing acknowledged yet: the program is parked on its write.
+        assert wait_until(progress.exists)
+        time.sleep(0.5)
+        parked = progress.read_text(encoding="utf-8")
+        time.sleep(0.5)
+        assert progress.read_text(encoding="utf-8") == parked != "done"
+
+        ws.send_json({"type": "ack", "chars": received})
+        for _ in range(100_000):
+            ev = ws.receive_json()
+            if ev["type"] == "output":
+                parts.append(ev["data"])
+                ws.send_json({"type": "ack", "chars": len(ev["data"])})
+                if "DONE" in "".join(parts[-2:]):
+                    break
+            elif ev["type"] == "exit":
+                break
+    numbers = re.findall(r"line (\d{7})\r?\n", "".join(parts))
+    assert len(numbers) == lines, "output was lost between the pty and the browser"
+    assert numbers == [f"{i:07d}" for i in range(lines)]
+
+
+RAW_SHELL = '''
+import sys, time, tty
+tty.setraw(0)
+print("RAW", flush=True)
+time.sleep(4)
+'''
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX raw mode")
+def test_typing_at_a_program_that_is_not_reading_leaves_the_server_responsive(
+    tmp_path, monkeypatch
+):
+    """One event loop serves every project. A blocking write into a pty whose
+    program had stopped reading used to hold that loop until the program
+    exited — every other window, socket and request frozen behind a paste."""
+    script = tmp_path / "raw.py"
+    script.write_text(RAW_SHELL, encoding="utf-8")
+    monkeypatch.setattr(terminal, "shell_argv", lambda: [sys.executable, "-u", str(script)])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        ws.receive_json()
+        read_until(ws, "RAW")
+        for _ in range(8):
+            ws.send_json({"type": "input", "data": "x" * 65536})
+        started = time.monotonic()
+        response = client.get("/api/health", headers={"host": "127.0.0.1:8642"})
+        assert response.status_code == 200
+        assert time.monotonic() - started < 2, "the server stalled behind the terminal"
+
+
 # ------------------------------------------------------------------ outbox
-
-
-async def test_a_flood_of_output_is_bounded_and_keeps_the_newest() -> None:
-    """`yes` into a terminal must not become the server's memory problem."""
-    box = terminal._Outbox()
-    chunk = "x" * 4096
-    for _ in range(terminal.MAX_PENDING_CHARS // len(chunk) + 40):
-        box.push(chunk)
-    box.push("THE-NEWEST")
-    text = await box.drain()
-    assert len(text) <= terminal.MAX_PENDING_CHARS + len(chunk) + len("THE-NEWEST")
-    assert text.endswith("THE-NEWEST")
-    assert box.dropped > 0
 
 
 async def test_the_outbox_coalesces_a_burst_into_one_frame() -> None:

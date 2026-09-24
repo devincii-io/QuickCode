@@ -57,8 +57,15 @@ export class TerminalSocket {
       if (mine !== this.generation) return;
       let ev;
       try { ev = JSON.parse(m.data); } catch { return; }
-      if (ev.type === "output") this.onOutput(ev.data);
-      else if (ev.type === "terminal_ready") {
+      if (ev.type === "output") {
+        this.onOutput(ev.data);
+        // The server stops reading the pty once enough output is unacknowledged
+        // (server/terminal.py OUTPUT_WINDOW), so `yes` waits for this tab rather
+        // than burying it. Sent after the emulator has consumed the frame.
+        // `length` counts UTF-16 units, never fewer than the server's code
+        // points, and the server floors an over-ack at zero in flight.
+        this.send({ type: "ack", chars: ev.data.length });
+      } else if (ev.type === "terminal_ready") {
         this.onStatus("live", ev.cwd || "");
         this.onReady(ev);
         // The size was measured before the socket existed; tell the pty now.

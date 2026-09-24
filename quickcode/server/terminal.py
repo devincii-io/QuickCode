@@ -49,14 +49,18 @@ log = logging.getLogger("quickcode.server.terminal")
 # A single keystroke frame is a keystroke, a paste, or somebody's clipboard
 # accident. Anything past this is not input a human produced.
 MAX_INPUT_CHARS = 1 << 16
-# How much unsent output may pile up before the oldest is dropped. `yes` into a
-# terminal produces megabytes a second, and the socket must not become the
-# thing that runs the machine out of memory. The browser is showing the tail
-# anyway, so the tail is what is kept.
-MAX_PENDING_CHARS = 1 << 20
-# After the shell exits its last bytes can still be in flight; wait this long
-# for them before announcing the exit rather than truncating a goodbye.
+# How much output may be on its way to the browser before the pty stops being
+# read. The browser acknowledges what it has drawn (`ack` frames); until it
+# does, `yes` blocks on its own write instead of the server reading megabytes
+# a second into memory the tab then has to swallow. Small enough that Ctrl+C
+# lands on a screen that is nearly caught up, large enough that a build log
+# never waits on a round trip.
+OUTPUT_WINDOW = 1 << 18
+# After the shell exits its last bytes can still be in flight. They are
+# forwarded until the pty has been quiet this long, and for no longer than
+# EXIT_DRAIN_MAX_S in all, before the exit is announced.
 EXIT_DRAIN_S = 0.2
+EXIT_DRAIN_MAX_S = 3.0
 
 DEFAULT_ROWS = 24
 DEFAULT_COLS = 80
@@ -80,40 +84,42 @@ def _shell_env() -> dict[str, str]:
 
 
 class _Outbox:
-    """Bytes from the reader thread, coalesced into as few frames as possible.
+    """Text from the pty's thread, coalesced into as few frames as possible.
 
-    The pty reader runs at whatever speed the shell writes; a WebSocket send is
+    The pty is read at whatever speed the shell writes; a WebSocket send is
     an await. Without a buffer between them a build log becomes ten thousand
     tiny frames and the browser spends its time in JSON.parse. This collects
-    whatever arrived since the last send and hands it over in one string.
+    whatever arrived since the last send and hands it over in one string. It
+    is bounded by the pty's output window, not here: the pty stops being read
+    once ``OUTPUT_WINDOW`` characters are unacknowledged.
     """
 
     def __init__(self) -> None:
         self._parts: list[str] = []
-        self._size = 0
         self._ready = asyncio.Event()
-        self.dropped = 0
 
     def push(self, text: str) -> None:
         self._parts.append(text)
-        self._size += len(text)
-        while self._size > MAX_PENDING_CHARS and len(self._parts) > 1:
-            self._size -= len(self._parts.pop(0))
-            self.dropped += 1
         self._ready.set()
 
-    async def drain(self) -> str:
-        await self._ready.wait()
-        self._ready.clear()
-        text = "".join(self._parts)
-        self._parts.clear()
-        self._size = 0
-        return text
+    def nudge(self) -> None:
+        """Wake a waiting ``drain`` with nothing, so it can notice an exit."""
+        self._ready.set()
+
+    async def drain(self, timeout: float | None = None) -> str:
+        """Everything pushed so far, once there is something ("" on timeout)."""
+        if timeout is None:
+            await self._ready.wait()
+        else:
+            try:
+                await asyncio.wait_for(self._ready.wait(), timeout)
+            except TimeoutError:
+                return ""
+        return self.take()
 
     def take(self) -> str:
         text = "".join(self._parts)
         self._parts.clear()
-        self._size = 0
         self._ready.clear()
         return text
 
@@ -142,19 +148,20 @@ async def serve_terminal(
     exit_code: list[int | None] = [None]
 
     def on_output(text: str) -> None:
-        # Called on the reader thread; hop to the loop before touching asyncio.
+        # Called on the pty's thread; hop to the loop before touching asyncio.
         loop.call_soon_threadsafe(outbox.push, text)
 
     def on_exit(code: int | None) -> None:
         def mark() -> None:
             exit_code[0] = code
             exited.set()
+            outbox.nudge()
 
         loop.call_soon_threadsafe(mark)
 
     argv = shell_argv()
     pty = InteractivePty(argv, cwd=str(cwd), env=_shell_env(),
-                         dimensions=(DEFAULT_ROWS, DEFAULT_COLS))
+                         dimensions=(DEFAULT_ROWS, DEFAULT_COLS), window=OUTPUT_WINDOW)
     try:
         await asyncio.to_thread(pty.start, on_output, on_exit)
     except PtyError as exc:
@@ -179,7 +186,9 @@ async def serve_terminal(
         pass
     finally:
         registry.discard(cwd, pty)
-        pty.close()
+        # Off the loop: ending a session gives it a moment to hang up, and
+        # every other project's socket is served by this same loop.
+        await asyncio.shield(asyncio.to_thread(pty.close))
 
 
 async def _run(
@@ -189,13 +198,28 @@ async def _run(
     exited: asyncio.Event,
     exit_code: list[int | None],
 ) -> None:
+    loop = asyncio.get_running_loop()
+
+    async def send_output(text: str) -> None:
+        await ws.send_text(json.dumps({"type": "output", "data": text}, ensure_ascii=False))
+
     async def pump_out() -> None:
-        while True:
+        while not exited.is_set():
             text = await outbox.drain()
             if text:
-                await ws.send_text(
-                    json.dumps({"type": "output", "data": text}, ensure_ascii=False)
-                )
+                await send_output(text)
+        # The shell is gone, but what it said last may still be on its way
+        # through the pty — and, with the window, may be waiting on an ack.
+        # Keep forwarding until the pty goes quiet, then say so.
+        deadline = loop.time() + EXIT_DRAIN_MAX_S
+        while loop.time() < deadline:
+            text = await outbox.drain(EXIT_DRAIN_S)
+            if not text:
+                break
+            await send_output(text)
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({"type": "exit", "code": exit_code[0]}))
+            await ws.close()
 
     async def pump_in() -> None:
         while True:
@@ -211,16 +235,16 @@ async def _run(
                 data = msg.get("data")
                 if isinstance(data, str) and data:
                     pty.write(data[:MAX_INPUT_CHARS])
+            elif kind == "ack":
+                count = msg.get("chars")
+                if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                    pty.ack(min(count, OUTPUT_WINDOW))
             elif kind == "resize":
                 with contextlib.suppress(TypeError, ValueError):
                     pty.resize(int(msg.get("rows", DEFAULT_ROWS)),
                                int(msg.get("cols", DEFAULT_COLS)))
 
-    tasks = [
-        asyncio.ensure_future(pump_out()),
-        asyncio.ensure_future(pump_in()),
-        asyncio.ensure_future(exited.wait()),
-    ]
+    tasks = [asyncio.ensure_future(pump_out()), asyncio.ensure_future(pump_in())]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -238,17 +262,7 @@ async def _run(
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    if not exited.is_set():
-        return  # the socket went first; nothing left to tell anyone
-    # The shell is gone. Its last words may still be arriving on the reader
-    # thread, so give them a beat before saying so, then say so.
-    await asyncio.sleep(EXIT_DRAIN_S)
-    tail = outbox.take()
-    with contextlib.suppress(Exception):
-        if tail:
-            await ws.send_text(json.dumps({"type": "output", "data": tail}, ensure_ascii=False))
-        await ws.send_text(json.dumps({"type": "exit", "code": exit_code[0]}))
-        await ws.close()
+
 
 
 def register_terminal_routes(
