@@ -4,9 +4,12 @@
 // zooming and panning the lanes, and appending live events. Fails only on
 // structure (the DOM must stay windowed); the timings are for reading.
 //
-// ISOLATE swaps the chat renderer for a no-op: the transcript still builds a
-// node per event, and at this size its cost would be the whole measurement.
-// Set it false to time the pane as a user gets it.
+// ISOLATE swaps the chat renderer for a no-op so that replayToPaintMs times the
+// trajectory alone. The transcript is windowed now and leaves the frame times
+// unchanged, but it still does its own replay work, several times the
+// trajectory's (roughly 90 ms against 450 ms with it at 10k events).
+// scripts/bench_chat.js times that side; set ISOLATE false to time the pane
+// as a user gets it.
 async (page) => {
   const ISOLATE = true;
   const origin = "http://127.0.0.1:8769";
