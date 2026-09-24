@@ -265,7 +265,8 @@ command string
         is denied
       → any argument or option value that may name a protected path, read
         as the shell will read it (.git .quickcode .ssh .env* / outside the
-        project) → ask (deny in dontask)
+        project), or a recursive read that would reach one on disk
+        → ask (deny in dontask)
       → builtin read-only? → auto-allow, if the command word is a bare name
         (or an absolute path outside the project), unless the line carries a
         substitution/redirection marker ($( ` > < or an unquoted `(`) or the
@@ -306,6 +307,16 @@ as an allow rule is the supported way to get there.
   (`*`, `*.py`) cannot match a dotfile in bash and is let through, except on
   Windows, where PowerShell and cmd would match `.env` with `*`. A brace
   expansion too large to enumerate is treated as unknown, and unknown asks.
+- **A recursive read is gated by what it reaches** (`security/sweep.py`).
+  `grep -r KEY .` names `.`, which is not protected, and used to print `.env`
+  and `.git/config` on the way through — the sweep the `grep` tool was fixed
+  to skip. For `grep -r`/`-R`, `diff -r`, and `rg` with `--hidden`, `-uu`,
+  `-.`, `-L` or a whitelist glob (`-g '*'` selects dotfiles even without
+  `--hidden`), the engine walks the directories named (the project, if none)
+  and treats the command as touching a protected path if the walk would reach
+  one; a followed symlink counts by its target. The walk stops at 20,000
+  entries and answers yes, since unknown is not safe. Plain `rg`, which skips
+  dotfiles by itself, is never walked, and neither is anything in yolo.
 - **The auto-allow is for the system's `cat`, not a file called `cat`.**
   `./cat`, `bin/ls` or `tools/grep` is whatever the repository shipped under
   that name, so a command word with a path in it takes the auto-allow only if

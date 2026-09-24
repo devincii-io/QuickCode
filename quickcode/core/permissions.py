@@ -10,6 +10,7 @@ into a modal via ``push_screen_wait``; headless turns it into an auto-deny.
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import re
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from quickcode.security import commands, shellwords
+from quickcode.security import commands, shellwords, sweep
 from quickcode.security.protected import (
     glob_may_name_protected,
     is_protected,
@@ -500,7 +501,11 @@ class PermissionEngine:
         #    words resolve inside the project and stay harmless.
         # `git config` writes `.git/config`, the file every later git command
         # takes its pager, editor and hooks path from.
-        if analysis.writes_protected or self._names_protected(tokens[idx:], sub):
+        if (
+            analysis.writes_protected
+            or self._names_protected(tokens[idx:], sub)
+            or (self.mode is not Mode.yolo and self._sweeps_protected(analysis.sweep))
+        ):
             if self.mode is Mode.dontask:
                 return Decision.deny
             # Same exemption as the path tools, and this is where it was felt:
@@ -578,6 +583,35 @@ class PermissionEngine:
             if any(self._candidate_protected(c) for c in candidates):
                 return True
         return False
+
+    def _sweeps_protected(self, walk: commands.Sweep | None) -> bool:
+        """Whether a recursive read (`grep -r`, `rg --hidden`, `rg -g '*'`,
+        `diff -r`) would reach a protected file under the directories it names.
+
+        `grep -r KEY .` names `.`, which is not protected, and prints `.env`
+        and `.git/config` on the way through -- the sweep the `grep` tool was
+        fixed to skip. So the answer comes from the disk, not the command line.
+        """
+        if walk is None:
+            return False
+        roots: list[Path] = []
+        names_a_file = False
+        for operand in walk.roots:
+            for candidate in shellwords.path_candidates(operand) or []:
+                matches = [candidate]
+                if shellwords.has_glob(candidate):
+                    matches = glob.glob(candidate, root_dir=self.root)
+                for match in matches:
+                    where = resolve(match, self.root)
+                    if where is not None and where.is_dir():
+                        roots.append(where)
+                    elif where is not None and where.exists():
+                        names_a_file = True
+        if not roots and not names_a_file:
+            roots = [self.root]
+        return sweep.reaches_protected(
+            roots, self.root, hidden=walk.hidden, globs=walk.globs, follow=walk.follow
+        )
 
     def _candidate_protected(self, candidate: str) -> bool:
         if is_protected(candidate, self.root):
