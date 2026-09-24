@@ -229,25 +229,26 @@ async def serve_terminal(
     argv = shell_argv()
     pty = InteractivePty(argv, cwd=str(cwd), env=_shell_env(),
                          dimensions=(DEFAULT_ROWS, DEFAULT_COLS), window=OUTPUT_WINDOW)
-    try:
-        await asyncio.to_thread(pty.start, on_output, on_exit)
-    except PtyError as exc:
-        # No pty backend, or the shell is not installed. Say which, on the
-        # socket, rather than closing with a code the user has to guess at.
-        log.warning("terminal: could not start %s: %s", argv, exc)
-        await ws.send_text(json.dumps({"type": "terminal_error", "message": str(exc)}))
-        await ws.close(code=4500)
-        return
-
+    # Registered and owned by the `finally` from before the spawn: a client
+    # that left before `terminal_ready`, or a shutdown during the spawn, used
+    # to leave a shell nothing would ever close.
     registry.add(cwd, pty)
-    await ws.send_text(json.dumps({
-        "type": "terminal_ready",
-        "cwd": str(cwd),
-        "shell": argv[0],
-        "pid": pty.pid,
-    }, ensure_ascii=False))
-
     try:
+        try:
+            await asyncio.to_thread(pty.start, on_output, on_exit)
+        except PtyError as exc:
+            # No pty backend, or the shell is not installed. Say which, on the
+            # socket, rather than closing with a code the user has to guess at.
+            log.warning("terminal: could not start %s: %s", argv, exc)
+            await ws.send_text(json.dumps({"type": "terminal_error", "message": str(exc)}))
+            await ws.close(code=4500)
+            return
+        await ws.send_text(json.dumps({
+            "type": "terminal_ready",
+            "cwd": str(cwd),
+            "shell": argv[0],
+            "pid": pty.pid,
+        }, ensure_ascii=False))
         await _run(ws, pty, outbox, exited, exit_code)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass

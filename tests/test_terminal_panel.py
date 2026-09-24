@@ -241,6 +241,20 @@ def test_each_project_gets_its_own_shell_and_cannot_reach_another_ones(tmp_path,
                 assert registry.count(second) == 1
 
 
+def test_a_shell_that_will_not_start_is_reported_and_not_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(terminal, "shell_argv", lambda: [str(tmp_path / "no-such-shell")])
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        ev = ws.receive_json()
+        assert ev["type"] == "terminal_error" and ev["message"]
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            ws.receive_json()
+        assert excinfo.value.code == 4500
+    assert wait_until(lambda: registry.count() == 0)
+
+
 def test_a_terminal_for_an_unknown_project_is_refused(tmp_path, fake_shell):
     proj = tmp_path / "proj"
     proj.mkdir()

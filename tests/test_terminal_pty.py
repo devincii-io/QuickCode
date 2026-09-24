@@ -22,6 +22,7 @@ import pytest
 
 from quickcode.pty import interactive as interactive_mod
 from quickcode.pty.interactive import InteractivePty
+from quickcode.pty.session import PtyError
 from tests.conftest import wait_until
 
 pytestmark = pytest.mark.skipif(
@@ -303,3 +304,65 @@ def test_without_a_window_output_streams_unthrottled(tmp_path) -> None:
         screen.wait_for("DONE", timeout_s=30)
     finally:
         pty.close()
+
+
+# --------------------------------------------------------------- lifecycle
+
+
+def test_a_pty_closed_before_it_started_does_not_leave_a_shell(tmp_path) -> None:
+    """The socket can go (or the server shut down) while the spawn is still
+    running in its worker thread; close() then found no pid to kill, and the
+    shell that appeared a moment later belonged to nobody."""
+    pty = InteractivePty(_python(tmp_path, "sleeper.py", INTERRUPTIBLE))
+    pty.close()
+    with pytest.raises(PtyError):
+        pty.start(lambda _t: None, lambda _c: None)
+    assert pty.pid is not None
+    assert wait_until(lambda: not _alive(pty.pid), timeout_s=5)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_shell_that_exits_is_reaped_not_left_a_zombie(tmp_path) -> None:
+    screen = Screen()
+    pty = InteractivePty(_python(tmp_path, "quick.py", "print('bye')\n"))
+    pty.start(screen.on_output, screen.on_exit)
+    try:
+        assert wait_until(lambda: screen.exit == [0])
+        assert wait_until(lambda: not os.path.exists(f"/proc/{pty.pid}"))
+    finally:
+        pty.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_closed_shell_is_reaped_not_left_a_zombie(tmp_path) -> None:
+    pty = InteractivePty(_python(tmp_path, "sleeper.py", INTERRUPTIBLE))
+    pty.start(lambda _t: None, lambda _c: None)
+    pid = pty.pid
+    pty.close()
+    assert not os.path.exists(f"/proc/{pid}")
+
+
+# ---------------------------------------------------------------- decoding
+
+SPLIT_UTF8 = """\
+import os, time
+os.write(1, b"caf\\xc3")
+time.sleep(0.3)
+os.write(1, b"\\xa9 ok\\n")
+os.write(1, b"latin1 \\xe9\\xff then more\\n")
+"""
+
+
+def test_a_character_split_across_reads_arrives_whole(tmp_path) -> None:
+    screen = Screen()
+    pty = InteractivePty(_python(tmp_path, "split.py", SPLIT_UTF8))
+    pty.start(screen.on_output, screen.on_exit)
+    try:
+        text = screen.wait_for("then more")
+    finally:
+        pty.close()
+    assert "café ok" in text
+    # Bytes that are not UTF-8 become replacement characters and the stream
+    # goes on; they never stop it or reach the socket as surrogates.
+    assert "latin1 �� then more" in text
+    text.encode("utf-8")

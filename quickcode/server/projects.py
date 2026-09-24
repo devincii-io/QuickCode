@@ -537,8 +537,9 @@ class ProjectHub:
             # A terminal panel open on this project holds a login shell that
             # nothing else would ever kill: it is not a conversation, so the
             # liveness check above does not see it, and its socket belongs to a
-            # window that is about to be told the project is gone.
-            terminal_registry.close_for(path)
+            # window that is about to be told the project is gone. Off the loop:
+            # ending a shell's session gives it a moment to hang up.
+            await asyncio.to_thread(terminal_registry.close_for, path)
             await manager.close()
             self.managers.pop(pid, None)
             self._project_extra.pop(pid, None)

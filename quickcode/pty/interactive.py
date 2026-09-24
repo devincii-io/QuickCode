@@ -149,6 +149,7 @@ class InteractivePty:
 
         self._proc = proc
         self.pid = proc.pid
+        self._refuse_if_closed(proc)
         answered = [False]
 
         def reader() -> None:
@@ -220,6 +221,7 @@ class InteractivePty:
 
         self._proc = proc
         self.pid = proc.pid
+        self._refuse_if_closed(proc, (master_fd, wake_r, wake_w))
         with self._fd_lock:
             self._master_fd = master_fd
             self._wake_w = wake_w
@@ -230,6 +232,28 @@ class InteractivePty:
             lambda: proc.returncode,
             on_exit,
         )
+
+    def _refuse_if_closed(self, proc, fds: tuple[int, ...] = ()) -> None:
+        """End a shell whose terminal was closed while it was being spawned.
+
+        The spawn runs in a worker thread, and the socket (or the server) can
+        go in the meantime. ``close`` then found no pid to kill, so the shell
+        that appeared a moment later would have belonged to nobody. Whichever
+        of the two sees the other second does the killing.
+        """
+        if not self._closed.is_set():
+            return
+        end_session(self.pid, leader_alive=True)
+        try:
+            if IS_WINDOWS:
+                proc.close(force=True)
+            else:
+                proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001
+            pass
+        for fd in fds:
+            _close_quietly(fd)
+        raise PtyError("the terminal was closed while its shell was starting")
 
     def _pump_posix(self, master_fd: int, wake_r: int, on_output: OnOutput) -> None:
         """The one thread that touches the master: read, write, then close it."""
