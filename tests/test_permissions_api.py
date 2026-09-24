@@ -225,6 +225,23 @@ def test_without_a_mode_it_answers_for_the_mode_a_new_session_starts_in(project)
     assert any("withheld" in n for n in payload["notes"])
 
 
+def test_a_yolo_default_nobody_armed_is_explained_as_the_mode_a_session_gets(project):
+    # A session opened with yolo asked for but not armed starts in ask; a dry
+    # run that answered for yolo would promise "allow" for every call.
+    _setup(project)
+    manager = make_manager(project, FakeProvider([]))
+    manager.config.default_mode = "yolo"
+    with make_client(manager) as client:
+        payload = client.post("/api/permissions/explain", json={
+            "tool": "edit", "input": {"file_path": "README.md"},
+        }).json()
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        live = manager.get(conv_id).agent.permissions
+
+    assert payload["posture"]["mode"] == live.mode.value == "ask"
+    assert payload["decision"] == "ask"
+
+
 def test_a_profile_deny_beats_a_project_allow_and_says_so(project):
     _setup(project, extra={"active_profile": "readonly"})
     manager = make_manager(project, FakeProvider([]))

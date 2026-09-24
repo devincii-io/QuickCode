@@ -122,6 +122,10 @@ def for_new_session(
         posture_mode, rules, profile = effective_posture(cwd, base, fallback=mode)
         if not default_mode:
             mode = posture_mode
+    # Unarmed, a yolo from any source opens the session in ask
+    # (``session/assemble._starting_posture``), so that is what it is asked in.
+    if mode == Mode.yolo and not allow_yolo:
+        mode = Mode.ask
     mode = narrower_mode(mode, resolved.ceiling)
     registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
     engine = PermissionEngine(mode=mode, rules=rules, root=cwd,
