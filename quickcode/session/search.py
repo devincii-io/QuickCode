@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from quickcode.session.records import parse
-from quickcode.session.store import SessionStore, safe_conv_id
+from quickcode.session.store import SessionStore, safe_conv_id, strip_reminders
 
 MAX_QUERY = 200
 MAX_TERMS = 8
@@ -38,9 +38,6 @@ LINE_CAP = 4 << 20
 _CHECK_EVERY = 256
 
 _TERM = re.compile(r'"([^"]+)"|([^\s"]+)')
-# What store.py strips from a persisted user message: reminders the loop
-# spliced in, which the user never typed and the transcript never showed.
-_REMINDER = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTALL)
 # Byte tokens only an event record of the transcript kinds carries: inside a
 # JSON string a quote is escaped, so a bare `"user_message"` is structure.
 _TRANSCRIPT_TOKENS = (b'"user_message"', b'"assistant_message"', b'"tool_call"',
@@ -158,7 +155,7 @@ def _fields(rec: dict[str, Any]) -> Iterator[tuple[str, str, Any, dict[str, Any]
         extra = {"ts": rec.get("ts"), "turn": None}
         content = msg.get("content") if isinstance(msg.get("content"), str) else ""
         if msg.get("role") == "user" and content:
-            yield "user", _REMINDER.sub("", content).strip(), None, extra
+            yield "user", strip_reminders(content).strip(), None, extra
         elif msg.get("role") == "assistant":
             if content:
                 yield "assistant", content, None, extra

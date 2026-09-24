@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -164,6 +165,40 @@ def test_a_log_from_before_the_event_log_is_searched_through_its_messages(tmp_pa
     assert all(h["seq"] is None for h in result["hits"])
     assert ids(search_sessions(tmp_path, "grep")) == ["legacy"]
     assert search_sessions(tmp_path, "hidden needle")["results"] == []
+
+
+@pytest.mark.parametrize("filler", ["<system-reminder>", "\n"])
+def test_a_crafted_legacy_message_cannot_stall_a_search(tmp_path, filler):
+    """A session log is a file in the project -- a cloned repository can ship
+    one -- and the reminder stripping runs inside a single line, below the time
+    budget's reach. Unclosed openings or a long run of newlines made the old
+    regex quadratic: this message took minutes to strip."""
+    store = SessionStore(tmp_path, "crafted")
+    store.append_message(ChatMessage(role="user", content="needle " + filler * 40_000))
+
+    started = time.monotonic()
+    [result] = search_sessions(tmp_path, "needle")["results"]
+    assert time.monotonic() - started < 2.0
+    assert result["hits"][0]["where"] == "user"
+
+
+@pytest.mark.parametrize("text", [
+    "plain",
+    "typed\n\n<system-reminder>a</system-reminder>",
+    "<system-reminder>a</system-reminder>typed",
+    "a\n<system-reminder>x\n</system-reminder>b\n\n<system-reminder>y</system-reminder>\nc",
+    "a <system-reminder>unclosed",
+    "a\n\n<system-reminder>x</system-reminder>\n<system-reminder>unclosed",
+    "<system-reminder><system-reminder>x</system-reminder></system-reminder>",
+    "\n\n\n",
+])
+def test_reminder_stripping_matches_what_the_regex_it_replaced_did(text):
+    import re
+
+    from quickcode.session.store import strip_reminders
+
+    old = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTALL)
+    assert strip_reminders(text) == old.sub("", text)
 
 
 def test_a_log_with_events_does_not_also_answer_from_its_messages(tmp_path):
