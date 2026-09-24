@@ -180,6 +180,23 @@
   background: color-mix(in srgb, var(--warning) 32%, transparent);
 }
 
+/* The command palette (js/palette.js): a menu with no anchor, near the top. */
+.menu.palette { width: min(640px, calc(100vw - 24px)); min-width: 0; max-width: none; }
+.palette .menu-search { font-size: 14px; padding: 9px 12px; }
+.palette .pal-item { cursor: pointer; padding: 7px 12px; }
+.palette .pal-item .mi-title { font-weight: 500; }
+.palette .pal-item[aria-selected="true"] {
+  background: var(--panel); box-shadow: inset 2px 0 var(--primary);
+}
+.pal-keys {
+  flex: none; font-family: var(--mono); font-size: 10.5px; font-weight: 400;
+  color: var(--fg-faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
+}
+.palette-foot {
+  flex: none; border-top: 1px solid var(--line); padding: 5px 12px;
+  font-size: 11px; color: var(--fg-faint); font-family: var(--mono);
+}
+
 /* ---------- deleting a project's QuickCode data (js/purge.js) ---------- */
 /* The one destructive action that gets a dialog. It has to answer two
    questions before the button is pressed: exactly which directory, and what is

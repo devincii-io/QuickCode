@@ -178,13 +178,47 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
   programs to run (`mcpServers`, `kind: tool` plugins) or widen permissions;
   lists every command line before you grant it.
 
+## Command palette
+
+`Ctrl+K` (`⌘K` on macOS) opens a searchable list of everything you can do from
+where you are (`js/palette.js`). Type to filter — every word must match, the
+start of a title ranks first, then the start of a word in it, then a word in
+its description — `↑`/`↓` (or `PgUp`/`PgDn`) choose, `Enter` runs, `Esc` or
+`Ctrl+K` again closes. It is a `role="dialog"` holding a combobox and a
+listbox, with the highlighted option tracked by `aria-activedescendant`.
+
+The key opens the palette of the document that has focus, so there are two:
+
+- **In an agent pane** (`js/palette_pane.js`): every slash command, read from
+  the same table the composer runs them from (`js/composer/commands.js`); each
+  permission mode; the model picker; *New conversation* and the recent
+  sessions; the pane commands (new pane, split right or below, maximize, the
+  sidebar, and *Go to another agent or workspace…*, which hands over to the
+  shell's palette); the side panel and the terminal; every Settings page; and
+  Help. Past conversations are searched too: after a pause, messages that
+  match are listed under *In past conversations* — the same search as
+  [Finding a conversation](#finding-a-conversation), opening the session at
+  the matching event.
+- **In the workspace shell** (`js/workspace_palette.js`), when focus is in the
+  sidebar or on Home: new pane, split, maximize, reopen closed pane, the
+  sidebar, every open agent and workspace, known projects not yet open, *Open
+  folder…*, Appearance, and the Settings and Help pages (in the utility
+  dialog).
+
+A command that moves focus keeps it; one that does not (a mode switch,
+*Show or hide the terminal*) gives it back to where it was, normally the
+composer. The palette does not open over a dialog, not in the Settings/Help
+dialog's own frame, and not in the terminal, whose shell keeps `Ctrl+K`.
+
 ## Keyboard
 
-The authoritative list is `KEYS` and `SLASH` in `js/help/shortcuts.js`, which
-both the `?` quick reference and Help ▸ Keyboard read.
+The authoritative list is `KEYS` in `js/help/shortcuts.js` and the slash
+commands in `js/composer/commands.js`, which both the `?` quick reference and
+Help ▸ Keyboard read.
 
 | Key | Action |
 |---|---|
+| `Ctrl+K` / `⌘K` | Command palette |
 | `Alt+N` | New agent pane in this workspace |
 | `Alt+Z` | Maximise the focused pane, or restore the layout |
 | `Alt+B` | Show or hide the workspace sidebar |

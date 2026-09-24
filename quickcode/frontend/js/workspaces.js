@@ -4,7 +4,10 @@ import { openDirBrowser } from "./dirbrowser.js";
 import { applyTheme, el, esc } from "./util.js";
 import { toastError, toastOk } from "./toast.js";
 import { readAppearance, renderAppearanceControls } from "./appearance.js";
+import { SECTIONS as HELP_SECTIONS } from "./help/view.js";
 import { Attention, badgeTitle, noticeCopy, paintBadge, showOsNotice, windowActive } from "./notify.js";
+import { bindPaletteKey, openPalette } from "./palette.js";
+import { workspaceItems } from "./workspace_palette.js";
 import { dwindleDir, equalize, evenRatio, heirOf, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
 import { MAX_PANES, MAX_RATIO, MIN_RATIO, clampRatio, resizeKey, restoreWorkspace } from "./workspace_state.js";
 
@@ -518,6 +521,38 @@ function openUtility(route, pid = home ? null : active) {
   utility.showModal();
 }
 
+function openWorkspacePalette() {
+  if (utility) return;
+  const state = {
+    home, active, zoomed, undo: !!undo,
+    workspaces: [...workspaces.values()].map((w) => ({
+      id: w.project.id, name: w.name || w.project.name || w.project.path, ready: !!w.ready, focused: w.focused,
+      panes: leaves(w.tree).map((id) => ({ id, title: w.panes[id]?.title || "Agent", state: frames.get(id)?.element.dataset.state || "" })),
+    })),
+  };
+  openPalette({
+    items: workspaceItems(state, {
+      newAgent: () => addPane(),
+      split: (dir) => addPane(current(), dir),
+      zoom: () => toggleZoom(),
+      sidebar: toggleSidebar,
+      reopen: undoClose,
+      focusPane: (wid, id) => { const w = workspaces.get(wid); if (w?.panes[id]) focus(w, id); },
+      openWorkspace: (wid) => { const w = workspaces.get(wid); if (w && (active !== wid || home)) activate(w); },
+      openFolder: () => openDirBrowser(openProject),
+      projects: showHome,
+      appearance,
+      route: (hash) => openUtility(hash),
+    }, HELP_SECTIONS),
+    // Known projects that are not open as a workspace yet.
+    load: api.projects().then(({ projects }) => projects.filter((p) => !workspaces.has(p.id)).map((p) => ({
+      group: "Projects", title: `Open ${p.name || p.path}`, hint: p.path, keywords: "project workspace",
+      run: () => openProject(p),
+    }))),
+    placeholder: "Go to an agent, a workspace or a page…",
+  });
+}
+
 function shortcut(e) {
   if (!e.altKey || e.ctrlKey || e.metaKey || document.querySelector("dialog[open]") || utility) return;
   const key = e.key.toLowerCase();
@@ -566,6 +601,7 @@ export async function bootWorkspaces() {
   document.getElementById("home-help").onclick = () => openUtility("#/help/workspaces");
   new ResizeObserver(layout).observe(grid);
   document.addEventListener("keydown", shortcut);
+  bindPaletteKey(openWorkspacePalette);
   window.addEventListener("focus", acknowledge);
   document.addEventListener("visibilitychange", acknowledge);
   window.addEventListener("message", (e) => {
@@ -581,6 +617,8 @@ export async function bootWorkspaces() {
       else acknowledge();
     }
     else if (data.action === "notice") notice(f, data);
+    else if (data.action === "palette") openWorkspacePalette();
+    else if (data.action === "split" && (data.dir === "h" || data.dir === "v")) { f.ws.focused = f.pane.id; addPane(f.ws, data.dir); }
     else if (data.action === "home") showHome();
     else if (data.action === "settings" && /^#\/(config|help)/.test(data.route)) openUtility(data.route, f.ws.project.id);
     else if (data.action === "shortcut") shortcut({ ...data, preventDefault() {} });

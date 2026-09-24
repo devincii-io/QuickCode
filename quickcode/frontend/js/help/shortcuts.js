@@ -5,12 +5,15 @@
 // read the same array, because a shortcut list that exists twice is a shortcut
 // list that is wrong in one of the two places.
 //
-// The slash commands mirror `COMMANDS` in js/composer/slash.js, which is what
-// actually runs when you type one.
+// The slash commands are read from js/composer/commands.js, the table the
+// composer runs them from.
 
-import { MODE_IDS } from "../modes.js";
+import { SLASH_COMMANDS } from "../composer/commands.js";
 
 export const KEYS = [
+  ["Ctrl + K (⌘K)", "Open the command palette: slash commands, modes, the model, sessions, "
+    + "panes and every Settings and Help page, searchable. In an agent pane it also "
+    + "searches your past conversations"],
   ["Alt + N", "Open a new agent pane in this workspace"],
   ["Alt + Z", "Maximize the focused agent or restore the pane layout"],
   ["Alt + B", "Show or hide the workspace sidebar"],
@@ -28,16 +31,7 @@ export const KEYS = [
     + "in this project's directory, yours to type in"],
 ];
 
-export const SLASH = [
-  ["/compact", "", "Compress the conversation into a summary"],
-  ["/clear", "", "Start a new conversation"],
-  ["/mode", `<${MODE_IDS.join("|")}>`, "Switch the permission mode"],
-  ["/model", "", "Pick the model for this session"],
-  ["/composition", "", "Switch this session's composition (at a turn boundary)"],
-  ["/profile", "", "Switch this session's permission profile (takes effect now)"],
-  ["/init", "", "Have the agent survey this project and write QUICKCODE.md"],
-  ["/help", "", "The quick reference"],
-];
+export const SLASH = SLASH_COMMANDS.map((c) => [c.name, c.arg || "", c.desc]);
 
 export const PANEL_NOTE =
   "The right-hand panel holds Trajectory, Agents, Tasks, Files and Usage. Drag "
