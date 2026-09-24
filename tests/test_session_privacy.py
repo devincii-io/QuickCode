@@ -37,6 +37,7 @@ def test_the_gitignore_covers_everything_that_holds_conversation_content(tmp_pat
     assert "sessions/" in patterns
     assert "tasks/" in patterns
     assert "artifacts/" in patterns
+    assert "checkpoints/" in patterns
     assert "settings.local.json" in patterns
 
 

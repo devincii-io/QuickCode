@@ -74,6 +74,7 @@ without the server sniffing for a `task_` name prefix.
 - Overwriting a file that was never `read`, or that changed on disk since it was read → error (forces the model to look before it leaps).
 - An overwritten file keeps its encoding, BOM and line endings; a new file is written exactly as given (UTF-8, no newline translation on any platform).
 - Creates missing parent directories. The model gets a one-line confirmation (`Wrote N lines to <path>`); the UI shows the written content.
+- **Checkpointed.** Before the first change a turn makes to a file inside the project, its previous bytes (or the fact that it did not exist) are saved, and the user can rewind it to before that turn. `edit` and every other tool declaring a path target are recorded the same way, by a loop hook rather than by the tool. See docs/CHECKPOINTS.md.
 
 ## edit
 
@@ -97,6 +98,7 @@ without the server sniffing for a `task_` name prefix.
 - "Changed on disk" compares content when the whole file was read (a `touch` is not a change; a rewrite inside one mtime tick is), and mtime otherwise.
 - The file keeps its encoding, BOM and line endings. In a CRLF file both strings are matched and written with CRLF, since read only ever shows `\n`.
 - The result is `Replaced N occurrence(s) in <path>` plus a unified diff of the change (2 lines of context, capped at 60 diff lines) — never the whole file. The UI renders the same diff.
+- Checkpointed like `write`: several edits to one file in a turn still rewind to the bytes from before the first (docs/CHECKPOINTS.md).
 
 ## glob `[read-only]`
 
@@ -168,6 +170,7 @@ without the server sniffing for a `task_` name prefix.
 - One process per call, run to completion. On POSIX it runs inside a pseudo-terminal (`pty/session.py`); on Windows on plain pipes with stdin on the null device, so a command that reads stdin gets EOF instead of hanging (`QUICKCODE_BASH_PTY=1` opts into ConPTY). See docs/ARCHITECTURE.md §The bash tool and PTYs.
 - There is no persistent shell. A bare `cd <dir>` is handled without spawning anything and moves a tracked working directory that later calls start in; `cd` inside a longer command line affects that command only.
 - Output is decoded (UTF-8, then the system code page), stripped of ANSI escapes, and capped at 30 000 chars to the model (head and tail kept, middle elided with a marker). Every command and its output is listed in the terminal drawer's *Agent* tab.
+- **Not checkpointed.** A command line names no files anyone can check, so what `bash` changes cannot be rewound; a rewind reports a tracked file that `bash` changed as a conflict rather than overwriting it (docs/CHECKPOINTS.md).
 - **Security:** commands are untrusted model output. The line is split on `;`, `&&`, `||`, `|`, `&` and newlines and each subcommand is gated on its own; a line with `$(`, a backtick, `>` or `<` never matches an allow rule or takes the read-only auto-allow (docs/PERMISSIONS.md §Bash evaluation pipeline). Stop and timeouts kill the whole process tree. The command's environment is QuickCode's without its API keys (`subproc.child_env`), so `echo $QUICKCODE_OPENROUTER_API_KEY` prints nothing — true of every process QuickCode starts.
 
 **Background jobs (`run_in_background: true`).** The command starts detached and the call returns at once with a job id (`bash_1`, `bash_2`, …); the model keeps its turn and the command keeps running past it. `bash_output` reads it and `bash_kill` stops it (below). What differs from a foreground call, and what does not:
@@ -402,7 +405,7 @@ The tool also **registers even with no key configured**, matching how the OpenRo
 
 | Tool | Purpose |
 |---|---|
-| `agent` | Spawn a subagent (own pane, own model, capped permissions). Blocking by default; `background: true` returns a job handle instead of a report. |
+| `agent` | Spawn a subagent (own pane, own model, capped permissions). Blocking by default; `background: true` returns a job handle instead of a report; `isolation: "worktree"` runs it in its own git worktree. |
 | `send_message` | Message/resume a subagent or teammate by name/id. |
 | `agent_status` | List the background jobs and their state (`running`/`done`/`error`/`cancelled`), or ask about one by id. |
 | `agent_result` | Collect a finished background job's report; `wait_s` blocks for one still running. |
@@ -412,6 +415,8 @@ The tool also **registers even with no key configured**, matching how the OpenRo
 The four delegation tools (`agent`, `send_message`, `agent_status`, `agent_result`) are granted **by depth, never by allowlist** (`kernel/composition.py::DELEGATION_TOOLS`): an agent that may spawn receives the whole set, and an agent at the depth limit receives none of it. Granting `agent` without the collectors would make `background: true` a way to start work nobody can read.
 
 **Detached jobs, end to end.** `agent(background: true, …)` prepares the child synchronously — an unknown `agent_type`, an exhausted budget or a refused composition still comes back as a tool error — then runs it on a task the *conversation* owns and returns a one-row `agent_jobs{id,type,status,seconds,collected,description}` TOON table. The model keeps its turn. Every delegation, detached or blocking, emits an `agent_done` event (`{agent_id, definition, status, seconds}`, status `done | error | cancelled`) into the session log when the child stops — a detached one *additionally* queues a reminder that the spawner reads at the top of its next turn, because it ends at a moment nothing in the spawner's own transcript marks; `agent_result` returns the same sanitized, artifact-offloaded report a blocking call would have (a detached run and a blocking one share `_run_and_finish`). Turn end is not a way out: a turn that finishes with a job running or a report uncollected leaves both a transcript note and a queued reminder. Interrupt (`Esc`) and closing the conversation cancel every job still in flight; the record survives with status `cancelled` and a `[did not finish]` report, so a later `agent_result` on that id says what happened rather than failing to recognise it.
+
+**Worktree isolation, end to end.** `agent(isolation: "worktree", …)` — allowed when the definition says `isolation: optional` (built-in `general`), automatic when it says `isolation: worktree` — gives the child a detached git worktree under `.quickcode/worktrees/`, made from the spawner's HEAD plus its uncommitted changes to tracked files. The child's `cwd`, shell, background jobs and permission root are the worktree, so the spawner's checkout is outside its project. However the run ends, its changes are committed to a `quickcode/*` branch and the checkout is removed; the report ends with a harness-written `<worktree branch=… base=… files=…>` block holding the `git diff --stat` and the command to bring the work in, which the spawner runs through `bash` (`git merge`, gated as ever). Outside a git repository the spawn is refused as a tool error. The tool keeps `mutates=False`: it writes only QuickCode's own `.quickcode/worktrees/` and `quickcode/*` refs, never the user's branch, index or working tree. Full behaviour in docs/AGENTS.md §1.2.
 
 `runtime.subagents.max_parallel` (default 4, max 16) caps how many jobs run **at once** — `max_agents` is a lifetime total and says nothing about simultaneity, which only became reachable when spawning stopped blocking the turn. Asking past the cap is an error naming the jobs in flight, never a queue.
 

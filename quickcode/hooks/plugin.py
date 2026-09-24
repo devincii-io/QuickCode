@@ -31,6 +31,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from quickcode.checkpoints.hook import CheckpointHook
 from quickcode.core.hooks import LoopHook, ToolCheck, default_hooks
 from quickcode.core.permissions import Decision
 from quickcode.hooks.config import EVENTS, HookCommand, HookConfig, load_hooks
@@ -298,18 +299,25 @@ def session_hooks(
     resumed: bool = False,
     trusted: bool | None = None,
 ) -> list[LoopHook]:
-    """The loop hooks for one session: the built-ins, then the user's commands."""
-    return [
-        *default_hooks(),
-        CommandHooks(lambda: load_hooks(cwd, trusted=trusted), session_id=session_id,
-                     transcript_path=transcript_path, resumed=resumed),
-    ]
+    """The loop hooks for one session: the built-ins, then the user's commands.
+
+    File checkpoints sit ahead of the user's commands, so a PreToolUse hook
+    that refuses a call cannot keep the turn from being counted, and every
+    change a PostToolUse hook is told about has already been saved.
+    """
+    hooks: list[LoopHook] = [*default_hooks()]
+    checkpoints = CheckpointHook.for_session(cwd, session_id)
+    if checkpoints is not None:
+        hooks.append(checkpoints)
+    hooks.append(CommandHooks(lambda: load_hooks(cwd, trusted=trusted), session_id=session_id,
+                              transcript_path=transcript_path, resumed=resumed))
+    return hooks
 
 
 def child_hooks(parent: list[LoopHook] | None) -> list[LoopHook]:
     """The loop hooks for a subagent spawned under ``parent``'s session."""
     hooks = default_hooks()
     for hook in parent or ():
-        if isinstance(hook, CommandHooks):
+        if isinstance(hook, (CheckpointHook, CommandHooks)):
             hooks.append(hook.for_subagent())
     return hooks

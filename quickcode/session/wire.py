@@ -29,6 +29,7 @@ from quickcode.core.events import (
     ToolResultEvent,
     TurnDone,
     Usage,
+    WorktreeEvent,
 )
 
 # Trace log caps: results are stored in full up to this size so the trace stays
@@ -44,6 +45,7 @@ _EXTRA: dict[type, Any] = {}
 _CORE_EVENT_TYPES: tuple[type, ...] = (
     TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd,
     ToolResultEvent, Usage, TurnDone, ContextInjection, AgentStatus, Compacted, SystemNote,
+    WorktreeEvent,
 )
 
 
@@ -110,6 +112,8 @@ def event_to_json(ev: AgentEvent) -> dict[str, Any] | None:
         }
     if isinstance(ev, SystemNote):
         return {"type": "system_note", "text": ev.text}
+    if isinstance(ev, WorktreeEvent):
+        return {"type": "worktree", **asdict(ev)}
     return None
 
 

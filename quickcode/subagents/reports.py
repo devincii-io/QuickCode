@@ -19,11 +19,13 @@ MARKER = "[quickcode: sanitized subagent report]"
 
 # Tags that read as the harness talking, or as the delegation template, or as
 # the wrapper the collector puts around a report (closing it early would put
-# whatever follows outside the child's voice). Matched whatever the case and
-# wherever a tokenizer would forgive whitespace.
+# whatever follows outside the child's voice). ``worktree`` is the block the
+# harness appends naming where an isolated child's work went; a child writing
+# its own could point the spawner at some other branch. Matched whatever the
+# case and wherever a tokenizer would forgive whitespace.
 _HARNESS_TAGS = (
     "system-reminder", "subagent", "compaction-summary",
-    "task", "objective", "context", "boundaries", "output_format",
+    "task", "objective", "context", "boundaries", "output_format", "worktree",
 )
 _TAG = re.compile(
     r"<(\s*/?\s*(?:" + "|".join(re.escape(t) for t in _HARNESS_TAGS) + r")\b[^<>]*)(>?)",

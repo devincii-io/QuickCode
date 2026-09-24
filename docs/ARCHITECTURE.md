@@ -69,6 +69,7 @@ quickcode/
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every child process starts here: no console window, no API keys in its env, killable tree
+  gitcmd.py               # git without the repository's own code: no hooks, fsmonitor, textconv, signing
   fsutil.py               # atomic_write_text/bytes: temp file beside the target, renamed over it
   jsonfile.py             # the one JSON-file decoder: BOM names UTF-8/16/32, else strict UTF-8
   workspace.py            # the project's .quickcode/ directory and its .gitignore
@@ -93,6 +94,8 @@ quickcode/
   hooks/                  # user command hooks on the LoopHook seam (docs/HOOKS.md)
     config.py protocol.py runner.py plugin.py events.py specs.py
     store.py trial.py     # the Hooks page: editing the settings files, test runs
+  checkpoints/            # file checkpoints per turn, and rewinding them (docs/CHECKPOINTS.md)
+    store.py snapshot.py recorder.py hook.py rewind.py diff.py paths.py events.py
   kernel/                 # the plugin kernel (below)
     spec.py registry.py bootstrap.py state.py
     manifest/             # the internal plugins we ship, one module per family
@@ -119,6 +122,7 @@ quickcode/
     projects_api.py       # project registry, data purge, directory browser, trust gate
     kernel_api.py         # plugin registry and settings, presets
     profiles_api.py prompt_api.py config_api.py update_api.py
+    checkpoints_api.py    # a conversation's checkpoints: list, preview a rewind, rewind
     manager.py            # ConversationManager: opens and tracks one project's conversations
     conversation.py       # Conversation: one live agent, its windows, its turn worker
     reviews.py            # ReviewDesk: permission / plan requests awaiting a client decision
@@ -137,6 +141,7 @@ quickcode/
     assemble.py           # build_session: the one way a session is put together, app and -p
   subagents/
     definitions.py runner.py jobs.py artifacts.py
+    worktree.py           # git-worktree isolation: a checkout per writer, its work as a branch
   providers/
     base.py openai_compat.py credits.py
     overflow.py           # "context length exceeded", in each provider's words
@@ -414,7 +419,7 @@ No tool can reach it, and the agent never sees what is typed there.
 - A **Conversation** = one main AgentInstance + its transcript + its spawned subagents. A conversation nobody is attached to stays *open* server-side — its agent, task board and background jobs survive — but nothing streams to a client that is not there. In the browser each agent pane is its own iframe holding exactly one socket to one conversation (`frontend/js/ws.js` enforces the one with a generation guard); several panes make several concurrent live conversations.
 - Subagents and teammates are just more AgentInstances with different system prompts, models, and permission caps — one runtime, no special cases. Coordination (task board, teammate messaging, result hand-back) is specced in docs/AGENTS.md.
 - **Spend vs. context.** Each AgentInstance owns a `Ledger`, so a child's tokens reach the session only through the recorder, which bridges every subagent bus. It rolls them in with `Ledger.add_subagent`: the cumulative fields (`input_tokens`, `output_tokens`, `cached_tokens`, `cost_usd`) take them, and `last_input_tokens` / `last_output_tokens` never do. That pair is the *live context footprint* — it drives `context_pct()`, the context meter and the compaction threshold — and a subagent fills a context window of its own, so counting its request there would show a short conversation as nearly full and could trip an auto-compaction the parent never needed. `Ledger.from_events` replays the same split from the log, reading the child's usage out of the `agent_event` wrapper it is logged inside.
-- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `session/wire.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py` through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its mid-turn compactions and system notes, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
+- Session store: the trace appends to `./.quickcode/sessions/<conv-id>.jsonl`. Not *every* event — `session/wire.py` holds a `LOGGED_TYPES` set and `loggable()` admits only the assembled shapes (`user_message`, `assistant_message`, `system_prompt`, `context_injection`, `tool_call`, `tool_result`, `usage`, `permission_request`, `permission_resolved`, `plan_request`, `plan_resolved`, `mode_changed`, `model_changed`, `compacted`, `agent_spawned`, `agent_done`, `bash_job_started`, `bash_job_done`, `hook_run`, `checkpoint`, `files_rewound`, `system_note`, `error`) — `hook_run` is registered by `hooks/events.py`, and `checkpoint` and `files_rewound` by `checkpoints/events.py`, through `register_event(..., logged=True)`. Two more are logged by their emitter passing `log_it=True`: `profile_changed` and `composition_changed`. Streaming deltas and transient status flips stay live-only, which is why the log replays as a transcript rather than as a keystroke recording. A subagent's assembled events (its tool calls, its results, its usage, its mid-turn compactions and system notes, its final message) are logged the same way, one level down inside an `agent_event` wrapper carrying the child's id and the spawning turn. An isolated child adds `worktree` records to that stream (`{action, path, branch, base, commit, files, insertions, deletions, detail}`; `action` is `created`/`reopened` when its checkout is ready, then `committed`/`unchanged`/`kept`/`failed` when the run ends), always ahead of its `agent_done` — docs/AGENTS.md §1.2. A plugin can add one more type via `register_event(..., logged=True)`. `--continue` resumes the most recent conversation, including its still-open task board; any other one is reopened from the session list in the UI.
 
 ## Headless runs (`-p`)
 

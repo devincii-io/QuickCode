@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from quickcode.server import auth
 from quickcode.server.agents_api import register_agent_routes
 from quickcode.server.authoring_api import register_authoring_routes
+from quickcode.server.checkpoints_api import register_checkpoint_routes
 from quickcode.server.config_api import register_config_routes
 from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.headers import security_headers
@@ -141,6 +142,7 @@ def create_app(
     register_kernel_routes(app, hub)
     register_profile_routes(app, hub)
     register_prompt_routes(app, hub)
+    register_checkpoint_routes(app, hub)
     register_config_routes(app, hub)
     register_update_routes(app, hub)
     register_ws_routes(app, hub, ws_allowed=_ws_allowed, token=token)

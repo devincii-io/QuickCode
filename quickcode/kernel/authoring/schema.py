@@ -565,6 +565,17 @@ def _validate_agent(doc: Document, common: dict[str, Any], add) -> AuthoredPlugi
             "Remove the 'role:' line. The orchestrator is the reserved id "
             "'@orchestrator' and nothing else can claim it.", field="role")
 
+    isolation = meta.get("isolation", "").strip().lower()
+    if isolation:
+        from quickcode.subagents.definitions import ISOLATION_CHOICES
+        if isolation not in ISOLATION_CHOICES:
+            choices = ", ".join(ISOLATION_CHOICES)
+            add(BAD_ENUM_CHOICE, "warning",
+                f"isolation: '{isolation}' is not one of {choices}; this agent "
+                "loads with isolation: none",
+                "Use 'optional' to let the spawner ask for a git worktree, or "
+                "'worktree' to always get one.", field="isolation")
+
     turns = meta.get("max_turns", "").strip()
     if turns and not turns.lstrip("-").isdigit():
         add(BAD_ENUM_CHOICE, "warning",
