@@ -25,10 +25,6 @@ export function chip(text, cls = "") {
   return `<span class="set-chip ${esc(cls)}">${esc(text)}</span>`;
 }
 
-export function tierNote(tier) {
-  return TIER_TEXT[tier] || "";
-}
-
 // ---- stacked sheet --------------------------------------------------------
 
 const modalRoot = () => document.getElementById("modal-root");
