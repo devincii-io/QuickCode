@@ -536,10 +536,6 @@ def _rewrite_identity(text: str, slug: str, title: str, derived_from: str) -> st
     return "\n".join(lines)
 
 
-def problems_json(problems: list[Problem]) -> list[dict]:
-    return [p.to_json() for p in problems]
-
-
 def plugin_json(plugin: AuthoredPlugin) -> dict:
     return {
         "id": plugin.id,

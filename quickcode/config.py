@@ -66,22 +66,6 @@ THEME_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 
-# Order to present color fields in the editor (stable, grouped structure→accent).
-THEME_COLOR_ORDER: list[str] = [
-    "background",
-    "surface",
-    "panel",
-    "boost",
-    "foreground",
-    "primary",
-    "secondary",
-    "accent",
-    "success",
-    "warning",
-    "error",
-]
-
-
 # Model cost band. Deliberately NOT called ``Tier``: ``kernel/spec.py`` owns
 # that name for mutability (free | confirm | locked), and one word meaning
 # two things across modules that import both is a bug waiting for a reader.
