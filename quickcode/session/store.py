@@ -23,10 +23,12 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
+import logging
 import os
 import re
 import shutil
 import stat
+import threading
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -34,7 +36,10 @@ from pathlib import Path
 from typing import Any
 
 from quickcode.providers.base import ChatMessage
+from quickcode.session.records import parse
 from quickcode.workspace import ensure_project_dir
+
+log = logging.getLogger("quickcode.session")
 
 PROJECT_DIRNAME = ".quickcode"
 SESSIONS_DIRNAME = Path(PROJECT_DIRNAME) / "sessions"
@@ -71,6 +76,10 @@ MAX_TITLE = 200
 # disk* -- `list_sessions` and `empty_sessions` derive them from filenames --
 # so the last line of defence belongs here, next to the code that deletes.
 _SAFE_CONV_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+
+# Serializes appends within this process, so the newline check before a write
+# and the write itself cannot be split by another thread's append.
+_WRITE_LOCK = threading.Lock()
 
 
 def safe_conv_id(conv_id: str) -> bool:
@@ -189,10 +198,18 @@ class SessionStore:
         self.active_path = self.sessions_dir / f"{self.conv_id}.jsonl"
         self.archived_path = self.archive_dir / f"{self.conv_id}.jsonl"
         self._next_seq: int | None = None
+        self._last_turn = 0
+        # (path, size) of the log as this store last read or wrote it. A size
+        # it did not produce means another writer appended, and the sequence
+        # counter has to be re-read before it hands out a number twice.
+        self._known_size: tuple[Path, int] | None = None
         # Set by ``hold`` for a conversation nobody has said anything in yet;
         # records pile up here until ``release``. See ``hold``.
         self._holding = False
         self._deferred: list[dict[str, Any]] = []
+        #: Line numbers the last read had to skip. See ``records.parse``.
+        self.damaged_lines: list[int] = []
+        self._reported_damage: list[int] = []
 
     @property
     def path(self) -> Path:
@@ -236,12 +253,41 @@ class SessionStore:
         self.archived_path.replace(self.active_path)
         return True
 
-    def _scan_last_seq(self) -> int:
-        last = 0
-        for rec in self._iter_records():
-            if rec.get("kind") == "event" and isinstance(rec.get("seq"), int):
-                last = max(last, rec["seq"])
-        return last
+    def _scan(self) -> None:
+        """Read the highest ``seq`` and ``turn`` the log already holds."""
+        last_seq = last_turn = 0
+        records, self._known_size = self._read()
+        for rec in records:
+            if rec.get("kind") != "event":
+                continue
+            if isinstance(rec.get("seq"), int):
+                last_seq = max(last_seq, rec["seq"])
+            ev = rec.get("ev")
+            if isinstance(ev, dict) and isinstance(ev.get("turn"), int):
+                last_turn = max(last_turn, ev["turn"])
+        self._next_seq = max(self._next_seq or 0, last_seq + 1)
+        self._last_turn = max(self._last_turn, last_turn)
+
+    def _current_size(self) -> tuple[Path, int]:
+        path = self.path
+        try:
+            return path, path.stat().st_size
+        except OSError:
+            return path, 0
+
+    def _allocate_seq(self) -> int:
+        if self._next_seq is None or self._current_size() != self._known_size:
+            self._scan()
+        assert self._next_seq is not None
+        seq = self._next_seq
+        self._next_seq += 1
+        return seq
+
+    def last_turn(self) -> int:
+        """The highest turn number already logged; 0 for a new session."""
+        if self._next_seq is None:
+            self._scan()
+        return self._last_turn
 
     # ---- writing ----
     def begin(self, **fields: Any) -> None:
@@ -286,15 +332,32 @@ class SessionStore:
         self._write_lines([obj])
 
     def _write_lines(self, objs: list[dict[str, Any]]) -> None:
+        """Append ``objs`` as one contiguous block of lines.
+
+        One write per batch, so another appender can never land between two
+        records of it. And a log that does not end in a newline -- a crash cut
+        the last record short, or left NUL padding -- gets one first: without
+        it the next record was glued onto the fragment and lost with it, so
+        the first thing said after a crash was the one thing resume never saw.
+        """
         target = self.path
         # The first line of the first session is what creates ``.quickcode/``
         # in a fresh project, so it is also where the directory gets the
         # ``.gitignore`` that stops this log from being committed.
         ensure_project_dir(self.root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as f:
-            for obj in objs:
-                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        payload = "".join(json.dumps(obj, ensure_ascii=False) + "\n" for obj in objs)
+        data = payload.encode("utf-8")
+        with _WRITE_LOCK, target.open("a+b", buffering=0) as f:
+            end = f.seek(0, os.SEEK_END)
+            if end:
+                f.seek(end - 1)
+                if f.read(1) != b"\n":
+                    data = b"\n" + data
+            view = memoryview(data)
+            while view:
+                view = view[f.write(view) or 0:]
+            self._known_size = (target, os.fstat(f.fileno()).st_size)
 
     def append_message(self, msg: ChatMessage) -> None:
         self.release()
@@ -364,37 +427,44 @@ class SessionStore:
         a reload (which replays from disk, where ``load_events`` folds the
         record's ``ts`` back in) put them where they actually happened.
         """
-        if self._next_seq is None:
-            self._next_seq = self._scan_last_seq() + 1
-        seq = self._next_seq
-        self._next_seq += 1
+        seq = self._allocate_seq()
         ts = ev["ts"] = datetime.datetime.now().isoformat()
         # The user saying something is what turns an open window into a
         # session. Everything before it was the app getting ready.
         if ev.get("type") == "user_message":
             self.release()
-        self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": ev})
+        # A copy: a held record is written later, and the caller goes on to
+        # stamp ``seq`` into its own dict, which must not reach the file.
+        self._append_line({"kind": "event", "seq": seq, "ts": ts, "ev": dict(ev)})
         return seq
 
     # ---- reading ----
     def _iter_records(self) -> list[dict[str, Any]]:
-        records: list[dict[str, Any]] = []
-        if self.path.exists():
-            with self.path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        records.append(json.loads(line))
-                    except (json.JSONDecodeError, ValueError):
-                        continue
+        return self._read()[0]
+
+    def _read(self) -> tuple[list[dict[str, Any]], tuple[Path, int]]:
+        """The log's records (held ones last) and the (path, size) read."""
+        path = self.path
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            data = b""
+        parsed = parse(data)
+        records = parsed.records
+        self.damaged_lines = parsed.damaged
+        if parsed.damaged and parsed.damaged != self._reported_damage:
+            self._reported_damage = list(parsed.damaged)
+            log.warning(
+                "session %s: skipped %d unreadable line(s) in %s (line %s)",
+                self.conv_id, len(parsed.damaged), path,
+                ", ".join(str(n) for n in parsed.damaged[:10]),
+            )
         # Held records are part of this session as far as every reader is
         # concerned. Only the *write* is deferred: a client that attaches to a
         # conversation before anything is said still replays its system prompt,
         # exactly as it did when opening the window created a file.
         records.extend(self._deferred)
-        return records
+        return records, (path, len(data))
 
     def load_messages(self) -> list[ChatMessage]:
         """The model context to resume with.
