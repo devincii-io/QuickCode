@@ -275,7 +275,11 @@ problem entry, because a switch would suggest it could run.
 
 The switch is the card's; adding, changing and removing a hook is the Hooks
 page's. Changing a hook's event, matcher or command gives it a new id, so a
-switch set on the old one does not follow it.
+switch set on the old one does not follow it. The switch of one of *your* hooks
+is saved beside the hook, in `~/.quickcode/settings.json`, so it holds in every
+project, trusted or not; flipping it also clears a project file's own switch
+for that hook, which would otherwise outrank yours. A project hook's switch is
+saved in the project's `.quickcode/settings.json`.
 
 ## The Hooks page
 

@@ -367,6 +367,48 @@ def test_a_hook_added_to_an_untrusted_project_is_saved_and_does_not_run(project)
     assert [h.command for h in config.refused] == ["guard.sh"]
 
 
+def _user_hook(command: str = "notify.sh") -> str:
+    write(state_store.user_settings_path(), {"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": command}]}]}})
+    [hook] = load_hooks(None).hooks
+    return hook.id
+
+
+def test_switching_off_your_own_hook_in_an_untrusted_project_keeps_it_off(project):
+    """The switch wrote the project file, and a project file's ``enabled:
+    false`` for a user hook is refused while the project is untrusted -- so the
+    hook kept running and the switch flipped back on the next load."""
+    hook_id = _user_hook()
+    _, client = make_client(project)
+    with client:
+        assert client.put(f"/api/kernel/plugins/{hook_id}",
+                          json={"enabled": False}).status_code == 200
+        [row] = client.get("/api/hooks").json()["hooks"]
+    assert row["status"] == "disabled"
+    assert load_hooks(project).hooks == ()
+    assert read(state_store.user_settings_path())["plugins"][hook_id] == {"enabled": False}
+    assert not project_file(project).exists()
+
+    with client:
+        client.put(f"/api/kernel/plugins/{hook_id}", json={"enabled": True})
+    assert [h.id for h in load_hooks(project).hooks] == [hook_id]
+
+
+def test_switching_your_own_hook_back_on_clears_a_project_s_switch_for_it(project):
+    """A trusted project's own ``enabled: false`` outranks the user file, so
+    turning the hook on at user scope alone would change nothing on screen."""
+    hook_id = _user_hook()
+    write(project_file(project), {"plugins": {hook_id: {"enabled": False}}})
+    trust.default_store().grant(project)
+    assert load_hooks(project).hooks == ()
+    _, client = make_client(project)
+    with client:
+        client.put(f"/api/kernel/plugins/{hook_id}", json={"enabled": True})
+    assert [h.id for h in load_hooks(project).hooks] == [hook_id]
+    assert hook_id not in read(project_file(project)).get("plugins", {})
+    assert trust.is_trusted(project)
+
+
 def test_saving_here_does_not_launder_an_edit_made_outside_the_app(project):
     """The project was trusted, then a pull added a hook. Saving a hook from the
     page must not re-grant trust over the pulled one, which nobody reviewed."""

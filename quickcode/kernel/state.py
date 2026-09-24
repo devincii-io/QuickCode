@@ -3,8 +3,9 @@
 Layered the same way permissions and MCP servers already are
 (``core/permissions.py``, ``plugins/mcp.py``): the user's
 ``~/.quickcode/settings.json`` underneath, the project's
-``.quickcode/settings.json`` on top. Writes always land in the project file --
-a plugin tuned for one repo has no business changing another.
+``.quickcode/settings.json`` on top. Writes land in the project file -- a
+plugin tuned for one repo has no business changing another -- except the switch
+of one of the user's own hooks, which lives with the hook (``save_entry``).
 
 Shape, alongside the existing ``permissions`` and ``mcpServers`` keys::
 
@@ -39,6 +40,7 @@ from quickcode.kernel.settings_file import (
     SETTINGS_FILENAME,
     read_settings,
     write_project_settings,
+    write_settings,
 )
 
 log = logging.getLogger("quickcode.kernel.state")
@@ -276,10 +278,16 @@ def prompt_overrides(cwd: Path | None) -> dict[str, str]:
 
 def save_entry(cwd: Path, plugin_id: str, *, enabled: bool | None = None,
                settings: dict[str, Any] | None = None) -> None:
-    """Merge one plugin's state into the project settings file.
+    """Merge one plugin's state into the settings file it belongs in.
 
     Everything else in the file -- permissions, mcpServers, other plugins --
     is left as it was, so this never clobbers config it does not own.
+
+    That is the project file, except for one of the user's own hooks: its
+    switch lives beside the hook, in the user's file. Written to the project,
+    switching it off did nothing in an untrusted project -- the gate refuses a
+    project's ``enabled: false`` for a user hook -- so the hook kept running
+    and the switch came back on at the next load.
     """
     def merge(raw: dict[str, Any]) -> None:
         section = raw.get(PLUGINS_KEY)
@@ -301,4 +309,37 @@ def save_entry(cwd: Path, plugin_id: str, *, enabled: bool | None = None,
         section[plugin_id] = entry
         raw[PLUGINS_KEY] = section
 
-    write_project_settings(cwd, merge)
+    if not _user_owned(plugin_id):
+        write_project_settings(cwd, merge)
+        return
+    write_settings(user_settings_path(), merge)
+    if enabled is not None:
+        _clear_project_switch(cwd, plugin_id)
+
+
+def _user_owned(plugin_id: str) -> bool:
+    """A plugin whose state is the user's rather than a project's: exactly the
+    ones a project may not switch off (``trust.GATED_DISABLE_PREFIXES``)."""
+    from quickcode.security import trust
+
+    return not trust.project_may_disable(plugin_id)
+
+
+def _clear_project_switch(cwd: Path, plugin_id: str) -> None:
+    """Drop the project file's ``enabled`` for ``plugin_id``: the project layer
+    outranks the user's, so a switch left there would decide instead."""
+    if "enabled" not in _entries(read_settings(project_settings_path(cwd))).get(plugin_id, {}):
+        return
+
+    def drop(raw: dict[str, Any]) -> None:
+        section = raw.get(PLUGINS_KEY)
+        entry = section.get(plugin_id) if isinstance(section, dict) else None
+        if not isinstance(entry, dict):
+            return
+        entry.pop("enabled", None)
+        if not entry:
+            del section[plugin_id]
+        if not section:
+            del raw[PLUGINS_KEY]
+
+    write_project_settings(cwd, drop)
