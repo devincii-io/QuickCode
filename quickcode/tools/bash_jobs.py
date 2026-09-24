@@ -26,18 +26,13 @@ conversation closes.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import itertools
-import os
-import signal
-import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from quickcode import subproc
-from quickcode.pty.session import IS_WINDOWS, _kill_tree
 
 if TYPE_CHECKING:
     from subprocess import Popen
@@ -213,15 +208,9 @@ class BashJob:
                 return False
             self._kill_requested = True
             self._kill_deadline = time.monotonic() + KILL_GRACE_S
-        if IS_WINDOWS:
-            _kill_tree(self.pid)
-        else:
-            # The job's own process group (``start_new_session``), signalled by
-            # id rather than looked up from the shell's pid: the shell may be
-            # gone already while what it started lives on, and POSIX does not
-            # reuse a pid while a process group still carries it.
-            with contextlib.suppress(OSError):
-                os.killpg(self.pid, signal.SIGKILL)
+        # The shell may be gone already while what it started lives on; the
+        # kill reaches it through the job's process group all the same.
+        subproc.kill_tree(self.pid)
         return True
 
     def kill(self, wait_s: float = KILL_WAIT_S) -> bool:
@@ -297,18 +286,7 @@ class BashJobs:
                 )
             env = subproc.child_env()
             env.setdefault("PYTHONUNBUFFERED", "1")
-            proc = subproc.popen(
-                argv,
-                cwd=cwd,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
-                # Its own process group on POSIX, so a kill reaches everything
-                # it started. Ignored on Windows, where taskkill /T walks the tree.
-                start_new_session=True,
-            )
+            proc = subproc.spawn(argv, cwd=cwd, env=env, stderr=subproc.STDOUT, bufsize=0)
             job = BashJob(f"bash_{next(self._counter)}", command, description, proc,
                           self.buffer_bytes)
             self._jobs[job.job_id] = job

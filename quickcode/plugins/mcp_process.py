@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
-import signal
 from pathlib import Path
 
 from quickcode import subproc
@@ -34,18 +32,12 @@ GRACE_S = 2.0
 async def spawn(
     command: str, args: list[str], env: dict[str, str], cwd: Path | None,
 ) -> asyncio.subprocess.Process:
-    kwargs = {} if subproc.IS_WINDOWS else {"start_new_session": True}
-    return await asyncio.create_subprocess_exec(
-        launch.resolve_program(command, env),
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
+    return await subproc.spawn_async(
+        [launch.resolve_program(command, env), *args],
         cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        stdin=subproc.PIPE,
         limit=MAX_LINE_BYTES,
-        creationflags=subproc.NO_WINDOW,
-        **kwargs,
     )
 
 
@@ -83,13 +75,13 @@ async def shutdown(proc: asyncio.subprocess.Process | None) -> None:
         with contextlib.suppress(Exception):
             proc.stdin.close()
     if not await _exited(proc):
-        await _signal_tree(proc.pid, hard=False)
+        await subproc.kill_tree_async(proc.pid, graceful=True)
         if not await _exited(proc):
-            await _signal_tree(proc.pid, hard=True)
+            await subproc.kill_tree_async(proc.pid)
             await _exited(proc)
     if not subproc.IS_WINDOWS:
         # The leader is gone; anything it started is an orphan in its group.
-        await _signal_tree(proc.pid, hard=True)
+        await subproc.kill_tree_async(proc.pid)
 
 
 async def _exited(proc: asyncio.subprocess.Process) -> bool:
@@ -100,15 +92,3 @@ async def _exited(proc: asyncio.subprocess.Process) -> bool:
     except TimeoutError:
         return False
     return True
-
-
-async def _signal_tree(pid: int, *, hard: bool) -> None:
-    if subproc.IS_WINDOWS:
-        with contextlib.suppress(Exception):
-            await asyncio.to_thread(
-                subproc.run, ["taskkill", "/T", "/F", "/PID", str(pid)],
-                capture_output=True, timeout=10,
-            )
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(pid, signal.SIGKILL if hard else signal.SIGTERM)

@@ -1,11 +1,12 @@
-"""What a child process QuickCode starts gets.
+"""What a child process QuickCode starts gets, and how it ends.
 
 Every program QuickCode runs -- the agent's shell commands, background jobs,
 authored command tools, hooks, MCP servers, the terminal panel, git and
-ripgrep -- takes its environment from ``subproc.child_env``. These tests start
-real processes and look at what they actually received: an environment without
-QuickCode's own API keys, because a model can ask for ``echo
-$QUICKCODE_*_API_KEY`` as easily as for ``ls``.
+ripgrep -- is started through ``quickcode/subproc.py``. These tests start real
+processes and look at what they actually received: an environment without
+QuickCode's own API keys (a model can ask for ``echo $QUICKCODE_*_API_KEY`` as
+easily as for ``ls``), ``/dev/null`` for stdin unless they are fed one, a
+process group of their own, and a kill that reaches what they started.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -216,31 +216,53 @@ async def test_a_piped_command_reads_the_null_device_not_the_servers_stdin(
     assert result.content.strip() == "/dev/null", result.content
 
 
+@LINUX_ONLY
+async def test_spawn_async_gives_a_child_null_stdin_and_a_group_of_its_own(tmp_path):
+    probe = ("import os; print(os.readlink('/proc/self/fd/0'), "
+             "os.getsid(0) == os.getpid(), os.getpgrp() == os.getpid())")
+    proc = await subproc.spawn_async([sys.executable, "-c", probe], cwd=str(tmp_path))
+    out, err, timed_out = await subproc.communicate(proc, timeout=30)
+    assert not timed_out
+    assert out.decode().split() == ["/dev/null", "True", "True"], err
+
+
+async def test_communicate_feeds_stdin_and_keeps_both_streams(tmp_path):
+    echo = "import sys; data = sys.stdin.read(); print(data.upper()); print('e', file=sys.stderr)"
+    proc = await subproc.spawn_async([sys.executable, "-c", echo], cwd=str(tmp_path),
+                                     stdin=subproc.PIPE)
+    out, err, timed_out = await subproc.communicate(proc, b"hello", timeout=30)
+    assert (out.strip(), err.strip(), timed_out) == (b"HELLO", b"e", False)
+    assert proc.returncode == 0
+
+
+async def test_communicate_keeps_what_arrived_before_a_timeout(tmp_path):
+    slow = "import sys, time; print('early', flush=True); time.sleep(60)"
+    proc = await subproc.spawn_async([sys.executable, "-c", slow], cwd=str(tmp_path))
+    started = time.monotonic()
+    out, _, timed_out = await subproc.communicate(proc, timeout=1.5)
+    assert timed_out
+    assert out.strip() == b"early"
+    assert time.monotonic() - started < 5
+
+
 # ---------------------------------------------------------------- the tree
 
 
 GRANDCHILD = "sleep 60 > /dev/null 2>&1 & echo $!"
 
 
-def _alive(pid: int) -> bool:
+@POSIX_ONLY
+async def test_kill_tree_reaches_a_grandchild(tmp_path):
+    proc = await subproc.spawn_async(["/bin/sh", "-c", f"{GRANDCHILD}; wait"],
+                                     cwd=str(tmp_path))
+    grandchild = int((await proc.stdout.readline()).decode())
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
-            return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except OSError:
-        return True
-
-
-def wait_for_death(pid: int, timeout_s: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if not _alive(pid):
-            return True
-        time.sleep(0.02)
-    return not _alive(pid)
+        subproc.kill_tree(proc.pid)
+        assert await await_until(lambda: not _alive(grandchild), timeout_s=5)
+        await asyncio.wait_for(proc.wait(), 5)
+    finally:
+        if _alive(grandchild):
+            os.kill(grandchild, 9)
 
 
 @POSIX_ONLY
@@ -248,8 +270,8 @@ def test_kill_tree_still_reaches_it_once_the_shell_itself_is_gone(tmp_path):
     """``npm run dev &`` as a whole command: the shell exits at once and the
     server lives on in its group. Looking the group up from the shell's pid
     finds nothing once the shell has been reaped, so nothing was killed."""
-    proc = subproc.popen(["/bin/sh", "-c", GRANDCHILD], cwd=str(tmp_path),
-                         stdout=subprocess.PIPE, start_new_session=True)
+    proc = subproc.spawn(["/bin/sh", "-c", GRANDCHILD], cwd=str(tmp_path),
+                         stdout=subproc.PIPE, stderr=subproc.DEVNULL)
     grandchild = int(proc.stdout.readline().decode())
     proc.wait()
     proc.stdout.close()
@@ -287,3 +309,12 @@ async def test_a_command_tool_timeout_kills_what_outlived_its_program(tmp_path, 
     finally:
         if _alive(grandchild):
             os.kill(grandchild, 9)
+
+
+def wait_for_death(pid: int, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.02)
+    return not _alive(pid)

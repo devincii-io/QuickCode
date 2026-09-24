@@ -6,13 +6,14 @@ can reason about, and an approval prompt that shows the exact argv before
 anything runs.
 
 **Argv, never a shell.** The template is a JSON array; each element is one
-token; the process is spawned with ``asyncio.create_subprocess_exec``. A
-parameter value containing ``; rm -rf /`` or ``$(curl evil)`` is inert bytes,
-because nothing between the model and ``execve`` ever parses it. There is no
-sanitiser here to be wrong about a case nobody thought of -- injection is
-structurally impossible rather than filtered. That is defence against the
-*model*, which fills the parameters and is the one component in this path
-nobody can audit. Shell mode is refused at validation, not half-implemented.
+token; the process is spawned with ``subproc.spawn_async``, an exec rather
+than a shell. A parameter value containing ``; rm -rf /`` or ``$(curl evil)``
+is inert bytes, because nothing between the model and ``execve`` ever parses
+it. There is no sanitiser here to be wrong about a case nobody thought of --
+injection is structurally impossible rather than filtered. That is defence
+against the *model*, which fills the parameters and is the one component in
+this path nobody can audit. Shell mode is refused at validation, not
+half-implemented.
 
 **Permission.** A command tool declares ``PermissionSpec(mutates=True,
 executes=True)``, always -- so ``auto-edit``, which allows edits, still asks. ``read_only: true`` in the frontmatter is recorded and surfaced, and
@@ -31,8 +32,6 @@ not become the way to read ``~/.ssh``.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import re
 import shutil
@@ -156,20 +155,15 @@ class CommandTool(Tool[BaseModel]):
 
         combined = plugin.output == "text"
         try:
-            proc = await asyncio.create_subprocess_exec(
-                program,
-                *argv[1:],
+            # No console window, its own process group (so a timeout or a torn
+            # down turn kills what it started, not just the top), and stdin on
+            # the null device unless the tool declares some.
+            proc = await subproc.spawn_async(
+                [program, *argv[1:]],
                 cwd=str(workdir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT if combined else asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.PIPE if plugin.stdin else asyncio.subprocess.DEVNULL,
                 env=env,
-                # The windowed app has no console to lend; without this every
-                # authored tool flashed a fresh one on screen (see subproc.py).
-                creationflags=subproc.NO_WINDOW,
-                # Its own process group, so a timeout or a cancelled turn can
-                # kill what it started and not just the process at the top.
-                start_new_session=True,
+                stdin=subproc.PIPE if plugin.stdin else subproc.DEVNULL,
+                stderr=subproc.STDOUT if combined else subproc.PIPE,
             )
         except (OSError, ValueError) as exc:
             return ToolResult(
@@ -178,22 +172,15 @@ class CommandTool(Tool[BaseModel]):
             )
 
         payload = plugin.stdin.encode("utf-8") if plugin.stdin else None
-        try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(payload), timeout=plugin.timeout_ms / 1000.0
-            )
-        except TimeoutError:
-            await _reap(proc)
+        out, err, timed_out = await subproc.communicate(
+            proc, payload, timeout=plugin.timeout_ms / 1000.0
+        )
+        if timed_out:
             return ToolResult(
                 content=f"Error: {self.name} timed out after {plugin.timeout_ms}ms "
                         "and was killed.",
                 is_error=True, ui_meta=meta,
             )
-        except asyncio.CancelledError:
-            # The turn was torn down (conversation closed). The child used to
-            # be left running with nobody reading its pipes.
-            await _reap(proc)
-            raise
 
         code = proc.returncode if proc.returncode is not None else -1
         stdout = _decode(out)
@@ -387,19 +374,7 @@ def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path
 # the process
 # --------------------------------------------------------------------------
 
-# How long to wait for pipes to close once the tree is dead. A grandchild that
-# escaped the process group keeps them open for as long as it lives, and
-# asyncio's wait() waits for the pipes as well as the process -- so without a
-# bound, a timed-out tool would hang for as long as that grandchild ran.
-_REAP_TIMEOUT_S = 5.0
 _BATCH_SUFFIXES = (".bat", ".cmd")
-
-
-async def _reap(proc: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(Exception):
-        await asyncio.to_thread(subproc.kill_tree, proc.pid)
-    with contextlib.suppress(Exception):
-        await asyncio.wait_for(proc.wait(), _REAP_TIMEOUT_S)
 
 
 def _batch_refusal(program: str) -> str:
