@@ -43,10 +43,20 @@ async (page) => {
   const after = await pane(ids[0]).boundingBox();
   check(after.width > before.width, "keyboard divider resize had no effect");
   check(await page.locator(".ws-divider:focus").count() === 1, "divider lost keyboard focus");
+  const frameDone = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.setViewportSize({ width: 1480, height: 950 }); await frameDone();
+  check(await page.locator(".ws-divider:focus").count() === 1, "re-layout dropped the focused divider");
+  await page.setViewportSize({ width: 1500, height: 950 }); await frameDone();
+  const keyed = (await pane(ids[0]).boundingBox()).width;
+  await page.locator(".ws-divider").first().press("Alt+ArrowRight");
+  check((await pane(ids[0]).boundingBox()).width === keyed, "Alt+arrow on a divider also resized it");
   const handle = await page.locator(".ws-divider").first().boundingBox();
   await page.mouse.move(handle.x + handle.width / 2, handle.y + 80);
   await page.mouse.down(); await page.mouse.move(handle.x - 60, handle.y + 80); await page.mouse.up();
   check((await pane(ids[0]).boundingBox()).width < after.width, "pointer divider resize had no effect");
+  await page.locator(".ws-divider").first().dblclick();
+  const halves = await Promise.all(ids.map(async (id) => (await pane(id).boundingBox()).width));
+  check(Math.abs(halves[0] - halves[1]) <= 1, "double-clicking a divider did not even out its panes");
   await pane(ids[0]).locator(".ws-pane-head").dragTo(pane(ids[1]).locator(".ws-pane-head"), { targetPosition: { x: 50, y: 15 } });
   check((await page.locator(".ws-pane iframe").evaluateAll((nodes) => nodes.map((f) => f.contentWindow.__workspaceSmokeMarker))).every((n, i) => n === documents[i]), "rearranging reloaded a live document");
   await page.locator("#ws-projects").click();
@@ -56,8 +66,23 @@ async (page) => {
   await ready(2);
   check(await second.locator("#input").inputValue() === "An unsent draft to recover", "workspace switch lost draft");
   check((await page.locator(".ws-pane iframe").evaluateAll((nodes) => nodes.slice(0, 2).map((f) => f.contentWindow.__workspaceSmokeMarker))).every((n, i) => n === documents[i]), "workspace switching reloaded an agent");
+  await page.locator("#ws-projects").click();
+  await page.locator(`.ws-agent[data-id="${ids[1]}"]`).click();
+  const leftHome = () => !document.getElementById("workspace-shell").classList.contains("ws-home");
+  await page.waitForFunction(leftHome, null, { timeout: 3000 }).catch(() => {});
+  if (!await page.evaluate(leftHome)) {
+    failures.push("an agent in the sidebar did not open from Home");
+    await page.locator(".ws-project").filter({ hasText: "Website redesign" }).click();
+  }
+  await ready(2);
+  const composerFocused = (id) => {
+    const f = document.activeElement;
+    return f?.tagName === "IFRAME" && f.closest(".ws-pane")?.dataset.pane === id && f.contentDocument.activeElement?.id === "input";
+  };
   await pane(ids[1]).locator('[data-action="close"]').click();
   await ready(1);
+  await page.waitForFunction(composerFocused, ids[0], { timeout: 3000 }).catch(() => {});
+  check(await page.evaluate(composerFocused, ids[0]), "closing a pane left keyboard focus nowhere");
   await page.locator("#ws-undo").click();
   await ready(2);
   check(await frame(ids[1]).locator("#input").inputValue() === "An unsent draft to recover", "reopening pane lost its draft");
@@ -79,6 +104,8 @@ async (page) => {
   await settings.locator('.theme-card[data-theme="light"]').click();
   await settings.locator("#theme-msg").filter({ hasText: "Saved" }).waitFor();
   check(await page.evaluate(() => document.documentElement.dataset.theme) === "light", "theme did not reach parent workspace");
+  await frame(ids[1]).locator('html[data-theme="light"]').waitFor({ timeout: 3000 }).catch(() => {});
+  check(await frame(ids[1]).locator("html").getAttribute("data-theme") === "light", "theme did not reach another agent pane");
   await settings.locator('select[name="spacing"]').selectOption("compact");
   await settings.locator('select[name="width"]').selectOption("full");
   await settings.locator('input[name="fontSize"]').fill("17");
@@ -110,7 +137,22 @@ async (page) => {
   await page.frameLocator(".ws-utility iframe").locator("#cfg-done").click();
   await page.setViewportSize({ width: 1500, height: 950 });
   await pane(ids[0]).locator('[data-action="zoom"]').click();
+  await pane(ids[1]).locator('[data-action="h"]').click();
+  await ready(3);
+  await page.locator(".ws-group").filter({ hasText: "Website redesign" }).locator(".ws-manage").click();
+  await page.getByRole("button", { name: "Equalize pane sizes" }).click();
+  const columns = await page.locator(".ws-pane:not([hidden])").evaluateAll((nodes) => nodes.map((n) => n.getBoundingClientRect().width));
+  check(Math.max(...columns) - Math.min(...columns) <= 6, `equalize left uneven columns: ${columns.join(", ")}`);
+  const stored = await page.evaluate(() => Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)]));
+  check(stored.every(([, v]) => !v.includes("workspace-preview")), "the auth token reached localStorage");
+  check(!stored.some(([k]) => k.startsWith("qc-draft")), "a draft left the tab's sessionStorage");
+  // A layout this browser can no longer trust must open a fresh conversation, not a dead pane.
+  const project = restored.workspaces[0].project;
+  await page.evaluate((project) => localStorage.setItem("qc-workspaces-v1", JSON.stringify({ version: 1, active: project.id,
+    workspaces: [{ project, focused: "__proto__", tree: { type: "pane", pane: "restored" }, panes: { restored: { convId: "bad id/.." } } }] })), project);
+  await page.reload();
+  await ready(1);
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "independent streams, drafts, resize, drag, zoom, workspaces, close/undo, reload, rename, settings, themes, shortcuts, narrow layout", runtimeErrors: errors };
+  return { passed: true, checks: "independent streams, drafts, resize, divider focus, drag, zoom, workspaces, close/undo, focus after close, reload, rename, settings, themes, shortcuts, narrow layout, equalize, storage hygiene, corrupted layout", runtimeErrors: errors };
 }
