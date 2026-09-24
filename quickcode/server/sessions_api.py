@@ -1,7 +1,8 @@
 """One project's conversation surface: what a pane boots from, and its sessions.
 
 Bootstrap, the session list and what can be done to it (rename, archive,
-delete, bulk delete, the empty-session sweep), opening a conversation, the
+delete, bulk delete, the empty-session sweep), searching it (the logic is in
+``session/search.py``), opening a conversation, the
 model catalog and the plugin inventory. Each handler takes the project's
 manager and is mounted in both path shapes by ``http.scoped``; bootstrap is
 written out per shape because its project shape also answers with the id.
@@ -18,6 +19,7 @@ from quickcode.server.config_api import search_payload
 from quickcode.server.http import PROJECT, project, read_json, scoped, valid_conv_id
 from quickcode.server.manager import ConversationManager
 from quickcode.server.projects import ProjectHub
+from quickcode.session.search import Limits, QueryError, search_sessions
 from quickcode.session.store import MAX_TITLE, SessionStore, purge_sessions
 
 
@@ -82,6 +84,23 @@ def sessions(manager: ConversationManager, archived: bool = False) -> list[dict]
             }
         )
     return out
+
+
+def session_search(
+    manager: ConversationManager, q: str = "", archived: bool = False, limit: int = 30
+) -> dict:
+    """Titles, messages and tool names across this project's sessions.
+
+    A plain function, so FastAPI runs it on its threadpool: it reads logs, and
+    a search through years of them must not hold up every open WebSocket.
+    """
+    try:
+        return search_sessions(
+            manager.cwd, q, include_archived=archived,
+            limits=Limits(max_sessions=max(1, min(limit, 100))),
+        )
+    except QueryError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 async def open_conversation(manager: ConversationManager, request: Request) -> dict:
@@ -292,6 +311,7 @@ _ROUTES = (
     ("GET", "/sessions", sessions),
     # Before the ``{conv_id}`` routes, so the literal path segments can never
     # be read as a conversation id.
+    ("GET", "/sessions/search", session_search),
     ("POST", "/sessions/delete", bulk_delete_sessions),
     ("POST", "/sessions/cleanup", cleanup_sessions),
     ("DELETE", "/sessions/{conv_id}", delete_session),

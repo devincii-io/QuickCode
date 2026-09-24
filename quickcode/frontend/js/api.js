@@ -83,6 +83,11 @@ export const api = {
   // Bulk paths answer per row: {deleted, skipped:[{conv_id, reason}], …}.
   removeSessions: (convIds) => req("POST", P("/sessions/delete"), { conv_ids: convIds }),
   cleanupSessions: (dryRun = false) => req("POST", P("/sessions/cleanup"), { dry_run: dryRun }),
+  // Titles, messages and tool names across the project's sessions, newest
+  // first; each hit carries the `seq` of the event it came from. `stopped`
+  // names the limit that ended the scan early ("results", "bytes", "time").
+  searchSessions: (q, { archived = true, limit = 30 } = {}) =>
+    req("GET", P(`/sessions/search?q=${encodeURIComponent(q)}&archived=${archived}&limit=${limit}`)),
   openConversation: (resume) => req("POST", P("/conversations"), resume ? { resume } : {}),
   models: (refresh = false) => req("GET", P(`/models?refresh=${refresh}`)),
   // Install-wide, like the endpoint it asks about — never project-scoped.

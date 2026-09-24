@@ -45,7 +45,9 @@ change reaches every open pane without a reload.
 
 ## Inside an agent pane
 
-- **Top bar** — project and session chips, session tabs (`js/sessionbar.js`),
+- **Top bar** — project and session chips (the session chip's list is also
+  where sessions are searched — see [Finding a conversation](#finding-a-conversation)),
+  session tabs (`js/sessionbar.js`),
   the update chip, new conversation, and toggles for the side panel, the
   terminal, Help and Settings.
 - **Transcript** (`js/chat.js`, `js/chat/`) — streaming markdown, reasoning,
@@ -87,6 +89,31 @@ compression and live follow, search, export, and a per-event inspector with
 to the matching event. It reads the same stream that resume and replay use, so
 what it shows is what the model saw — see docs/ARCHITECTURE.md for which event
 types are logged.
+
+## Finding a conversation
+
+The session chip's list (`js/sessions_menu.js`) opens with a search box.
+Typing filters the rows by title at once; after a short pause the server
+searches the messages too (`GET …/sessions/search?q=`,
+`session/search.py`) and lists the matches under *In messages*, each with a
+highlighted snippet. What is searched: titles, what you typed, what the agent
+answered, and the names of the tools it called — not tool output, and not the
+system prompt. Terms are case-insensitive and all of them must occur in the
+same message; `"a quoted phrase"` counts as one term. There are no regular
+expressions, by design: a pattern that backtracks for ever has no timeout.
+
+A search reads the newest sessions first and stops at 30 matching sessions,
+256 MiB of log or 1.5 s, whichever comes first, and says so under the results.
+It runs on the server's thread pool, so it never holds up a streaming turn.
+The archive is searched too; opening an archived session restores it to the
+list, as it always has.
+
+Clicking a match opens that conversation at the matching event, in the
+inspector (`js/inspect.js`) — the same view a ⌕ link opens. Inside the
+workspace a conversation that already has a pane is focused rather than opened
+twice; otherwise a new pane opens with the event's `seq` in its URL (`at=`),
+which is never saved in the layout. `↑`/`↓` walk the list, `Enter` opens the
+first entry, and `Esc` clears the search before it closes the list.
 
 ## The event protocol
 

@@ -4,8 +4,37 @@ import { api } from "./api.js";
 import { makeSelection, reportBulk } from "./selection.js";
 import { openRenameSession } from "./session_rename.js";
 import { store } from "./store.js";
+import { highlightHtml, matchesAll, queryTerms } from "./text_match.js";
 import { menuAt } from "./ui/menu.js";
-import { el, esc, oneLine, relTime } from "./util.js";
+import { debounce, el, esc, oneLine, relTime } from "./util.js";
+
+const WHO = { user: "you", assistant: "agent", tool: "tool" };
+const STOPPED = {
+  results: (a) => `Showing the first ${a.results.length} matching sessions.`,
+  bytes: (a) => `Searched the ${a.scanned} newest of ${a.sessions} sessions (size limit).`,
+  time: (a) => `Searched the ${a.scanned} newest of ${a.sessions} sessions (time limit).`,
+};
+
+/** Message hits from the server's search, as rows that open a session at the
+ *  event they came from. A session that matched by title alone is already in
+ *  the filtered list above, so it is not repeated here. */
+function hitsHtml(answer) {
+  const items = answer.results.filter((r) => r.hits.length).flatMap((r) => r.hits.map((h, i) => `
+    <button class="menu-item mi-hit" data-conv="${esc(r.conv_id)}"
+            data-seq="${Number.isInteger(h.seq) ? h.seq : ""}"
+            title="Open ${esc(oneLine(r.title, 120))} at this message">
+      <div class="mi-title"><span class="mi-name">${esc(oneLine(r.title, 90))}</span>${
+        r.archived ? '<span class="mi-tag">archived</span>' : ""}${
+        i === 0 && r.hit_count > r.hits.length
+          ? `<span class="mi-tag">${r.hit_count} hits</span>` : ""}</div>
+      <div class="mi-desc"><span class="mi-who">${WHO[h.where] || esc(h.where)}</span>
+        ${highlightHtml(h.snippet, answer.terms)}</div>
+    </button>`)).join("");
+  const note = STOPPED[answer.stopped]?.(answer) || "";
+  return `<div class="menu-head">In messages</div>${
+    items || '<div class="menu-note">No messages match.</div>'}${
+    note ? `<div class="menu-note">${esc(note)}</div>` : ""}`;
+}
 
 /** Arm-then-act on one button: the first click relabels it, the second runs.
  *  A `confirm()` here would block the window while the agent is streaming. */
@@ -37,15 +66,22 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
   // not outlive the list it was made in.
   const sel = makeSelection();
   let order = [];
+  let terms = [];
+  let asked = 0;
 
   const m = menuAt(
     anchor,
     `<button class="menu-item" data-new><div class="mi-title">＋ New session</div>
        <div class="mi-desc">Start an empty conversation in this project.</div></button>
-     <div class="menu-sep"></div><div class="menu-rows"></div>`,
-    { below: true },
+     <div class="menu-sep"></div><div class="menu-rows"></div>
+     <div class="menu-hits" aria-live="polite" hidden></div>`,
+    { below: true, searchable: true },
   );
   const rowsEl = m.querySelector(".menu-rows");
+  const hitsEl = m.querySelector(".menu-hits");
+  const search = m.querySelector(".menu-search");
+  search.placeholder = "Search sessions and messages…";
+  search.setAttribute("aria-label", "Search sessions and messages");
   const foot = el(`<div class="menu-foot menu-tools"></div>`);
   m.appendChild(foot);
 
@@ -77,15 +113,18 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
     const emptyIds = sessions
       .filter((s) => !s.archived && !s.live && !s.message_count)
       .map((s) => s.conv_id);
-    const visible = sessions.filter((s) => revealed || !s.archived);
+    // A search looks in the archive too: finding the session is the point.
+    const visible = sessions.filter((s) =>
+      (revealed || !s.archived || terms.length) && matchesAll(s.title, terms));
     // The rows on screen, in the order they are drawn: what a shift-click
     // ranges over and what "select all" means.
     order = visible.map((s) => s.conv_id);
     sel.keepOnly(order);
     rowsEl.innerHTML = visible.length
       ? visible.map(row).join("")
-      : `<div class="menu-note">${archivedCount && !revealed
-          ? "Nothing here but the archive." : "No saved sessions in this project yet."}</div>`;
+      : `<div class="menu-note">${terms.length ? "No session titles match."
+          : archivedCount && !revealed
+            ? "Nothing here but the archive." : "No saved sessions in this project yet."}</div>`;
     const n = sel.size;
     const allOn = order.length > 0 && n === order.length;
     foot.innerHTML = `
@@ -126,16 +165,57 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
 
   render();
 
-  // Escape clears the selection before it closes the popover. Registered now,
-  // synchronously, so it runs ahead of menuAt's own Escape handler — which is
-  // added on a timeout and would otherwise close the menu out from under a
-  // keystroke the user meant as "never mind, deselect".
+  // Titles filter as you type; messages are the server's to search once the
+  // typing pauses. Every keystroke bumps `asked`, so an answer to an earlier
+  // query that arrives late is dropped rather than drawn over a newer one.
+  const lookup = debounce(async (q) => {
+    const mine = ++asked;
+    if (queryTerms(q).join("").length < 2) { hitsEl.hidden = true; hitsEl.innerHTML = ""; return; }
+    hitsEl.hidden = false;
+    hitsEl.innerHTML = '<div class="menu-head">In messages</div><div class="menu-note">Searching…</div>';
+    let answer;
+    try {
+      answer = await api.searchSessions(q);
+    } catch (err) {
+      if (mine === asked && m.isConnected) hitsEl.innerHTML = `<div class="menu-note">${esc(err.message)}</div>`;
+      return;
+    }
+    if (mine === asked && m.isConnected) hitsEl.innerHTML = hitsHtml(answer);
+  }, 250);
+  search.addEventListener("input", () => {
+    asked++;
+    terms = queryTerms(search.value);
+    render();
+    lookup(search.value.trim());
+  });
+  search.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    m.querySelector(".menu-list [data-conv]")?.click();
+  });
+  // ↑/↓ walk the search box and every entry, so the list works without a
+  // pointer; Tab still reaches each row's own actions in between.
+  m.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const stops = [search, ...m.querySelectorAll(".menu-list .menu-item")];
+    const at = stops.indexOf(document.activeElement);
+    if (at === -1) return;
+    e.preventDefault();
+    stops[(at + (e.key === "ArrowDown" ? 1 : -1) + stops.length) % stops.length].focus();
+  });
+  search.focus();
+
+  // Escape clears the selection, then the search, before it closes the
+  // popover. Registered now, synchronously, so it runs ahead of menuAt's own
+  // Escape handler — which is added on a timeout and would otherwise close the
+  // menu out from under a keystroke the user meant as "never mind".
   const onSelEsc = (e) => {
     if (!m.isConnected) { document.removeEventListener("keydown", onSelEsc, true); return; }
-    if (e.key !== "Escape" || !sel.size) return;
+    if (e.key !== "Escape" || (!sel.size && !search.value)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    sel.clear();
+    if (sel.size) sel.clear();
+    else { search.value = ""; terms = []; asked++; lookup(""); }
     render();
   };
   document.addEventListener("keydown", onSelEsc, true);
@@ -244,6 +324,9 @@ export async function openSessionMenu(anchor, { onPick, onNew }) {
     }
 
     const b = e.target.closest("[data-conv]");
-    if (b) { m.closeMenu(); onPick(b.dataset.conv); }
+    if (b) {
+      m.closeMenu();
+      onPick(b.dataset.conv, b.dataset.seq ? { seq: Number(b.dataset.seq) } : {});
+    }
   });
 }

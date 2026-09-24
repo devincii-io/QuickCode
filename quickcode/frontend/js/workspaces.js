@@ -129,16 +129,22 @@ async function openProject(project, { resume = null } = {}) {
   if (resume) addPane(ws, null, resume);
 }
 
-function addPane(ws = current(), dir = null, convId = null) {
+// `seq` is an event to open in the pane's inspector: a session search hit.
+function addPane(ws = current(), dir = null, convId = null, seq = null) {
   if (!ws) return;
+  const at = Number.isSafeInteger(seq) ? seq : null;
   const existing = convId && Object.values(ws.panes).find((p) => p.convId === convId);
-  if (existing) { focus(ws, existing.id); return; }
+  if (existing) {
+    focus(ws, existing.id);
+    if (at !== null) post(frames.get(existing.id)?.iframe, { action: "reveal", seq: at });
+    return;
+  }
   if (leaves(ws.tree).length >= MAX_PANES) {
     toastError(`A workspace can show up to ${MAX_PANES} agents. Close a pane before adding another.`);
     return;
   }
   const id = crypto.randomUUID();
-  const pane = { id, convId, title: "New agent", persisted: !!convId };
+  const pane = { id, convId, title: "New agent", persisted: !!convId, reveal: at };
   const box = frames.get(ws.focused)?.element.getBoundingClientRect() || grid.getBoundingClientRect();
   ws.tree = insertBeside(ws.tree, ws.focused, id, dir || dwindleDir(box));
   ws.panes[id] = pane;
@@ -208,6 +214,8 @@ function mount(ws, pane) {
   const iframe = element.querySelector("iframe");
   const query = new URLSearchParams({ pane: "1", project: ws.project.id, view: pane.id });
   if (pane.convId) query.set("resume", pane.convId);
+  if (pane.convId && pane.reveal != null) query.set("at", String(pane.reveal));
+  delete pane.reveal;
   // sessionStorage is shared by same-origin frames in this tab. No secret is
   // put in a frame URL, a saved layout, or a postMessage payload.
   iframe.src = `${location.pathname}?${query}`;
@@ -534,7 +542,7 @@ export async function bootWorkspaces() {
     else if (data.action === "home") showHome();
     else if (data.action === "settings" && /^#\/(config|help)/.test(data.route)) openUtility(data.route, f.ws.project.id);
     else if (data.action === "shortcut") shortcut({ ...data, preventDefault() {} });
-    else if (data.action === "open-session") { focus(f.ws, f.pane.id, false); addPane(f.ws, null, data.convId); }
+    else if (data.action === "open-session") { focus(f.ws, f.pane.id, false); addPane(f.ws, null, data.convId, data.seq); }
     else if (data.action === "state") {
       if (data.convId) f.pane.convId = data.convId;
       if (data.persisted) f.pane.persisted = true;
