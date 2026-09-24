@@ -1,11 +1,12 @@
 """The plugin registry: one place that knows what exists and how it is set.
 
-Discovery has three sources, in a fixed order so a later one can extend but
+Discovery has four sources, in a fixed order so a later one can extend but
 never silently replace an earlier one:
 
-1. ``manifest.py``  -- the internal plugins we ship.
-2. entry points     -- third-party packages (``quickcode.tools`` and friends).
-3. config           -- data-driven plugins, e.g. one per configured MCP server.
+1. ``kernel/manifest/`` -- the internal plugins we ship.
+2. entry points        -- third-party packages (``quickcode.tools`` and friends).
+3. config              -- data-driven plugins, e.g. one per configured MCP server.
+4. authored files      -- ``.quickcode/plugins/*.md`` (``kernel/authoring/``).
 
 The registry holds specs plus persisted state. It does not build tools,
 render prompts, or run anything -- the subsystems do that, asking the
@@ -428,7 +429,7 @@ class PluginRegistry:
             "tier": spec.tier(),
             "metadata": spec.metadata,
             # The six questions, in the order the UI asks them. Written once in
-            # manifest.py and carried through verbatim -- a card that explained
+            # kernel/manifest/ and carried through verbatim -- a card that explained
             # itself differently from the registry would be describing an app
             # that does not exist.
             "summary": spec.summary,

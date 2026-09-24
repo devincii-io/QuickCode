@@ -275,7 +275,7 @@ def _refuse_unarmed_yolo(mode: str | None, *, armed: bool) -> None:
     """``--mode yolo`` without ``--yolo`` (or Settings' allow_yolo) is an
     argument error, raised before anything is built.
 
-    The rule the server applies (``manager.set_mode``/``apply_posture``): yolo
+    The rule the server applies (``Conversation.set_mode``/``apply_posture``): yolo
     needs arming, whoever asks for it. Asked for by settings, a composition or
     a profile instead, the run starts in ask and says so -- the same fallback
     ``session/assemble.py`` gives the app.

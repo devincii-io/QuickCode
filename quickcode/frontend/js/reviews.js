@@ -3,7 +3,7 @@
 // Reviews are a QUEUE, not a single slot. Read-only tool calls in one assistant
 // message run concurrently, so four of them can hit a protected path at once and
 // the server opens four futures, each awaiting its own decision
-// (server/manager.py: `await fut`). Showing them one dialog at a time and
+// (server/reviews.py: `await fut`). Showing them one dialog at a time and
 // dropping the rest left those futures pending forever: the tool calls hung and
 // the turn never ended. Every request is now either answered or still queued.
 

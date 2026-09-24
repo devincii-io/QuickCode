@@ -66,9 +66,10 @@ _REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTAL
 MAX_TITLE = 200
 
 # The shape a conversation id is allowed to have. The server checks ids on the
-# way in with `safe_conv_id`, but ids also come *off the disk* --
-# `list_sessions` and `empty_sessions` derive them from filenames -- so the
-# last line of defence belongs here, next to the code that deletes.
+# way in (`server/http.py::valid_conv_id`, which asks `safe_conv_id`), but ids
+# also come *off the disk* -- `list_sessions` and `empty_sessions` derive them
+# from filenames -- so the check itself lives here, next to the code that
+# deletes.
 _SAFE_CONV_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
 # Serializes appends within this process, so the newline check before a write
