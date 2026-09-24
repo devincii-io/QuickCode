@@ -1201,6 +1201,13 @@ class ConversationManager:
         # either way, since the flag has nothing to say about those.
         if not self.default_mode:
             mode = posture_mode
+        # Yolo needs the app to have armed it, whoever asks for it -- a
+        # profile, a settings default or ``--mode``. ``set_mode`` and
+        # ``apply_posture`` both hold that line; opening a session is the
+        # third door, and it has to hold it too.
+        unarmed_yolo = mode == Mode.yolo and not self.allow_yolo
+        if unarmed_yolo:
+            mode = Mode.ask
         # The starting mode may not begin above the ceiling. It stays live
         # below it -- rules decide this call, the ceiling decides what is ever
         # possible, and only the second is composition.
@@ -1313,6 +1320,14 @@ class ConversationManager:
                 title="", model=model, cwd=str(self.cwd), preset=preset.id,
                 composition=resolved.to_json(),
             )
+        if unarmed_yolo:
+            # After ``begin``, so it is held behind the opening record like
+            # anything else said before the user speaks.
+            conv.emit({
+                "type": "system_note",
+                "text": (f"this session was asked to start in yolo mode: "
+                         f"{conv.YOLO_UNARMED}. Started in {mode.value} instead."),
+            })
         conv.start()
         self.conversations[store.conv_id] = conv
         return conv
