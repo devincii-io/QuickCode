@@ -33,6 +33,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from quickcode import textio
 from quickcode.core.permissions import Mode
 from quickcode.kernel.composition import ORCHESTRATOR_ID, Composition, parse_mode
 
@@ -285,11 +286,11 @@ def load_defs(cwd: Path) -> dict[str, AgentDef]:
 def _parse_def(path: Path) -> AgentDef | None:
     """One ``.quickcode/agents/*.md`` file.
 
-    ``utf-8-sig`` because Notepad saves one: with the mark left in, the first
-    line is not ``---`` and the whole frontmatter -- its ``tools:`` allowlist
-    included -- was read as prompt text.
+    Read through ``textio`` because Notepad saves a byte-order mark: with the
+    mark left in, the first line is not ``---`` and the whole frontmatter --
+    its ``tools:`` allowlist included -- was read as prompt text.
     """
-    text = path.read_text(encoding="utf-8-sig")
+    text = textio.read_text(path)
     meta, body = _split_frontmatter(text)
     return agent_def_from_meta(
         meta, body, path=str(path), source="authored", fallback_name=path.stem,

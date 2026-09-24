@@ -69,9 +69,10 @@ quickcode/
   update.py               # the update check, download and verified install
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every child process starts here: no console window, no API keys in its env, killable tree
-  gitcmd.py               # git without the repository's own code: no hooks, fsmonitor, textconv, signing
+  gitcmd.py               # git without the repository's own code: no hooks, fsmonitor, textconv, filters, signing
   fsutil.py               # atomic_write_text/bytes: temp file beside the target, renamed over it
-  jsonfile.py             # the one JSON-file decoder: BOM names UTF-8/16/32, else strict UTF-8
+  textio.py               # the one decoder for files a person edits: BOM names UTF-8/16/32, else strict UTF-8
+  jsonfile.py             # JSON files (settings.json, config.json) read through textio
   workspace.py            # the project's .quickcode/ directory and its .gitignore
   frontmatter.py          # the one frontmatter parser: plugin loader and trust gate read files the same way
   ui/window.py            # pywebview window, browser fallback

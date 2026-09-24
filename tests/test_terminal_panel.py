@@ -266,6 +266,36 @@ def test_each_project_gets_its_own_shell_and_cannot_reach_another_ones(tmp_path,
                 assert registry.count(second) == 1
 
 
+def test_output_arriving_after_the_server_s_loop_has_closed_is_dropped(tmp_path, monkeypatch):
+    """The pty's reader and watcher threads outlive the socket by design (the
+    pty is closed off the loop). What they report in that window is for a loop
+    that may be gone, and ``call_soon_threadsafe`` on a closed loop raises --
+    in the pty's thread, where nothing catches it."""
+    callbacks = {}
+
+    class Pty:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self, on_output, on_exit):
+            callbacks.update(output=on_output, exit=on_exit)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(terminal, "InteractivePty", Pty)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _hub, client = app_for(tmp_path, proj)
+    with client, terminal_socket(client, "/ws/terminal") as ws:
+        assert ws.receive_json()["type"] == "terminal_ready"
+
+    callbacks["output"]("said after the app stopped")
+    callbacks["exit"](0)
+
+
 def test_a_shell_that_will_not_start_is_reported_and_not_kept(tmp_path, monkeypatch):
     monkeypatch.setattr(terminal, "shell_argv", lambda: [str(tmp_path / "no-such-shell")])
     proj = tmp_path / "proj"

@@ -37,7 +37,8 @@ the branches that are fully merged into the project's HEAD -- through
 ``git branch -d``, which refuses an unmerged one -- and keeps and logs the rest.
 
 Every git call goes through ``quickcode/gitcmd.py``: no hook, fsmonitor,
-external diff, textconv or signing program the repository configures runs.
+external diff, textconv, content filter or signing program the repository
+configures runs.
 """
 
 from __future__ import annotations

@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from quickcode import frontmatter, jsonfile
+from quickcode import frontmatter, jsonfile, textio
 from quickcode.config import CONFIG_DIR
 from quickcode.fsutil import atomic_write_text
 
@@ -255,7 +255,12 @@ def project_command_tools(cwd: str | os.PathLike[str]) -> dict[str, str]:
             raw = path.read_bytes()
         except OSError:
             continue
-        kind = _declared_kind(raw.decode("utf-8", errors="replace"))
+        try:
+            # The loader's decoder, so a UTF-16 agent file is read as one here too.
+            text = textio.decode(raw)
+        except UnicodeDecodeError:
+            text = ""  # the loader refuses it; an unreadable kind is hashed
+        kind = _declared_kind(text)
         if kind is not None and kind != "tool":
             continue  # agents and prompt sections are text; they are not gated
         out[path.name] = hashlib.sha256(raw).hexdigest()

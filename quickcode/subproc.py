@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -59,19 +58,6 @@ DEVNULL = subprocess.DEVNULL
 DRAIN_S = 5.0
 _READ_SIZE = 65536
 
-# A credential by the shape of its name: ``_secret_names`` lists the ones
-# QuickCode reads today, this catches the next one before anybody lists it.
-_SECRET_NAME = re.compile(r"^QUICKCODE_\w*(KEY|TOKEN|SECRET|PASSWORD)$")
-
-
-def _secret_names() -> set[str]:
-    from quickcode.search.resolve import provider_infos
-    from quickcode.secrets import API_KEY_ENV, PROVIDER_KEY_ENV
-
-    return ({API_KEY_ENV, *PROVIDER_KEY_ENV.values()}
-            | {i.api_key_env for i in provider_infos() if i.api_key_env})
-
-
 def child_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """QuickCode's environment as a child may see it, with ``extra`` on top.
 
@@ -81,11 +67,13 @@ def child_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     an MCP server's configured ``env``, a hook's project directory -- so it wins
     over what was inherited and is not filtered.
     """
-    secret = _secret_names()
+    from quickcode.secrets import credential_env_names, is_credential_env
+
+    known = credential_env_names()
     env = {
         name: value
         for name, value in os.environ.items()
-        if name.upper() not in secret and not _SECRET_NAME.match(name.upper())
+        if not is_credential_env(name, known)
     }
     if getattr(sys, "frozen", False):
         _unfreeze(env)

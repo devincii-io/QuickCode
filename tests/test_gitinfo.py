@@ -228,3 +228,24 @@ def test_opening_the_git_panel_never_runs_a_command_the_repository_configured(re
     assert not fs_ran.exists(), "core.fsmonitor ran"
     assert not ext_ran.exists(), "diff.external ran"
     assert not tc_ran.exists(), "a textconv driver ran"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shell script as the command")
+def test_the_git_panel_never_runs_a_filter_the_repository_configured(repo):
+    """``filter.<name>.clean`` runs on ``git status`` whenever the stat data
+    cannot settle whether a file changed, on every diff of a working-tree file,
+    and on ``diff --no-index``. The name is the repository's to choose, so no
+    single ``-c`` option covers it."""
+    clean, ran = _tripwire(repo, "clean")
+    git(repo, "config", "filter.evil.clean", str(clean))
+    (repo / ".gitattributes").write_text("*.txt filter=evil\n", encoding="utf-8")
+    (repo / "tracked.txt").write_text("ONE\n", encoding="utf-8")  # same size as HEAD's
+
+    with make_client(make_manager(repo, FakeProvider())) as client:
+        files = client.get("/api/git/status").json()["files"]
+        diff = client.get("/api/git/diff", params={"path": "tracked.txt"}).json()["diff"]
+        client.get("/api/git/diff", params={"path": "fresh.txt"})
+
+    assert {"path": "tracked.txt", "status": "M"} in files
+    assert "+ONE" in diff
+    assert not ran.exists(), "a clean filter from .git/config ran"

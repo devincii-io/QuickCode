@@ -70,15 +70,18 @@ listed as they stand in 2.7.0.
   re-prompting.
 - `git` is invoked inside a project before the trust prompt, so a repository
   delivered with its `.git` directory intact can reach `core.fsmonitor`,
-  `diff.external` or a `textconv` filter.
+  `diff.external` or a `textconv` filter. (Fixed on `main` after 2.7.0: every
+  git call switches those off, and the content filters the repository's own
+  config defines; see `docs/COMPLIANCE.md` §7.4(d) for what remains.)
 - The protected-path check returns before deny rules, so a `deny` against a
   protected path is downgraded to a prompt; `cd` out of the project root is not
   followed by later path checks; and "always allow" on a compound command
   persists a broader rule than was approved.
 - Session transcripts are written **unredacted** to
-  `<project>/.quickcode/sessions/`, with no retention or size limit. Nothing in
-  the product redacts a secret pasted into chat, printed by a command, or living
-  in an `AGENTS.md`. They are git-ignored now, which is not the same as safe.
+  `<project>/.quickcode/sessions/`, with no retention or size limit. Only the
+  API keys QuickCode itself holds are redacted; nothing in the product redacts
+  any other secret pasted into chat, printed by a command, or living in an
+  `AGENTS.md`. They are git-ignored now, which is not the same as safe.
 - Stored API keys are protected by Windows DPAPI (user-bound), which does not
   defend against anything already running as that user — including QuickCode's
   own shell tool. On Linux and macOS the stored key is only base64-encoded in a

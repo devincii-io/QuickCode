@@ -36,6 +36,7 @@ import re
 import time
 from pathlib import Path
 
+from quickcode import textio
 from quickcode.fsutil import atomic_write_bytes
 from quickcode.kernel.authoring import schema
 from quickcode.kernel.authoring.discovery import (
@@ -179,7 +180,7 @@ def create(
 
 def read_source(cwd: Path | str | None, plugin_id: str) -> tuple[Path, str, list[Problem]]:
     path, scope = locate(cwd, plugin_id)
-    text = path.read_text(encoding="utf-8")
+    text = textio.read_text(path)
     _plugin, problems = _validate_file(path, scope)
     return path, text, problems
 
@@ -259,7 +260,7 @@ def _md_files(directory: Path) -> list[Path]:
 
 def _read(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return textio.read_text(path)
     except (OSError, UnicodeDecodeError):
         return ""
 

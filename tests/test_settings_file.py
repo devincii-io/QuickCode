@@ -242,6 +242,30 @@ async def test_a_rule_that_cannot_be_saved_does_not_fail_the_call_it_allowed(pro
     assert len(agent.permissions.rules.allow) == 1
 
 
+async def test_a_rule_that_cannot_be_saved_says_so_in_the_conversation(project):
+    """Otherwise the next session prompts again for what the user answered
+    "always" to, and nothing ever said the answer was not kept."""
+    from quickcode.core.agent import PermissionOutcome
+    from quickcode.core.events import SystemNote, TurnDone
+    from quickcode.core.permissions import Mode
+    from tests.test_loop import Scripted, _agent, _call, _drain
+
+    _unwritable(project)
+    provider = Scripted([[_call("w", "write", file_path=str(project / "n.txt"), content="x"),
+                          TurnDone("tool_calls")]])
+    agent = _agent(project, provider, mode=Mode.ask)
+    q = agent.bus.subscribe(maxsize=0)
+
+    async def always(_req):
+        return PermissionOutcome(allow=True, persist=True)
+    agent.permission_cb = always
+
+    await agent.run_turn("write it")
+
+    notes = [ev.text for ev in _drain(q) if isinstance(ev, SystemNote)]
+    assert any("this session only" in note and "write" in note for note in notes), notes
+
+
 def _symlink(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)
@@ -278,3 +302,43 @@ def test_a_projects_settings_symlink_cannot_redirect_the_write(project, tmp_path
     assert elsewhere.read_text(encoding="utf-8") == "{}"
     assert not (project / ".quickcode" / "settings.json").is_symlink()
     assert _read(project) == {"active_preset": "x"}
+
+
+# ---- a permissions block that is not the shape it should be ----
+
+
+@pytest.mark.parametrize("block", [
+    ["bash(*)"], "bash(*)", 3, {"allow": "bash(*)", "deny": "rm"}, {"deny": [3, None]},
+])
+def test_a_malformed_permissions_block_is_reported_rather_than_crashing_the_open(
+        project, caplog, block):
+    """``"permissions": [...]`` used to raise out of ``Rules.load`` -- the
+    ``.get`` was outside the ``try`` -- and a string where a list belongs was
+    read one character per rule."""
+    from quickcode.core.permissions import Rules
+
+    _settings(project, {"permissions": block})
+    (project / ".quickcode" / "settings.local.json").write_text(
+        json.dumps({"permissions": {"deny": ["write"]}}), encoding="utf-8")
+
+    rules = Rules.load(project, trusted=True)
+
+    assert rules.allow == [] and rules.ask == []
+    assert rules.deny == ["write"]  # the file that is well formed still counts
+    assert "settings.json" in caplog.text and "permissions" in caplog.text
+
+
+@pytest.mark.parametrize("block", [["bash(*)"], {"allow": "bash(ls)"}])
+def test_always_allow_over_a_malformed_permissions_block_says_why_it_was_not_saved(
+        project, block):
+    from quickcode.core.permissions import Rules
+
+    local = project / ".quickcode" / "settings.local.json"
+    local.write_text(json.dumps({"permissions": block}), encoding="utf-8")
+    rules = Rules()
+
+    unsaved = rules.persist_allow(project, "bash(npm test)")
+
+    assert rules.allow == ["bash(npm test)"]
+    assert unsaved and "this session" in unsaved and "permissions" in unsaved
+    assert json.loads(local.read_text(encoding="utf-8")) == {"permissions": block}

@@ -150,6 +150,17 @@ class _Outbox:
         return text
 
 
+def _post(loop: asyncio.AbstractEventLoop, callback: Callable[..., Any], *args: Any) -> None:
+    """Hand ``callback`` to ``loop`` from the pty's thread.
+
+    The pty's threads outlive the socket (it is closed off the loop), so the
+    loop may already be closed; there is nobody left to tell, and raising here
+    would only kill the reader thread with a traceback.
+    """
+    with contextlib.suppress(RuntimeError):
+        loop.call_soon_threadsafe(callback, *args)
+
+
 async def serve_terminal(
     ws: WebSocket,
     cwd: Any,
@@ -180,7 +191,7 @@ async def serve_terminal(
 
     def on_output(text: str) -> None:
         # Called on the pty's thread; hop to the loop before touching asyncio.
-        loop.call_soon_threadsafe(outbox.push, text)
+        _post(loop, outbox.push, text)
 
     def on_exit(code: int | None) -> None:
         def mark() -> None:
@@ -188,7 +199,7 @@ async def serve_terminal(
             exited.set()
             outbox.nudge()
 
-        loop.call_soon_threadsafe(mark)
+        _post(loop, mark)
 
     argv = shell_argv()
     pty = InteractivePty(argv, cwd=str(cwd), env=_shell_env(),

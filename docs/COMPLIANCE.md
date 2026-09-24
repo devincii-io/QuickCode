@@ -69,7 +69,7 @@ unchanged since the audit.
 |---|---|---|---|---|
 | B1 | **The permission engine can be bypassed into unprompted code execution**, in `plan` mode, by prefixing any read-only command with an environment assignment: `PATH=. ls` (§7.2, W1). Reproduced. | **Fixed** — `ee1461e` | Everyone. This is the safety boundary the whole product rests on. | An environment assignment now disqualifies the read-only auto-allow, and the env-stripped form is no longer offered to *allow* rules — approving `git status` is not approving `LD_PRELOAD=./x.so git status`. Deny rules still see the stripped form, so `FOO=1 rm -rf y` still hits an `rm` deny. Any assignment disqualifies, deliberately, rather than a blocklist of dangerous names; §7.2 W1 says why. Re-measured: `PATH=. ls` is `deny` in `plan` and `dontask`, `ask` in `ask` and `auto-edit`. |
 | B2 | **`grep` and `glob` read any file on the machine with no prompt, in every mode** — `~/.ssh/id_rsa`, `~/.aws/credentials`, any `.env` (§7.2, W2). Reproduced. | **Fixed** — `ee1461e` | Everyone; acute for anyone with credentials on developer machines. | Both now declare `path_target=True`, as `read` already did, and a test asserts no built-in tool targets a path-shaped field without it. A second fix the audit had not named: gating the path a call *names* did not stop a project-wide `grep` returning `.env` contents, so `grep` now also skips `.ssh` and `.env*` **while walking**. |
-| B3 | A **cloned repository's own committed `.quickcode/settings.json` grants itself shell permissions and can start the session in `yolo`** — neither passes the trust gate (§7.4). Reproduced end to end. | **Fixed** — `ee1461e` | Anyone who will open third-party, customer or untrusted code. | `permissions.allow`, `runtime.permissions.*` settings and a project preset's `default_mode` now route through the existing trust gate. The dividing line is *direction*: rules that only narrow (`deny`, `ask`, disabling a plugin, lowering the starting mode) load from any project; anything that widens needs the grant. A project may **lower** the starting mode without asking and never raise it. Policy config joins the trust hash under its own key and only when non-empty, so grants already on disk stay valid while a project that later adds policy config re-prompts. Every drop is logged and surfaced in the UI. Two related findings, §7.4(c) and (d), are **not** covered by this fix and remain open. |
+| B3 | A **cloned repository's own committed `.quickcode/settings.json` grants itself shell permissions and can start the session in `yolo`** — neither passes the trust gate (§7.4). Reproduced end to end. | **Fixed** — `ee1461e` | Anyone who will open third-party, customer or untrusted code. | `permissions.allow`, `runtime.permissions.*` settings and a project preset's `default_mode` now route through the existing trust gate. The dividing line is *direction*: rules that only narrow (`deny`, `ask`, disabling a plugin, lowering the starting mode) load from any project; anything that widens needs the grant. A project may **lower** the starting mode without asking and never raise it. Policy config joins the trust hash under its own key and only when non-empty, so grants already on disk stay valid while a project that later adds policy config re-prompts. Every drop is logged and surfaced in the UI. Two related findings, §7.4(c) and (d), are **not** covered by this fix; (c) remains open, and (d) is fixed after 2.7.0 on its own. |
 | B4 | Windows installer is **not code-signed**; it downloads and silently executes Git and Python installers **without verifying any hash or signature** (§6). | **Partly fixed** — `36fd777` | Any organisation with an unsigned-binary or verified-download policy — the standard procurement stop. | The *download* half is closed: `scripts/bootstrap.ps1` now Authenticode-verifies both the Git and the Python installer — signature status **and** signer subject — before executing either, failing closed and deleting the file, with TLS 1.2 forced. A pinned SHA-256 was deliberately not used; §6.1 records the reasoning and what it does not catch. **The QuickCode installer itself is still unsigned** (§6.3), and that is the half a procurement process usually stops on. It is a purchasing decision, not a code change: a certificate costs money. |
 | B5 | Session transcripts containing **full source code, prompts and shell output** are written into the project tree, and QuickCode **does not add `.quickcode/` to the project's `.gitignore`** (§4.4). Routine `git add -A` publishes them. | **Fixed** — `dc27c2b` | Anyone with a data-classification policy. | A `.gitignore` is written *inside* `.quickcode/` when that directory is created — never the user's own `.gitignore`, and never over an existing file. It excludes `sessions/`, `tasks/`, `artifacts/`, `plugins/.trash/` and `settings.local.json`, and deliberately does **not** exclude `settings.json`, `agents/` or `plugins/`, which are project config meant to be shared. A test runs a real `git init` and `git add -A` and asserts the transcript is unstaged while `settings.json` is staged. |
 | B6 | **No redaction anywhere.** A secret pasted into chat, printed by a command, or living in `AGENTS.md` is copied verbatim into the session log and sent to the model provider (§4.2). | **Open** | Anyone handling regulated data or customer secrets. | Nothing has changed. Treat session logs as classified at the level of the code being worked on. There is still no in-product control. B5's fix keeps them out of *git*; it does nothing about what is in them. |
@@ -96,17 +96,17 @@ unredacted, unrotated and unbounded, and still re-sent to the provider whenever
 a session is resumed.
 
 Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) followed. W3–W7
-have since been fixed (each is marked below with the test that pins it);
-§7.4(c) and (d) are open, and are still routes by which a
-repository's own files reach past the trust gate. Individually none is a bypass
+have since been fixed (each is marked below with the test that pins it), and
+§7.4(d) after 2.7.0; §7.4(c) is open, and is still a route by
+which a repository's own files reach past the trust gate. Individually none is a bypass
 of the reach B1–B3 had; collectively they mean the engine has had one round of
 review and not yet a second.
 
 So: **a pilot on first-party code, on machines without production credentials,
 is now a defensible decision where before it was not.** Handing QuickCode an
 untrusted third-party repository is not, and neither is putting regulated data
-through it — §7.4(c) and (d) are still ways a repository reaches past the trust
-gate, and B6 means everything the agent touches lands unredacted on disk and at
+through it — §7.4(c) is still a way a repository reaches past the trust gate
+(and §7.4(d) is, in any released build), and B6 means everything the agent touches lands unredacted on disk and at
 the model provider. §9 sets out the controls that make the pilot version of that
 hold.
 
@@ -423,8 +423,15 @@ unredacted:**
   team's agent instructions is duplicated into every session log.
 - The absolute working directory.
 
-There is **no redaction, no filtering and no field-level suppression anywhere
-in the write path.**
+There is **no general redaction, filtering or field-level suppression in the
+write path.** Since after 2.7.0 (unreleased) exactly two things are scrubbed
+(`quickcode/session/redact.py`): the values of the keys QuickCode itself holds
+— every key saved from Settings, and every credential environment variable
+`child_env()` withholds (§4.1; one list, `secrets.credential_env_names()`) —
+wherever they appear, and credential shapes (`Bearer …`, `Authorization:`,
+`user:password@`, `?api_key=`) in error text only. A secret pasted into chat,
+printed by a command, or living in `AGENTS.md` that is not one of those keys is
+still written verbatim.
 
 | | |
 |---|---|
@@ -1288,7 +1295,7 @@ repository can add a new executable command tool with no re-prompt.**
 > the last match, or to include any file with more than one `kind:` line.
 
 **(d) `git` runs inside the untrusted repository before the trust prompt.
-OPEN.**
+FIXED after 2.7.0 (unreleased).**
 Environment detection and the git status/diff panel invoke `git -C <untrusted
 repo>` with only `-c core.quotepath=off` — no `GIT_CONFIG_NOSYSTEM`, no
 `protocol.ext.allow=never`, no `core.fsmonitor=`. A repository delivered **as
@@ -1297,11 +1304,37 @@ not copy that config) can set `core.fsmonitor`, `diff.external` or a
 `textconv` filter, which git itself executes. That is code execution from
 project-tree data, outside the trust gate.
 
-> **Open.** Unchanged by `ee1461e`, and not addressable by the trust gate at
+> **Was open.** Unchanged by `ee1461e`, and not addressable by the trust gate at
 > all: this vector runs *before* any settings file is consulted, so gating
 > configuration cannot reach it. It needs `GIT_CONFIG_NOSYSTEM`,
 > `protocol.ext.allow=never` and an empty `core.fsmonitor` on the `git`
 > invocations themselves.
+
+> **Fixed.** Every git call QuickCode makes -- the git panel, environment
+> detection, subagent worktree isolation -- goes through `quickcode/gitcmd.py`:
+> `core.fsmonitor=false`, `protocol.ext.allow=never`, `submodule.recurse=false`;
+> `--no-ext-diff --no-textconv` on every diff; `core.hooksPath` at the null
+> device and no signing on writes; `--ignore-submodules=dirty` on status and
+> diff, so git never runs itself inside a submodule, where the submodule's own
+> config would apply (as a flag, which a `.gitmodules` `ignore = none` cannot
+> override). Before any call that can touch file content, every content filter
+> the repository's own config (`local` and `worktree` scope, includes and all)
+> defines is switched off by name (`-c filter.<name>.clean=` and its `smudge`,
+> `process` and `required`); a name no `-c` option can spell refuses the call.
+> Git's environment is `child_env()`'s, so it holds no API key. Pinned by
+> `tests/test_gitcmd.py` and `tests/test_gitinfo.py`, which plant each program
+> as a tripwire.
+>
+> **What remains.** `GIT_CONFIG_NOSYSTEM` is deliberately *not* set: the system
+> config is written by an administrator or Git's installer, not by a
+> repository, and Git for Windows keeps `core.autocrlf=true` and the Git LFS
+> filter there -- without it every CRLF file diffs as wholly changed. The
+> command-line options above outrank the system config exactly as they do the
+> repository's. A filter defined in the user's or the system's config (Git LFS)
+> still runs over the repository's content: that is the user's own program. Git
+> older than 2.26 cannot say which config defined a filter, so there every
+> filter is switched off, LFS included. The panel does not show changes inside a
+> submodule, only a submodule moved to another commit.
 
 **The self-grant chain the audit described is broken.** Taken together, (a) and
 (b) formed a complete one: a repository committed `allow: ["bash(**)"]`, the
@@ -1437,9 +1470,10 @@ was found at and carries its status.
 
 **Medium**
 
-13. **[OPEN]** `git` runs inside an untrusted repository before the trust
-    prompt, giving a `.git/config` `core.fsmonitor` / `diff.external` execution
-    vector (§7.4d).
+13. **[FIXED — after 2.7.0, unreleased]** `git` runs inside an untrusted
+    repository before the trust prompt, giving a `.git/config` `core.fsmonitor`
+    / `diff.external` / filter-driver execution vector (§7.4d). Every git call
+    now switches those off (`quickcode/gitcmd.py`).
 14. **[FIXED]** `cd` escapes the project root; later commands are still checked
     against the original root (§7.2, W5).
 15. **[FIXED]** The protected-path check outranks `deny`, downgrading an

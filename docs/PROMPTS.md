@@ -183,7 +183,7 @@ the program's entire output: lead with the result.
 Notes:
 
 - `<environment>` is safe in the system prompt because caching only needs *within-session* stability — cwd/OS/branch don't change mid-session, and `{session_date}` is a date, not a timestamp.
-- `<project_instructions>` is the spliced content of `QUICKCODE.md`/`AGENTS.md`/`CLAUDE.md`. Empty tag if none — the tag itself stays so the template shape is constant.
+- `<project_instructions>` is the spliced content of `QUICKCODE.md`/`AGENTS.md`/`CLAUDE.md` (the first that exists and decodes: UTF-8, or UTF-8/16/32 with a byte-order mark, which is dropped; line endings read as `\n`). Empty tag if none — the tag itself stays so the template shape is constant.
 - Order within the prompt is *not* fully stability-sorted, and it was documented as if it were. `<environment>` and `<project_instructions>` carry per-session values and sit at orders 80 and 90, but `<orchestration>`, `<send_message_hint>`, `<plan_mode>` and `<headless_mode>` follow them at 100–130. Those four are static text switched on by a session-long flag, so the prefix is still byte-stable for the session; what it costs is that a hypothetical mid-session instruction reload would re-render more than the tail.
 - A section can be authored from `.quickcode/plugins/*.md` and takes its own slot in this order. Ties on `order` break by `id`, deterministically, because the composed prompt is a cache breakpoint.
 

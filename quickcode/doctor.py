@@ -3,8 +3,8 @@
 Self-contained health checks for the current environment: interpreter
 version, external tool availability (ripgrep, git), whether a pseudo-terminal
 can be opened, the shells the agent and the terminal panel will run, API key
-resolution, user config loadability, and whether ``web_search`` has a
-provider it can actually reach.
+resolution, which key variables are set (by name), user config loadability, and
+whether ``web_search`` has a provider it can actually reach.
 
 Each check is a small pure function returning a :class:`Check` — no
 printing, no side effects — so they're easy to unit test individually.
@@ -152,6 +152,25 @@ def check_api_key(provider: str | None = None) -> Check:
     )
 
 
+def check_credential_env() -> Check:
+    """The credential variables set in this environment, by name only.
+
+    Named from ``secrets.credential_envs_set``, the list ``subproc.child_env``
+    withholds and the session log redacts, so what this reports as protected
+    is what is.
+    """
+    from quickcode.secrets import credential_envs_set
+
+    found = sorted(credential_envs_set())
+    if not found:
+        return Check("Key variables", True, "ok", "none set")
+    return Check(
+        "Key variables", True, "ok",
+        f"{', '.join(found)} — withheld from every program QuickCode starts, "
+        "and redacted from session logs",
+    )
+
+
 def _active_provider() -> str:
     try:
         from quickcode import config
@@ -287,6 +306,7 @@ def run_checks() -> list[Check]:
         check_terminal_shell(),
         check_config(),
         check_api_key(),
+        check_credential_env(),
         check_search(),
     ]
 

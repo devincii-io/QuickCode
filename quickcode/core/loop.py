@@ -29,6 +29,7 @@ from quickcode.core.events import (
     ContextInjection,
     ReasoningBlock,
     ReasoningDelta,
+    SystemNote,
     TextDelta,
     ToolCallDelta,
     ToolCallEnd,
@@ -546,7 +547,10 @@ async def _run_tool(
             return (f"Permission denied by user: {reason}", True, {})
         if outcome.persist:
             for rule in req.rules:
-                agent.permissions.rules.persist_allow(agent.ctx.cwd, rule)
+                unsaved = agent.permissions.rules.persist_allow(agent.ctx.cwd, rule)
+                if unsaved:
+                    agent.bus.emit(SystemNote(unsaved))
+                    break
     elif decision == Decision.deny:
         return (hook_reason or "Blocked by permission rules or current mode.", True, {})
 
