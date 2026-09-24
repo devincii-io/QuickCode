@@ -4,6 +4,8 @@
 // follows runs under node:test. checkpoints/dialog.js draws it; chat/rewind.js
 // marks the turns. The API shapes are in docs/CHECKPOINTS.md.
 
+import { unifiedLines } from "../diff.js";
+
 // quickcode/checkpoints/rewind.py MAX_SELECTED: a longer `paths` list is a 400.
 export const MAX_SELECTED = 1000;
 
@@ -291,21 +293,16 @@ export function listingRows(listing) {
 
 // ---- the diff ---------------------------------------------------------------
 
-/** Each line of a unified diff with its kind: "meta" | "hunk" | "add" | "del"
- *  | "ctx". The ---/+++ header is only the first two lines, so a removed line
- *  that itself starts with "--" stays a removal. Line endings are kept by the
- *  server (a CRLF → LF rewind is a change); the \r is dropped for display. */
+/** A rewind preview's diff as js/diff.js line records. The server keeps each
+ *  line's ending (a CRLF → LF rewind is a change, quickcode/checkpoints/diff.py),
+ *  so the \r is dropped here for display, the final newline ends the text
+ *  rather than adding a blank line, and "\ No newline at end of file" is a
+ *  note, not a context line. */
 export function diffLines(text) {
-  const raw = String(text ?? "").split("\n");
-  if (raw.length && raw[raw.length - 1] === "") raw.pop();
-  return raw.map((line, i) => {
+  const body = String(text ?? "").replace(/\n$/, "");
+  if (!body) return [];
+  return unifiedLines(body).map(({ kind, text: line }) => {
     const shown = line.endsWith("\r") ? line.slice(0, -1) : line;
-    let kind = "ctx";
-    if (i < 2 && (line.startsWith("--- ") || line.startsWith("+++ "))) kind = "meta";
-    else if (line.startsWith("@@")) kind = "hunk";
-    else if (line.startsWith("\\")) kind = "meta";
-    else if (line.startsWith("+")) kind = "add";
-    else if (line.startsWith("-")) kind = "del";
-    return { kind, text: shown };
+    return { kind: shown.startsWith("\\ ") ? "note" : kind, text: shown };
   });
 }

@@ -209,14 +209,14 @@ test("diff lines keep a removed '--' line a removal and drop the CR only for dis
   const text = "--- a/x.txt\r\n+++ b/x.txt\n@@ -1,2 +1,2 @@\n--- not a header\r\n+back\n same\n"
     + "\\ No newline at end of file\n";
   assert.deepEqual(diffLines(text), [
-    { kind: "meta", text: "--- a/x.txt" },
-    { kind: "meta", text: "+++ b/x.txt" },
+    { kind: "file", text: "--- a/x.txt" },
+    { kind: "file", text: "+++ b/x.txt" },
     { kind: "hunk", text: "@@ -1,2 +1,2 @@" },
     { kind: "del", text: "--- not a header" },
     { kind: "add", text: "+back" },
     { kind: "ctx", text: " same" },
-    { kind: "meta", text: "\\ No newline at end of file" },
-  ]);
+    { kind: "note", text: "\\ No newline at end of file" },
+  ], "the shared js/diff.js kinds, with no blank line after the last one");
   assert.deepEqual(diffLines(""), []);
 });
 

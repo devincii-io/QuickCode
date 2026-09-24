@@ -78,7 +78,7 @@ export const panel = {
           button),
         h("ul", { class: "pc-files" }, row.files.map((f) =>
           h("li", { class: f.state ? "pc-file pc-gone" : "pc-file" },
-            h("span", { class: `pc-change pc-${f.change}` }, f.change),
+            h("span", { class: "pc-change", "data-change": f.change }, f.change),
             h("span", { class: "pc-path", title: f.path }, f.path),
             f.counts ? h("span", { class: "pc-counts" }, f.counts) : null,
             f.agent ? h("span", { class: "pc-agent" }, f.agent) : null,

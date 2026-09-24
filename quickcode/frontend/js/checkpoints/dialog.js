@@ -5,10 +5,10 @@
 // agent wrote, and a text node cannot be anything but text. What the dialog
 // may send is decided in checkpoints/model.js; this module only draws it.
 //
-// Diff lines use the transcript's diff colours (.diff-add / .diff-del). The
-// Files panel has its own markup-string renderer; neither is shared yet.
+// Diffs are drawn by js/diff.js, as in the permission prompt and the edit cards.
 
 import { api } from "../api.js";
+import { diffNode } from "../diff.js";
 import { store, subscribe } from "../store.js";
 import { h } from "../ui/dom.js";
 import { modal, onModalClose } from "../ui/modal.js";
@@ -151,7 +151,7 @@ function fileRow(view, row) {
   }, h("span", { class: "rw-caret", "aria-hidden": "true" }), h("span", { class: "rw-path" }, row.path));
   const node = h("div", { class: "rw-file", "data-path": row.path },
     h("div", { class: "rw-row" }, check, toggle,
-      h("span", { class: `rw-action rw-${row.action || "none"}` }, plannedText(row.action)),
+      h("span", { class: "rw-action", "data-action": row.action || "none" }, plannedText(row.action)),
       counts(row)),
     conflictList(row),
     row.selectable ? null
@@ -191,13 +191,8 @@ function diffBody(row) {
       row.action === "none" ? "No change: the file already holds what the rewind would write."
         : "No text diff.")];
   }
-  const pre = h("pre", { class: "rw-pre" });
-  const lines = diffLines(row.diff);
-  lines.forEach((line, i) => {
-    const cls = { add: "diff-add", del: "diff-del", hunk: "diff-hunk", meta: "diff-meta" }[line.kind];
-    pre.append(cls ? h("span", { class: cls }, line.text) : line.text);
-    if (i < lines.length - 1) pre.append("\n");
-  });
+  const pre = diffNode(diffLines(row.diff));
+  pre.classList.add("rw-pre");
   const out = [h("div", { class: "rw-legend" }, "− on disk now   + after the rewind"), pre];
   if (row.truncated) out.push(h("div", { class: "rw-hint" }, "Diff cut at 100 000 characters."));
   return out;
