@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from quickcode import gitcmd, jsonfile, textio
+from quickcode.fsutil import atomic_write_text
 from quickcode.search import SearchSettings
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -257,7 +258,7 @@ class Config:
                 for name, p in self.profiles.items()
             },
         }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        atomic_write_text(path, json.dumps(data, indent=2))
 
 
 @dataclass

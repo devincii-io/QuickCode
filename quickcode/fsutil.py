@@ -6,7 +6,9 @@ The temporary name starts with a dot, which no plugin or config scan reads, and
 is unique per call, so two writers in one process cannot collide on it.
 
 Durability is the caller's choice: ``fsync=True`` survives a power cut as well
-as a crash, and costs a disk flush.
+as a crash, and costs a disk flush. So are the permission bits: ``mode=0o600``
+creates the temporary file private, so a secret is never readable by another
+account, not even between the write and a ``chmod``.
 """
 
 from __future__ import annotations
@@ -17,22 +19,25 @@ from pathlib import Path
 
 
 def atomic_write_bytes(path: str | os.PathLike[str], data: bytes, *,
-                       fsync: bool = False) -> None:
-    _replace(Path(path), "wb", data, fsync=fsync)
+                       fsync: bool = False, mode: int | None = None) -> None:
+    _replace(Path(path), "wb", data, fsync=fsync, mode=mode)
 
 
 def atomic_write_text(path: str | os.PathLike[str], text: str, *,
                       encoding: str = "utf-8", newline: str | None = None,
-                      fsync: bool = False) -> None:
+                      fsync: bool = False, mode: int | None = None) -> None:
     """Same arguments and newline translation as ``Path.write_text``."""
-    _replace(Path(path), "w", text, fsync=fsync, encoding=encoding, newline=newline)
+    _replace(Path(path), "w", text, fsync=fsync, mode=mode,
+             encoding=encoding, newline=newline)
 
 
-def _replace(path: Path, mode: str, payload: str | bytes, *, fsync: bool,
+def _replace(path: Path, how: str, payload: str | bytes, *, fsync: bool, mode: int | None,
              encoding: str | None = None, newline: str | None = None) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    opener = None if mode is None else (lambda name, flags: os.open(name, flags, mode))
     try:
-        with open(tmp, mode.replace("w", "x"), encoding=encoding, newline=newline) as fh:
+        with open(tmp, how.replace("w", "x"), encoding=encoding, newline=newline,
+                  opener=opener) as fh:
             fh.write(payload)
             if fsync:
                 fh.flush()

@@ -27,6 +27,8 @@ import re
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
+from quickcode.fsutil import atomic_write_bytes
+
 API_KEY_ENV = "QUICKCODE_OPENROUTER_API_KEY"
 
 SECRETS_DIR = Path.home() / ".quickcode"
@@ -73,11 +75,7 @@ def _write_secret(path: Path, value: str) -> None:
     else:
         # Not real encryption — the 0600 file permission is the control.
         payload = b"B64:" + base64.b64encode(raw)
-    path.write_bytes(payload)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    atomic_write_bytes(path, payload, mode=0o600)
 
 
 def _read_secret(path: Path) -> str | None:
