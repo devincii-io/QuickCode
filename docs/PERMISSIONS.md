@@ -56,8 +56,12 @@ MCP tools declare `mutates=not read_only`, honouring the server's
 | `dontask` | ✅ | rule-matched only, else **auto-deny** | rule-matched only, else auto-deny | never blocks on a prompt |
 | `yolo` | ✅ | ✅ | ✅ | bypass; explicit opt-in |
 
-`auto-edit` auto-allows *edits*, and nothing else. A shell command in `auto-edit`
-takes the same path it takes in `ask`: the read-only builtins below are allowed,
+`auto-edit` auto-allows *edits*, and nothing else. An edit is a mutating tool
+whose target is a path (`path_target`), which the protected-path check has
+already confined to the project; every other mutating tool — `web_fetch`,
+`web_search`, a plugin's command tool, an MCP tool that is not read-only —
+prompts exactly as in `ask`. (The mode default used to allow all of them.)
+A shell command in `auto-edit` takes the same path it takes in `ask`: the read-only builtins below are allowed,
 everything else prompts. There is **no allowlist of file-op commands** —
 `mkdir`, `touch`, `mv`, `cp` and `rm` all prompt, in every mode but `yolo`.
 Earlier versions of this document described such a list; it was never
@@ -95,7 +99,10 @@ today.
   as a separator. Only components *below* the project root count, so a project
   kept under a directory named `.quickcode` is not protected wholesale.
   Checked *before* allow-rule
-  evaluation so no rule can accidentally unprotect them. In `dontask` the same
+  evaluation so no rule can accidentally unprotect them, and *after* deny rules,
+  so a `read(**.env)` deny denies `.env` rather than turning into a prompt with
+  an Allow button on it. Plan mode's refusal of mutating calls also comes first:
+  a write to `.git/config` in plan mode is denied, not offered. In `dontask` the same
   check denies instead of prompting, because there is nobody to ask. In `yolo`
   it does neither: the mode exists to stop asking, and asking anyway made a
   plain `find / -name "*x*"` stop and wait — `bash` treats every non-option
@@ -123,7 +130,7 @@ today.
 
 ## Rules
 
-Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fixed: **deny → ask → allow → mode default**. First match wins — a broad deny beats a narrow allow by design.
+Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fixed: **deny → (plan mode refuses mutation) → protected-path prompt → ask → allow → mode default**. First match wins — a broad deny beats a narrow allow by design, and beats the protected-path prompt too.
 
 ```jsonc
 // .quickcode/settings.json
@@ -245,12 +252,14 @@ command string
   → split into subcommands on && || | ; & and newlines
   → per subcommand:
       strip harmless wrappers (timeout, time, nice, nohup) and env-var prefixes*
+      → deny rules
+      → plan mode: anything that is not an auto-allowable read-only builtin
+        is denied
       → any non-option argument that resolves to a protected path
         (.git .quickcode .ssh .env* / outside the project) → ask (deny in dontask)
-      → deny rules → builtin read-only? → auto-allow, unless the line carries
-        a substitution/redirection marker ($( ` > <) or the subcommand carries
+      → builtin read-only? → auto-allow, unless the line carries a
+        substitution/redirection marker ($( ` > <) or the subcommand carries
         an env-var prefix
-      → plan mode stops here: anything not read-only is denied
       → ask rules → allow rules → mode default
   → + circuit breakers, matched against the whole line
   → final decision = most restrictive across subcommands

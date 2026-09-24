@@ -279,37 +279,41 @@ class PermissionEngine:
         """Decide for a single tool invocation. ``arg`` is the match target
         (a shell command line, or a path -- whichever the tool declares)."""
         spec = spec or self.spec_for(tool)
-        is_write = spec.mutates
-        is_read = not spec.mutates
 
-        # 1. Protected paths prompt before any allow rule — except in yolo,
+        # Shell tools get decomposed and evaluated per subcommand, through the
+        # same order as below.
+        if spec.shell:
+            return self._eval_bash(arg)
+
+        # 1. Deny rules first, before anything that could answer "ask". The
+        #    protected-path prompt used to come first, so a `read(**.env)` deny
+        #    was never consulted for `.env`: the user got a prompt, with an
+        #    Allow button, for the one file they had said no to outright.
+        for r in self.rules.deny:
+            if _rule_matches(r, tool, arg):
+                return Decision.deny
+
+        # 2. Plan mode structurally blocks mutation -- ahead of the protected
+        #    prompt too, or a write to `.git/config` in plan mode was a prompt
+        #    the user could click through rather than a refusal.
+        if self.mode == Mode.plan and spec.mutates:
+            return Decision.deny
+
+        # 3. Protected paths prompt before any allow rule -- except in yolo,
         #    which is the mode whose entire promise is that it does not ask.
         #    Prompting there was the rule outliving its reason: it exists so an
         #    ordinary session cannot wander into `.git`, `.env` or the world
         #    outside the project without a word, and somebody who has turned on
         #    the mode named yolo, confirmed it, and watched it go red has
-        #    already had that conversation. A deny rule still denies below;
-        #    this only stops the asking.
+        #    already had that conversation.
         if spec.path_target and is_protected(arg, self.root):
-            if not (is_read and is_subagent_artifact(arg, self.root)):
+            if spec.mutates or not is_subagent_artifact(arg, self.root):
                 if self.mode is Mode.dontask:
                     return Decision.deny
                 if self.mode is not Mode.yolo:
                     return Decision.ask
 
-        # 2. Shell tools get decomposed and evaluated per subcommand (handles
-        #    plan mode itself — read-only builtins stay allowed, rest denied).
-        if spec.shell:
-            return self._eval_bash(arg)
-
-        # 3. Plan mode structurally blocks file mutation.
-        if self.mode == Mode.plan and is_write:
-            return Decision.deny
-
-        # 4. Rule evaluation: deny → ask → allow.
-        for r in self.rules.deny:
-            if _rule_matches(r, tool, arg):
-                return Decision.deny
+        # 4. The rest of the rules: ask, then allow.
         for r in self.rules.ask:
             if _rule_matches(r, tool, arg):
                 return Decision.ask
@@ -318,15 +322,20 @@ class PermissionEngine:
                 return Decision.allow
 
         # 5. Mode default.
-        if is_read:
+        if not spec.mutates:
             return Decision.allow
-        return self._mode_default_for_write()
+        return self._mode_default_for_write(spec)
 
-    def _mode_default_for_write(self) -> Decision:
+    def _mode_default_for_write(self, spec: PermissionSpec) -> Decision:
         if self.mode == Mode.yolo:
             return Decision.allow
-        if self.mode == Mode.auto_edit:
-            return Decision.allow  # edits auto; bash handled separately
+        # auto-edit auto-allows *edits*: a tool whose target is a path, which
+        # the protected check above has already confined to the project. It
+        # used to allow every mutating tool, so `web_fetch` (a way out for any
+        # file the agent has read), a plugin's command tool and every MCP tool
+        # that writes ran unprompted in the mode documented as "edits only".
+        if self.mode == Mode.auto_edit and spec.path_target:
+            return Decision.allow
         if self.mode == Mode.dontask:
             return Decision.deny
         return Decision.ask
@@ -370,29 +379,9 @@ class PermissionEngine:
         # *restrict* (deny, ask) are matched against this form too.
         by_name = " ".join([first, *tokens[idx + 1 :]]) if idx < len(tokens) else stripped
 
-        # Shell reads must respect the same protected-path boundary as the
-        # dedicated read tool. Treat every non-option argument as a potential
-        # path; ordinary words resolve inside the project and remain harmless.
-        for token in tokens[idx + 1 :]:
-            if token.startswith("-"):
-                continue
-            candidate = token.split("=", 1)[-1] if "=" in token else token
-            # Quotes come out wherever they sit, not only at the ends: the
-            # shell concatenates `.en''v` into `.env`, so a scan that stripped
-            # only the outside compared the wrong string and waved through the
-            # very file it exists to protect.
-            candidate = candidate.replace("'", "").replace('"', "").strip("{},()")
-            if candidate and is_protected(candidate, self.root):
-                if self.mode is Mode.dontask:
-                    return Decision.deny
-                # Same exemption as the path tools above, and this is where it
-                # was felt: every non-option token is treated as a possible
-                # path, so `find / -name "*x*"` prompted in yolo because of the
-                # `/`. A mode that promises not to ask must not ask here.
-                if self.mode is not Mode.yolo:
-                    return Decision.ask
-
-        # deny rules first (against the substitution-free subcommand)
+        # 1. Deny rules first (against the substitution-free subcommand), for
+        #    the same reason as in ``evaluate``: a protected path must not turn
+        #    a deny into a prompt.
         for r in self.rules.deny:
             if (
                 _rule_matches(r, "bash", sub)
@@ -401,8 +390,8 @@ class PermissionEngine:
             ):
                 return Decision.deny
 
-        # Builtin read-only → auto-allow (only when no substitution smuggling
-        # and no rewritten environment).
+        # Builtin read-only commands auto-allow -- only when there is no
+        # substitution smuggling and no rewritten environment.
         #
         # Every assignment disqualifies, not a blocklist of the dangerous
         # names. A blocklist here would have to be complete, and it cannot be:
@@ -417,12 +406,39 @@ class PermissionEngine:
         # The conservative reading costs one prompt for `FOO=1 ls`, which is
         # not a command anybody types by hand, and the auto-allow exists to
         # make the ordinary case frictionless rather than to cover every case.
-        if first in READONLY_BUILTINS and not has_sub and not has_env_prefix:
-            # plan mode allows read-only bash
-            return Decision.allow
+        read_only = first in READONLY_BUILTINS and not has_sub and not has_env_prefix
 
-        if self.mode == Mode.plan:
-            return Decision.deny  # only read-only builtins allowed in plan
+        # 2. Plan mode runs the read-only builtins and nothing else -- decided
+        #    before the protected-path prompt, which would otherwise offer to
+        #    run `rm .git/index` in plan mode rather than refuse it.
+        if self.mode == Mode.plan and not read_only:
+            return Decision.deny
+
+        # 3. Shell reads respect the same protected-path boundary as the
+        #    dedicated read tool. Every non-option argument is a potential path;
+        #    ordinary words resolve inside the project and stay harmless.
+        for token in tokens[idx + 1 :]:
+            if token.startswith("-"):
+                continue
+            candidate = token.split("=", 1)[-1] if "=" in token else token
+            # Quotes come out wherever they sit, not only at the ends: the
+            # shell concatenates `.en''v` into `.env`, so a scan that stripped
+            # only the outside compared the wrong string and waved through the
+            # very file it exists to protect.
+            candidate = candidate.replace("'", "").replace('"', "").strip("{},()")
+            if candidate and is_protected(candidate, self.root):
+                if self.mode is Mode.dontask:
+                    return Decision.deny
+                # Same exemption as the path tools, and this is where it was
+                # felt: every non-option token is treated as a possible path,
+                # so `find / -name "*x*"` prompted in yolo because of the `/`.
+                # A mode that promises not to ask must not ask here.
+                if self.mode is not Mode.yolo:
+                    return Decision.ask
+
+        # 4. Read-only builtins run without a prompt, in every mode.
+        if read_only:
+            return Decision.allow
 
         for r in self.rules.ask:
             if _rule_matches(r, "bash", sub) or _rule_matches(r, "bash", by_name):
