@@ -52,7 +52,8 @@ change reaches every open pane without a reload.
   with their results, diffs, and system notes. Rendering is batched per
   animation frame and a streaming message patches one live node rather than
   re-rendering the transcript.
-- **Composer** (`js/composer.js`) — `Enter` sends, `Shift+Enter` inserts a
+- **Composer** (`js/composer.js`, with its commands, `@` completion, recall
+  and pills in `js/composer/`) — `Enter` sends, `Shift+Enter` inserts a
   newline, `/` opens the slash menu, `@` completes a project path, `↑/↓` walks
   sent-message history filtered by what is already typed. Messages sent while
   the agent is busy are queued. Beside it: the mode pill, the model pill, the

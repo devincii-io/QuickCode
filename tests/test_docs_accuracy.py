@@ -845,7 +845,7 @@ def test_the_documented_logged_event_types_are_the_logged_set():
 def test_the_documented_slash_commands_are_the_composer_s():
     """docs/UI.md's keyboard table lists the slash commands; the composer's
     ``COMMANDS`` array is what runs."""
-    composer = (ROOT / "quickcode/frontend/js/composer.js").read_text(encoding="utf-8")
+    composer = (ROOT / "quickcode/frontend/js/composer/slash.js").read_text(encoding="utf-8")
     block = composer[composer.index("const COMMANDS = [") :]
     real = set(re.findall(r'name: "(/[a-z]+)"', block[: block.index("\n];")]))
     row = next(line for line in read(DOCS / "UI.md").splitlines() if line.startswith("| `/` |"))

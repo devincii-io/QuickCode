@@ -5,7 +5,7 @@
 // read the same array, because a shortcut list that exists twice is a shortcut
 // list that is wrong in one of the two places.
 //
-// The slash commands mirror `COMMANDS` in js/composer.js, which is what
+// The slash commands mirror `COMMANDS` in js/composer/slash.js, which is what
 // actually runs when you type one.
 
 import { MODE_IDS } from "../modes.js";
