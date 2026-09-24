@@ -1,11 +1,12 @@
 // Chat view: incremental transcript renderer over the event store.
 
 import { promptNote } from "./inspect.js";
-import { markdownStream, renderMarkdown } from "./markdown.js";
+import { renderMarkdown } from "./markdown.js";
 import { midTurn, store, subscribe } from "./store.js";
 import { argSummary, markPerm, resultHtml, toolCardNode, traceLink } from "./chat/cards.js";
 import { CardRegistry, MAIN } from "./chat/registry.js";
 import { Follower } from "./chat/scroll.js";
+import { LiveBubble } from "./chat/stream.js";
 import { REVEAL_PX, TranscriptWindow } from "./chat/window.js";
 import { setCopySource } from "./copy.js";
 import { clickable, el, esc, fmtMs, oneLine } from "./util.js";
@@ -14,10 +15,7 @@ let transcript, taskStrip;
 let welcome = null;             // the empty-conversation greeting, until the first event
 let follower = null;            // keeps the newest line in view while the reader is there
 let win = null;                 // which blocks are in the document (chat/window.js)
-let streamNode = null;          // live assistant bubble
-let streamMd = null;            // its incremental renderer (markdown.js)
-let streamTail = [];            // its nodes the next update replaces
-let reasoningText = null;       // the text node inside its <details>
+let live = null;                // the assistant message still streaming (chat/stream.js)
 let streamFrame = 0;            // a paint is queued for the next frame
 const agentsDirty = new Set();  // subagents whose live text changed since the last frame
 // Every card by the ids events refer to it with (tool calls per agent, agent
@@ -27,7 +25,7 @@ let onOpenTrace = () => {};
 // The open step: consecutive tool calls collect into one titled block instead
 // of stacking as loose cards. Closed by anything that is not a tool call.
 let step = null;                // {node, body, title, count, names, block}
-// req_id -> {ev, card} for a permission still awaiting its answer. The resolved
+// req_id -> {ev, entry} for a permission still awaiting its answer. The resolved
 // event carries only the verdict, so the request has to be held until then or
 // the card cannot show what was actually asked.
 let openPerms = new Map();
@@ -37,6 +35,7 @@ export function initChat({ openTrace }) {
   onOpenTrace = openTrace;
   win = new TranscriptWindow(transcript);
   follower = new Follower(transcript, { beforeSnap: () => win.trim() });
+  live = new LiveBubble(win);
   transcript.addEventListener("scroll", () => {
     follower.onScroll();
     if (!follower.pinned && transcript.scrollTop < REVEAL_PX) win.revealOlder();
@@ -155,7 +154,7 @@ function clear() {
   transcript.innerHTML = `<div class="chat-welcome"><span>NEW CONVERSATION</span><h2>What would you like to work on?</h2><p>Describe a change or ask a question about this project.<br>Choose the model and permissions below before sending.</p></div>`;
   welcome = transcript.firstElementChild;
   win.reset();
-  streamNode = null;
+  live.forget();
   step = null;
   openPerms = new Map();
   cards.clear();
@@ -178,11 +177,6 @@ function snapshot() {
   return box;
 }
 
-function dropStream() {
-  win.remove(streamNode);
-  streamNode = null;
-}
-
 // Queued for the next frame (chat/scroll.js), so a burst of events costs one
 // layout rather than one each.
 function scrollBottom(force = false) {
@@ -192,11 +186,8 @@ function scrollBottom(force = false) {
 
 // ---- streaming ----
 //
-// Deltas arrive far faster than a screen refreshes, and each one used to
-// re-parse and re-insert the whole reply: quadratic in its length, with every
-// code block rebuilt (and re-decorated by copy.js) dozens of times a second.
-// Now a delta only marks the frame dirty, and the paint appends the blocks
-// markdown.js has finished and replaces just the open one.
+// A delta only marks the frame dirty; the frame's paint patches the live
+// bubble and the subagents' live text once, however many deltas landed.
 
 function schedulePaint() {
   if (streamFrame) return;
@@ -207,7 +198,11 @@ function schedulePaint() {
 // away; flushed early by an event, it leaves that to the frame.
 function paint(inFrame = false) {
   streamFrame = 0;
-  renderStream();
+  live.render({
+    text: store.streamText,
+    reasoning: store.streamReasoning,
+    pending: store.pendingCalls.size > 0,
+  });
   for (const id of agentsDirty) renderAgentStream(id);
   agentsDirty.clear();
   if (inFrame && !store.replaying) follower.flush();
@@ -218,56 +213,6 @@ function flushStream() {
   if (!streamFrame) return;
   cancelAnimationFrame(streamFrame);
   paint();
-}
-
-function ensureStreamNode() {
-  if (!streamNode) {
-    streamNode = el(`<div class="msg msg-assistant">
-        <div class="reasoning-slot"></div><div class="bubble"></div></div>`);
-    streamMd = markdownStream();
-    streamTail = [];
-    reasoningText = null;
-    win.append(streamNode);
-  }
-  return streamNode;
-}
-
-function fragment(html) {
-  const t = document.createElement("template");
-  t.innerHTML = html;
-  return t.content;
-}
-
-function renderStream() {
-  if (!store.streamText && !store.streamReasoning && !store.pendingCalls.size) {
-    // Emptied without the message that normally replaces it: a replayed
-    // message superseded what streamed (store.js). What is on screen is stale.
-    if (streamNode) dropStream();
-    return;
-  }
-  const node = ensureStreamNode();
-  if (store.streamReasoning) {
-    // Built once and then only its text moves, so collapsing it mid-stream
-    // sticks instead of being re-opened by the next delta.
-    if (!reasoningText) {
-      const details = el(`<details class="reasoning" open><summary>thinking</summary></details>`);
-      reasoningText = details.appendChild(document.createTextNode(""));
-      node.querySelector(".reasoning-slot").appendChild(details);
-    }
-    if (reasoningText.data !== store.streamReasoning) reasoningText.data = store.streamReasoning;
-  }
-  const bubble = node.querySelector(".bubble");
-  const { reset, commit, tail } = streamMd.update(store.streamText);
-  if (reset) {
-    for (const child of [...bubble.childNodes]) {
-      if (!child.classList?.contains("copy-btn")) child.remove();
-    }
-  }
-  for (const n of streamTail) n.remove();
-  if (commit) bubble.appendChild(fragment(commit));
-  const rest = fragment(tail);
-  streamTail = [...rest.childNodes];
-  bubble.appendChild(rest);
 }
 
 // ---- logged events ----
@@ -306,25 +251,8 @@ function renderEvent(ev) {
   }
 }
 
-// Drop the live bubble if nothing has been drawn in it. It is created as soon
-// as *anything* streams — including a tool call's arguments — so a round that
-// went straight to a tool left an empty message behind, once per round, each
-// one a stray gap in the transcript. (Its text cannot be the test: copy.js puts
-// a "copy" button in every bubble.)
-//
-// A bubble that has text stays live. Its assistant_message always follows —
-// session/recorder.py flushes one before each tool call, at the end of every
-// round and on an interrupt — and replaces it. Letting it go here, when an
-// unrelated event such as a mode switch landed mid-reply, left the partial copy
-// on the page and streamed the whole reply a second time underneath it.
-function closeStream() {
-  if (streamNode && !streamNode.querySelector(".reasoning, .bubble > :not(.copy-btn)")) {
-    dropStream();
-  }
-}
-
 function addNode(node) {
-  closeStream();
+  live.closeIfBlank();
   step = null;   // anything that is not a tool call ends the step
   win.append(node);
 }
@@ -356,7 +284,7 @@ function ensureStep() {
     names: [],                    // what each card's `.tool-name` reads
     block: cards.nextBlock(),
   };
-  closeStream();
+  live.closeIfBlank();
   win.append(node);
   return step;
 }
@@ -373,7 +301,7 @@ function addUser(ev) {
 }
 
 function addAssistant(ev) {
-  if (streamNode) dropStream();
+  live.drop();
   step = null;
   const node = el(`<div class="msg msg-assistant">
       <div class="reasoning-slot"></div>
@@ -468,7 +396,7 @@ function permCard(ev) {
 // ---- subagents ----
 
 function addAgentCard(ev) {
-  closeStream();
+  live.closeIfBlank();
   step = null;
   const card = el(`<div class="agent-card" data-agent="${esc(ev.agent_id)}">
     <div class="agent-head" aria-expanded="false"><span>⛓</span>
