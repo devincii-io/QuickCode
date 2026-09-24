@@ -167,8 +167,11 @@ def _search(input: GrepInput, root: Path, rx: re.Pattern[str],  # noqa: A002
 def _run_ripgrep(rg: str, input: GrepInput, root: Path, *, hidden: bool = True) -> str:  # noqa: A002
     # ``--with-filename`` because ``rg -c`` leaves the path off when it is
     # handed a single file, and the count would then be read as the path.
+    # ``--no-ignore-global``: the walk cannot see git's core.excludesFile, and
+    # a machine-specific ignore list is exactly how the two backends would
+    # come to disagree on one user's machine and not on another's.
     args = [rg, "--no-heading", "--line-number", "--color=never", "--with-filename",
-            f"--max-filesize={MAX_FILE_BYTES}"]
+            f"--max-filesize={MAX_FILE_BYTES}", "--no-ignore-global"]
     if hidden:
         args.append("--hidden")
     if input.ignore_case:
