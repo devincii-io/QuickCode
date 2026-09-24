@@ -118,3 +118,52 @@ def test_the_trust_gate_reads_kind_with_the_loaders_parser(text):
     expected = None if parsed.duplicates else (
         parsed.meta.get("kind", "").strip().lower() or None)
     assert trust._declared_kind(text) == expected
+
+
+# ---- reserved names come from the live registry --------------------------
+
+
+def _core_names() -> list[str]:
+    from quickcode.tools.registry import core_tools
+
+    return sorted(t.name for t in core_tools())
+
+
+@pytest.mark.parametrize("name", _core_names())
+def test_every_builtin_tool_name_is_refused_to_an_authored_tool(name):
+    from quickcode.kernel.authoring.reserved import reserved_reason
+
+    assert reserved_reason(f"tool.{name}", "tool", name), name
+
+
+def test_web_fetch_cannot_be_authored_over_the_builtin(project):
+    write(project, "web_fetch", echo_tool(ECHO, []).replace("name: echo-args", "name: web_fetch"))
+    found = discovery.discover(project)
+    assert found.plugins == []
+    problem = next(p for p in found.problems if p.code == schema.ID_RESERVED)
+    assert "built-in tool" in problem.message
+
+
+def test_a_builtin_added_later_is_reserved_without_editing_a_list(monkeypatch):
+    from quickcode.kernel.authoring import reserved
+    from quickcode.tools import registry
+    from quickcode.tools.base import Tool
+
+    class BashOutput(Tool):
+        name = "bash_output"
+
+    shipped = registry.core_tools
+    monkeypatch.setattr(registry, "core_tools", lambda **kw: [*shipped(**kw), BashOutput()])
+    assert "built-in tool" in reserved.reserved_reason("tool.bash_output", "tool", "bash_output")
+
+
+def test_the_reserved_names_still_hold_if_the_registry_cannot_be_read(monkeypatch):
+    from quickcode.kernel.authoring import reserved
+    from quickcode.tools import registry
+
+    def broken(**kw):
+        raise RuntimeError("import trouble")
+
+    monkeypatch.setattr(registry, "core_tools", broken)
+    for name in ("bash", "web_fetch", "web_search", "read"):
+        assert reserved.reserved_reason(f"tool.{name}", "tool", name), name
