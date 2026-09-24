@@ -29,6 +29,8 @@ async (page) => {
   await second.locator(".msg-assistant").waitFor();
   check(!(await first.locator("#transcript").innerText()).includes("Review settings independently"), "transcripts crossed between panes");
   await first.locator(".msg-user .bubble").click({ button: "right" });
+  check(await first.locator('.ctx-menu[role="menu"] > .ctx-item').evaluateAll((items) =>
+    items.length > 0 && items.every((b) => b.getAttribute("role") === "menuitem")), "the right-click menu's items are not menuitems");
   await first.locator(".ctx-menu .ctx-item", { hasText: "Copy message" }).click();
   await first.locator(".toast", { hasText: /Copied message|Could not copy/ }).waitFor({ timeout: 3000 })
     .catch(() => failures.push("a right-click menu item did nothing when clicked"));
