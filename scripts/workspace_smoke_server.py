@@ -2,7 +2,7 @@
 
 Run through uv with --no-sync, then open the printed URL. Ctrl+C stops it.
 
-    workspace_smoke_server.py [port] [--jobs] [--ask]
+    workspace_smoke_server.py [port] [--jobs] [--ask] [--edits]
 
 ``--jobs`` makes the preview agent answer a message by starting a background
 job (``bash`` with ``run_in_background``) that prints a coloured tick five times
@@ -12,11 +12,16 @@ a second until it is killed -- the Jobs tab's subject, for
 ``--ask`` makes the preview agent act instead of only talking: every turn it
 reads README.md, edits it, then runs a shell command, so the permission prompt
 (its diff, the rules "Always allow" would save, "Why?") can be reviewed.
+
+``--edits`` makes the preview agent change files in each conversation's first
+turn -- read README.md, edit it, write notes.md -- in auto-edit mode, so those
+calls run unasked and leave checkpoints behind (scripts/smoke_rewind.js).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -29,10 +34,31 @@ for i in itertools.count(1):
     time.sleep(0.2)
 """
 
+# The first turn under --edits: (tool call id, tool, arguments) per round.
+EDIT_ROUNDS = [
+    [("smoke-read", "read", {"file_path": "README.md"})],
+    [("smoke-edit", "edit", {"file_path": "README.md", "old_string": "UI review project.",
+                             "new_string": "UI review project, edited by the agent."}),
+     ("smoke-write", "write", {"file_path": "notes.md", "content": "Notes the agent wrote.\n"})],
+]
+
+
+def edit_round(req) -> list | None:
+    """The tool calls this request should make, or None to just talk: each
+    round's calls go out once, in order, and only while tools are offered."""
+    if not req.tools:
+        return None
+    answered = {m.tool_call_id for m in req.messages if m.role == "tool"}
+    for calls in EDIT_ROUNDS:
+        if calls[0][0] not in answered:
+            return calls
+    return None
+
 
 def main() -> None:
     argv = sys.argv[1:]
     jobs = "--jobs" in argv
+    edits = "--edits" in argv
     positional = [a for a in argv if not a.startswith("--")]
     with tempfile.TemporaryDirectory(prefix="quickcode-workspace-") as scratch:
         root = Path(scratch)
@@ -40,8 +66,6 @@ def main() -> None:
         os.environ["USERPROFILE"] = scratch
         os.environ["HOME"] = scratch
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-        import json
 
         import uvicorn
 
@@ -90,6 +114,11 @@ def main() -> None:
                         yield ToolCallEnd(f"preview-{last_user}-{done}", name, json.dumps(args))
                         yield TurnDone("tool_calls")
                         return
+                if edits and (calls := edit_round(req)):
+                    for cid, name, args in calls:
+                        yield ToolCallEnd(cid, name, json.dumps(args))
+                    yield TurnDone("tool_calls")
+                    return
                 for text in ["I am reviewing this project. ", "The workspace and agent panes ",
                              "keep separate conversations, drafts, and settings."]:
                     await asyncio.sleep(.5)
@@ -104,7 +133,9 @@ def main() -> None:
             settings.write_text(json.dumps({
                 "plugins": {PLUGIN_ID: {"settings": {AUTO_CHECK_KEY: False}}},
             }), encoding="utf-8")
-            hub = ProjectHub(config=cfg, provider=PreviewProvider(), registry=ProjectRegistry.ephemeral())
+            hub = ProjectHub(config=cfg, provider=PreviewProvider(),
+                             registry=ProjectRegistry.ephemeral(),
+                             default_mode="auto-edit" if edits else None)
             for name in ["Website redesign", "Client portal"]:
                 project = root / name
                 project.mkdir()
