@@ -131,6 +131,11 @@ the web-search providers' — are removed, as they are from every process
 QuickCode starts (`quickcode/subproc.py`): no hook needs them, and a hook that
 logs its environment should not be how they leak.
 
+A subagent working in its own git worktree (`isolation: "worktree"`) runs its
+hooks there instead: `cwd` and `QUICKCODE_PROJECT_DIR` name the checkout it is
+editing under `.quickcode/worktrees/`, and a file a hook writes there that git
+does not ignore is committed with the subagent's work.
+
 ## Output
 
 | Exit code | Meaning |
