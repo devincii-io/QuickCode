@@ -49,6 +49,11 @@ DEFAULT_PORT = 8642
 HEALTH_PROBE_TIMEOUT_S = 0.6
 HAND_OFF_TIMEOUT_S = 2.0
 
+# How long shutdown lets open requests finish before cancelling them, inside
+# the time the window gives the whole server thread to unwind.
+SHUTDOWN_GRACE_S = 3
+_WINDOW_JOIN_S = 10
+
 
 def _free_port() -> int:
     with socket.socket() as s:
@@ -146,6 +151,32 @@ def _printable(url: str, *, opened: bool) -> str:
     return url.split("#", 1)[0] if opened else url
 
 
+def _server_config(app, port: int) -> uvicorn.Config:
+    return uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        # Named rather than left on "auto". Each "auto" is a try/except
+        # import chain resolved at startup, and — more to the point — a
+        # frozen build only carries what quickcode.spec was told to bundle;
+        # a probe that reached for an implementation nobody packaged would
+        # fail at the one moment there is no console to say so. These three
+        # are what "auto" already picks here: h11 (httptools is not a
+        # dependency), the sansio websockets implementation (uvicorn 0.52
+        # deprecated the older one), plain asyncio (uvloop is POSIX-only).
+        loop="asyncio",
+        http="h11",
+        ws="websockets-sansio",
+        # Unbounded by default: uvicorn waits for every open request before
+        # it returns, and only then does ``_serve`` close the hub -- the
+        # terminals and MCP servers that would otherwise outlive this process.
+        # Closing the window waits ``_WINDOW_JOIN_S`` for all of that, so one
+        # slow request (an installer download) must not be able to use it up.
+        timeout_graceful_shutdown=SHUTDOWN_GRACE_S,
+    )
+
+
 async def _serve(
     *,
     cwd: Path,
@@ -177,25 +208,7 @@ async def _serve(
     token = auth.get_or_create_token()
     app = create_app(hub, host="127.0.0.1", port=port, token=token)
 
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-            # Named rather than left on "auto". Each "auto" is a try/except
-            # import chain resolved at startup, and — more to the point — a
-            # frozen build only carries what quickcode.spec was told to bundle;
-            # a probe that reached for an implementation nobody packaged would
-            # fail at the one moment there is no console to say so. These three
-            # are what "auto" already picks here: h11 (httptools is not a
-            # dependency), the sansio websockets implementation (uvicorn 0.52
-            # deprecated the older one), plain asyncio (uvloop is POSIX-only).
-            loop="asyncio",
-            http="h11",
-            ws="websockets-sansio",
-        )
-    )
+    server = uvicorn.Server(_server_config(app, port))
 
     url = f"http://127.0.0.1:{port}/#token={token}&project={hub.default_id}"
     if initial_resume:
@@ -300,4 +313,4 @@ def _run_windowed(serve: Callable[..., object]) -> None:
     window.run(str(state["url"]), on_close=_shutdown)
     # Closing the window shuts the agent down: wait for the server to unwind
     # its sessions rather than killing them with the process.
-    thread.join(timeout=10)
+    thread.join(timeout=_WINDOW_JOIN_S)

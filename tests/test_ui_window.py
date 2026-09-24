@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 
@@ -256,6 +257,52 @@ def test_the_hand_off_reaches_a_real_server_and_opens_the_project(tmp_path):
     finally:
         server.should_exit = True
         thread.join(10)
+
+
+def test_a_request_that_never_finishes_cannot_hold_shutdown_open(monkeypatch):
+    """The hub -- terminals, MCP servers -- is only closed after uvicorn
+    returns, and uvicorn waited for every open request without limit. The
+    window gives the server thread a fixed time to unwind, so one slow
+    request used to be enough to skip the cleanup entirely."""
+    import threading
+    import time
+    import urllib.request
+
+    import uvicorn
+    from fastapi import FastAPI
+
+    monkeypatch.setattr(webapp, "SHUTDOWN_GRACE_S", 0.3)
+    started = threading.Event()
+    app = FastAPI()
+
+    @app.get("/stuck")
+    async def stuck():
+        started.set()
+        await asyncio.sleep(3600)
+
+    port = webapp._free_port()
+    server = uvicorn.Server(webapp._server_config(app, port))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def request() -> None:
+        try:
+            opener.open(f"http://127.0.0.1:{port}/stuck", timeout=30)
+        except Exception:
+            pass  # cut off by the shutdown, which is the point
+
+    threading.Thread(target=request, daemon=True).start()
+    assert started.wait(5)
+
+    t0 = time.monotonic()
+    server.should_exit = True
+    thread.join(5)
+    assert not thread.is_alive(), "shutdown waited on the stuck request"
+    assert time.monotonic() - t0 < 3
 
 
 def test_the_console_line_never_carries_the_token_when_the_app_opens_its_own_window():
