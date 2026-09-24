@@ -21,6 +21,10 @@ One ``BashJobs`` per conversation, carried in ``ToolCtx.extra["bash_jobs"]``
 and shared down the agent tree the way the subagent job table is. It caps how
 many jobs run at once and kills every process tree it still holds when the
 conversation closes.
+
+The Jobs tab reads the same ring through ``BashJob.tail`` (``server/jobs_api.py``),
+which takes absolute offsets and never touches the model's cursor: what a person
+watched scroll past is not something the model has read.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import itertools
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from quickcode import subproc
@@ -53,12 +58,32 @@ POLL_S = 0.05
 KILL_GRACE_S = 2.0
 KILL_WAIT_S = 5.0
 COMMAND_LOG_CHARS = 200
+# The longest a job's new output waits before a watching window hears there is
+# some. A trailing edge, so the last line a job prints is never the one held back.
+OUTPUT_NOTE_S = 0.25
+USER = "user"
 
 OnEvent = Callable[[dict[str, Any]], None]
 
 
 class JobLimitReached(RuntimeError):
     """Refused rather than queued: a queued shell job is a hidden one."""
+
+
+@dataclass(frozen=True)
+class Tail:
+    """What ``BashJob.tail`` hands a viewer: bytes and where they sit.
+
+    ``start`` and ``next`` are absolute offsets into everything the job has
+    written; ``gap`` is how many bytes after the asked-for offset are not in
+    ``data`` -- dropped by the ring, or skipped to keep the answer bounded.
+    """
+
+    data: bytes
+    start: int
+    next: int
+    end: int
+    gap: int
 
 
 class BashJob:
@@ -72,6 +97,13 @@ class BashJob:
         self.pid = proc.pid
         self.started_at = time.monotonic()
         self.finished_at: float | None = None
+        # Wall clock, for a person reading the Jobs tab; the durations above
+        # stay monotonic.
+        self.started_ts = time.time()
+        self.ended_ts: float | None = None
+        # Who asked for the kill that ended it: "" for the model or the
+        # conversation closing, ``USER`` for the Jobs tab.
+        self.killed_by = ""
         self.status = RUNNING
         self.exit_code: int | None = None
         # The model has been shown the final status (by bash_output or
@@ -89,6 +121,8 @@ class BashJob:
         self._kill_requested = False
         self._kill_deadline: float | None = None
         self._reader_done = threading.Event()
+        self._on_output: Callable[[BashJob], None] | None = None
+        self._output_note_due = False  # a bash_job_output note is scheduled
 
     @property
     def running(self) -> bool:
@@ -112,7 +146,8 @@ class BashJob:
         if self.status == RUNNING:
             return f"is still running ({self.seconds()}s)"
         if self.status == KILLED:
-            return f"was killed after {self.seconds()}s"
+            who = " by the user" if self.killed_by == USER else ""
+            return f"was killed{who} after {self.seconds()}s"
         return f"exited with code {self.exit_code} after {self.seconds()}s"
 
     # ---- output ring ----
@@ -145,6 +180,40 @@ class BashJob:
             data = _skip_continuation(data)
         return data, dropped
 
+    def written(self) -> int:
+        """Every byte the job has written, the ones the ring let go included."""
+        with self._lock:
+            return self._base + len(self._buf)
+
+    def dropped(self) -> int:
+        """How many of the oldest bytes the ring no longer holds."""
+        with self._lock:
+            return self._base
+
+    def tail(self, since: int, limit: int) -> Tail:
+        """The newest bytes after absolute offset ``since``, at most ``limit``.
+
+        For a person watching, so newest wins: more than ``limit`` pending means
+        the older part is skipped and counted in ``gap``, not paged through.
+        The cursor ``take`` moves is not touched -- a window reading a job must
+        not change what ``bash_output`` calls new. A character cut in half is
+        handled as ``take`` handles it: an unfinished one at the end waits for
+        the rest, and the orphaned tail of one at a skipped-to start is dropped.
+        """
+        limit = max(1, limit)
+        with self._lock:
+            end = self._base + len(self._buf)
+            since = min(max(0, since), end)
+            start = max(since, self._base, end - limit)
+            data = bytes(self._buf[start - self._base:])
+            if self.running:
+                data = data[:_utf8_boundary(data)]
+        if start > since:
+            kept = _skip_continuation(data)
+            start += len(data) - len(kept)
+            data = kept
+        return Tail(data=data, start=start, next=start + len(data), end=end, gap=start - since)
+
     def _append(self, data: bytes) -> None:
         with self._lock:
             self._buf += data
@@ -152,9 +221,13 @@ class BashJob:
             if over > 0:
                 del self._buf[:over]
                 self._base += over
+        if self._on_output is not None:
+            self._on_output(self)
 
     # ---- lifecycle ----
-    def _begin(self, on_finished: Callable[[BashJob], None]) -> None:
+    def _begin(self, on_finished: Callable[[BashJob], None],
+               on_output: Callable[[BashJob], None] | None = None) -> None:
+        self._on_output = on_output
         threading.Thread(target=self._read, name=f"{self.job_id}-reader", daemon=True).start()
         threading.Thread(
             target=self._watch, args=(on_finished,), name=f"{self.job_id}-watcher", daemon=True
@@ -196,6 +269,7 @@ class BashJob:
         with self._lock:
             self.status = KILLED if self._kill_requested else EXITED
             self.finished_at = time.monotonic()
+            self.ended_ts = time.time()
         # Announced before ``finished`` is set, so whoever waits on a kill or a
         # close resumes after the ending is already on its way to the log.
         try:
@@ -203,11 +277,16 @@ class BashJob:
         finally:
             self.finished.set()
 
-    def request_kill(self) -> bool:
-        """Kill the process tree without waiting. False if it had already ended."""
+    def request_kill(self, by: str = "") -> bool:
+        """Kill the process tree without waiting. False if it had already ended.
+
+        ``by`` names who asked, and the first asker is the one on record.
+        """
         with self._lock:
             if self.status != RUNNING:
                 return False
+            if not self._kill_requested:
+                self.killed_by = by
             self._kill_requested = True
             self._kill_deadline = time.monotonic() + KILL_GRACE_S
         # The shell may be gone already while what it started lives on; the
@@ -215,8 +294,8 @@ class BashJob:
         subproc.kill_tree(self.pid)
         return True
 
-    def kill(self, wait_s: float = KILL_WAIT_S) -> bool:
-        killed = self.request_kill()
+    def kill(self, wait_s: float = KILL_WAIT_S, by: str = "") -> bool:
+        killed = self.request_kill(by)
         if killed:
             self.finished.wait(wait_s)
         return killed
@@ -301,7 +380,7 @@ class BashJobs:
             "command": command.strip()[:COMMAND_LOG_CHARS],
             "description": description,
         })
-        job._begin(self._finished)
+        job._begin(self._finished, self._output_arrived)
         return job
 
     def _forget_oldest(self) -> None:
@@ -311,13 +390,42 @@ class BashJobs:
             self._forgotten.add(job.job_id)
 
     def _finished(self, job: BashJob) -> None:
-        self._emit({
+        ev: dict[str, Any] = {
             "type": "bash_job_done",
             "job_id": job.job_id,
             "status": job.status,
             "exit_code": job.exit_code,
             "seconds": job.seconds(),
-        })
+        }
+        # Additive, and only when it says something: the model's kills and the
+        # close's look exactly as they always have.
+        if job.status == KILLED and job.killed_by:
+            ev["killed_by"] = job.killed_by
+        self._emit(ev)
+
+    def _output_arrived(self, job: BashJob) -> None:
+        """Called on the reader thread: schedule one ``bash_job_output`` note.
+
+        Live-only and data-free -- a window that cares asks ``tail`` for the
+        bytes -- and at most one per job per ``OUTPUT_NOTE_S``, so ``yes`` costs
+        four events a second rather than one per pipe read.
+        """
+        loop = self._loop
+        if job._output_note_due or loop is None or self.on_event is None:
+            return
+        job._output_note_due = True
+        try:
+            loop.call_soon_threadsafe(loop.call_later, OUTPUT_NOTE_S, self._note_output, job)
+        except RuntimeError:  # the loop has closed: the process is going away
+            pass
+
+    def _note_output(self, job: BashJob) -> None:
+        # Cleared before the size is read, so output landing after the read
+        # schedules a note of its own instead of being folded into this one.
+        job._output_note_due = False
+        handler = self.on_event
+        if handler is not None:
+            handler({"type": "bash_job_output", "job_id": job.job_id, "bytes": job.written()})
 
     def _emit(self, ev: dict[str, Any]) -> None:
         """Hand an event to the owner on its own loop, from whichever thread."""

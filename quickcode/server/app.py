@@ -31,6 +31,7 @@ from quickcode.server.gitinfo import register_git_routes
 from quickcode.server.headers import security_headers
 from quickcode.server.hooks_api import register_hooks_routes
 from quickcode.server.http import DEFAULT, PROJECT, project, register_error_handlers
+from quickcode.server.jobs_api import register_job_routes
 from quickcode.server.kernel_api import register_kernel_routes
 from quickcode.server.manager import ConversationManager
 from quickcode.server.paths import register_path_routes
@@ -162,6 +163,8 @@ def create_app(
     register_agent_routes(app, hub)
     # The permission dry run ("why was I prompted?"), against the real engine.
     register_permission_routes(app, hub)
+    # The Jobs tab: a conversation's background shell jobs, read and killed.
+    register_job_routes(app, hub)
     # The terminal panel's sockets. Handed `_ws_allowed` and the token rather
     # than re-deriving them, so there is exactly one WebSocket auth rule in
     # this app and the shell socket is behind that one, not a second copy.
