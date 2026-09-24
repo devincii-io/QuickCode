@@ -250,6 +250,9 @@ class ProjectHub:
         self._mcp_connect = mcp_connect
         self.managers: dict[str, ConversationManager] = {}
         self._servers: list[Any] = []
+        # The same servers by project, so revoking one project's trust can stop
+        # exactly the processes that trust started.
+        self._project_servers: dict[str, list[Any]] = {}
         # Per-project mutable tool list that each manager's registry_factory
         # closes over, so trust granted after open can inject MCP tools live.
         self._project_extra: dict[str, list[Tool]] = {}
@@ -332,6 +335,7 @@ class ProjectHub:
         servers, mcp_tools = await self._mcp_connect(path)
         self._servers.extend(servers)
         pid = project_id(path)
+        self._project_servers[pid] = list(servers)
         # Held by reference: registry_factory reads this list every time it runs,
         # so appending to it (grant_trust) makes new conversations see new tools.
         extra = [*self.plugin_tools, *mcp_tools]
@@ -426,7 +430,7 @@ class ProjectHub:
         status = self._trust_store.status(manager.cwd)
         return {**status.to_json(), "running": list(manager.mcp_servers)}
 
-    async def grant_trust(self, pid: str) -> dict[str, Any]:
+    async def grant_trust(self, pid: str, *, expected: str | None = None) -> dict[str, Any]:
         """Record trust for an open project and connect its (now-permitted)
         project-scope MCP servers live, so the user need not reopen the project.
 
@@ -442,35 +446,61 @@ class ProjectHub:
         if manager is None:
             raise KeyError(pid)
         store = self._trust_store
-        store.grant(manager.cwd)
+        store.grant(manager.cwd, expected=expected)
 
         connected: list[str] = []
         # Only start servers not already tracked, so a repeat grant is a no-op.
         running = set(manager.mcp_servers)
         pending = [n for n in trust.project_mcp_servers(manager.cwd) if n not in running]
         if pending:
-            servers, tools = await mcp_module.connect_project_servers(manager.cwd)
+            servers, tools = await mcp_module.connect_project_servers(
+                manager.cwd, store=store)
             fresh = [s for s in servers if s.name not in running]
+            for s in servers:
+                if s not in fresh:
+                    await s.stop()  # a duplicate of one already running
             self._servers.extend(fresh)
+            self._project_servers.setdefault(pid, []).extend(fresh)
             extra = self._project_extra.setdefault(pid, [])
-            fresh_names = {s.name for s in fresh}
-            for t in tools:
-                sname = t.name.split("__")[1] if t.name.startswith("mcp__") else ""
-                if sname in fresh_names:
-                    extra.append(t)
+            extra.extend(t for t in tools if getattr(t, "_server", None) in fresh)
             for s in fresh:
                 manager.mcp_servers.append(s.name)
                 connected.append(s.name)
         return {**store.status(manager.cwd).to_json(), "connected": connected}
 
-    def revoke_trust(self, pid: str) -> dict[str, Any]:
-        """Forget trust for a project. Governs future connects; servers already
-        running in this session keep running until the project is torn down."""
+    async def revoke_trust(self, pid: str) -> dict[str, Any]:
+        """Forget trust for a project and stop what that trust started.
+
+        The project's MCP servers are stopped and their tools leave the list new
+        conversations are built from. A conversation already holding one of
+        those tools keeps the name, and a call to it now fails; its command
+        tools re-check trust on every call and refuse the same way.
+        """
         manager = self.managers.get(pid)
         if manager is None:
             raise KeyError(pid)
         existed = self._trust_store.revoke(manager.cwd)
-        return {**self._trust_store.status(manager.cwd).to_json(), "revoked": existed}
+        stopped = await self._stop_project_servers(pid, manager)
+        return {**self._trust_store.status(manager.cwd).to_json(), "revoked": existed,
+                "stopped": stopped}
+
+    async def _stop_project_servers(self, pid: str, manager: ConversationManager) -> list[str]:
+        mine = self._project_servers.get(pid, [])
+        doomed = [s for s in mine if getattr(s, "scope", "") == "project"]
+        if not doomed:
+            return []
+        extra = self._project_extra.get(pid)
+        if extra is not None:
+            extra[:] = [t for t in extra if getattr(t, "_server", None) not in doomed]
+        for server in doomed:
+            with contextlib.suppress(Exception):
+                await server.stop()
+            mine.remove(server)
+            if server in self._servers:
+                self._servers.remove(server)
+            if server.name in manager.mcp_servers:
+                manager.mcp_servers.remove(server.name)
+        return [s.name for s in doomed]
 
     # ---- forgetting a project ----
     def data_summary(self, pid: str) -> dict[str, Any]:
@@ -558,6 +588,11 @@ class ProjectHub:
             await manager.close()
             self.managers.pop(pid, None)
             self._project_extra.pop(pid, None)
+            for server in self._project_servers.pop(pid, []):
+                with contextlib.suppress(Exception):
+                    await server.stop()
+                if server in self._servers:
+                    self._servers.remove(server)
             result["closed"] = True
         elif manager is not None and purge_data:
             # The default project stays open, but its idle conversations are

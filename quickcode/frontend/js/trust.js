@@ -203,10 +203,9 @@ const NOTE_SESSION =
   "chat to use these tools.";
 
 const NOTE_REVOKE =
-  "Revoking stops QuickCode from starting these again — on the next open, and " +
-  "for anything that would start one after that. A server process that is " +
-  "already running keeps running until this project is closed; a command tool " +
-  "stops being offered to the agent in new chats.";
+  "Revoking takes effect now: this project's MCP servers are stopped and are " +
+  "not started again, and its command tools refuse to run — in the chat that " +
+  "is open as well as in new ones.";
 
 function serverWord(n) { return n === 1 ? "server" : "servers"; }
 function toolWord(n) { return n === 1 ? "command tool" : "command tools"; }
@@ -424,13 +423,22 @@ function card() {
     grant.textContent = "…";
     grant.disabled = true;
     try {
-      const next = await api.grantTrust();
+      const next = await api.grantTrust(current.status && current.status.hash);
       writeApproved(pid, next, specs);
       current = { ...current, status: next, granted: next.connected || [] };
       collapsed = false;
       render();
       refreshIfOpen();   // the tool list just changed underneath it
     } catch (err) {
+      if (err.message.startsWith("409")) {
+        // The files changed after this card was drawn: show what is there now
+        // rather than approving what was.
+        await checkTrust(pid);
+        const fresh = host && host.querySelector(".trust-err");
+        if (fresh) fail(fresh.parentElement, "The configuration changed while you " +
+          "were reading it. This is the current version — review it again.");
+        return;
+      }
       grant.disabled = false;
       disarm(grant, resting);
       fail(el_, `Could not record trust: ${err.message}`);

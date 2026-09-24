@@ -198,7 +198,9 @@ export const api = {
   // because starting one runs its command on this machine. GET reports what was
   // refused, POST grants and connects, DELETE revokes future connects.
   trust: () => req("GET", P("/trust")),
-  grantTrust: () => req("POST", P("/trust")),
+  // `hash` is the configuration the prompt showed; the server refuses (409)
+  // when the files changed after it was read.
+  grantTrust: (hash) => req("POST", P("/trust"), hash ? { hash } : undefined),
   revokeTrust: () => req("DELETE", P("/trust")),
   trustOf: (pid) => req("GET", `/api/projects/${encodeURIComponent(pid)}/trust`),
   revokeTrustOf: (pid) =>

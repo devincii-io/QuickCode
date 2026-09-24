@@ -68,6 +68,7 @@ quickcode/
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every subprocess goes through here (no console window on Windows)
   workspace.py            # the project's .quickcode/ directory and its .gitignore
+  frontmatter.py          # the one frontmatter parser: plugin loader and trust gate read files the same way
   ui/window.py            # pywebview window, browser fallback
   frontend/               # index.html, css/, js/, assets/  (see docs/UI.md)
   context/toon.py         # TOON, the table encoding structured tool results use
@@ -92,7 +93,9 @@ quickcode/
     authoring/            # .quickcode/plugins/*.md → plugins
       format.py schema.py model.py discovery.py store.py
       argv.py reserved.py templates.py
-  security/trust.py       # the project trust gate
+  security/
+    trust.py              # the project trust gate
+    launch.py             # resolving and launching command/MCP executables safely (PATHEXT, .cmd/.bat)
   server/
     app.py                # FastAPI routes + WebSocket attach
     manager.py            # ConversationManager / Conversation

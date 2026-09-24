@@ -29,6 +29,14 @@ The five rules, exactly:
    argument would produce a command that runs and does the wrong thing, which
    is worse than one that refuses to load.
 
+No shell does not mean no parser. The program still parses its own options, so
+a value that *begins* an argv element with ``-`` is read as a flag:
+``pytest {path}`` with ``--basetemp=/`` empties a directory, and the path
+check passes it because it resolves inside the project. ``leading_dash``
+finds that case so the tool can refuse it; a literal ``"--"`` element before
+the placeholder, or ``allow_leading_dash`` on the parameter, is the author
+saying the program will read the value as a value.
+
 This module is pure: no filesystem, no runtime imports. It is shared by the
 validator (which checks a template it will never run) and by ``CommandTool``
 (which runs one it has already checked), so the two cannot disagree about what
@@ -42,6 +50,14 @@ from typing import Any
 
 # ``{{`` / ``}}`` first so an escaped brace is never read as a placeholder.
 _TOKEN = re.compile(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+# A number is never an option smuggler: ``-3`` is the most it can say. ``-inf``
+# and ``-nan`` are letters, and a float field will accept them.
+_NUMBER = re.compile(r"^-?\d+(\.\d+)?([eE][-+]?\d+)?$")
+
+# Types whose value the model chooses freely. ``enum`` choices and ``bool``
+# flags are written by the author.
+_FREE_TYPES = ("string", "text", "path", "list", "int", "float")
 
 
 def placeholders(element: str) -> list[str]:
@@ -121,3 +137,53 @@ def render_argv(
             continue
         out.append(render_element(element, values))
     return out
+
+
+def leading_dash(
+    template: list[str] | tuple[str, ...],
+    params: dict[str, Any],
+    values: dict[str, Any],
+) -> tuple[str, str] | None:
+    """``(param, value)`` for the first value that would start an argv element
+    with ``-``, or ``None`` when every value lands where a value belongs."""
+    for element in template:
+        if element == "--":
+            return None  # everything after it is positional by convention
+        name = whole_placeholder(element)
+        if name and name in params:
+            param = params[name]
+            value = values.get(name)
+            if getattr(param, "type", "string") == "list":
+                items = value if isinstance(value, (list, tuple)) else []
+                for item in items:
+                    if _option_like(scalar(item), param):
+                        return name, scalar(item)
+            elif _option_like(scalar(value), param):
+                return name, scalar(value)
+            continue
+        first = _TOKEN.search(element)
+        if first is None or first.group(1) is None or first.start() != 0:
+            continue  # literal text leads the element; the value cannot
+        cursor = 0
+        for match in _TOKEN.finditer(element):
+            name = match.group(1)
+            if name is None or match.start() != cursor:
+                break  # literal text (an escaped brace counts) now leads
+            cursor = match.end()
+            text = scalar(values.get(name))
+            if text:
+                if name in params and _option_like(text, params[name]):
+                    return name, text
+                break
+    return None
+
+
+def _option_like(text: str, param: Any) -> bool:
+    if not text.startswith("-") or getattr(param, "allow_leading_dash", False):
+        return False
+    kind = getattr(param, "type", "string")
+    if kind == "list":
+        kind = getattr(param, "item_type", "string")
+    if kind not in _FREE_TYPES:
+        return False
+    return not (kind in ("int", "float") and _NUMBER.match(text))

@@ -49,7 +49,7 @@ The command is an array, one element per argument, executed directly -- never
 through a shell. A value containing `; rm -rf /` is one inert argument, because
 nothing parses it.
 
-Four rules worth knowing:
+Five rules worth knowing:
 
   - `{{path}}` inside an element substitutes in place: "--path={{path}}" stays
     one argument whatever the value contains.
@@ -59,6 +59,10 @@ Four rules worth knowing:
     per item.
   - a bool parameter must have an element to itself; true emits `--<name>`,
     false drops it.
+  - a value may not start an argument with `-`, because the program would read
+    it as an option. Put a "--" element before it, or set
+    "allow_leading_dash": true on a parameter that follows an option taking a
+    value.
 
 ```json argv
 ["git", "status", "--short", "{{path}}"]

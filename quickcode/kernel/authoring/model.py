@@ -48,6 +48,9 @@ class Param:
     max_length: int | None = None
     # bool only: the token emitted when the value is true. Defaults to --<name>.
     flag: str = ""
+    # The program reads this value as a value even when it starts with "-"
+    # (it follows an option that takes an argument). Off: see argv.leading_dash.
+    allow_leading_dash: bool = False
 
 
 @dataclass(frozen=True)

@@ -83,6 +83,10 @@ class PermissionSpec:
     path_target: bool = False
     # The target is a shell command line and gets decomposed per subcommand.
     shell: bool = False
+    # Runs a program rather than editing a file (an authored command tool, an
+    # MCP tool). ``auto-edit`` allows edits and nothing else, so these prompt
+    # there the way a shell command does.
+    executes: bool = False
 
 
 # What an unknown tool gets: treated as mutating, so a plugin that forgets to
@@ -324,7 +328,15 @@ class PermissionEngine:
         # (see Tool.permission_target). Its answer wins when it gives one.
         declared = getattr(tool, "permission_target", None)
         target = (declared(args) if callable(declared) else "") or self.target_for(spec, args)
-        return self.evaluate(tool.name, target, spec=spec), target
+        decision = self.evaluate(tool.name, target, spec=spec)
+        # A tool with several path arguments (an authored command tool) names
+        # them all: a rule matches one target, but every path the call touches
+        # gets the protected-path check that runs before any allow rule.
+        paths = getattr(tool, "permission_paths", None)
+        if callable(paths) and decision is Decision.allow and self.mode is not Mode.yolo:
+            if any(_protected(p, self.root) for p in paths(args)):
+                decision = Decision.deny if self.mode is Mode.dontask else Decision.ask
+        return decision, target
 
     def evaluate(self, tool: str, arg: str, spec: PermissionSpec | None = None) -> Decision:
         """Decide for a single tool invocation. ``arg`` is the match target
@@ -371,12 +383,12 @@ class PermissionEngine:
         # 5. Mode default.
         if is_read:
             return Decision.allow
-        return self._mode_default_for_write()
+        return self._mode_default_for_write(executes=spec.executes)
 
-    def _mode_default_for_write(self) -> Decision:
+    def _mode_default_for_write(self, *, executes: bool = False) -> Decision:
         if self.mode == Mode.yolo:
             return Decision.allow
-        if self.mode == Mode.auto_edit:
+        if self.mode == Mode.auto_edit and not executes:
             return Decision.allow  # edits auto; bash handled separately
         if self.mode == Mode.dontask:
             return Decision.deny

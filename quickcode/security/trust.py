@@ -45,11 +45,11 @@ import hashlib
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quickcode import frontmatter
 from quickcode.config import CONFIG_DIR
 
 log = logging.getLogger("quickcode.security.trust")
@@ -68,8 +68,6 @@ PROJECT_SETTINGS_FILES = (
 # Authored plugins live here. A ``kind: tool`` file names a program and an argv,
 # so it is executable config in exactly the way an mcpServers block is.
 PROJECT_PLUGINS_DIR = Path(".quickcode") / "plugins"
-
-_KIND_RE = re.compile(r"^kind\s*:\s*[\"']?([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
 
 # The policy half of what this gate governs, named once so the hash, the report
 # and the three loaders that drop it can never disagree about the list.
@@ -212,21 +210,19 @@ def project_hook_rows(cwd: str | os.PathLike[str]) -> list[dict[str, str]]:
 
 
 def _declared_kind(text: str) -> str | None:
-    """The ``kind:`` an authored plugin file declares, or ``None`` if unreadable.
+    """The ``kind:`` an authored plugin file declares, or ``None`` if unclear.
 
-    This reads the frontmatter directly instead of calling the real parser
-    because ``kernel.authoring.discovery`` imports *this* module: security sits
-    below the kernel and cannot import it back. Only enough is read to answer
-    one question — is this a command tool — and ``None`` means "could not tell",
-    which the caller resolves the safe way.
+    Read with ``quickcode.frontmatter`` -- the parser the plugin loader itself
+    uses -- so this gate and the loader cannot reach different answers about
+    the same bytes. ``None`` means "could not tell" (no kind, no frontmatter,
+    or a key written twice, which the loader refuses), and the caller resolves
+    it the safe way.
     """
-    if not text.startswith("---"):
+    head = frontmatter.parse(text)
+    if head.duplicates:
         return None
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None
-    match = _KIND_RE.search(text[:end])
-    return match.group(1).lower() if match else None
+    kind = head.meta.get("kind", "").strip().lower()
+    return kind or None
 
 
 def project_command_tools(cwd: str | os.PathLike[str]) -> dict[str, str]:
@@ -350,6 +346,10 @@ def config_hash(cwd: str | os.PathLike[str]) -> str:
         payload["hooks"] = hooks
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class ConfigChanged(ValueError):
+    """The project's gated config is not the configuration the grant named."""
 
 
 @dataclass
@@ -492,9 +492,19 @@ class TrustStore:
         )
 
     # ---- mutations ----
-    def grant(self, cwd: str | os.PathLike[str]) -> str:
-        """Trust this project for its current config. Returns the bound hash."""
+    def grant(self, cwd: str | os.PathLike[str], *, expected: str | None = None) -> str:
+        """Trust this project for its current config. Returns the bound hash.
+
+        ``expected`` is the hash the person reviewed; when the config no longer
+        hashes to it, nothing is recorded and ``ConfigChanged`` is raised, so an
+        edit that lands between reading the prompt and clicking it is not
+        approved unseen.
+        """
         h = config_hash(cwd)
+        if expected is not None and expected != h:
+            raise ConfigChanged(
+                "the project's configuration changed since it was reviewed; "
+                "review it again before trusting it")
         data = self._load()
         data.setdefault("version", STORE_VERSION)
         data["projects"][_norm(cwd)] = {

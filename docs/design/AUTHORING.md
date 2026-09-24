@@ -73,6 +73,15 @@ Substitution rules, exactly:
 5. `{{` and `}}` are literal braces. An unknown `{name}` is a validation error,
    not a silent empty string.
 
+No shell is not the same as no parser: the program still parses its own
+options. A model-supplied value that would *begin* an argv element with `-` is
+refused at run time (`pytest {path}` with `--basetemp=/` empties a directory,
+and the path resolves inside the project). Numbers, `enum` choices and `bool`
+flags are exempt; so is everything after a literal `"--"` element, and any
+parameter declared `"allow_leading_dash": true` (for one that follows an option
+taking a value, like `grep -e {pattern}`). A path the model really means is
+spelled `./-name`.
+
 Shell mode exists, because `npm test 2>&1 | tail -40` is a real thing people
 want. It is opt-in with `shell: true`, it is `confirm`-tier to enable, and it
 comes with the rule that makes it safe: **in shell mode `{param}` substitution

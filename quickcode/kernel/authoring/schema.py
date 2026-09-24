@@ -62,6 +62,8 @@ READ_ONLY_UNVERIFIED = "read_only_unverified"
 NEEDS_TRUST = "needs_trust"
 NOT_DUPLICABLE = "not_duplicable"
 SUBAGENT_SECTION_UNSUPPORTED = "subagent_section_unsupported"
+BAD_PATTERN = "bad_pattern"
+DUPLICATE_KEY = "duplicate_key"
 
 KINDS = ("tool", "agent", "prompt")
 # Named so the refusal can say what happened to them rather than "bad kind".
@@ -122,6 +124,18 @@ def validate(
         problems.append(_problem(code, severity, message, fix, subject=subject,
                                  field=field, scope=scope, path=path,
                                  line=line or doc.line_of(field)))
+
+    # -- keys written twice -------------------------------------------------
+    if doc.duplicate_keys:
+        for key, lines in sorted(doc.duplicate_keys.items()):
+            where = ", ".join(str(n) for n in lines)
+            add(DUPLICATE_KEY, "error",
+                f"'{key}' is set more than once (lines {where}), so this file "
+                "says two different things",
+                f"Keep one '{key}:' line. The file is refused rather than read "
+                "either way, because which copy wins is a guess.",
+                field=key, line=lines[-1])
+        return None, problems
 
     # -- kind --------------------------------------------------------------
     if not kind:
@@ -359,6 +373,15 @@ def _parse_params(doc: Document, add) -> tuple[list[Param], bool]:
                 field="params", line=block.line)
             failed = True
             continue
+        if _shadows_input_model(name):
+            add(BAD_SLUG, "error",
+                f"'{name}' cannot be a parameter name: the tool's input model "
+                "already uses it",
+                "Rename the parameter; names starting with 'model_' and ones "
+                "like 'schema', 'json' or 'copy' are taken.",
+                field="params", line=block.line)
+            failed = True
+            continue
         if name in seen:
             add(ID_DUPLICATE, "error",
                 f"two parameters are both called '{name}'",
@@ -390,6 +413,18 @@ def _parse_params(doc: Document, add) -> tuple[list[Param], bool]:
                 field="params", line=block.line)
             failed = True
             continue
+        pattern = str(entry.get("pattern", "") or "")
+        problem = _pattern_problem(pattern) if pattern else ""
+        if problem:
+            add(BAD_PATTERN, "error",
+                f"'{name}' has a pattern the input model cannot enforce: {problem}",
+                "Fix the pattern, or remove it. It is matched by a linear-time "
+                "engine, so look-around and backreferences are not available; "
+                "it only rejects nonsense early -- argv execution is what keeps "
+                "a value inert.",
+                field="params", line=block.line)
+            failed = True
+            continue
         out.append(Param(
             name=name,
             type=ptype,
@@ -398,13 +433,40 @@ def _parse_params(doc: Document, add) -> tuple[list[Param], bool]:
             default=entry.get("default"),
             choices=choices,
             item_type=item_type,
-            pattern=str(entry.get("pattern", "")),
+            pattern=pattern,
             minimum=_opt_float(entry.get("minimum")),
             maximum=_opt_float(entry.get("maximum")),
             max_length=_opt_int(entry.get("max_length")),
             flag=str(entry.get("flag", "")),
+            allow_leading_dash=entry.get("allow_leading_dash") is True,
         ))
     return out, failed
+
+
+def _pattern_problem(pattern: str) -> str:
+    """Why pydantic would refuse ``pattern``, or "".
+
+    Asked of pydantic itself rather than ``re``: it enforces patterns with a
+    linear-time engine that lacks look-around, so ``re`` accepting a pattern
+    says nothing about whether the tool's input model will build.
+    """
+    from pydantic import Field, create_model
+
+    try:
+        create_model("PatternCheck", value=(str, Field("", pattern=pattern)))
+    except Exception as exc:  # SchemaError, or whatever the engine raises
+        lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip()]
+        return lines[-1] if lines else type(exc).__name__
+    return ""
+
+
+def _shadows_input_model(name: str) -> bool:
+    """A field with this name would replace part of the pydantic model the
+    tool's input is parsed into -- ``model_config`` stops it building,
+    ``model_dump`` makes every call crash."""
+    from pydantic import BaseModel
+
+    return name.startswith("model_") or hasattr(BaseModel, name)
 
 
 def _parse_argv(doc: Document, add) -> list[str]:
