@@ -1,7 +1,14 @@
+import { notifySupport, requestNotify } from "./notify.js";
 import { applyTheme } from "./util.js";
 
 const KEY = "qc-appearance-v1";
-export const defaults = { fontSize: 14, spacing: "comfortable", width: "focused", metrics: false, motion: true };
+export const defaults = { fontSize: 14, spacing: "comfortable", width: "focused", metrics: false, motion: true, notify: false };
+
+const NOTIFY_NOTE = {
+  unsupported: "This window cannot show desktop notifications. Unseen activity still shows in the window title and the sidebar.",
+  denied: "Notifications are blocked for QuickCode in this browser's site settings.",
+  default: "Notifications were not allowed, so none will be shown.",
+};
 
 export function readAppearance() {
   let value;
@@ -12,6 +19,7 @@ export function readAppearance() {
     width: value?.width === "full" ? "full" : defaults.width,
     metrics: value?.metrics === true,
     motion: value?.motion !== false,
+    notify: value?.notify === true,
   };
 }
 
@@ -48,11 +56,23 @@ export function renderAppearanceControls(host) {
     <label>Conversation width<select name="width"><option value="focused">Focused column</option><option value="full">Use the whole pane</option></select></label>
     <label class="ws-check"><input type="checkbox" name="metrics"> Show detailed token and timing metrics</label>
     <label class="ws-check"><input type="checkbox" name="motion"> Animate activity indicators</label>
+    <label class="ws-check"><input type="checkbox" name="notify"> Desktop notifications when an agent in the background finishes, needs approval or fails</label>
+    <p class="ws-hint" data-notify-note></p>
     <p class="ws-error" role="alert"></p><button class="btn" data-reset>Restore defaults</button></div>`;
+  const note = host.querySelector("[data-notify-note]");
+  const support = notifySupport();
+  if (support === "unsupported" || (p.notify && support !== "granted")) note.textContent = NOTIFY_NOTE[support];
   host.querySelectorAll("input, select").forEach((input) => {
     if (input.type === "checkbox") input.checked = p[input.name];
     else input.value = p[input.name];
-    input.addEventListener("input", () => {
+    if (input.name === "notify" && support === "unsupported") input.disabled = true;
+    input.addEventListener("input", async () => {
+      // Asked here and nowhere else: this change is the user's own click.
+      if (input.name === "notify" && input.checked) {
+        const answer = await requestNotify();
+        input.checked = answer === "granted";
+        note.textContent = NOTIFY_NOTE[answer] || "";
+      }
       p[input.name] = input.type === "checkbox" ? input.checked : input.type === "range" ? Number(input.value) : input.value;
       host.querySelector("output").textContent = `${p.fontSize}px`;
       try { saveAppearance(p); } catch { host.querySelector(".ws-error").textContent = "Could not save appearance settings in this browser."; }

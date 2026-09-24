@@ -3,7 +3,8 @@ import { initHome, refreshHome, rememberProject } from "./home.js";
 import { openDirBrowser } from "./dirbrowser.js";
 import { applyTheme, el, esc } from "./util.js";
 import { toastError, toastOk } from "./toast.js";
-import { renderAppearanceControls } from "./appearance.js";
+import { readAppearance, renderAppearanceControls } from "./appearance.js";
+import { Attention, badgeTitle, noticeCopy, paintBadge, showOsNotice, windowActive } from "./notify.js";
 import { dwindleDir, equalize, evenRatio, heirOf, insertBeside, layoutRects, leaves, removeLeaf } from "./split_tree.js";
 import { MAX_PANES, MAX_RATIO, MIN_RATIO, clampRatio, resizeKey, restoreWorkspace } from "./workspace_state.js";
 
@@ -17,6 +18,8 @@ const dividers = new Map();
 let active = null, zoomed = null, home = true, shell, grid, sidebar, utility;
 let dragged = null, undo = null, storageWarning = false;
 let chrome = { width: 232, collapsed: false };
+// Turns finished, reviews waiting and errors in panes you were not looking at.
+const attention = new Attention();
 
 function saveChrome() {
   try { localStorage.setItem("qc-workspace-chrome", JSON.stringify(chrome)); } catch { /* current window keeps its layout */ }
@@ -111,6 +114,7 @@ async function activate(ws) {
     rememberProject(pid);
     render();
     save();
+    acknowledge();
   } catch (err) {
     ws.opening = null;
     toastError(`Could not open ${ws.project.name || ws.project.path}: ${err.message}`);
@@ -159,9 +163,34 @@ function focus(ws, id, input = true) {
   if (active !== ws.project.id || home) activate(ws);
   ws.focused = id;
   if (zoomed && zoomed !== id) zoomed = null;
+  attention.clear(id);
   render();
   save();
   if (input) post(frames.get(id)?.iframe, { action: "focus" });
+}
+
+// Whether you can see this pane now: its notices are read the moment you can.
+function watching(f) {
+  return windowActive() && !home && !utility && active === f.ws.project.id
+    && f.ws.focused === f.pane.id && (!zoomed || zoomed === f.pane.id);
+}
+
+function acknowledge() {
+  const f = frames.get(current()?.focused);
+  if (f && watching(f) && attention.clear(f.pane.id)) render();
+}
+
+function notice(f, data) {
+  if (watching(f) || !attention.add(f.pane.id, data.kind)) return;
+  const copy = noticeCopy(data.kind, f.pane.title, typeof data.detail === "string" ? data.detail.slice(0, 60) : "");
+  document.getElementById("ws-live").textContent = `${copy.title}. ${copy.body}`;
+  render();
+  if (!windowActive() && readAppearance().notify) {
+    showOsNotice(copy, { tag: `qc-${f.pane.id}`, onClick: () => {
+      window.focus();
+      if (frames.get(f.pane.id) === f) focus(f.ws, f.pane.id);
+    } });
+  }
 }
 
 function closePane(ws, id) {
@@ -367,7 +396,8 @@ function layout() {
 
 function render() {
   const ws = current();
-  document.title = !home && ws ? `${ws.name || ws.project.name} | QuickCode` : "QuickCode";
+  attention.retain(new Set(frames.keys()));
+  document.title = badgeTitle(!home && ws ? `${ws.name || ws.project.name} | QuickCode` : "QuickCode", attention.total());
   document.getElementById("ws-title").textContent = home ? "Projects" : ws?.name || ws?.project.name || "Workspace";
   document.getElementById("ws-path").textContent = home ? "Open a folder or return to a workspace" : ws?.project.path || "";
   document.getElementById("ws-new-agent").disabled = home || !ws?.ready;
@@ -389,6 +419,7 @@ function render() {
     group.querySelector(".ws-count").textContent = leaves(workspace.tree).length;
     const list = group.querySelector(".ws-agents");
     const ids = leaves(workspace.tree);
+    paintBadge(group.querySelector(".ws-project"), attention.sum(ids), group.querySelector(".ws-count"));
     for (const node of [...list.children]) { if (!ids.includes(node.dataset.id)) node.remove(); }
     ids.forEach((id) => {
       const pane = workspace.panes[id];
@@ -403,7 +434,11 @@ function render() {
       const selected = !home && active === pid && workspace.focused === id;
       row.classList.toggle("active", selected);
       row.setAttribute("aria-current", String(selected));
+      paintBadge(row, attention.get(id), row.querySelector(".ws-agent-state"));
     });
+  }
+  for (const [id, f] of frames) {
+    paintBadge(f.element.querySelector(".ws-pane-head"), attention.get(id), f.element.querySelector(".ws-pane-status"));
   }
   layout();
 }
@@ -479,7 +514,7 @@ function openUtility(route, pid = home ? null : active) {
   if (pid) query.set("project", pid);
   utility.querySelector("iframe").src = `${location.pathname}?${query}${route}`;
   shell.appendChild(utility);
-  utility.addEventListener("close", () => { utility?.remove(); utility = null; });
+  utility.addEventListener("close", () => { utility?.remove(); utility = null; acknowledge(); });
   utility.showModal();
 }
 
@@ -510,6 +545,7 @@ export async function bootWorkspaces() {
     </aside>
     <div class="ws-content"><header class="ws-toolbar"><button id="ws-sidebar-toggle" class="ws-icon" title="Toggle sidebar (Alt+B)" aria-label="Toggle sidebar" aria-controls="ws-sidebar">☰</button><div class="ws-location"><strong id="ws-title">Projects</strong><span id="ws-path"></span></div><button id="ws-undo" class="btn" hidden>Reopen closed pane</button><button id="ws-new-agent" class="btn primary" title="New agent pane (Alt+N)">＋ New agent</button></header>
       <main id="ws-grid" aria-label="Agent workspace"><div id="ws-empty" hidden><h2>Your workspace is ready</h2><p>Open an agent to start a conversation in this folder.</p><button class="btn primary">New agent</button></div></main>
+      <div id="ws-live" class="sr-only" aria-live="polite"></div>
     </div></div>`);
   document.body.appendChild(shell);
   grid = document.getElementById("ws-grid"); sidebar = document.getElementById("ws-list");
@@ -530,6 +566,8 @@ export async function bootWorkspaces() {
   document.getElementById("home-help").onclick = () => openUtility("#/help/workspaces");
   new ResizeObserver(layout).observe(grid);
   document.addEventListener("keydown", shortcut);
+  window.addEventListener("focus", acknowledge);
+  document.addEventListener("visibilitychange", acknowledge);
   window.addEventListener("message", (e) => {
     if (e.origin !== location.origin || e.data?.source !== "qc-agent") return;
     const f = [...frames.values()].find((f) => f.iframe.contentWindow === e.source);
@@ -538,7 +576,11 @@ export async function bootWorkspaces() {
     const data = e.data;
     if (data.action === "utility-close" && isUtility) { utility.close(); return; }
     if (!f) return;
-    if (data.action === "focus") { if (current()?.focused !== f.pane.id || active !== f.ws.project.id) focus(f.ws, f.pane.id, false); }
+    if (data.action === "focus") {
+      if (current()?.focused !== f.pane.id || active !== f.ws.project.id) focus(f.ws, f.pane.id, false);
+      else acknowledge();
+    }
+    else if (data.action === "notice") notice(f, data);
     else if (data.action === "home") showHome();
     else if (data.action === "settings" && /^#\/(config|help)/.test(data.route)) openUtility(data.route, f.ws.project.id);
     else if (data.action === "shortcut") shortcut({ ...data, preventDefault() {} });

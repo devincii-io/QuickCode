@@ -28,6 +28,7 @@ import {
 import {
   initHelp, isHelpRoute, lastHelpRoute, render as renderHelp,
 } from "./help/view.js";
+import { initPaneNotices } from "./pane_notices.js";
 import { initPanel, openPanelTab, setPanelProject } from "./panel.js";
 import { clearQueue, initStatusBar, shortModel } from "./statusbar.js";
 import { store, subscribe } from "./store.js";
@@ -382,6 +383,12 @@ async function boot() {
   });
   initStatusBar();
   initConnBanner({ newSession: () => openConversation(null) });
+  if (!utility) {
+    initPaneNotices({
+      tell: embedded ? (notice) => tellWorkspace("notice", notice) : null,
+      label: () => $("session-chip").textContent.replace(/\s*▾$/, ""),
+    });
+  }
 
   if (!token) {
     showHome();

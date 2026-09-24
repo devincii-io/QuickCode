@@ -28,6 +28,38 @@ restores the last one. Each pane's header and its sidebar entry show a status �
 `Ready`, `Working`, `Needs approval` or `Offline` — so an agent waiting on a
 permission prompt in a pane you are not looking at is still visible.
 
+### Notifications
+
+A pane you are not looking at tells you when its agent **finished a turn**,
+**needs approval** (a permission prompt or a plan review) or **stopped with an
+error**. The pane only reports what happened (`js/pane_notices.js`, over the
+same origin- and source-checked bridge as everything else); the shell decides
+whether you saw it, because only the shell knows which pane is focused and
+whether the window is in front (`js/notify.js`). A notice for the focused pane
+of the visible workspace, while the window has focus, is simply not raised.
+Anything else becomes:
+
+- a **count badge** on the pane header, on its agent row in the sidebar and,
+  summed, on its workspace row — amber for a waiting review, red for an error,
+  green for a finished turn, most urgent first;
+- a **title badge**, `(2) Website redesign | QuickCode`, the total unseen;
+- a **desktop notification**, only while the window is in the background and
+  only once *Desktop notifications* is switched on under Appearance (the
+  sidebar's *Appearance*, or Settings ▸ Appearance). It is off by default, and
+  the browser is asked for permission by that toggle and never otherwise.
+  Notifications are silent and say which agent and what kind of event, never
+  the conversation's text: an error message or a command is not for a lock
+  screen. Clicking one brings the window forward on that pane. Where the window
+  has no Notification API — the native window's WebView may not — the toggle
+  is disabled with a note, and the badges carry on alone.
+
+Focusing a pane (clicking it, its sidebar row, `Alt+arrow`) marks it seen, and
+so does returning to the window on the pane you left. Replayed history never
+raises anything, and neither does the end of a turn you interrupted yourself.
+A pane opened on its own, outside the workspace, keeps its own title badge. The
+badges' entrance animation follows the *Animate activity indicators* setting
+and the system's reduced-motion preference; nothing makes a sound.
+
 Storage split: the auth token stays in the tab's `sessionStorage`; workspace
 `localStorage` holds only names, session ids and layout. Unsent drafts survive
 pane closure and a reload within the same tab. Appearance preferences
