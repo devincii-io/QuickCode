@@ -15,6 +15,7 @@ developer's real configuration would pass or fail depending on it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -478,8 +479,10 @@ async def test_a_matching_checksum_earns_the_real_filename(home, monkeypatch):
     assert saved.read_bytes() == INSTALLER_BYTES
     assert result.sha256 == hashlib.sha256(INSTALLER_BYTES).hexdigest()
     assert result.size == len(INSTALLER_BYTES)
-    # No .part survives, and the verification record sits beside the file.
-    assert not (home / "updates" / (INSTALLER_NAME + ".part")).exists()
+    # No partial file survives, and the verification record sits beside the file.
+    assert sorted(p.name for p in (home / "updates").iterdir()) == [
+        INSTALLER_NAME, INSTALLER_NAME + ".sha256",
+    ]
     assert saved.with_suffix(saved.suffix + ".sha256").read_text() == result.sha256
     # The checksums are fetched before the executable, always.
     assert rec.requests[0].endswith(update.CHECKSUMS_NAME)
@@ -603,6 +606,104 @@ async def test_a_plaintext_asset_url_is_refused_before_anything_is_fetched(
             status, transport=rec.transport, dest_dir=home / "updates",
         )
     assert rec.requests == []
+
+
+def _rename_installer(payload, new_name):
+    for asset in payload["assets"]:
+        if asset["name"] == INSTALLER_NAME:
+            asset["name"] = new_name
+            asset["browser_download_url"] = asset["browser_download_url"].replace(
+                INSTALLER_NAME, new_name,
+            )
+    return payload
+
+
+@pytest.mark.parametrize(
+    "asset_name",
+    [
+        # Another version's installer attached to this release: installing it
+        # would be a downgrade wearing the new release's name.
+        "QuickCode-Setup-2.0.0.exe",
+        # The name becomes a file name on disk. Windows normalises ".."
+        # lexically, so this would have been written two levels up.
+        "QuickCode-Setup-2.1.0\\..\\..\\escaped.exe",
+        "QuickCode-Setup-2.1.0/../../escaped.exe",
+    ],
+    ids=["other-version", "backslash-path", "slash-path"],
+)
+async def test_only_this_releases_installer_by_its_exact_name_is_fetched(
+    home, monkeypatch, asset_name,
+):
+    payload = _rename_installer(release_payload(), asset_name)
+    monkeypatch.setattr(
+        update, "detect_install",
+        lambda *a, **k: update.InstallInfo("installer", "fake", app_dir="C:/x"),
+    )
+    status = await update.check(transport=json_ok(payload).transport)
+    assert status.to_json()["downloadable"] is False
+    digest = hashlib.sha256(INSTALLER_BYTES).hexdigest()
+    rec = download_transport(sums_body=f"{digest}  {asset_name}\n")
+    with pytest.raises(update.UpdateError, match="no Windows installer"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert rec.requests == []
+    assert not (home / "escaped.exe").exists()
+
+
+async def test_a_redirect_to_plaintext_is_never_followed(home, monkeypatch):
+    """The addresses in the payload are checked before anything is fetched, and
+    every hop after them is checked too: a redirect is just another address."""
+    status = await available_status(home, monkeypatch)
+    inner = download_transport()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(INSTALLER_NAME) and request.url.host == "github.com":
+            return httpx.Response(302, headers={"location": "http://cdn.example/installer.exe"})
+        return inner._handler(request)
+
+    rec = Recorder(handler)
+    with pytest.raises(update.UpdateError, match="non-https"):
+        await update.download_installer(
+            status, transport=rec.transport, dest_dir=home / "updates",
+        )
+    assert not any(r.startswith("http://") for r in rec.requests)
+    assert list((home / "updates").iterdir()) == []
+
+
+async def test_a_dead_network_while_fetching_the_checksums_is_a_refusal(home, monkeypatch):
+    """Not an httpx exception escaping into the route as a 500."""
+    status = await available_status(home, monkeypatch)
+
+    def boom(_request):
+        raise httpx.ConnectError("no route to host")
+
+    with pytest.raises(update.UpdateError, match="SHA256SUMS"):
+        await update.download_installer(
+            status, transport=httpx.MockTransport(boom), dest_dir=home / "updates",
+        )
+
+
+async def test_an_interrupted_download_leaves_nothing_behind(home, monkeypatch):
+    """A cancelled request (the page closed mid-download) is not an HTTP error,
+    and used to skip the cleanup that only ran for those."""
+    status = await available_status(home, monkeypatch)
+    inner = download_transport()
+
+    async def stalls():
+        yield INSTALLER_BYTES[:100]
+        raise asyncio.CancelledError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(INSTALLER_NAME):
+            return httpx.Response(200, content=stalls())
+        return inner._handler(request)
+
+    with pytest.raises(asyncio.CancelledError):
+        await update.download_installer(
+            status, transport=Recorder(handler).transport, dest_dir=home / "updates",
+        )
+    assert list((home / "updates").iterdir()) == []
 
 
 def test_parse_checksums_skips_anything_it_does_not_fully_understand():
