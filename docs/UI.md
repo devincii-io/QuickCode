@@ -74,6 +74,22 @@ change reaches every open pane without a reload.
   plus an *Agent* tab listing every command the agent ran with its output. The
   agent cannot type into this shell and never sees it; no tool can reach the
   terminal route.
+- **Jobs** (a third tab in the terminal drawer, `js/terminal/jobs.js`) — the
+  commands the agent started with `run_in_background`: each with a status chip
+  (`running`, `exit 0`, `exit 1`, `killed`, `killed by you`), its duration and
+  output size, and for the one selected, its output tailing live through the
+  same terminal renderer as the Agent tab — colour and progress-bar redraws
+  intact, the newest 1,500 lines on the page. *Copy command* copies it; *Kill*
+  asks first, then stops the whole process tree; the transcript notes it and
+  the agent is told at the start of its next turn. Reading here never marks
+  output as read for the agent (the meta line says how much it has not read).
+  It lives in the drawer rather than the side panel because a job's output is
+  a terminal log, as wide as the shell's, and it continues the Agent tab: that
+  one lists commands that ran to completion, this one those left running. The
+  drawer's toggle and the tab carry a count while any job runs.
+  Behind it: `server/jobs_api.py` (docs/TOOLS.md §bash). `scripts/smoke_jobs.js`
+  drives it in a browser against `scripts/workspace_smoke_server.py --jobs`,
+  whose preview agent starts a ticking background job.
 - **Status bar** (`js/statusbar.js`) — state, model, context use, time, speed,
   cache hits, tokens, cost and connection. A connection that stays down past
   a moment gets a banner as well (`js/connbanner.js`).
