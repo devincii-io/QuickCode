@@ -295,7 +295,7 @@ class BashJobs:
                     f"the limit of {self.max_running}. Stop one with bash_kill, or wait "
                     "for one to finish, before starting another."
                 )
-            env = dict(os.environ)
+            env = subproc.child_env()
             env.setdefault("PYTHONUNBUFFERED", "1")
             proc = subproc.popen(
                 argv,

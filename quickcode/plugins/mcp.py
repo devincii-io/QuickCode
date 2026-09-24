@@ -30,13 +30,13 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
+from quickcode import subproc
 from quickcode.plugins import mcp_process, mcp_wire
 from quickcode.providers.base import ToolSchema
 from quickcode.tools.base import PermissionSpec, Tool, ToolCtx, ToolResult, truncate
@@ -95,8 +95,9 @@ class MCPServer:
 
     # ---- lifecycle ----
     async def start(self) -> None:
-        env = dict(os.environ)
-        env.update(self.env)
+        # What its config declares, on top of what every child gets -- which is
+        # the app's environment without QuickCode's own credentials.
+        env = subproc.child_env(self.env)
         self._stderr = mcp_process.StderrTail(list(self.env.values()))
         self.proc = await mcp_process.spawn(self.command, self.args, env, self.cwd)
         self._reader_task = asyncio.create_task(self._read_loop(self.proc))

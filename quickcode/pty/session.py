@@ -73,7 +73,7 @@ class PtySession:
             raise ValueError("argv must be a non-empty list")
         self.argv = [str(a) for a in argv]
         self.cwd = str(cwd) if cwd is not None else None
-        self.env = env
+        self.env = subproc.child_env() if env is None else env
         self.dimensions = dimensions
         self.pid: int | None = None
 

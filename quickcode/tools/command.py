@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -55,7 +54,8 @@ from quickcode.tools.base import Tool, ToolCtx, ToolResult, decode_output, trunc
 # may be committed, so the child gets what a program needs to run and not the
 # whole ambient environment: an API key in ``os.environ`` is not something a
 # repository's tool should inherit by default. Anything else is opt-in through
-# ``env_from``.
+# ``env_from`` -- except QuickCode's own credentials, which no child is given
+# (``subproc.child_env``), so a committed file cannot ask for them by name.
 _BASE_ENV_KEYS = (
     "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
     "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LANG", "LC_ALL",
@@ -427,13 +427,11 @@ def _batch_refusal(program: str) -> str:
 
 
 def _child_env(plugin: AuthoredPlugin) -> dict[str, str]:
+    inherited = subproc.child_env()
     env: dict[str, str] = {}
-    for key in _BASE_ENV_KEYS:
-        value = os.environ.get(key)
-        if value is not None:
-            env[key] = value
-    for key in plugin.env_from:
-        value = os.environ.get(key)
+    for key in (*_BASE_ENV_KEYS, *plugin.env_from):
+        # Windows names are case-insensitive, and its os.environ upper-cases them.
+        value = inherited.get(key.upper() if subproc.IS_WINDOWS else key)
         if value is not None:
             env[key] = value
     env.update(plugin.env_literal)

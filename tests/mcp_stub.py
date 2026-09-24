@@ -14,6 +14,7 @@ exactly the way a user's settings.json would:
                     call only while that file does not exist (then create it)
 ``STUB_HANG``       "1": never answer tools/call
 ``STUB_LEAK``       an env var name: print its value to stderr and exit 2
+``STUB_ENV``        "1": a call's echo also carries the environment the server got
 ``STUB_CONTENT``    JSON list: the ``content`` a call returns verbatim
 ``STUB_STRUCTURED`` JSON value: a ``structuredContent`` returned with no content
 ``STUB_PIDFILE``    a path: write this process's pid there, then spawn a child
@@ -90,9 +91,11 @@ def main() -> None:
                 sys.exit(1)
             if os.environ.get("STUB_HANG") == "1":
                 continue
-            result: dict = {"content": [{"type": "text", "text": json.dumps(
-                {"tool": msg["params"]["name"], "args": msg["params"].get("arguments"),
-                 "cwd": os.getcwd(), "pid": os.getpid()})}]}
+            echo = {"tool": msg["params"]["name"], "args": msg["params"].get("arguments"),
+                    "cwd": os.getcwd(), "pid": os.getpid()}
+            if os.environ.get("STUB_ENV"):
+                echo["env"] = dict(os.environ)
+            result: dict = {"content": [{"type": "text", "text": json.dumps(echo)}]}
             if os.environ.get("STUB_BIG"):
                 result = {"content": [{"type": "text", "text": "x" * int(os.environ["STUB_BIG"])}]}
             if os.environ.get("STUB_CONTENT"):

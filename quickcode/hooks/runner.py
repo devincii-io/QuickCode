@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,7 +23,6 @@ from typing import Any
 
 from quickcode import subproc
 from quickcode.pty.session import _kill_tree
-from quickcode.secrets import API_KEY_ENV
 from quickcode.tools.base import ToolCtx, decode_output
 from quickcode.tools.bash import _build_argv
 
@@ -48,15 +46,14 @@ class Completed:
 
 
 def hook_env(cwd: Path) -> dict[str, str]:
-    """The environment a hook runs in: the app's own, minus its model key.
+    """The environment a hook runs in: every child's, plus the project root.
 
     A hook is a program the user (or a trusted project) chose to run, so it
-    gets the environment a terminal would give it. QuickCode's own API key is
-    the one thing taken out: no hook needs it, and a hook that logs its
-    environment should not be how it leaks.
+    gets the environment a terminal would give it -- which is QuickCode's
+    minus its own API keys (``subproc.child_env``): no hook needs them, and a
+    hook that logs its environment should not be how they leak.
     """
-    env = {k: v for k, v in os.environ.items() if k != API_KEY_ENV}
-    env[PROJECT_DIR_ENV] = str(cwd)
+    env = subproc.child_env({PROJECT_DIR_ENV: str(cwd)})
     # The payload is UTF-8. A Python hook on Windows would otherwise read its
     # stdin in the ANSI code page and mangle every non-ASCII path it is sent.
     env.setdefault("PYTHONIOENCODING", "utf-8")
