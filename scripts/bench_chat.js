@@ -110,6 +110,11 @@ async (page) => {
     if (lastCard?.dataset.call !== "live119" || !lastCard.querySelector(".tool-dot.ok")) {
       fail("the last live result did not land on its card");
     }
+    const took = lastCard.querySelector(".tool-head > .tool-took");
+    const governs = lastCard.querySelector(".tool-head > .k-link");
+    if (took?.textContent !== "30 ms" || governs?.textContent.trim() !== "tool.read ↗") {
+      fail("a result's duration did not land in its own slot beside the config link");
+    }
 
     // Streaming: a delta per frame into the live bubble.
     out.streamDelta = await frames(120, (i) => {

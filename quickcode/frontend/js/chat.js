@@ -396,6 +396,9 @@ function newCard(ev, scope, block) {
     name: String(ev.name ?? ""),   // what its `.tool-name` reads
     args: ev.arguments,
     dot: card.querySelector(".tool-dot"),
+    // Not the first `.tool-ms`: the config link ahead of it shares the class,
+    // and a result's duration used to overwrite the link's label.
+    took: card.querySelector(".tool-took"),
   });
   return card;
 }
@@ -418,7 +421,7 @@ function attachToolResult(ev) {
   const entry = cards.call(ev.id);
   if (!entry) return;
   settleCard(entry, ev);
-  if (ev.ms) entry.card.querySelector(".tool-ms").textContent = fmtMs(ev.ms);
+  if (ev.ms) entry.took.textContent = fmtMs(ev.ms);
   if (ev.is_error) entry.card.classList.add("open");
 }
 

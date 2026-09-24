@@ -66,7 +66,7 @@ export function toolCardNode(ev, { wireTrace }) {
       <span class="tool-name">${esc(ev.name)}</span>
       <span class="tool-summary">${summaryHtml(ev.name, ev.arguments)}</span>
       ${configLinkHtml(ev)}
-      <span class="tool-ms"></span>
+      <span class="tool-ms tool-took"></span>
     </div>
     <div class="tool-body"></div></div>`);
   const body = card.querySelector(".tool-body");
