@@ -17,7 +17,9 @@ import {
   chip, flash, highlightJson, openPluginView, splitError, tierBadge,
 } from "../settings/ui.js";
 import { explainHtml, fixedBlockHtml, recourseHtml } from "./explain.js";
-import { bodyHtml, duplicateRefusal, kindLabel, sigilHtml, signatureOf } from "./kinds.js";
+import {
+  bodyHtml, duplicateRefusal, kindLabel, recourseHref, sigilHtml, signatureOf,
+} from "./kinds.js";
 import { duplicatePlugin } from "./create/scaffold.js";
 import { dryRunHtml, wireDryRun } from "./create/tool.js";
 import { usedByHtml } from "./usedby.js";
@@ -210,7 +212,9 @@ export async function renderDetail(host, ctx, plugin, { crumb = "", lede = "" } 
     const rec = e.target.closest("[data-recourse]");
     if (rec) {
       const action = rec.dataset.recourse;
-      if (action === "settings" && rec.dataset.target) ctx.go(`#/config/parts/${rec.dataset.target}`);
+      const href = recourseHref({ action, target: rec.dataset.target }, plugin,
+        ctx.kernel.plugins);
+      if (href) ctx.go(href);
       else if (action === "duplicate" || action === "author") {
         duplicatePlugin(ctx, plugin.id, rec);
       } else openPluginView(ctx.api, plugin);

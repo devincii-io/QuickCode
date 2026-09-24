@@ -81,6 +81,32 @@ const RECOURSE = {
   panel: ["A panel is frontend code.", "", ""],
 };
 
+const AUTHOR_SLUG = { tool: "tool", agent: "agent", prompt_section: "prompt" };
+
+/** Where a recourse button goes, or "" when pressing it is not a navigation.
+ *
+ *  `target` means different things per action (kernel/spec.py): a plugin id
+ *  for `settings`, a kind for `author`. A plugin id is not a Parts slug, so it
+ *  is resolved to that plugin's one canonical page — sending it to
+ *  `#/config/parts/<id>` landed on the Tools list. `author` on a file you own
+ *  opens that file; on a built-in prompt section it is a Duplicate (the copy is
+ *  a sibling that runs after the original), so it has no href here. */
+export function recourseHref(recourse, plugin, plugins = []) {
+  const { action = "", target = "" } = recourse || {};
+  if (action === "settings") {
+    const dest = plugins.find((p) => p.id === target);
+    return dest ? canonicalHref(dest) : "";
+  }
+  if (action === "author") {
+    if (plugin?.source === "authored") {
+      return `#/config/edit/${encodeURIComponent(plugin.id)}`;
+    }
+    if (plugin?.kind === "prompt_section") return "";
+    return AUTHOR_SLUG[target] ? `#/config/new/${AUTHOR_SLUG[target]}` : "";
+  }
+  return "";
+}
+
 /** `null` when this plugin can be duplicated, else `{why, label, href}`. */
 export function duplicateRefusal(plugin) {
   if (!plugin) return null;
