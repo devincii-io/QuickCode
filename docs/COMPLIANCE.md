@@ -86,8 +86,9 @@ not a code change; and **session logs** (§4.2) — now git-ignored, still
 unredacted, unrotated and unbounded, and still re-sent to the provider whenever
 a session is resumed.
 
-Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) are also
-untouched, and two of them — §7.4(c) and (d) — are still routes by which a
+Seven weaker permission-engine findings (§7.2 W3–W7, §7.4c–d) followed. W3–W6
+have since been fixed (each is marked below with the test that pins it); W7 and
+§7.4(c) and (d) are open, and the last two are still routes by which a
 repository's own files reach past the trust gate. Individually none is a bypass
 of the reach B1–B3 had; collectively they mean the engine has had one round of
 review and not yet a second.
@@ -877,7 +878,7 @@ default**.
 
 **Then the holes.** All of the following were reproduced by executing the
 permission module against throwaway fixtures. **W1 and W2 have since been fixed
-(`ee1461e`); W3 to W7 are open.** Each finding keeps its original text, with the
+(`ee1461e`), and W3 to W6 in the later permission hardening; W7 is open.** Each finding keeps its original text, with the
 fix and the re-verification stated after it.
 
 **W1 — critical, FIXED: environment-variable prefixes defeat the read-only
@@ -966,7 +967,7 @@ file to fix.
 > check covers it outside the project root; the disclosure inside is filenames
 > only, and was judged not worth the false positives.
 
-**W3 — high, OPEN: `yolo` circuit breakers are evadable.** Only four patterns exist.
+**W3 — high, FIXED: `yolo` circuit breakers are evadable.** Only four patterns exist.
 Measured `allow` in `yolo`: `rm -rf "$HOME"` and `rm -rf $HOME` (the pattern
 matches the literal `~` only, while the docs promise `rm -rf ~` coverage);
 `git push -f origin main` (the pattern requires a literal `--force`). Flag
@@ -978,7 +979,15 @@ reordering — `rm -fr /`, `rm -r -f /` — does not match either. The documente
 > `rm -r -f /` and `rm -rf ~` return `ask` (the last because the literal-`~`
 > pattern does match, which is the one the docs promise).
 
-**W4 — high, OPEN: subagents run with an empty rule set.**
+> **Fixed.** The breakers moved to `security/breakers.py` and match the
+> command's words rather than one spelling: `rm -rf "$HOME"`, `rm -rf $HOME`,
+> `git push -f origin main`, `rm -rf --no-preserve-root /`, `rm -rf build /`,
+> `git -C . push -f`, `git push origin +main` and a fork bomb under any name
+> all return `ask` in `yolo`, and a breaker inside `$()`, backticks or
+> `bash -c` is caught because those commands are now evaluated as if typed.
+> Pinned by `tests/test_permission_breakers.py`.
+
+**W4 — high, FIXED: subagents run with an empty rule set.**
 `quickcode/subagents/runner.py` constructs `PermissionEngine(effective_mode,
 Rules(), deps.cwd)`. Every `deny` and `ask` rule from project settings is
 **dropped for child agents**, so the documented "a deny rule from any scope
@@ -991,7 +1000,12 @@ either.) Mode capping and the auto-deny callback remain.
 > purely a loss of `deny` and `ask` coverage in child agents. The construction
 > at `subagents/runner.py:287` is unchanged.
 
-**W5 — medium, OPEN: `cd` escapes the project root and later checks do not
+> **Fixed.** A child's engine now starts with the session's `deny` and `ask`
+> rules (read live through `SubagentDeps.rules_getter`, handed down every
+> level) and none of its `allow` rules. Pinned by
+> `tests/test_permission_subagents.py`.
+
+**W5 — medium, FIXED: `cd` escapes the project root and later checks do not
 follow.**
 The bash tool records a new working directory with **no containment check**,
 while the engine keeps evaluating path arguments against the *original* root.
@@ -1000,11 +1014,21 @@ following `cat Documents\taxes.pdf` is evaluated as inside the project,
 auto-allowed as a read-only builtin, and executes in the escaped directory. The
 escaped directory persists for the conversation.
 
-**W6 — medium, OPEN: the protected-path check outranks `deny`, downgrading it to
+> **Fixed.** The loop passes the shell's persisted directory to the engine,
+> which resolves relative arguments from it and treats a shell standing outside
+> the project (or in a protected directory) as touching a protected path. A
+> bare `cd` or `cd -` inside one line counts the same way. Pinned by
+> `tests/test_permission_cwd.py`.
+
+**W6 — medium, FIXED: the protected-path check outranks `deny`, downgrading it to
 `ask`.** The protected-path branch returns before the deny loop, so
 `deny: ["read(**)"]` against `<root>/.env` yields `ask`, not `deny` — a user
 can click through a rule written to be absolute. Re-measured for this revision:
 still `ask`.
+
+> **Fixed.** Deny rules are consulted first, then plan mode's refusal, then the
+> protected-path prompt, then `ask` and `allow`. Pinned by
+> `tests/test_permission_order.py`.
 
 **W7 — medium, OPEN: "always allow" persists a broader rule than was
 approved.**
@@ -1027,8 +1051,9 @@ in the same pass.
 
 The rest stands, re-checked against `docs/PERMISSIONS.md` as it is now: the
 auto-edit "small allowlist of file-op commands" does not exist (and auto-edit
-in fact auto-allows *every* mutating non-shell tool, including `web_fetch` and
-MCP write tools); "read-only git forms" are still listed as auto-allowing when
+auto-allowed *every* mutating non-shell tool, including `web_fetch` and MCP
+write tools — since fixed: it now allows only tools that declare a path
+target); "read-only git forms" are still listed as auto-allowing when
 `git` is not in `READONLY_BUILTINS` at all, while `echo`, `grep`, `tree`,
 `file`, `basename` and `dirname` silently are; user-scope
 `~/.quickcode/config.json` is still named in the precedence chain but
@@ -1037,8 +1062,8 @@ as a `deny` does not remove the tool from the model's tool list; the promised
 "one rule per subcommand" for "always allow" is still not implemented (W7);
 PowerShell alias canonicalisation does not exist, so on the PowerShell fallback
 the engine still applies POSIX splitting and a POSIX allowlist; and the
-documented `$()`/backtick variant of the catastrophic-command breaker is still
-absent (W3).
+documented `$()`/backtick variant of the catastrophic-command breaker was
+absent (W3, since fixed).
 
 **What still holds.** Protected paths prompt even in `yolo` — the check runs
 before the mode default, which is stronger than documented. Substitution
@@ -1271,13 +1296,13 @@ The three dimensions `SECURITY.md` names — tools, permission mode, model — a
 - A child cannot prompt the user (auto-deny), and child output is stripped of
   `system-reminder`-shaped text before it enters the parent's context.
 
-Two gaps, both **open**:
+Two gaps; the first has since been fixed, the second is **open**:
 
-- **The child is constructed with an empty rule set** (`Rules()`), so the
-  parent's `deny` and `ask` rules do not propagate. Under an `auto-edit` or
-  `yolo` effective mode a child can therefore perform an operation the parent
+- **The child was constructed with an empty rule set** (`Rules()`), so the
+  parent's `deny` and `ask` rules did not propagate. Under an `auto-edit` or
+  `yolo` effective mode a child could therefore perform an operation the parent
   was explicitly denied. Not a widening in `SECURITY.md`'s literal wording, but
-  a widening in substance. Unchanged; see W4.
+  a widening in substance. Since fixed; see W4.
 - **Model bounding is opt-in, not default.** An unconstrained composition means
   "any model", and the `agent` tool exposes a free-text model override to the
   model itself. The parent nominally has the same freedom, so this is not
@@ -1350,9 +1375,9 @@ was found at and carries its status.
    categories (§7.4). It now covers a third — the policy config that steers the
    permission engine. `active_preset`, prompt overrides and agent definitions
    remain outside it.
-7. **[OPEN]** `yolo` circuit breakers evaded by `$HOME`, `-f`, and flag
+7. **[FIXED]** `yolo` circuit breakers evaded by `$HOME`, `-f`, and flag
    reordering; the documented substitution breaker does not exist (§7.2, W3).
-8. **[OPEN]** Subagents run with an empty rule set — parent `deny`/`ask` rules
+8. **[FIXED]** Subagents run with an empty rule set — parent `deny`/`ask` rules
    do not propagate (§7.2 W4, §7.5).
 9. **[OPEN]** Windows installer is unsigned (§6.3). A purchasing decision.
 10. **[FIXED — `36fd777`]** Installer downloads and silently executes Git and
@@ -1375,9 +1400,9 @@ was found at and carries its status.
 13. **[OPEN]** `git` runs inside an untrusted repository before the trust
     prompt, giving a `.git/config` `core.fsmonitor` / `diff.external` execution
     vector (§7.4d).
-14. **[OPEN]** `cd` escapes the project root; later commands are still checked
+14. **[FIXED]** `cd` escapes the project root; later commands are still checked
     against the original root (§7.2, W5).
-15. **[OPEN]** The protected-path check outranks `deny`, downgrading an
+15. **[FIXED]** The protected-path check outranks `deny`, downgrading an
     absolute rule to a click-through prompt (§7.2, W6).
 16. **[OPEN]** "Always allow" persists a rule broader than what was approved
     (§7.2, W7).
