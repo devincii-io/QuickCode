@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from quickcode import jsonfile
 from quickcode.fsutil import atomic_write_bytes
 from quickcode.hooks.config import (
     EVENTS,
@@ -198,7 +199,7 @@ def _read_strict(path: Path) -> dict[str, Any]:
         return {}
     fix = "Fix the file by hand first: saving here would overwrite everything in it."
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = jsonfile.load(path)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HookEditError(f"{path} could not be read as JSON ({exc}), so it was left alone",
                             status=409, fix=fix) from exc
@@ -244,7 +245,7 @@ def _scope_files(cwd: Path, scope: Scope) -> list[tuple[str, Path, Any]]:
     """``(file name, path, raw hooks block)`` for each file of one scope."""
     if scope == "user":
         path = state_store.user_settings_path()
-        return [(USER_FILE, path, state_store._read(path).get(trust.HOOKS_KEY))]
+        return [(USER_FILE, path, state_store.read_settings(path).get(trust.HOOKS_KEY))]
     return [(Path(rel).name, Path(cwd) / rel, block)
             for rel, block in trust.project_hooks(cwd).items()]
 

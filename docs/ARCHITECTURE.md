@@ -69,6 +69,7 @@ quickcode/
   webapp.py               # uvicorn on a loopback port, single-instance hand-off, window vs browser
   subproc.py              # every child process starts here: no console window, no API keys in its env, killable tree
   fsutil.py               # atomic_write_text/bytes: temp file beside the target, renamed over it
+  jsonfile.py             # the one JSON-file decoder: BOM names UTF-8/16/32, else strict UTF-8
   workspace.py            # the project's .quickcode/ directory and its .gitignore
   frontmatter.py          # the one frontmatter parser: plugin loader and trust gate read files the same way
   ui/window.py            # pywebview window, browser fallback

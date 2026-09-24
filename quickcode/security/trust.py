@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from quickcode import frontmatter
+from quickcode import frontmatter, jsonfile
 from quickcode.config import CONFIG_DIR
 from quickcode.fsutil import atomic_write_text
 
@@ -146,14 +146,16 @@ def _project_settings_by_file(
     from; unreadable ones skipped.
 
     One reader for both of them, so nothing that gates on their contents can
-    end up looking at a different pair of files than the hash does.
+    end up looking at a different pair of files than the hash does -- and the
+    decoder every runtime reader uses (``quickcode.jsonfile``), so none of them
+    can read those files differently either.
     """
     out: list[tuple[Path, dict[str, Any]]] = []
     root = Path(cwd)
     for rel in PROJECT_SETTINGS_FILES:
         try:
-            data = json.loads((root / rel).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            data = jsonfile.load(root / rel)
+        except (OSError, ValueError):
             continue
         if isinstance(data, dict):
             out.append((rel, data))

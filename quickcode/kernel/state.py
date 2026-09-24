@@ -41,9 +41,6 @@ from quickcode.kernel.settings_file import (
     write_project_settings,
 )
 
-# The old private name, still imported from outside this module.
-_read = read_settings
-
 log = logging.getLogger("quickcode.kernel.state")
 
 PLUGINS_KEY = "plugins"

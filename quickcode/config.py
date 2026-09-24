@@ -13,7 +13,7 @@ import platform
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from quickcode import subproc
+from quickcode import jsonfile, subproc
 from quickcode.search import SearchSettings
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -206,7 +206,7 @@ class Config:
     def load(cls, path: Path = CONFIG_PATH) -> Config:
         if not path.exists():
             return cls()
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = jsonfile.load(path)
         profiles: dict[str, Profile] = {}
         for name, p in raw.get("profiles", {}).items():
             profiles[name] = Profile(

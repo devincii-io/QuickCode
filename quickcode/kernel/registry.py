@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import quote
 
 from quickcode.kernel import state as state_store
+from quickcode.kernel.authoring.schema import ID_DUPLICATE
 from quickcode.kernel.patterns import pattern_matches
 from quickcode.kernel.problems import Problem, Provenance
 from quickcode.kernel.spec import (
@@ -136,7 +137,7 @@ class PluginRegistry:
             kept = self._specs[spec.id]
             log.warning("duplicate plugin id %r from %s ignored", spec.id, spec.source)
             self.problems.append(Problem(
-                code="id_duplicate", severity="error",
+                code=ID_DUPLICATE, severity="error",
                 message=(f"'{spec.id}' is claimed twice: the {kept.source} one "
                          f"is in use and the {spec.source} one was refused"),
                 fix=("Rename the second one. An id names one plugin; letting a "

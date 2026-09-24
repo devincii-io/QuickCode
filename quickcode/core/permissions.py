@@ -15,7 +15,6 @@ into a modal via ``push_screen_wait``; headless turns it into an auto-deny.
 from __future__ import annotations
 
 import glob
-import json
 import logging
 import re
 import sys
@@ -134,6 +133,7 @@ class Rules:
         no settings file is in -- so an untrusted project prompts, rather than
         failing to open. ``trusted`` is for tests; see ``trust.resolve_trust``.
         """
+        from quickcode.kernel.settings_file import read_settings
         from quickcode.security import trust
 
         allowed = trust.resolve_trust(root, trusted)
@@ -144,7 +144,7 @@ class Rules:
             if not p.exists():
                 continue
             try:
-                data = json.loads(p.read_text(encoding="utf-8")).get("permissions", {})
+                data = read_settings(p).get("permissions", {})
             except Exception:
                 continue
             if allowed:
@@ -160,12 +160,16 @@ class Rules:
             )
         return merged
 
-    def persist_allow(self, root: Path, rule: str) -> None:
+    def persist_allow(self, root: Path, rule: str) -> str | None:
         """Append a rule to settings.local.json (gitignored).
 
         The rule applies for the rest of this session either way. Whether it
         applies to the *next* one is the trust gate's answer, same as for every
         other allow rule -- ``load`` says why.
+
+        Returns ``None`` once the rule is saved, or the sentence telling the
+        user it was not. A file that cannot be written is never a reason to
+        fail the call the user just approved.
         """
         # This file is part of the project's trust hash, so writing to it used
         # to untrust the project -- and an untrusted project's allow rules are
@@ -185,11 +189,15 @@ class Rules:
             if rule not in allow:
                 allow.append(rule)
 
+        unsaved = None
         try:
             write_project_settings(root, add, filename=LOCAL_SETTINGS_FILENAME)
-        except SettingsUnreadable as exc:
-            log.warning("allow rule %r kept for this session only: %s", rule, exc)
+        except (SettingsUnreadable, OSError) as exc:
+            unsaved = (f"'Always allow' for {rule} applies to this session only: "
+                       f"it could not be saved to {LOCAL_SETTINGS_FILENAME} ({exc})")
+            log.warning("%s", unsaved)
         self.allow.append(rule)
+        return unsaved
 
 
 # The tool-name half of a rule. Not `\w+`: an MCP tool is named

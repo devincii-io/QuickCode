@@ -328,6 +328,18 @@ def test_two_files_claiming_one_id_at_one_scope_skip_both(sandbox):
     assert any(p.code == schema.ID_DUPLICATE for p in found.problems)
 
 
+def test_the_registry_names_a_second_claim_on_an_id_with_the_same_code(sandbox):
+    from quickcode.kernel.registry import PluginRegistry
+    from quickcode.kernel.spec import PluginSpec
+
+    registry = PluginRegistry(sandbox)
+    registry.register(PluginSpec(id="prompt.house", kind="prompt_section", title="House"))
+    registry.register(PluginSpec(id="prompt.house", kind="prompt_section", title="Again",
+                                 source="entrypoint"))
+
+    assert [p.code for p in registry.problems] == [schema.ID_DUPLICATE]
+
+
 def test_project_shadows_user_for_an_authored_id(sandbox):
     user_write("house", "---\nkind: prompt\nname: house\ntitle: User\n"
                         "description: x\n---\n\n<house>user</house>\n")

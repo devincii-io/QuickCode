@@ -21,6 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
+from quickcode import jsonfile
 from quickcode.fsutil import atomic_write_text
 from quickcode.security import trust
 
@@ -48,8 +49,8 @@ def read_settings(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        raw = jsonfile.load(path)
+    except (OSError, ValueError) as exc:
         # A hand-edited settings file with a stray comma must not take the app
         # down; the layer is skipped and the user is told once, in the log.
         log.warning("ignoring unreadable settings at %s: %s", path, exc)
@@ -98,7 +99,7 @@ def _read_for_write(path: Path) -> dict[str, Any]:
     key it owns and erase everything else the file held.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = jsonfile.decode(path.read_bytes())
     except FileNotFoundError:
         return {}
     except UnicodeDecodeError as exc:

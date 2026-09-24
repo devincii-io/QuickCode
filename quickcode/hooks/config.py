@@ -29,6 +29,7 @@ from typing import Any, Literal
 
 from quickcode.kernel import state as state_store
 from quickcode.kernel.problems import Problem, Provenance
+from quickcode.kernel.settings_file import read_settings
 from quickcode.security import trust
 
 EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SessionStart")
@@ -224,7 +225,7 @@ def load_hooks(cwd: Path | None, *, trusted: bool | None = None) -> HookConfig:
     ``None`` in production.
     """
     user_path = state_store.user_settings_path()
-    user_raw = state_store._read(user_path).get(trust.HOOKS_KEY)
+    user_raw = read_settings(user_path).get(trust.HOOKS_KEY)
     user, problems = parse(user_raw, scope="user", source=str(user_path))
 
     project: list[HookCommand] = []
