@@ -339,3 +339,19 @@ def wait_for_death(pid: int, timeout_s: float = 5.0) -> bool:
             return True
         time.sleep(0.02)
     return not _alive(pid)
+
+
+def test_a_search_key_kept_in_config_json_is_redacted_from_the_log():
+    """``search.providers.<name>.api_key`` is stored in plain text in
+    config.json; a provider error that echoes it must not carry it into the
+    session log."""
+    from quickcode.config import CONFIG_PATH
+    from quickcode.session import redact
+
+    key = "tvly-" + "k" * 32
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps({"search": {"providers": {"tavily": {"api_key": key}}}}),
+                           encoding="utf-8")
+    assert key in redact.known_secrets()
+    line = json.dumps({"type": "error", "message": f"401 for key {key}"})
+    assert key not in redact.scrub_serialized(line, redact.known_secrets())

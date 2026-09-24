@@ -23,11 +23,11 @@ Nothing here executes anything. Hooks are counted, never run.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from quickcode import jsonfile
 from quickcode.core.permissions import (
     DEFAULT_SPEC,
     Decision,
@@ -75,7 +75,7 @@ class RuleSources:
 
 def _permissions_block(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8")).get("permissions", {})
+        data = jsonfile.load(path).get("permissions", {})
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}

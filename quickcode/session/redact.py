@@ -70,10 +70,12 @@ def known_secrets() -> tuple[str, ...]:
         ))
     except OSError:
         files = ()
-    signature = (env_values, files)
+    config_stamp = _config_stamp()
+    signature = (env_values, files, config_stamp)
     if signature == _cache["signature"]:
         return _cache["values"]
     found: set[str] = {v for v in env_values if v}
+    found.update(_config_search_keys())
     for name, _mtime in files:
         try:
             value = secrets.load_secret(name[: -len(".key")])
@@ -88,6 +90,35 @@ def known_secrets() -> tuple[str, ...]:
     ))
     _cache["signature"], _cache["values"] = signature, values
     return values
+
+
+def _config_stamp() -> int | None:
+    from quickcode.config import CONFIG_PATH
+
+    try:
+        return CONFIG_PATH.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _config_search_keys() -> set[str]:
+    """Web-search keys kept in plain text in ``config.json``
+    (``search.providers.<name>.api_key``) -- as much a credential as the
+    encrypted provider keys, and just as likely to surface in an error."""
+    from quickcode import jsonfile
+    from quickcode.config import CONFIG_PATH
+
+    try:
+        raw = jsonfile.load(CONFIG_PATH)
+    except (OSError, ValueError):
+        return set()
+    providers = ((raw or {}).get("search") or {}).get("providers") if isinstance(raw, dict) else None
+    if not isinstance(providers, dict):
+        return set()
+    return {
+        str(entry["api_key"]) for entry in providers.values()
+        if isinstance(entry, dict) and entry.get("api_key")
+    }
 
 
 def scrub_serialized(line: str, secrets: tuple[str, ...]) -> str:
