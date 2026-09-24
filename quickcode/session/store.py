@@ -55,6 +55,7 @@ SESSIONS_DIRNAME = Path(PROJECT_DIRNAME) / "sessions"
 ARCHIVE_DIRNAME = "archive"
 TASKS_DIRNAME = Path(PROJECT_DIRNAME) / "tasks"
 ARTIFACTS_DIRNAME = Path(PROJECT_DIRNAME) / "artifacts"
+CHECKPOINTS_DIRNAME = Path(PROJECT_DIRNAME) / "checkpoints"
 
 _REMINDER_RE = re.compile(r"\n*<system-reminder>.*?</system-reminder>", re.DOTALL)
 
@@ -199,6 +200,8 @@ class PurgeResult:
     sessions: list[str] = field(default_factory=list)
     boards: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
+    #: Sessions whose file checkpoints (``quickcode/checkpoints/``) went too.
+    checkpoints: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     #: Logs that exist but could not be removed (another process holds them
     #: open, say), with the reason. Kept apart from ``missing`` because the
@@ -674,8 +677,9 @@ def _artifact_refs_in(path: Path) -> set[str]:
 def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
     """Delete sessions and everything on disk that belonged only to them.
 
-    A session owns three things: its JSONL (archived or not), its task board
-    under ``.quickcode/tasks/<conv_id>/``, and the subagent artifacts its log
+    A session owns four things: its JSONL (archived or not), its task board
+    under ``.quickcode/tasks/<conv_id>/``, its file checkpoints under
+    ``.quickcode/checkpoints/<conv_id>/``, and the subagent artifacts its log
     references. Artifacts are shared namespace — the id counter restarts per
     conversation — so one is removed only when no *surviving* session still
     points at it.
@@ -719,6 +723,11 @@ def purge_sessions(root: Path, conv_ids: Iterable[str]) -> PurgeResult:
         if board_dir.is_dir():
             shutil.rmtree(board_dir, ignore_errors=True)
             result.boards.append(conv_id)
+        # The copies of project files the session's turns started from.
+        checkpoint_dir = root / CHECKPOINTS_DIRNAME / conv_id
+        if checkpoint_dir.is_dir() and not checkpoint_dir.is_symlink():
+            shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            result.checkpoints.append(conv_id)
 
     if doomed_refs:
         keep: set[str] = set()
