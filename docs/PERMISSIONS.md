@@ -262,11 +262,13 @@ command string
       → deny rules
       → plan mode: anything that is not an auto-allowable read-only builtin
         is denied
-      → any non-option argument that resolves to a protected path
-        (.git .quickcode .ssh .env* / outside the project) → ask (deny in dontask)
-      → builtin read-only? → auto-allow, unless the line carries a
-        substitution/redirection marker ($( ` > <) or the subcommand carries
-        an env-var prefix
+      → any argument or option value that may name a protected path, read
+        as the shell will read it (.git .quickcode .ssh .env* / outside the
+        project) → ask (deny in dontask)
+      → builtin read-only? → auto-allow, if the command word is a bare name
+        (or an absolute path outside the project), unless the line carries a
+        substitution/redirection marker ($( ` > < or an unquoted `(`) or the
+        subcommand carries an env-var prefix
       → ask rules → allow rules → mode default
   → + circuit breakers, matched against the whole line
   → final decision = most restrictive across subcommands
@@ -288,6 +290,27 @@ as an allow rule is the supported way to get there.
 
 - *Env-prefix stripping is for **deny** matching: `FOO=x rm -rf y` still hits a `rm` deny. It does **not** buy the read-only auto-allow, and it does not match an allow rule written against the bare command — `PATH=. ls` is not `ls`, and approving `git status` is not approving `LD_PRELOAD=./x.so git status`. A rule that spells the assignment out still matches.
 - Any assignment disqualifies, not a list of dangerous names: such a list would have to be complete, and `PATH`/`LD_PRELOAD` are only the obvious entries next to `BASH_ENV`, `IFS`, `PYTHONSTARTUP`, `NODE_OPTIONS` — and `RIPGREP_CONFIG_PATH`, which points `rg` (a read-only builtin) at a config file that can set `--pre`, which runs a program. The set grows with every program installed on the machine. The cost of the conservative reading is one prompt for `FOO=1 ls`.
+- **Words are read the way the shell reads them** (`security/shellwords.py`).
+  Every argument is expanded into each string it may become before the
+  protected-path test: quotes and backslash escapes removed (`.en''v`,
+  `.e\nv`), ANSI-C quoting decoded (`$'\x2eenv'`), braces expanded
+  (`{.env,x}`), an option's value split off (`--from-file=.env`, `-f.env`), an
+  assignment's right-hand side, a redirection's target (`cat<.env`) and each
+  element of a PowerShell array (`x,.env`). A glob counts if it could expand to
+  a protected name (`.e?v`, `.en*`, `.*`); one that opens with a wildcard
+  (`*`, `*.py`) cannot match a dotfile in bash and is let through, except on
+  Windows, where PowerShell and cmd would match `.env` with `*`. A brace
+  expansion too large to enumerate is treated as unknown, and unknown asks.
+- **The auto-allow is for the system's `cat`, not a file called `cat`.**
+  `./cat`, `bin/ls` or `tools/grep` is whatever the repository shipped under
+  that name, so a command word with a path in it takes the auto-allow only if
+  it resolves outside the project (`/bin/cat`). The command word is also tested
+  for protected *names* (`.git/hooks/post-checkout`), though not for being
+  outside the project, since every program on `PATH` is.
+- **An unquoted `(` forfeits the auto-allow.** PowerShell evaluates
+  `cat (Remove-Item x)` and `cat x,(Remove-Item y)` before `cat` sees a thing;
+  in bash an unquoted `(` inside a command is a syntax error or a
+  substitution, so no ordinary command loses anything.
 - Exec-style wrappers that smuggle commands (`watch`, `xargs -I`, `find -exec`, `setsid`) are never stripped → always prompt unless the full string matches a rule.
 - "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**.
 - Windows: PowerShell runs through the same pipeline, but **alias canonicalization is not implemented**. `gci`, `dir` and `Get-ChildItem` are three unrelated strings to the engine — none of them is in `READONLY_BUILTINS` either, so on PowerShell the read-only auto-allow effectively never fires and a rule has to name the exact spelling the model used. `bash` prefers Git Bash where it exists (docs/ARCHITECTURE §Windows notes), which is why this has not bitten harder.

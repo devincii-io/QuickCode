@@ -19,6 +19,7 @@ Being as strict on Linux costs nothing: nobody names a directory ``.GIT`` there.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
 
@@ -32,6 +33,16 @@ _SHORT_NAME = re.compile(
 )
 # Short-name spellings a glob's literal prefix could be the start of.
 _SHORT_NAME_PREFIXES = ("GIT~", "QUICKC~", "SSH~", "ENV~")
+# Names a glob that opens with a wildcard is tried against, where the shell
+# lets such a glob match a leading dot. The `.env.*` family is open-ended, so
+# it is represented by the spellings projects actually use.
+_REPRESENTATIVE = (
+    *PROTECTED_DIRS, ".ENV", *(f"{p}1" for p in _SHORT_NAME_PREFIXES),
+    *(f".ENV.{s}" for s in (
+        "LOCAL", "DEV", "DEVELOPMENT", "TEST", "STAGING", "PROD", "PRODUCTION",
+        "EXAMPLE", "SAMPLE", "BAK", "BACKUP", "OLD", "SECRET", "CI",
+    )),
+)
 
 # A shell word this side cannot resolve: a variable, a substitution, or a
 # Windows %VAR%. The expansion happens in the shell, long after this decision,
@@ -63,19 +74,23 @@ def is_protected_name(part: str) -> bool:
 def glob_may_name_protected(component: str, *, dotfiles: bool) -> bool:
     """Whether a glob component could expand to a protected name.
 
-    Decided on the literal text before the first wildcard, which is enough to
-    be safe: ``.e?v`` and ``.en*`` start the way ``.env`` does, ``*.py`` does
-    not start with anything. A component that *opens* with a wildcard matches
-    a leading dot only where the shell lets it (``dotfiles``) -- bash does not,
-    PowerShell and cmd do -- and one that opens with a bracket expression is
-    taken to be able to, since the rules differ between shells.
+    Decided on the literal text before the first wildcard where there is some:
+    ``.e?v`` and ``.en*`` start the way ``.env`` does. A component that *opens*
+    with a wildcard matches a leading dot only where the shell lets it
+    (``dotfiles``) -- bash does not, PowerShell and cmd do -- and is then tried
+    against the protected names, so ``*`` counts there and ``*.py`` does not.
+    One that opens with a bracket expression is taken to be able to match,
+    since the rules for it differ between shells.
     """
     first = min((i for i in (component.find(c) for c in "*?[") if i >= 0), default=-1)
     if first < 0:
         return is_protected_name(component)
     literal = component[:first].upper()
     if not literal:
-        return component[0] == "[" or dotfiles
+        if component[0] == "[":
+            return True
+        pattern = component.upper()
+        return dotfiles and any(fnmatch.fnmatchcase(n, pattern) for n in _REPRESENTATIVE)
     names = (*PROTECTED_DIRS, ".ENV", *_SHORT_NAME_PREFIXES)
     return any(name.startswith(literal) for name in names) or literal.startswith(".ENV.")
 

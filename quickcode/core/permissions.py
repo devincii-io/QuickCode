@@ -18,8 +18,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from quickcode.security import shellwords
 from quickcode.security.protected import (
+    glob_may_name_protected,
     is_protected,
+    is_protected_name,
     is_subagent_artifact,
     lexical_parts,
     resolve,
@@ -40,7 +43,8 @@ WRAPPERS = {"timeout", "time", "nice", "nohup"}
 _ENV_ASSIGNMENT = re.compile(r"\w+=.*")
 # Splitters that break a command line into subcommands.
 _SPLIT = re.compile(r"&&|\|\||\||;|&|\n")
-# Substitution markers that forbid prefix-matching a rule.
+# Substitution markers that forbid prefix-matching a rule. An unquoted `(` is
+# one too (``shellwords.has_unquoted_paren``): PowerShell runs `cat (rm x)`.
 _COMPOUND_MARKERS = ("$(", "`", ">", "<")
 # Whether deny and ask rules on paths ignore case: on these filesystems
 # `KEY.PEM` opens `key.pem`, so a rule against one must hold for the other.
@@ -391,7 +395,9 @@ class PermissionEngine:
 
     def _eval_bash(self, command: str) -> Decision:
         subs = [s.strip() for s in _SPLIT.split(command) if s.strip()]
-        has_substitution = any(m in command for m in _COMPOUND_MARKERS)
+        has_substitution = any(
+            m in command for m in _COMPOUND_MARKERS
+        ) or shellwords.has_unquoted_paren(command)
         decisions: list[Decision] = []
         for sub in subs or [command]:
             decisions.append(self._eval_bash_sub(sub, command, has_substitution))
@@ -418,7 +424,10 @@ class PermissionEngine:
             has_env_prefix = has_env_prefix or bool(_ENV_ASSIGNMENT.fullmatch(tokens[idx]))
             idx += 1
         stripped = " ".join(tokens[idx:])
-        first = tokens[idx].split("/")[-1].split("\\")[-1] if idx < len(tokens) else ""
+        # The command word as the shell reads it: `r''m`, `"rm"` and `\\rm` are
+        # all `rm`, and a deny rule on `rm` has to see that.
+        spelled = shellwords.dequote(tokens[idx]) if idx < len(tokens) else ""
+        first = re.split(r"[\\/]", spelled)[-1]
         # The command as its bare name: `/bin/cat x` -> `cat x`. The auto-allow
         # for read-only builtins already worked on the basename, so `/bin/cat`
         # was auto-allowed -- while a deny rule was matched against the full
@@ -455,7 +464,12 @@ class PermissionEngine:
         # The conservative reading costs one prompt for `FOO=1 ls`, which is
         # not a command anybody types by hand, and the auto-allow exists to
         # make the ordinary case frictionless rather than to cover every case.
-        read_only = first in READONLY_BUILTINS and not has_sub and not has_env_prefix
+        read_only = (
+            first in READONLY_BUILTINS
+            and self._runs_from_path(spelled)
+            and not has_sub
+            and not has_env_prefix
+        )
 
         # 2. Plan mode runs the read-only builtins and nothing else -- decided
         #    before the protected-path prompt, which would otherwise offer to
@@ -464,26 +478,17 @@ class PermissionEngine:
             return Decision.deny
 
         # 3. Shell reads respect the same protected-path boundary as the
-        #    dedicated read tool. Every non-option argument is a potential path;
-        #    ordinary words resolve inside the project and stay harmless.
-        for token in tokens[idx + 1 :]:
-            if token.startswith("-"):
-                continue
-            candidate = token.split("=", 1)[-1] if "=" in token else token
-            # Quotes come out wherever they sit, not only at the ends: the
-            # shell concatenates `.en''v` into `.env`, so a scan that stripped
-            # only the outside compared the wrong string and waved through the
-            # very file it exists to protect.
-            candidate = candidate.replace("'", "").replace('"', "").strip("{},()")
-            if candidate and is_protected(candidate, self.root):
-                if self.mode is Mode.dontask:
-                    return Decision.deny
-                # Same exemption as the path tools, and this is where it was
-                # felt: every non-option token is treated as a possible path,
-                # so `find / -name "*x*"` prompted in yolo because of the `/`.
-                # A mode that promises not to ask must not ask here.
-                if self.mode is not Mode.yolo:
-                    return Decision.ask
+        #    dedicated read tool. Every argument is a potential path; ordinary
+        #    words resolve inside the project and stay harmless.
+        if self._names_protected(tokens[idx:], sub):
+            if self.mode is Mode.dontask:
+                return Decision.deny
+            # Same exemption as the path tools, and this is where it was felt:
+            # every argument is treated as a possible path, so `find / -name
+            # "*x*"` prompted in yolo because of the `/`. A mode that promises
+            # not to ask must not ask here.
+            if self.mode is not Mode.yolo:
+                return Decision.ask
 
         # 4. Read-only builtins run without a prompt, in every mode.
         if read_only:
@@ -508,6 +513,58 @@ class PermissionEngine:
         if self.mode == Mode.dontask:
             return Decision.deny
         return Decision.ask
+
+    def _runs_from_path(self, command: str) -> bool:
+        """Whether a command word names a program found on PATH (or installed
+        outside the project), rather than a file inside it.
+
+        The read-only auto-allow is for `cat` the system program. It was
+        matched on the basename, so `./cat`, `bin/ls` or `tools/grep` -- a file
+        the repository ships, with whatever it contains -- ran unprompted in
+        every mode, plan included.
+        """
+        if not re.search(r"[\\/]", command):
+            return True
+        resolved = resolve(command, self.root)
+        if resolved is None or not Path(command).expanduser().is_absolute():
+            return False
+        return not resolved.is_relative_to(self.root.resolve())
+
+    def _names_protected(self, words: list[str], sub: str) -> bool:
+        """Whether any word of a subcommand may name a protected path.
+
+        Each word is read every way the shell might read it
+        (``shellwords.path_candidates``): quotes and escapes removed, braces
+        expanded, option values and assignment right-hand sides split off. A
+        glob is protected if it could expand to a protected name. The words
+        are also taken from a quote-aware split, so a redirection glued to
+        its target (`cat<.env`) is seen.
+        """
+        if not words:
+            return False
+        # The command word is where a program comes from, not what it reads:
+        # every program on PATH lives outside the project. Only a protected
+        # *name* counts there (`.git/hooks/post-checkout`).
+        for candidate in shellwords.path_candidates(words[0]) or []:
+            if any(is_protected_name(p) for p in lexical_parts(candidate)):
+                return True
+        lexed = [w for segment in shellwords.segments(sub) for w in segment[1:]]
+        for word in [*words[1:], *lexed]:
+            candidates = shellwords.path_candidates(word)
+            if candidates is None:
+                return True
+            if any(self._candidate_protected(c) for c in candidates):
+                return True
+        return False
+
+    def _candidate_protected(self, candidate: str) -> bool:
+        if is_protected(candidate, self.root):
+            return True
+        return shellwords.has_glob(candidate) and any(
+            glob_may_name_protected(p, dotfiles=shellwords.GLOB_MATCHES_DOTFILES)
+            for p in lexical_parts(candidate)
+            if shellwords.has_glob(p)
+        )
 
     def suggest_rule(self, tool: str, arg: str) -> str:
         """The rule text an 'always allow' would persist."""
