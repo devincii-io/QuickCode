@@ -48,6 +48,8 @@ export const TERMINAL_NOTE =
   "The bottom drawer (Ctrl + `) is a real terminal in this project's "
   + "directory. Its second tab, Agent, lists every command the agent ran, "
   + "with its output as the terminal would have drawn it; ▸ run here puts one "
-  + "at your own prompt without running it. The agent cannot type into your "
-  + "shell and never sees what you do there — the two are separate sessions.";
+  + "at your own prompt without running it. The third, Jobs, lists the commands "
+  + "it left running in the background, with their live output and a Kill "
+  + "button. The agent cannot type into your shell and never sees what you do "
+  + "there — the two are separate sessions.";
 export const SLASH = slashRows();
