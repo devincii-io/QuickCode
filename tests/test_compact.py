@@ -201,6 +201,47 @@ def test_reasoning_is_spend_but_not_context():
     assert replayed.last_output_tokens == agent.ledger.last_output_tokens == 1_000
 
 
+async def test_the_summary_request_reuses_the_conversations_cached_prefix():
+    """Tools come first in the cached prefix, so a request with none shared no
+    cache with the turns before it -- and it re-sends nearly a full window.
+    (A backend may also refuse tool calls in history with no tools declared.)"""
+    from quickcode.core.loop import _tools_for
+    from quickcode.tools.registry import default_registry
+
+    provider = StubProvider("SUMMARY")
+    agent = _agent(provider)
+    agent.registry = default_registry(include_agent=False)
+    for i in range(3):
+        agent.history.push_user(f"u{i}")
+
+    await run_compaction(agent, keep_turns=1)
+
+    assert provider.last_request.tools == _tools_for(agent)
+    assert "Do not call any tools" in provider.last_request.messages[-1].content
+
+
+class _CallsATool:
+    async def stream_chat(self, req):
+        from quickcode.core.events import ToolCallEnd
+
+        yield ToolCallEnd("c1", "read", "{}")
+        yield TurnDone("tool_calls")
+
+    async def list_models(self):
+        return []
+
+
+async def test_a_summary_that_calls_a_tool_instead_is_refused():
+    agent = _agent(_CallsATool())
+    agent.history.push_user("u0")
+    before = list(agent.history.messages)
+
+    with pytest.raises(ProviderError):
+        await run_compaction(agent, keep_turns=1)
+
+    assert agent.history.messages == before
+
+
 def test_a_replayed_ledger_does_not_measure_context_from_before_a_compaction():
     events = [
         {"type": "usage", "input_tokens": 90_000, "output_tokens": 500},

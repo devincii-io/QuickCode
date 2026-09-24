@@ -234,7 +234,7 @@ Tool descriptions are prompts too — the highest-leverage ones. House rules (fu
 
 ## 4. Compaction prompt
 
-Run as a one-off request (same model, no tools) when the token ledger crosses ~80% of the context window, or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history.
+Run as a one-off request (same model) when the token ledger crosses ~80% of the context window, or on `/compact`. The transcript is the input; the output becomes the seed message of the rebuilt history. It declares the conversation's tools but tells the model not to call them: tools lead the cached prefix, so a request with none would re-send nearly a full window uncached. A reply with no summary text is refused and history is left alone.
 
 ```xml
 <task>
@@ -271,6 +271,7 @@ continuation, not narration.
 </required_sections>
 
 <rules>
+- Do not call any tools. Answer with the summary text alone.
 - Facts only; no praise, no meta-commentary.
 - Prefer paths, symbols, and commands over prose descriptions of them.
 </rules>

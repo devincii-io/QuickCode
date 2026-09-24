@@ -1,7 +1,7 @@
 """Compaction: compress a long transcript into a continuation handoff.
 
 When the token ledger crosses ~80% of the model's context window (or on
-manual /compact), we run a one-off no-tools request that summarizes the
+manual /compact), we run a one-off request that summarizes the
 conversation, then rebuild history as [summary seed] + the last few verbatim
 turns (cut where no tool call loses its result). See docs/PROMPTS.md §4.
 """
@@ -85,15 +85,20 @@ def _select_tail(
 
 
 async def _summarize(agent: AgentInstance) -> str:
-    """Run the compaction request (no tools) and return the summary text.
+    """Run the compaction request and return the summary text.
 
-    Its usage is emitted like any round's: it is the largest request a
-    session makes, nearly a full window, and it was being counted nowhere.
+    It declares the same tools as the turns before it, though the prompt says
+    not to call them: tools lead the cached prefix, and with none declared this
+    request -- nearly a full window -- shared no cache with the conversation it
+    summarizes. Its usage is emitted like any round's for the same reason: it
+    is the largest request a session makes, and it was being counted nowhere.
     """
+    from quickcode.core.loop import _tools_for
+
     messages = agent.history.build_messages()  # [system, *history]
     messages = [*messages, ChatMessage(role="user", content=COMPACTION_PROMPT)]
     req = ChatRequest(
-        model=agent.model, messages=messages, tools=[],
+        model=agent.model, messages=messages, tools=_tools_for(agent),
         max_tokens=getattr(agent, "max_tokens", 0) or None,
     )
     parts: list[str] = []
