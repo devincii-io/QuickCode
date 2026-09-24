@@ -63,6 +63,18 @@ async def _headless_permission_cb(request: PermissionRequest) -> PermissionOutco
     return PermissionOutcome(allow=False, deny_message="headless: not permitted")
 
 
+def _port(value: str) -> int:
+    """A TCP port a server can listen on, or an argument error now rather
+    than an OverflowError from the socket layer once the window is open."""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a port number: {value!r}") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"port must be between 1 and 65535, not {port}")
+    return port
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quickcode", description="QuickCode coding agent")
     # `qc [path] [prompt]`: the first positional is the project directory when
@@ -82,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="allow cycling into yolo mode (skips all permission prompts)")
     parser.add_argument("--continue", dest="continue_session", action="store_true",
                          help="continue the most recent session")
-    parser.add_argument("--port", type=int, default=None,
+    parser.add_argument("--port", type=_port, default=None,
                          help="local web port (default: 8642, or a free port)")
     parser.add_argument("--no-browser", action="store_true",
                          help="don't open any window (prints the URL)")
@@ -125,39 +137,9 @@ def _looks_like_dir(value: str) -> bool:
 
 def _build_agent(args: argparse.Namespace):
     config = Config.load()
-    cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    cwd = _project_dir(args)
     env = Environment.detect(cwd)
     profile = config.profile
-
-    # Imported here rather than at module scope: this module is what `qc` and
-    # the windowed entry point both load first, and a top-level import would
-    # drag the OpenAI SDK in before anything is on screen.
-    from quickcode.providers.openai_compat import OpenAICompatProvider
-
-    provider = OpenAICompatProvider(profile.base_url, profile.api_key)
-
-    registry = default_registry()
-
-    # Session store + optional resume of the most recent conversation.
-    from quickcode.core.tasks import TaskBoard
-    from quickcode.session.store import SessionStore
-
-    conv_id = None
-    if args.continue_session:
-        conv_id = SessionStore.most_recent(cwd)
-    store = SessionStore(cwd, conv_id)
-
-    # Task board persisted per conversation.
-    board_path = cwd / ".quickcode" / "tasks" / store.conv_id / "board.json"
-    board = TaskBoard.load(board_path)
-
-    ctx = ToolCtx(
-        cwd=cwd,
-        read_registry=ReadRegistry(),
-        shell_name=env.shell_name,
-        platform=env.platform,
-        extra={"task_board": board},
-    )
 
     mode_str = args.mode or config.default_mode
     try:
@@ -176,6 +158,39 @@ def _build_agent(args: argparse.Namespace):
     posture_mode, rules, _posture = effective_posture(cwd, Rules.load(cwd), fallback=mode)
     if not args.mode:
         mode = posture_mode
+    mode = _armed_mode(mode, explicit=bool(args.mode), armed=args.yolo or config.allow_yolo)
+
+    # Imported here rather than at module scope: this module is what `qc` and
+    # the windowed entry point both load first, and a top-level import would
+    # drag the OpenAI SDK in before anything is on screen.
+    from quickcode.providers.openai_compat import OpenAICompatProvider
+
+    provider = OpenAICompatProvider(profile.base_url, profile.api_key)
+
+    registry = default_registry()
+
+    # Session store + optional resume of the most recent conversation.
+    from quickcode.core.tasks import TaskBoard
+    from quickcode.session.store import SessionStore
+
+    conv_id = None
+    if args.continue_session:
+        conv_id = SessionStore.most_recent(cwd)
+        if conv_id is None:
+            _note(f"no earlier session in {cwd}; starting a new one")
+    store = SessionStore(cwd, conv_id)
+
+    # Task board persisted per conversation.
+    board_path = cwd / ".quickcode" / "tasks" / store.conv_id / "board.json"
+    board = TaskBoard.load(board_path)
+
+    ctx = ToolCtx(
+        cwd=cwd,
+        read_registry=ReadRegistry(),
+        shell_name=env.shell_name,
+        platform=env.platform,
+        extra={"task_board": board},
+    )
 
     permissions = PermissionEngine(
         mode=mode,
@@ -278,17 +293,93 @@ async def _warm_context_length(agent: AgentInstance) -> None:
 
 async def _run_headless(
     agent: AgentInstance, recorder: TranscriptRecorder, prompt: str
-) -> str:
+) -> tuple[str, str | None]:
     """One traceable headless turn: the log a UI turn would have left, then
-    the final response for stdout."""
+    the final response for stdout and the error that ended it, if any."""
+    from quickcode import headless
+
     # The trace has to show everything the model sees, and a resumed run may
     # have re-rendered the prompt — same reason the server logs it at open.
     recorder.emit({"type": "system_prompt", "text": agent.history.system_prompt})
+    watch = headless.watch_for_failure(agent.bus)
     warm = asyncio.create_task(_warm_context_length(agent))
     try:
-        return await recorder.record_turn(agent, prompt)
+        text = await recorder.record_turn(agent, prompt)
     finally:
         warm.cancel()
+    return text, headless.turn_failure(watch)
+
+
+def _note(message: str) -> None:
+    from quickcode import headless
+
+    headless.emit(f"note: {message}", sys.stderr)
+
+
+def _project_dir(args: argparse.Namespace) -> Path:
+    """The project directory the run is about, which must already exist.
+
+    A typo used to be taken at its word: the session store created the path,
+    a ``.quickcode`` inside it and a session file, and the agent went to work
+    in an empty directory.
+    """
+    if not args.cwd:
+        return Path.cwd()
+    path = Path(args.cwd).expanduser()
+    if not path.is_dir():
+        problem = "not a directory" if path.exists() else "no such directory"
+        print(f"error: {problem}: {args.cwd}", file=sys.stderr)
+        raise SystemExit(2)
+    return path.resolve()
+
+
+def _armed_mode(mode: Mode, *, explicit: bool, armed: bool) -> Mode:
+    """``mode``, unless it is yolo and nothing armed yolo.
+
+    The rule the server applies (``manager.set_mode``/``apply_profile``): yolo
+    needs ``--yolo`` or Settings' allow_yolo, whoever asks for it. Asked for
+    outright it is an argument error; asked for by settings or a profile the
+    run falls back to ask and says so, as the server does in a system note.
+    """
+    if mode is not Mode.yolo or armed:
+        return mode
+    if explicit:
+        print("error: --mode yolo runs every tool without asking; it needs --yolo "
+              "(or allow_yolo in Settings)", file=sys.stderr)
+        raise SystemExit(2)
+    _note("your settings or permission profile ask for yolo mode, which is not "
+          "enabled (pass --yolo, or turn it on in Settings); running in ask mode")
+    return Mode.ask
+
+
+def _main_headless(args: argparse.Namespace) -> int:
+    from quickcode import headless
+
+    _project_dir(args)
+    prompt = args.prompt or headless.prompt_from_stdin(sys.stdin)
+    if not prompt or not prompt.strip():
+        print("error: no prompt given for --print (pass one, or pipe it in)", file=sys.stderr)
+        return headless.EXIT_USAGE
+    agent, config, env, store, recorder = _build_agent(args)
+    if not config.profile.api_key:
+        print(
+            f"warning: no API key set. Set ${config.profile.api_key_env} "
+            "or add one in Settings.",
+            file=sys.stderr,
+        )
+    try:
+        result, failure = asyncio.run(_run_headless(agent, recorder, prompt))
+    except KeyboardInterrupt:
+        # The recorder has already closed the log out; a traceback here would
+        # only bury the one line that matters.
+        headless.emit("interrupted", sys.stderr)
+        return headless.EXIT_INTERRUPTED
+    if result or not failure:
+        headless.emit(result)
+    if failure:
+        headless.emit(f"error: {failure}", sys.stderr)
+        return headless.EXIT_TURN_FAILED
+    return headless.EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -309,32 +400,22 @@ def main(argv: list[str] | None = None) -> None:
     _resolve_positionals(args)
 
     if args.print_mode:
-        agent, config, env, store, recorder = _build_agent(args)
-        prompt = args.prompt
-        if not prompt:
-            prompt = sys.stdin.read()
-        if not prompt or not prompt.strip():
-            print("error: no prompt given for --print", file=sys.stderr)
-            sys.exit(2)
-        if not config.profile.api_key:
-            print(
-                f"warning: no API key set. Set ${config.profile.api_key_env} "
-                "or add one in Settings.",
-                file=sys.stderr,
-            )
-        result = asyncio.run(_run_headless(agent, recorder, prompt))
-        print(result)
+        code = _main_headless(args)
+        if code:
+            raise SystemExit(code)
         return
 
     from quickcode.session.store import SessionStore
     from quickcode.webapp import run_webapp
 
     config = Config.load()
-    cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    cwd = _project_dir(args)
     env = Environment.detect(cwd)
     if args.model:
         config.last_model = args.model
     resume = SessionStore.most_recent(cwd) if args.continue_session else None
+    if args.continue_session and resume is None:
+        _note(f"no earlier session in {cwd}; starting a new one")
     run_webapp(
         cwd=cwd,
         config=config,
