@@ -28,8 +28,7 @@ from fastapi import HTTPException
 
 from quickcode.core.permissions import Mode
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import ORCHESTRATOR_ID
-from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
+from quickcode.kernel.orchestrator import resolve_orchestrator
 from quickcode.prompts.system import render_with_sections
 from quickcode.subagents.definitions import load_defs
 
@@ -46,14 +45,11 @@ def _section_json(section: Any, start: int | None = None,
 def _live(manager: Any) -> dict[str, Any]:
     cwd = Path(manager.cwd)
     preset = preset_module.resolve(cwd)
-    limits = runtime_limits(cwd)
-    resolved = resolve_composition(
-        ORCHESTRATOR_ID,
-        pool=session_pool(cwd, list(manager.registry_factory().tools.values())),
+    resolved = resolve_orchestrator(
+        pool=manager.session_pool(),
         preset=preset,
         defs=load_defs(cwd),
         cwd=cwd,
-        max_depth=limits.max_depth,
         resolve_model=manager.resolve_role,
     )
     model = manager.config.last_model or manager.config.profile.resolve("orchestrator")

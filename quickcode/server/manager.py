@@ -26,37 +26,25 @@ from quickcode.config import Config, Environment
 from quickcode.core.agent import (
     AgentInstance,
     EventBus,
-    Ledger,
     PermissionOutcome,
     PermissionRequest,
     PlanOutcome,
 )
 from quickcode.core.compact import run_compaction, should_compact
-from quickcode.core.history import History
-from quickcode.core.permissions import Mode, PermissionEngine, Rules
+from quickcode.core.permissions import Mode, Rules
 from quickcode.core.profiles import PermissionProfile
-from quickcode.core.profiles import effective as effective_posture
 from quickcode.core.tasks import TaskBoard
-from quickcode.hooks import session_hooks
 from quickcode.kernel import preset as preset_module
-from quickcode.kernel.composition import (
-    MODE_PRIVILEGE,
-    ORCHESTRATOR_ID,
-    Resolved,
-    narrower_mode,
-)
-from quickcode.kernel.resolve import default_mode as resolved_default_mode
-from quickcode.kernel.resolve import resolve_composition, runtime_limits, session_pool
-from quickcode.prompts.system import render_system_prompt
+from quickcode.kernel.composition import MODE_PRIVILEGE, Resolved, narrower_mode
+from quickcode.kernel.orchestrator import resolve_orchestrator
+from quickcode.kernel.resolve import runtime_limits
+from quickcode.kernel.resolve import session_pool as resolve_session_pool
 from quickcode.providers.base import ModelInfo, Provider, ProviderError
 from quickcode.providers.choice import display_name
+from quickcode.session import assemble
 from quickcode.session.recorder import TranscriptRecorder
 from quickcode.session.store import SessionStore
 from quickcode.subagents.definitions import load_defs
-from quickcode.subagents.runner import SubagentDeps
-from quickcode.tools.base import ReadRegistry, ToolCtx
-from quickcode.tools.bash_jobs import BashJobs
-from quickcode.tools.registry import ToolRegistry
 
 log = logging.getLogger("quickcode.server")
 
@@ -790,17 +778,10 @@ class Conversation:
         # the settings files: switching model already rebuilds the prompt cache,
         # but it must not silently apply prompt edits made since the session
         # opened.
-        self.agent.history.set_system_prompt(
-            render_system_prompt(
-                self.manager.env,
-                model=model,
-                provider=self.manager.provider_name,
-                headless=False,
-                plan=(self.agent.mode == Mode.plan),
-                orchestration=bool(self.resolved.spawns),
-                overrides=dict(self.resolved.section_bodies),
-            )
-        )
+        self.agent.history.set_system_prompt(assemble.system_prompt(
+            self.manager.env, self.resolved, model=model,
+            provider=self.manager.provider_name, plan=(self.agent.mode == Mode.plan),
+        ))
         self.manager.config.last_model = model
         self.manager.config.save()
         self.store.append_meta(model=model)
@@ -854,20 +835,10 @@ class Conversation:
         if preset.id == self.preset_id:
             raise SwitchRefused(f"this session already runs “{preset.title}”")
 
-        pool = session_pool(
-            manager.cwd, list(manager.registry_factory().tools.values())
-        )
+        pool = manager.session_pool()
         defs = load_defs(manager.cwd)
-        limits = runtime_limits(manager.cwd)
-        resolved = resolve_composition(
-            ORCHESTRATOR_ID,
-            pool=pool,
-            preset=preset,
-            defs=defs,
-            cwd=manager.cwd,
-            parent=None,
-            depth=0,
-            max_depth=limits.max_depth,
+        resolved = resolve_orchestrator(
+            pool=pool, preset=preset, defs=defs, cwd=manager.cwd,
             resolve_model=manager.resolve_role,
         )
         limits = runtime_limits(settings=resolved.settings)
@@ -881,7 +852,7 @@ class Conversation:
 
         # The tool list the model is about to be told about, built the same way
         # ``open()`` builds it, from one computation.
-        registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
+        registry = assemble.session_registry(pool, resolved)
         self.agent.registry = registry
         self.agent.permissions.specs = registry.permission_specs()
         self.agent.limits = limits
@@ -893,17 +864,10 @@ class Conversation:
             self.agent.set_mode(resolved.ceiling)
             self.emit({"type": "mode_changed", "mode": resolved.ceiling.value})
 
-        self.agent.history.set_system_prompt(
-            render_system_prompt(
-                manager.env,
-                model=self.agent.model,
-                provider=manager.provider_name,
-                headless=False,
-                plan=(self.agent.mode == Mode.plan),
-                orchestration=bool(resolved.spawns),
-                overrides=dict(resolved.section_bodies),
-            )
-        )
+        self.agent.history.set_system_prompt(assemble.system_prompt(
+            manager.env, resolved, model=self.agent.model,
+            provider=manager.provider_name, plan=(self.agent.mode == Mode.plan),
+        ))
 
         # Everything a later spawn resolves against moves with the session: the
         # pool, the parent composition, the definitions snapshot and the preset.
@@ -1078,258 +1042,64 @@ class ConversationManager:
     def get(self, conv_id: str) -> Conversation | None:
         return self.conversations.get(conv_id)
 
-    def _resolve_role(self, spec: str) -> str:
-        """A model role ("worker", "orchestrator") to a slug; anything else
-        passes through, because any id the provider accepts is allowed."""
-        if spec in ("worker", "orchestrator"):
-            return self.config.profile.resolve(spec)  # type: ignore[arg-type]
-        return spec
-
     def resolve_role(self, spec: str) -> str:
-        """The public name for ``_resolve_role``.
+        """A model role ("worker", "orchestrator") to a slug; anything else
+        passes through, because any id the provider accepts is allowed.
 
         The workbench has to pass the *same* callable the runner passes or model
         policy would be checked against a different set in the preview than at
         spawn, which is exactly the drift a preview exists to rule out.
         """
-        return self._resolve_role(spec)
+        return assemble.resolve_role(self.config.profile, spec)
 
-    @staticmethod
-    def _frozen_composition(store: SessionStore, resuming: bool) -> Resolved | None:
-        """A resumed session's recorded composition, if it has one.
-
-        Sessions written before compositions existed have no such record and
-        fall back to re-resolving, which is exactly what they did before --
-        including the fallback to ``standard`` when the preset is gone. A
-        session that *does* carry one resumes from it and does not re-resolve,
-        which is strictly better: deleting a preset no longer degrades a
-        conversation already in flight.
-        """
-        if not resuming:
-            return None
-        return Resolved.from_json(store.meta().get("composition"))
+    def session_pool(self) -> list[Any]:
+        """The tools a session opened now would have: this install's (plugin
+        and MCP ones included), plus the project's authored command tools,
+        minus every plugin that is switched off. See ``kernel.resolve``."""
+        return resolve_session_pool(self.cwd, list(self.registry_factory().tools.values()))
 
     def open(self, conv_id: str | None = None) -> Conversation:
         """Create a new conversation, or attach to / resume an existing one."""
         if conv_id and conv_id in self.conversations:
             return self.conversations[conv_id]
 
-        profile = self.config.profile
-        store = SessionStore(self.cwd, conv_id)
-        resuming = conv_id is not None and store.path.exists()
-
-        board_path = self.cwd / ".quickcode" / "tasks" / store.conv_id / "board.json"
-        board = TaskBoard.load(board_path)
-
-        ctx = ToolCtx(
-            cwd=self.cwd,
-            read_registry=ReadRegistry(),
-            shell_name=self.env.shell_name,
-            platform=self.env.platform,
-            extra={"task_board": board},
+        session = assemble.build_session(
+            self.cwd, self.config, self.env, self.provider,
+            pool=self.session_pool(),
+            conv_id=conv_id,
+            mode=self.default_mode,
+            provider_name=self.provider_name,
+            yolo_armed=self.allow_yolo,
+            model_info=self.model_info,
         )
-
-        # The preset is the session's plugin composition. A resumed session
-        # keeps the one it started with: the conversation was already told
-        # which tools it has, and changing them underneath it is a lie.
-        preset = preset_module.resolve(
-            self.cwd, store.meta().get("preset", "") if resuming else ""
-        )
-
-        # The session pool: everything this install has, minus the plugins that
-        # are switched off. Distinct from any one agent's grant -- restricting
-        # the orchestrator's tools does not restrict the session, and this is
-        # the set that says what the session's envelope actually is.
-        pool = session_pool(self.cwd, list(self.registry_factory().tools.values()))
-        # Snapshotted once: editing an agent definition takes effect in new
-        # sessions, consistent with presets.
-        defs = load_defs(self.cwd)
-
-        # Read off disk to resolve with, then re-read from the answer: a
-        # resumed session runs on the limits recorded in its own composition,
-        # so editing max_rounds or the compaction threshold reaches the next
-        # session rather than one already in flight.
-        limits = runtime_limits(self.cwd)
-        resolved = self._frozen_composition(store, resuming) or resolve_composition(
-            ORCHESTRATOR_ID,
-            pool=pool,
-            preset=preset,
-            defs=defs,
-            cwd=self.cwd,
-            parent=None,
-            depth=0,
-            max_depth=limits.max_depth,
-            resolve_model=self._resolve_role,
-        )
-        limits = runtime_limits(settings=resolved.settings)
-
-        mode_str = (
-            self.default_mode
-            or preset.default_mode
-            or resolved_default_mode(self.cwd, self.config.default_mode)
-        )
-        try:
-            mode = Mode(mode_str)
-        except ValueError:
-            mode = Mode.ask
-        # The permission posture: the active profile's rules ride *on top of*
-        # the project's own (never instead of them, or picking a profile would
-        # revoke every "always allow" the user has accrued here), and its mode
-        # is where the session starts.
-        #
-        # Applied identically whether or not this is a resume, which is a
-        # decision and not an oversight. The tempting rule -- a profile's mode
-        # is a *starting* mode, and a resumed session has already started, so it
-        # should keep the mode it had -- has nothing to keep: no per-session
-        # mode is ever written to disk, and the ``mode`` computed above is the
-        # composition's default re-derived, not this session's. Skipping the
-        # profile on resume would preserve nothing; it would swap the posture
-        # the user picked for the install default, and for every profile that
-        # narrows -- Read only starts in ``plan`` -- that is a resume coming
-        # back *wider* than the session it resumes.
-        #
-        # It is also the reading ``apply_posture`` already commits to: nothing
-        # the model has been told depends on the posture, which is the whole
-        # reason one can be swapped under a live turn. A thing that may change
-        # mid-turn does not need protecting across a reopen.
-        posture_mode, rules, posture = effective_posture(
-            self.cwd, Rules.load(self.cwd), fallback=mode,
-        )
-        # Above the preset's ``default_mode``, below ``--mode``. A profile is a
-        # file and the flag is the operator saying it at launch, which is the
-        # same order ``mode_str`` above already puts them in; the rules apply
-        # either way, since the flag has nothing to say about those.
-        if not self.default_mode:
-            mode = posture_mode
-        # Yolo needs the app to have armed it, whoever asks for it -- a
-        # profile, a settings default or ``--mode``. ``set_mode`` and
-        # ``apply_posture`` both hold that line; opening a session is the
-        # third door, and it has to hold it too.
-        unarmed_yolo = mode == Mode.yolo and not self.allow_yolo
-        if unarmed_yolo:
-            mode = Mode.ask
-        # The starting mode may not begin above the ceiling. It stays live
-        # below it -- rules decide this call, the ceiling decides what is ever
-        # possible, and only the second is composition.
-        mode = narrower_mode(mode, resolved.ceiling)
-        # One registry for the session: the agent runs it, the permission
-        # engine reads its tools' declared shapes, and subagents select from it.
-        # Built from the resolved tool list, so the answer the UI gives and the
-        # tools the model is handed come from one computation.
-        registry = ToolRegistry([t for t in pool if t.name in resolved.tools])
-        permissions = PermissionEngine(
-            mode=mode, rules=rules, root=self.cwd,
-            yolo_accepted=self.allow_yolo,
-            specs=registry.permission_specs(),
-        )
-
-        model = self.config.last_model or profile.resolve("orchestrator")
-        info = self.model_info(model)
-
-        history = History(
-            render_system_prompt(
-                self.env,
-                model=model,
-                provider=self.provider_name,
-                headless=False,
-                plan=(mode == Mode.plan),
-                orchestration=bool(resolved.spawns),
-                overrides=dict(resolved.section_bodies),
-            )
-        )
-        if resuming:
-            history.messages = store.load_messages()
-
-        # The user's command hooks ride alongside plan mode. Their settings are
-        # read at the first turn rather than here, so trusting the project
-        # before typing is enough for its hooks to apply (docs/HOOKS.md).
-        hooks = session_hooks(self.cwd, session_id=store.conv_id,
-                              transcript_path=str(store.path), resumed=resuming)
-        agent = AgentInstance(
-            name="main",
-            provider=self.provider,
-            registry=registry,
-            history=history,
-            ctx=ctx,
-            permissions=permissions,
-            model=model,
-            permission_cb=None,  # wired below
-            context_length=info.context_length if info else None,
-            hooks=hooks,
-            limits=limits,
-        )
-
-        # The user's generation settings, applied as each session opens so a
-        # change reaches the next one without a restart. The response budget in
-        # particular is not a preference: the provider reserves credit against
-        # it, and a balance too small for it is refused outright.
-        agent.max_tokens = self.config.max_tokens
-        agent.temperature = self.config.temperature
-
-        if resuming:
-            # Spend belongs to the session, not to this process: restore it
-            # from the log so a reopened conversation does not claim it cost
-            # nothing so far.
-            agent.ledger = Ledger.from_events(store.load_events())
-
+        agent = session.agent
         conv = Conversation(
-            conv_id=store.conv_id, agent=agent, store=store, board=board,
-            manager=self, resolved=resolved, preset_id=preset.id,
-            profile_id=posture.id if posture else "",
+            conv_id=session.conv_id, agent=agent, store=session.store,
+            board=session.board, manager=self, resolved=session.resolved,
+            preset_id=session.preset.id,
+            profile_id=session.posture.id if session.posture else "",
         )
         agent.permission_cb = conv.permission_cb
         agent.plan_cb = conv.plan_cb
-        bash_jobs = BashJobs(on_event=conv.on_bash_job)
-        ctx.extra["bash_jobs"] = bash_jobs
-        ctx.extra["subagent"] = SubagentDeps(
-            provider=self.provider,
-            profile=profile,
-            env=self.env,
-            mode_getter=lambda: permissions.mode,
-            rules_getter=lambda: permissions.rules,
-            cwd=self.cwd,
-            depth=0,
+        session.wire(
             on_pane=conv.on_subagent,
             on_done=conv.on_subagent_done,
+            on_bash_event=conv.on_bash_job,
             # What makes a detached job survive the turn that started it, and
             # what lets interrupt and close reach it afterwards.
             adopt_task=conv.adopt_job,
-            owner=agent,
-            # The depth-0 carve-out. Children at depth 0 are intersected
-            # against the session POOL, not the orchestrator's GRANT: the
-            # orchestrator's restriction says what it does with its own hands,
-            # not what the session may do. Passing the filtered registry here
-            # is what made "delegate everything" hand every subagent an empty
-            # toolset. Deeper levels keep intersecting against the parent's
-            # grant, which is what ``deps.child()`` passes down.
-            pool=pool,
-            tool_pool=pool,
-            parent=resolved,
-            defs=defs,
-            preset=preset,
-            limits=limits,
-            bash_jobs=bash_jobs,
-            hooks=hooks,
         )
-        if not resuming:
-            # Held, not written: opening a project opens a conversation, so
-            # writing here made merely starting the app leave an empty session
-            # on disk. The record still goes in front of whatever is said
-            # first -- it just no longer creates a file nobody asked for.
-            store.begin(
-                title="", model=model, cwd=str(self.cwd), preset=preset.id,
-                composition=resolved.to_json(),
-            )
-        if unarmed_yolo:
-            # After ``begin``, so it is held behind the opening record like
+        session.begin_log()
+        if session.unarmed_yolo:
+            # After ``begin_log``, so it is held behind the opening record like
             # anything else said before the user speaks.
             conv.emit({
                 "type": "system_note",
                 "text": (f"this session was asked to start in yolo mode: "
-                         f"{conv.YOLO_UNARMED}. Started in {mode.value} instead."),
+                         f"{conv.YOLO_UNARMED}. Started in {agent.mode.value} instead."),
             })
         conv.start()
-        self.conversations[store.conv_id] = conv
+        self.conversations[session.conv_id] = conv
         return conv
 
     def live_conversations(self) -> dict[str, str]:

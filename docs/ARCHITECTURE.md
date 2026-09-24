@@ -111,6 +111,7 @@ quickcode/
   session/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
+    assemble.py           # build_session: the one way a session is put together, app and -p
   subagents/
     definitions.py runner.py jobs.py artifacts.py
   providers/
