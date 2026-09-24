@@ -94,11 +94,28 @@ async (page) => {
   await page.waitForTimeout(800);
   check(await lastTick() === after, "output kept arriving after the kill");
 
+  // A second job: the list is one Tab stop, and ↑/↓ choose between its rows.
+  await page.locator("#input").fill("Start another ticker");
+  await page.locator("#input").press("Enter");
+  await page.locator('.modal [data-act="allow"]').waitFor();
+  await page.waitForTimeout(500);
+  await page.locator('.modal [data-act="allow"]').click();
+  await page.locator('.qt-job[data-id="bash_2"]').waitFor();
+  await page.locator('.qt-job[aria-selected="true"]').focus();
+  const stops = await page.locator(".qt-job").evaluateAll((rows) => rows.filter((r) => r.tabIndex === 0).length);
+  check(stops === 1, `the Jobs list has ${stops} Tab stops`);
+  const chosen = () => page.evaluate(() => [document.activeElement?.dataset.id,
+    document.querySelector('.qt-job[aria-selected="true"]')?.dataset.id, document.querySelector(".qt-jobs-cmd")?.title]);
+  const from = (await chosen())[0];
+  await page.keyboard.press(from === "bash_1" ? "ArrowUp" : "ArrowDown");
+  const [focused, selected] = await chosen();
+  check(focused && focused !== from && focused === selected, `arrow key in the Jobs list: ${from} -> ${focused}/${selected}`);
+
   // Narrow: list above output, nothing overflows the window.
   await page.setViewportSize({ width: 700, height: 800 });
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "the Jobs tab overflows a narrow window");
 
   if (errors.length) failures.push(...errors);
   if (failures.length) throw new Error(failures.join("\n"));
-  return { passed: true, checks: "empty state, tab keys, permission, list, badges, live tail, colour, follow, model cursor, copy, kill confirm/cancel, killed by you, transcript note, narrow", runtimeErrors: errors };
+  return { passed: true, checks: "empty state, tab keys, permission, list, badges, live tail, colour, follow, model cursor, copy, kill confirm/cancel, killed by you, transcript note, list keys, narrow", runtimeErrors: errors };
 }

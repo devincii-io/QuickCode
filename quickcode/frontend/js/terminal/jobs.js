@@ -76,6 +76,16 @@ export function initJobs(container, { onCount } = {}) {
       "watcher, a long build — it is listed here with its live output and a Kill button."),
   );
   container.append(emptyEl, listEl, detail);
+  listEl.addEventListener("keydown", (e) => {
+    const items = [...listEl.children];
+    const at = items.indexOf(e.target);
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (at < 0 || to === undefined || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    const row = items[Math.max(0, Math.min(items.length - 1, to))];
+    select(row.dataset.id);
+    row.focus();
+  });
 
   // ---- data ----
 
@@ -168,6 +178,7 @@ export function initJobs(container, { onCount } = {}) {
     const on = job.id === selected;
     row.classList.toggle("active", on);
     row.setAttribute("aria-selected", on ? "true" : "false");
+    row.tabIndex = on ? 0 : -1;   // the list is one Tab stop; ↑/↓ move within it
   }
 
   function renderHead() {

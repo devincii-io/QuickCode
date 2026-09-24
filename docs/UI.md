@@ -116,8 +116,9 @@ change reaches every open pane without a reload.
 - **Jobs** (a third tab in the terminal drawer, `js/terminal/jobs.js`) — the
   commands the agent started with `run_in_background`: each with a status chip
   (`running`, `exit 0`, `exit 1`, `killed`, `killed by you`), its duration and
-  output size, and for the one selected, its output tailing live through the
-  same terminal renderer as the Agent tab — colour and progress-bar redraws
+  output size (`↑`/`↓` move through the list), and for the one selected, its
+  output tailing live through the same terminal renderer as the Agent tab —
+  colour and progress-bar redraws
   intact, the newest 1,500 lines on the page. *Copy command* copies it; *Kill*
   asks first, then stops the whole process tree; the transcript notes it and
   the agent is told at the start of its next turn. Reading here never marks
