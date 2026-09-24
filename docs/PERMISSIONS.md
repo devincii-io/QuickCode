@@ -174,12 +174,13 @@ Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fi
 }
 ```
 
-**Known gap — a deny on a protected path is only a prompt.** The
-protected-path check runs *before* the rule lists, so `read(**.env)` above
-denies a `.env` in `dontask` and `yolo` but, in `plan`, `ask` and `auto-edit`,
-the call prompts instead of being refused. Answering the prompt is still up to
-you; the rule just does not answer it for you. SECURITY.md lists this among
-the open issues.
+**A deny on a protected path refuses it.** Deny rules are checked before the
+protected-path prompt, so `read(**.env)` above refuses `.env` in every mode
+rather than offering a prompt with an Allow button on it. (It used to be the
+other way round, and this paragraph used to call that a known gap.)
+
+To see what a rule will do before writing it, ask the engine:
+`qc why --allow "bash(make **)" "make test"` (§Why was I prompted?).
 
 Syntax. A rule is either a bare tool name or `tool(pattern)`; the pattern is
 matched against the target the tool declares (`_rule_matches` → `_glob_match`).
@@ -406,7 +407,7 @@ there.
   `set`, `--global`…) is treated as a write to a protected path, because
   `.git/config` is where every later git command takes its pager, editor and
   hooks path from. Reads (`--get`, `--list`, `git config k`) are unaffected.
-- "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**.
+- "Always allow" persists **one rule for the whole call**, not one per subcommand. `suggest_rule` takes the first whitespace-separated token of the command and offers `bash(<first-token> *)` — so approving `npm test && git push` writes `bash(npm *)`, which covers the first subcommand and leaves `git push` prompting next time. Read the rule text in the modal; it is shown for exactly this reason. Per-subcommand rule generation would be the better behaviour and is **not implemented**. The dry run below says, for any call, whether its suggested rule would stop the next prompt.
 - Windows: PowerShell runs through the same pipeline, but **alias canonicalization is not implemented**. `gci`, `dir` and `Get-ChildItem` are three unrelated strings to the engine — none of them is in `READONLY_BUILTINS` either, so on PowerShell the read-only auto-allow effectively never fires and a rule has to name the exact spelling the model used. `bash` prefers Git Bash where it exists (docs/ARCHITECTURE §Windows notes), which is why this has not bitten harder.
 
 ## The prompt (UI in docs/UI.md)
@@ -429,6 +430,94 @@ Three buttons, in `js/reviews.js`:
 There are no `y / a / n` keyboard shortcuts on this modal — the buttons are the only way to answer it. Earlier text here promised them; they are **not implemented**.
 
 While an agent waits on a prompt, its pane header and its entry in the workspace sidebar read *Needs approval* with a warning-coloured dot, so a prompt in a pane you are not looking at is never invisible.
+
+## Why was I prompted?
+
+A dry run of the gate: give it a tool call, get back the decision the engine
+would make and **which check made it**. Nothing runs, nothing is written, and
+no hook is executed. Three ways in, one answer:
+
+- **Help ▸ Hands-on ▸ Permission sandbox** and the **profile editor's
+  preview** (Configuration ▸ Permission profiles) ask it on every keystroke
+  (debounced) and draw the trace with `js/help/explain.js`.
+- **`qc why "<command line>"`**, or `quickcode permissions explain`, prints it
+  in a terminal (`quickcode/permission_cli.py`):
+
+  ```
+  qc why "npm test && rm -rf build"
+  qc why --mode yolo "git push -f origin main"
+  qc why --allow "bash(make **)" --deny "bash(make deploy**)" "make test"
+  quickcode permissions explain --tool read .env
+  quickcode permissions explain --tool edit --input '{"file_path": "src/a.py"}' --json
+  ```
+
+  `--allow` / `--ask` / `--deny` add rules for that one question;
+  `--no-project-rules` and `--no-profile` leave those layers out; `--mode`
+  asks as if the session were in that mode; `--json` prints the payload below.
+  It sees what a new session in `--cwd` would see, so an MCP server's tools,
+  which exist only once the app has connected to them, are not known to it.
+- **`POST /api/permissions/explain`** (and `/api/projects/{pid}/…`),
+  `server/permissions_api.py`.
+
+**It is the engine, not a model of it.** The answer comes from
+`PermissionEngine.evaluate_tool` — the call the agent loop makes before every
+tool — with its `trace=` hook on: each deciding line in `core/permissions.py`
+records itself as it returns (`_traced`), so the explanation cannot disagree
+with the decision. The engine asked is the one a session opened now would
+start with, built from the same calls `manager.open()` makes: starting mode,
+`Rules.load`, the active profile merged by `profiles.effective`, the
+composition's ceiling, and each tool's `PermissionSpec`
+(`core/permission_posture.py`). Given `conv`, it is instead the live engine of
+that open conversation, including the "Always allow" answers given during it.
+`core/permission_explain.py` adds only prose and provenance. The Help view
+used to answer with a JavaScript port of the engine; it had fallen behind the
+engine and is gone.
+
+Request body — the call, in whichever shape is handy, plus options:
+
+| Field | |
+|---|---|
+| `tool` | the tool's name; defaults to `bash` when `command` is given |
+| `input` / `command` / `target` | one of: the call's arguments object; a shell tool's command line; the value of the field the tool declares as its target |
+| `mode` | ask as if the session were in this mode (default: the new session's, or the conversation's) |
+| `conv` | ask the live gate of this open conversation |
+| `rules` | `{"allow": [], "ask": [], "deny": []}` added for this question only, merged the way a profile's rules are; lines the engine could never match come back in `invalid_rules` |
+| `project_rules`, `profile` | `false` leaves out the project's settings rules, or the active profile |
+
+The answer: `decision`; `summary`, one sentence for the step that decided;
+`decided_by`, that step; `steps`, the whole trace; `suggestion` (only for
+`ask`) — the rule "Always allow" would write, the file, whether it persists
+past this session (it does once the project is trusted), and `next_time`, the
+engine's answer *with that rule added*: `ask` means the rule would not stop the
+next prompt (a protected path, a circuit breaker, an ask rule, or another
+subcommand the rule does not cover), and the text says which; `hints`, the
+allow rules an untrusted project's own files state and the loader ignored,
+when trusting it would change the answer; `notes`, for a tool the composition
+never gives the agent, a mutating tool plan mode withholds, and PreToolUse
+hooks that match the tool — they run after the gate and can only tighten it,
+and a dry run does not run them; and `posture`, what was asked (mode and where
+it came from, profile, trust).
+
+Each step has a `step` id, a `decision` (`null` for one that looked and did
+not decide) and a `why`; a matched rule carries `sources`, the settings file,
+profile, what-if or session answer it came from.
+
+| `step` | |
+|---|---|
+| `deny_rule`, `ask_rule`, `allow_rule` | a rule matched (`rule`, `sources`) |
+| `plan_mode` | plan mode refused a mutating tool, or a shell command that is not a read-only builtin |
+| `protected_path` | the target (or, in the shell, an argument, where the shell stands, what the command writes, or what a recursive read reaches — `reason`) is protected; `waived` when yolo or the artifacts exemption let it through |
+| `read_only` | no rule matched and the tool is read-only |
+| `mode_default` | no rule matched; the mode decided |
+| `shell`, `parsed`, `subcommand` | how a command line was split and read; each subcommand carries its own `steps` |
+| `readonly_builtin` | a read-only builtin ran unprompted — or did not qualify, and why |
+| `unresolvable_command` | a command word only the shell can finish, with a `bash` deny rule in place |
+| `inner_command`, `nesting_limit` | a command another command runs, judged as its own line (its own `steps`); nested too deep |
+| `circuit_breaker`, `most_restrictive` | the line-wide checks and the final fold |
+
+A "Why?" link from the permission prompt itself, which would ask the same
+question with the pending call and the conversation filled in, is **not
+implemented** yet.
 
 ## Plan mode
 

@@ -245,7 +245,9 @@ export async function renderPermissions(host) {
         folder would train you to click through the prompt that matters.</p>`)}
 
     <p class="hp-p">${link("#/help/handson", "Hands-on")} has a sandbox where you
-      can type a rule and a call and watch this whole decision run.</p>
+      can type a rule and a call and watch this project's own engine run this
+      whole decision; <code>qc why "&lt;command&gt;"</code> asks it from a
+      terminal.</p>
   `;
 
   host.innerHTML = pageHtml("Permissions & trust", {
