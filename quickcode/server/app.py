@@ -719,16 +719,18 @@ def create_app(
             out.append(raw)
         return out
 
-    def _purge_many(manager: ConversationManager, conv_ids: list[str]) -> dict:
+    async def _purge_many(manager: ConversationManager, conv_ids: list[str]) -> dict:
         """Delete what can be deleted; report the rest instead of failing whole.
 
         A bulk delete that aborted on the first live session would leave the
-        user guessing which of twenty rows went through.
+        user guessing which of twenty rows went through. "Live" is the same
+        test the single delete applies: an idle conversation opened earlier
+        in this run is closed and deleted, not reported as in use.
         """
         skipped: list[dict] = []
         targets: list[str] = []
         for conv_id in conv_ids:
-            if manager.get(conv_id) is not None:
+            if await manager.release(conv_id):
                 skipped.append({"conv_id": conv_id, "reason": "live"})
             elif not SessionStore(manager.cwd, conv_id).path.exists():
                 skipped.append({"conv_id": conv_id, "reason": "missing"})
@@ -746,7 +748,7 @@ def create_app(
 
     async def _bulk_delete(manager: ConversationManager, request: Request) -> dict:
         body = await _read_json(request)
-        return _purge_many(manager, _selection(body))
+        return await _purge_many(manager, _selection(body))
 
     async def _cleanup_empty(manager: ConversationManager, request: Request) -> dict:
         """Sweep abandoned sessions: no messages *and* no transcript events.
@@ -761,7 +763,7 @@ def create_app(
         candidates = [c for c in SessionStore.empty_sessions(manager.cwd) if c not in live]
         if dry_run:
             return {"candidates": candidates, "deleted": [], "skipped": []}
-        return {"candidates": candidates, **_purge_many(manager, candidates)}
+        return {"candidates": candidates, **(await _purge_many(manager, candidates))}
 
     # ---- default-project routes (the original single-project API) ----
 

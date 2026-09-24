@@ -11,7 +11,13 @@ from quickcode.providers.base import ModelInfo
 from quickcode.server import manager as manager_module
 from quickcode.session.store import SessionStore
 from tests.test_background_agents import _settle
-from tests.test_server import make_manager
+from tests.test_server import (
+    FakeProvider,
+    make_client,
+    make_manager,
+    recv_until,
+    ws_connect,
+)
 
 # ---- a client that falls behind ----
 
@@ -124,3 +130,28 @@ async def test_closing_a_conversation_stops_a_compaction_still_in_flight(tmp_pat
         await asyncio.sleep(0.01)
     kinds = [r.get("kind") for r in SessionStore(tmp_path, conv.conv_id)._iter_records()]
     assert "compaction" not in kinds
+
+
+# ---- deleting a selection ----
+
+
+def test_a_bulk_delete_closes_an_idle_open_conversation_the_way_a_single_delete_does(tmp_path):
+    """Opened earlier in this run and since left alone is not "live": the
+    single delete route closes such a session and deletes it, and the bulk
+    route reported the same session as live and kept it."""
+    provider = FakeProvider([[TextDelta("hi"), TurnDone("stop")]])
+    manager = make_manager(tmp_path, provider)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        with ws_connect(client, f"/ws/conversation/{conv_id}") as ws:
+            recv_until(ws, "replay_done")
+            ws.send_json({"type": "user_message", "text": "hello"})
+            recv_until(ws, "assistant_message")
+        # The socket is gone and the turn is over: open, but idle.
+        assert conv_id in manager.conversations
+
+        body = client.post("/api/sessions/delete", json={"conv_ids": [conv_id]}).json()
+        assert body["deleted"] == [conv_id]
+        assert body["skipped"] == []
+        assert conv_id not in manager.conversations
+        assert not SessionStore(tmp_path, conv_id).path.exists()
