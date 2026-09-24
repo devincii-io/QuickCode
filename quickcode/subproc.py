@@ -40,3 +40,37 @@ def popen(argv: list[str], **kwargs: Any) -> subprocess.Popen:
     """``subprocess.Popen`` that does not put a console on the user's screen."""
     kwargs["creationflags"] = kwargs.pop("creationflags", 0) | NO_WINDOW
     return subprocess.Popen(argv, **kwargs)  # noqa: S603 - argv is caller-controlled
+
+
+def kill_tree(pid: int | None) -> None:
+    """Kill a process and everything it started. Never raises.
+
+    On POSIX this reaches the whole tree only when the process was started
+    with ``start_new_session=True``, which makes it the leader of its own
+    process group; otherwise it kills the one process. Killing just the top
+    of a tree is not enough for a caller holding its pipes: a grandchild that
+    inherited them keeps them open, and asyncio's ``Process.wait()`` does not
+    return until every pipe has closed.
+    """
+    if not pid:
+        return
+    if IS_WINDOWS:
+        try:
+            run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, timeout=10)
+        except Exception:  # noqa: BLE001 - already gone, or taskkill missing
+            pass
+        return
+    import os
+    import signal
+
+    try:
+        group = os.getpgid(pid)
+        if group != os.getpgrp():
+            os.killpg(group, signal.SIGKILL)
+            return
+    except OSError:
+        pass
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass

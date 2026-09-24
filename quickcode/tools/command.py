@@ -36,12 +36,14 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, create_model
 
+from quickcode import subproc
 from quickcode.context import toon
 from quickcode.core.permissions import PermissionSpec
 from quickcode.kernel.authoring import argv as argv_rules
@@ -126,10 +128,19 @@ class CommandTool(Tool[BaseModel]):
             return ToolResult(content="Error: the command resolved to nothing.",
                               is_error=True)
 
+        refusal = _batch_refusal(argv[0])
+        if refusal:
+            return ToolResult(content=refusal, is_error=True)
+
         workdir = _workdir(plugin, values, root)
         env = _child_env(plugin)
         meta = {"argv": list(argv), "cwd": str(workdir), "tool": self.name,
                 "authored": True, "path": plugin.path}
+        if not workdir.is_dir():
+            return ToolResult(
+                content=f"Error: the working directory {workdir} does not exist.",
+                is_error=True, ui_meta=meta,
+            )
 
         combined = plugin.output == "text"
         try:
@@ -140,6 +151,12 @@ class CommandTool(Tool[BaseModel]):
                 stderr=asyncio.subprocess.STDOUT if combined else asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE if plugin.stdin else asyncio.subprocess.DEVNULL,
                 env=env,
+                # The windowed app has no console to lend; without this every
+                # authored tool flashed a fresh one on screen (see subproc.py).
+                creationflags=subproc.NO_WINDOW,
+                # Its own process group, so a timeout or a cancelled turn can
+                # kill what it started and not just the process at the top.
+                start_new_session=True,
             )
         except (OSError, ValueError) as exc:
             return ToolResult(
@@ -153,15 +170,17 @@ class CommandTool(Tool[BaseModel]):
                 proc.communicate(payload), timeout=plugin.timeout_ms / 1000.0
             )
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            await _reap(proc)
             return ToolResult(
                 content=f"Error: {self.name} timed out after {plugin.timeout_ms}ms "
                         "and was killed.",
                 is_error=True, ui_meta=meta,
             )
+        except asyncio.CancelledError:
+            # The turn was torn down (conversation closed). The child used to
+            # be left running with nobody reading its pipes.
+            await _reap(proc)
+            raise
 
         code = proc.returncode if proc.returncode is not None else -1
         stdout = _decode(out)
@@ -294,6 +313,49 @@ def _workdir(plugin: AuthoredPlugin, values: dict[str, Any], root: Path) -> Path
             return root
         return target if target.is_dir() else root
     return root
+
+
+# --------------------------------------------------------------------------
+# the process
+# --------------------------------------------------------------------------
+
+# How long to wait for pipes to close once the tree is dead. A grandchild that
+# escaped the process group keeps them open for as long as it lives, and
+# asyncio's wait() waits for the pipes as well as the process -- so without a
+# bound, a timed-out tool would hang for as long as that grandchild ran.
+_REAP_TIMEOUT_S = 5.0
+_BATCH_SUFFIXES = (".bat", ".cmd")
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(subproc.kill_tree, proc.pid)
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), _REAP_TIMEOUT_S)
+
+
+def _batch_refusal(program: str) -> str:
+    """"" unless ``program`` is a Windows batch file, which is refused.
+
+    Windows cannot execute a batch file; CreateProcess hands it to cmd.exe,
+    which re-parses the whole command line with its own quoting rules -- so a
+    parameter value of ``x & calc`` runs calc. That is precisely the shell
+    this module exists not to have, and it cannot be escaped reliably (see
+    CVE-2024-24576 and its siblings). ``npm``, ``npx`` and ``yarn`` are batch
+    shims on Windows, so this is also the answer to "why won't npm run".
+    """
+    if not subproc.IS_WINDOWS:
+        return ""
+    resolved = shutil.which(program) or program
+    if not resolved.lower().endswith(_BATCH_SUFFIXES):
+        return ""
+    return (
+        f"Error: {program!r} is {resolved}, a batch file. Windows runs batch files "
+        "through cmd.exe, which re-parses every argument, so a parameter value "
+        "could run commands of its own -- exactly what a command tool's argv "
+        "exists to rule out. Point argv at the real program instead (for npm, "
+        "`node` and the .js file the shim calls), or use the bash tool."
+    )
 
 
 def _child_env(plugin: AuthoredPlugin) -> dict[str, str]:
