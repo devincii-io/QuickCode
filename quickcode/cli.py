@@ -200,6 +200,14 @@ def _build_agent(args: argparse.Namespace):
 
     recorder = TranscriptRecorder(store)
 
+    # Background shell jobs work within the one turn a `-p` run has -- start a
+    # server, test against it, stop it -- and `_run_headless` kills whatever is
+    # left when that turn ends, because the process is about to.
+    from quickcode.tools.bash_jobs import BashJobs
+
+    bash_jobs = BashJobs(on_event=recorder.emit)
+    ctx.extra["bash_jobs"] = bash_jobs
+
     ctx.extra["subagent"] = SubagentDeps(
         provider=provider,
         profile=profile,
@@ -216,6 +224,7 @@ def _build_agent(args: argparse.Namespace):
         on_done=recorder.on_subagent_done,
         tool_pool=list(registry.tools.values()),
         limits=limits,
+        bash_jobs=bash_jobs,
     )
 
     # Model precedence: explicit --model, then the last model picked via F2
@@ -289,6 +298,9 @@ async def _run_headless(
         return await recorder.record_turn(agent, prompt)
     finally:
         warm.cancel()
+        bash_jobs = agent.ctx.extra.get("bash_jobs") if agent.ctx else None
+        if bash_jobs is not None:
+            await asyncio.to_thread(bash_jobs.close)
 
 
 def main(argv: list[str] | None = None) -> None:

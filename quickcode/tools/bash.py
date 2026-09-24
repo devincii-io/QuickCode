@@ -13,7 +13,8 @@ colors, tty semantics, and correct process-tree kill on timeout. On Windows
 they run on plain pipes, so that a command which reads stdin gets EOF and
 exits instead of waiting for a person who is not there (see ``_use_pty``).
 Either way the tool falls back to a plain subprocess if the PTY backend is
-unavailable. Background execution is not yet supported.
+unavailable. ``run_in_background`` hands the command to the conversation's job
+table instead (``tools/bash_jobs.py``) and returns its id at once.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from quickcode.tools.base import (
     ToolResult,
     decode_output,
 )
+from quickcode.tools.bash_jobs import MAX_RUNNING, JobLimitReached
 
 DEFAULT_TIMEOUT_MS = 120_000
 MAX_TIMEOUT_MS = 600_000
@@ -116,7 +118,12 @@ class BashInput(BaseModel):
         description=f"Timeout in milliseconds (default {DEFAULT_TIMEOUT_MS}, max {MAX_TIMEOUT_MS}).",
     )
     run_in_background: bool = Field(
-        False, description="Not yet supported in this build; leave False."
+        False,
+        description=(
+            "Start the command detached and return its job id at once, for servers, "
+            "watchers and long builds. Read it with bash_output, stop it with bash_kill. "
+            "timeout_ms does not apply."
+        ),
     )
 
 
@@ -129,7 +136,12 @@ class BashTool(Tool[BashInput]):
         "(falls back to PowerShell), /bin/bash elsewhere. The working directory "
         "persists across calls in this session. Output over 30000 characters "
         "is truncated (head and tail kept). timeout_ms defaults to 120000 and "
-        f"caps at {MAX_TIMEOUT_MS}. run_in_background is not yet supported."
+        f"caps at {MAX_TIMEOUT_MS}. For a command that should keep running -- a dev "
+        "server, a watcher, a build you will check on later -- pass "
+        "run_in_background=true: it returns a job id (bash_1, ...) immediately and "
+        "the command runs on past this turn; read it with bash_output and stop it "
+        f"with bash_kill. At most {MAX_RUNNING} run at once, and all of them are "
+        "stopped when the conversation closes."
     )
     is_read_only: ClassVar[bool] = False
     # Stop must be able to end a command. `run` kills the process tree on the
@@ -162,24 +174,21 @@ class BashTool(Tool[BashInput]):
         first = command.splitlines()[0] if command else ""
         more = " …" if len(command.splitlines()) > 1 or len(first) > 160 else ""
         shown = first[:160] + more
-        return f"⏺ Bash: {shown}" + (f"  — {note}" if note else "")
+        # Said in the dialog because it changes what is being approved: a
+        # command that keeps running after the answer, not one that finishes.
+        label = "Bash (background)" if input.run_in_background else "Bash"
+        return f"⏺ {label}: {shown}" + (f"  — {note}" if note else "")
 
     async def run(self, input: BashInput, ctx: ToolCtx) -> ToolResult:  # noqa: A002
-        if input.run_in_background:
-            return ToolResult(
-                content=(
-                    "Error: run_in_background is not yet supported in this build. "
-                    "Re-run with run_in_background=False."
-                ),
-                is_error=True,
-            )
-
         cwd = Path(ctx.extra.get("bash_cwd", ctx.cwd))
 
         stripped = input.command.strip()
         m = _LONE_CD_RE.match(stripped)
         if m:
             return _handle_cd(m.group(1), cwd, ctx)
+
+        if input.run_in_background:
+            return await _start_background(input, cwd, ctx)
 
         timeout_ms = min(max(input.timeout_ms or DEFAULT_TIMEOUT_MS, 1), MAX_TIMEOUT_MS)
         timeout_s = timeout_ms / 1000.0
@@ -238,6 +247,35 @@ class BashTool(Tool[BashInput]):
             return ToolResult(content=content, is_error=True)
 
         return ToolResult(content=text or "(no output)")
+
+
+async def _start_background(input: BashInput, cwd: Path, ctx: ToolCtx) -> ToolResult:  # noqa: A002
+    jobs = ctx.extra.get("bash_jobs")
+    if jobs is None:
+        return ToolResult(
+            content=(
+                "Error: background jobs are not available in this session. Run the "
+                f"command in the foreground (timeout_ms up to {MAX_TIMEOUT_MS})."
+            ),
+            is_error=True,
+        )
+    try:
+        job = await jobs.start(
+            _build_argv(input.command, ctx), cwd=str(cwd),
+            command=input.command, description=input.description,
+        )
+    except JobLimitReached as exc:
+        return ToolResult(content=f"Error: {exc}", is_error=True)
+    except OSError as exc:
+        return ToolResult(content=f"Error: failed to start command: {exc}", is_error=True)
+    return ToolResult(
+        content=(
+            f"Started background job {job.job_id}. It keeps running after this call "
+            "returns. Read its output with "
+            f'bash_output(bash_id="{job.job_id}") -- pass wait_s to wait for it to '
+            f'finish -- and stop it with bash_kill(bash_id="{job.job_id}").'
+        ),
+    )
 
 
 def _handle_cd(raw_target: str, cwd: Path, ctx: ToolCtx) -> ToolResult:

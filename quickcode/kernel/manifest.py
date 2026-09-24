@@ -808,7 +808,7 @@ def _tool_group(tool: Any) -> str:
     name = getattr(tool, "name", "")
     if name.startswith("mcp__"):
         return "MCP"
-    if name in ("bash",):
+    if name in ("bash", "bash_output", "bash_kill"):
         return "Shell"
     if name in ("read", "write", "edit", "glob", "grep"):
         return "Files"
@@ -923,6 +923,25 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
                        "keeps its full context, which is why this is cheaper than "
                        "spawning the same work again.",
     },
+    "bash_output": {
+        "affects": ("tool_list", "loop"),
+        "summary": "Reads what a background shell job has written since the last read.",
+        "consequence": "Reads a buffer this conversation already holds -- no process "
+                       "is started, so there is nothing to prompt about. Granted "
+                       "wherever bash is, because bash with run_in_background=true "
+                       "starts work only this can read. Each job keeps its most "
+                       "recent 1 MB of output; anything older than that between two "
+                       "reads is dropped, and the read says how much.",
+    },
+    "bash_kill": {
+        "affects": ("tool_list", "loop"),
+        "summary": "Stops a background shell job and every process it started.",
+        "consequence": "Never prompts: the command was approved when it started, and "
+                       "the argument is a job id from this conversation's own table, "
+                       "not a pid, so nothing else on the machine can be named. "
+                       "Granted wherever bash is. Closing the conversation or "
+                       "quitting the app stops every job still running without it.",
+    },
     "web_fetch": {
         "affects": ("tool_list", "permissions"),
         "summary": "Reads one public web page as markdown; refuses loopback and "
@@ -960,6 +979,8 @@ _TOOL_DOCS: dict[str, str] = {
     "glob": "docs/TOOLS.md#glob-read-only",
     "grep": "docs/TOOLS.md#grep-read-only",
     "bash": "docs/TOOLS.md#bash",
+    "bash_output": "docs/TOOLS.md#bash_output-read-only",
+    "bash_kill": "docs/TOOLS.md#bash_kill",
     "web_fetch": "docs/TOOLS.md#web_fetch",
     "web_search": "docs/TOOLS.md#web_search",
     "agent": "docs/TOOLS.md#agentic-tools-specced-in-docsagentsmd-and-docspermissionsmd",

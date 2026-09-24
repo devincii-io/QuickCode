@@ -51,6 +51,12 @@ ORCHESTRATOR_ID = "@orchestrator"
 # every background report it produced.
 DELEGATION_TOOLS = ("agent", "send_message", "agent_status", "agent_result")
 
+# The shell-job pair rides with ``bash`` for the same reason: bash's
+# run_in_background starts work that only these two can read or stop, so an
+# agent granted bash without them could start a job it can never see the end
+# of. Granted wherever bash is, unless a binding revokes one by name.
+SHELL_JOB_TOOLS = ("bash_output", "bash_kill")
+
 # plan < ask < auto-edit < dontask < yolo (least -> most privileged).
 MODE_PRIVILEGE: dict[Mode, int] = {
     Mode.plan: 0, Mode.ask: 1, Mode.auto_edit: 2, Mode.dontask: 3, Mode.yolo: 4,

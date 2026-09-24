@@ -19,6 +19,7 @@ from quickcode.tools.agent import AgentTool
 from quickcode.tools.agent_jobs import AgentResultTool, AgentStatusTool
 from quickcode.tools.base import Tool
 from quickcode.tools.bash import BashTool
+from quickcode.tools.bash_job_tools import BashKillTool, BashOutputTool
 from quickcode.tools.edit import EditTool
 from quickcode.tools.glob import GlobTool
 from quickcode.tools.grep import GrepTool
@@ -68,6 +69,10 @@ def core_tools(*, include_plan: bool = True, include_agent: bool = True) -> list
         GlobTool(),
         GrepTool(),
         BashTool(),
+        # The readers of bash(run_in_background=true). They ride with bash in
+        # every composition (kernel/composition.py::SHELL_JOB_TOOLS).
+        BashOutputTool(),
+        BashKillTool(),
         # Registered whether or not a search key is configured: an unconfigured
         # web_search fails with the signup page in the message, which is more
         # use to everyone than a tool that silently does not exist. Same
