@@ -73,8 +73,10 @@ today.
   `permissions.next_mode` implements a `plan → ask → auto-edit (→ yolo)` cycle
   for a `Shift+Tab`-style hotkey, but **nothing calls it**: there is no key
   binding for mode cycling in the frontend.
-- **Yolo guardrails:** confirmation screen on entry (persisted acceptance), red
-  status bar, and a hard circuit breaker. Four patterns prompt **even in yolo**,
+- **Yolo guardrails:** it has to be armed first — `--yolo` at launch, or the
+  Settings → General checkbox, which asks for confirmation and persists as
+  `allow_yolo` — the mode pill turns red while it is on, and there is a hard
+  circuit breaker. Four patterns prompt **even in yolo**,
   and this is the whole list (`_CIRCUIT_BREAKERS`): `rm -rf /`, `rm -rf ~`,
   `git push … --force` (any remote, any branch — not only the default one), and
   the `:(){` fork bomb. Two things the old text promised are not breakers:
@@ -94,8 +96,8 @@ today.
   it does neither: the mode exists to stop asking, and asking anyway made a
   plain `find / -name "*x*"` stop and wait — `bash` treats every non-option
   token as a possible path, so the `/` was enough. The gate is entry to the
-  mode (a confirmation screen, a persisted acceptance, a red status bar), not
-  a second conversation per command. Deny rules still deny in yolo, and the
+  mode (arming it, confirming that, a red mode pill), not a second
+  conversation per command. Deny rules still deny in yolo, and the
   four circuit breakers still prompt. The prompt
   is the ordinary three-button one; there is no "allow self-config edits for
   this session" option — an always-allow on a `.quickcode/` path writes an
@@ -113,7 +115,7 @@ today.
   to ordinary rule evaluation, so a `deny` rule covering the file still denies
   it. A shell `cat` of an artifact still prompts — `bash` declares itself
   mutating and the bash pipeline's own scan is unchanged.
-- **Subagent capping:** a child agent's mode is `min(parent mode, its spawn-time cap)` — a yolo orchestrator does not imply yolo workers. Detail in docs/AGENTS.md.
+- **Subagent capping:** a child agent's mode is `min(parent mode, its spawn-time cap)` — a yolo orchestrator does not imply yolo workers. A child cannot prompt: anything its mode would ask about is denied. **Known gap:** the child's engine is built with no rules (`Rules()` in `subagents/runner.py`), so the project's `allow`/`ask`/`deny` lists do not reach it — a parent's `deny` does not bind a child running at `auto-edit`. Detail in docs/AGENTS.md.
 
 ## Rules
 
@@ -134,6 +136,13 @@ Stored as `allow` / `ask` / `deny` arrays. Sources merge; evaluation order is fi
   }
 }
 ```
+
+**Known gap — a deny on a protected path is only a prompt.** The
+protected-path check runs *before* the rule lists, so `read(**.env)` above
+denies a `.env` in `dontask` and `yolo` but, in `plan`, `ask` and `auto-edit`,
+the call prompts instead of being refused. Answering the prompt is still up to
+you; the rule just does not answer it for you. SECURITY.md lists this among
+the open issues.
 
 Syntax. A rule is either a bare tool name or `tool(pattern)`; the pattern is
 matched against the target the tool declares (`_rule_matches` → `_glob_match`).
@@ -289,16 +298,16 @@ Three buttons, in `modals.js`:
 
 There are no `y / a / n` keyboard shortcuts on this modal — the buttons are the only way to answer it. Earlier text here promised them; they are **not implemented**.
 
-While any agent is blocked on a prompt, its tab/pane row glows orange (never an invisible modal in an unfocused conversation).
+While an agent waits on a prompt, its pane header and its entry in the workspace sidebar read *Needs approval* with a warning-coloured dot, so a prompt in a pane you are not looking at is never invisible.
 
 ## Plan mode
 
 - Entry: the mode pill, `/mode plan`, or `--mode plan`. (There is no `Shift+Tab` binding and no bare `/plan` command.) The system prompt gains a `<plan_mode>` section: *investigate, don't mutate; produce a plan; call the `plan` tool when ready*.
 - Enforcement is **structural, not prompt-based**: in plan mode the mutating tools are withheld from the request's tool list (the model can't call what isn't offered), and the bash pipeline only permits builtin read-only commands.
 - It lives in `PlanModeHook` (`core/hooks.py`), not in the loop. The hook hides every tool declaring `mutates` unless it also declares `shell` — a shell tool is only partly mutating and the engine gates it per subcommand — and it intercepts the `plan` call to run the review. Because the rule is written against the declaration rather than against two tool names, a plugin's mutating tool is withheld in plan mode too.
-- Exit: the model calls `plan(markdown)` → **PlanReviewModal**:
-  1. **Approve & auto-edit** — plan accepted, mode drops to `auto-edit` for execution
-  2. **Approve, manual** — mode drops to `ask`
+- Exit: the model calls `plan(plan=<markdown>)` → the plan review dialog:
+  1. **Approve · auto-edit** — plan accepted, mode drops to `auto-edit` for execution
+  2. **Approve · ask mode** — mode drops to `ask`
   3. **Keep planning** — feedback text returns to the model, stays in plan mode
 - On approval the plan text is stored on the agent (`AgentInstance.approved_plan`) and the interception tells the model, in its tool result, that the plan was approved and to execute it. That is the whole of it today.
 - **Not implemented**, though this section used to promise them: `Ctrl+G` to open the plan in `$EDITOR` before approving; pinning the plan as an `<approved_plan>` system-reminder on later turns; the sidebar card; seeding the task board from the plan's steps. `approved_plan` is written and never read — the seam is there, nothing is attached to it.
@@ -316,7 +325,8 @@ user-configured executable receiving `{tool_name, tool_input, mode, cwd}` on
 stdin and answering `{"decision": "allow"|"deny"|"ask"|"defer", "reason": …}`,
 subordinate to deny/ask rules (a hook must never be able to override a deny),
 with exit code 2 as a hard block whose stderr is shown to the model. The
-in-process seam above is where it would attach.
+in-process seam above is where it would attach. User-configurable hooks are
+in progress (docs/ROADMAP.md); this section describes what ships in 2.7.0.
 
 ## Headless mode
 
