@@ -20,6 +20,8 @@ def main() -> None:
         os.environ["HOME"] = scratch
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+        import json
+
         import uvicorn
 
         from quickcode.config import Config
@@ -27,6 +29,7 @@ def main() -> None:
         from quickcode.providers.base import ModelInfo
         from quickcode.server.app import create_app
         from quickcode.server.projects import ProjectHub, ProjectRegistry
+        from quickcode.update import AUTO_CHECK_KEY, PLUGIN_ID
 
         class PreviewProvider:
             async def list_models(self):
@@ -41,8 +44,12 @@ def main() -> None:
 
         async def serve():
             cfg = Config(last_model="preview/agent")
-            cfg.update_check = False
             cfg.save()
+            # The update check's off switch is a plugin setting, not a config key.
+            settings = root / ".quickcode" / "settings.json"
+            settings.write_text(json.dumps({
+                "plugins": {PLUGIN_ID: {"settings": {AUTO_CHECK_KEY: False}}},
+            }), encoding="utf-8")
             hub = ProjectHub(config=cfg, provider=PreviewProvider(), registry=ProjectRegistry.ephemeral())
             for name in ["Website redesign", "Client portal"]:
                 project = root / name
