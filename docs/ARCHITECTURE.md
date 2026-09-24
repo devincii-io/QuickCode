@@ -97,7 +97,13 @@ quickcode/
     trust.py              # the project trust gate
     launch.py             # resolving and launching command/MCP executables safely (PATHEXT, .cmd/.bat)
   server/
-    app.py                # FastAPI routes + WebSocket attach
+    app.py                # create_app: loopback guard, security headers, route registration
+    http.py               # bounded JSON bodies, id checks, `scoped` (one handler, both path shapes)
+    ws.py                 # conversation WebSocket: attach, replay, heartbeat, client messages
+    sessions_api.py       # bootstrap, sessions (rename, archive, delete, sweep), models
+    projects_api.py       # project registry, data purge, directory browser, trust gate
+    kernel_api.py         # plugin registry and settings, presets
+    profiles_api.py prompt_api.py config_api.py update_api.py
     manager.py            # ConversationManager / Conversation
     projects.py           # ProjectHub, project registry
     serialization.py      # AgentEvent → wire JSON, LOGGED_TYPES
