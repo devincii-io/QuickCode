@@ -12,16 +12,11 @@
 // is labelled "as written" and the panel's most useful control is the link to
 // the page that shows what it becomes.
 
+import { MODES, modeById } from "../../modes.js";
 import { esc } from "../../util.js";
 import { parseFrontmatter, parseList, patchFrontmatter } from "./scaffold.js";
 
-const CEILING_NOTE = {
-  plan: "may not write anything at all",
-  ask: "stops for permission on anything mutating — but a subagent has nobody "
-     + "to ask, so this is where it stops",
-  "auto-edit": "may edit files without asking; other mutations still stop",
-  yolo: "may do anything the tool pool allows without asking",
-};
+const CEILINGS = MODES.filter((m) => m.ceiling);
 
 export function agentPanel({ read, write }) {
   return {
@@ -51,7 +46,7 @@ export function agentPanel({ read, write }) {
                 ? `<span class="wb-note">allowed: ${esc(models.join(", "))}</span>`
                 : ""}</dd>
             <dt>ceiling</dt><dd><code>${esc(cap)}</code>
-              <span class="wb-note">${esc(CEILING_NOTE[cap]
+              <span class="wb-note">${esc(modeById(cap)?.ceiling
                 || "the most this agent may ever do")}. It is intersected with
                 the spawner's, so raising it here cannot lift the agent above
                 the session it runs in.</span></dd>
@@ -61,8 +56,8 @@ export function agentPanel({ read, write }) {
             <input class="tp-input" data-fm="title" value="${esc(meta.title || "")}"></label>
           <label class="ed-field"><span>ceiling</span>
             <select class="tp-input" data-fm="mode_cap">
-              ${["plan", "ask", "auto-edit", "yolo"].map((c) => `<option${
-                c === cap ? " selected" : ""}>${c}</option>`).join("")}
+              ${CEILINGS.map(({ id }) => `<option${
+                id === cap ? " selected" : ""}>${id}</option>`).join("")}
             </select></label>
           <p class="wb-note block">These rewrite one frontmatter line each and
             leave the rest of the bytes alone — the file stays the document.</p>

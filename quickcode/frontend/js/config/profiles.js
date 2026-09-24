@@ -24,6 +24,7 @@
 // user picked it by name and expects the name to hold, so a warning in a log
 // line somewhere else is not good enough.
 
+import { MODE_IDS, MODES, modeLabel } from "../modes.js";
 import { esc } from "../util.js";
 import { flash } from "../settings/ui.js";
 import { problemsCardHtml, wireProblems } from "./problems.js";
@@ -37,14 +38,6 @@ const LISTS = [
   ["deny", "Deny", "Refused outright, before everything else. Because a "
     + "profile's rules merge with the project's own rather than replacing "
     + "them, this is the only way a profile narrows anything."],
-];
-
-const MODES = [
-  ["plan", "Plan — read-only exploration; the agent submits a plan first"],
-  ["ask", "Ask — every mutating action asks for permission"],
-  ["auto-edit", "Auto-edit — edits inside the project run; the shell still asks"],
-  ["dontask", "Don't ask — never prompts; anything outside the rules is denied"],
-  ["yolo", "Yolo — no prompts at all (and only if the app was launched with --yolo)"],
 ];
 
 const LAYER_NOTE = {
@@ -215,8 +208,8 @@ function editorHtml(draft, { tools, scope, isNew, builtinIds }) {
 
     <div class="set-field">
       <label for="pf-mode">Starting mode</label>
-      <select id="pf-mode">${MODES.map(([id, text]) =>
-        `<option value="${id}"${id === draft.mode ? " selected" : ""}>${esc(text)}</option>`
+      <select id="pf-mode">${MODES.map((m) =>
+        `<option value="${m.id}"${m.id === draft.mode ? " selected" : ""}>${esc(modeLabel(m))}</option>`
       ).join("")}</select>
       <div class="pf-note">Where a session <em>starts</em>, not a ceiling —
         the mode pill still changes it afterwards. A profile that means to hold has to
@@ -288,7 +281,7 @@ function previewHtml(tools, mode) {
       </div>
       <div class="set-field">
         <label for="pf-try-mode">In mode</label>
-        <select id="pf-try-mode">${MODES.map(([id]) =>
+        <select id="pf-try-mode">${MODE_IDS.map((id) =>
           `<option value="${id}"${id === mode ? " selected" : ""}>${id}</option>`
         ).join("")}</select>
       </div>

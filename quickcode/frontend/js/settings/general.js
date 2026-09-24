@@ -6,7 +6,8 @@
 // catalog read-only (the session model is switched from the composer pill),
 // Appearance applies a preset live and persists it.
 
-import { confirmModal, creditLine } from "../modals.js";
+import { creditLine } from "../quick_settings.js";
+import { confirmModal } from "../ui/modal.js";
 import { store } from "../store.js";
 import { applyTheme, esc, fmtTokens } from "../util.js";
 import { flash } from "./ui.js";
@@ -58,8 +59,8 @@ export async function renderGeneralPage(c, { api, modes }) {
       <div class="set-field"><label>API key <span id="set-key-state"></span></label>
         <input id="set-apikey" type="password" placeholder="sk-… (stored encrypted at rest)"></div>
       <div class="set-field"><label>Default permission mode (new sessions)</label>
-        <select id="set-mode">${modes.map(([id, t]) =>
-          `<option value="${id}"${bs.default_mode === id ? " selected" : ""}>${t}</option>`).join("")}
+        <select id="set-mode">${modes.map(({ id, title }) =>
+          `<option value="${id}"${bs.default_mode === id ? " selected" : ""}>${title}</option>`).join("")}
         </select></div>
       <div class="set-field"><label>Yolo mode
         <span class="qs-hint">— yolo runs every tool without asking, including

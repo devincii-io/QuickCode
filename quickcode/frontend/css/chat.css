@@ -2,7 +2,7 @@
  *
  * Loaded after app.css so it may override the older tool-card rules it
  * replaces. Tokens (--panel, --line, --fg-dim, --chip-*, --mono) come from
- * app.css:5-36 — nothing here hardcodes a colour, because the palette is
+ * tokens.css — nothing here hardcodes a colour, because the palette is
  * user-swappable at runtime.
  */
 

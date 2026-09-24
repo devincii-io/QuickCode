@@ -1,6 +1,6 @@
 import { api, authToken, initAuth } from "./api.js";
 import { initHome, refreshHome, rememberProject } from "./home.js";
-import { openDirBrowser } from "./modals.js";
+import { openDirBrowser } from "./dirbrowser.js";
 import { applyTheme, el, esc } from "./util.js";
 import { toastError, toastOk } from "./toast.js";
 import { renderAppearanceControls } from "./appearance.js";

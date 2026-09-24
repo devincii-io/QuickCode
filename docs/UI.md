@@ -45,14 +45,15 @@ change reaches every open pane without a reload.
 
 ## Inside an agent pane
 
-- **Top bar** — project and session chips, session tabs, the update chip,
-  new conversation, and toggles for the side panel, the terminal, Help and
-  Settings.
+- **Top bar** — project and session chips, session tabs (`js/sessionbar.js`),
+  the update chip, new conversation, and toggles for the side panel, the
+  terminal, Help and Settings.
 - **Transcript** (`js/chat.js`) — streaming markdown, reasoning, tool calls
   with their results, diffs, and system notes. Rendering is batched per
   animation frame and a streaming message patches one live node rather than
   re-rendering the transcript.
-- **Composer** (`js/composer.js`) — `Enter` sends, `Shift+Enter` inserts a
+- **Composer** (`js/composer.js`, with its commands, `@` completion, recall
+  and pills in `js/composer/`) — `Enter` sends, `Shift+Enter` inserts a
   newline, `/` opens the slash menu, `@` completes a project path, `↑/↓` walks
   sent-message history filtered by what is already typed. Messages sent while
   the agent is busy are queued. Beside it: the mode pill, the model pill, the
@@ -66,8 +67,9 @@ change reaches every open pane without a reload.
   plus an *Agent* tab listing every command the agent ran with its output. The
   agent cannot type into this shell and never sees it; no tool can reach the
   terminal route.
-- **Status bar** — state, model, context use, time, speed, cache hits,
-  tokens, cost and connection.
+- **Status bar** (`js/statusbar.js`) — state, model, context use, time, speed,
+  cache hits, tokens, cost and connection. A connection that stays down past
+  a moment gets a banner as well (`js/connbanner.js`).
 
 ## Trajectory
 
@@ -98,7 +100,7 @@ Client → server frames are `user_message`, `interrupt`, `set_mode`,
 
 ## Dialogs the agent waits on
 
-- **Permission prompt** (`js/modals.js`) — shows the tool and the call's own
+- **Permission prompt** (`js/reviews.js`) — shows the tool and the call's own
   preview (for `bash`, the command itself), then **Allow once**, **Always
   allow** (shows the exact rule and the file it goes to) and **Deny** (a
   second click confirms, with an optional message returned to the model).

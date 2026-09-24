@@ -420,7 +420,7 @@ that can put words in front of the model. The description is still shown, beside
 the command rather than instead of it; a multi-line command is capped and marked
 with an ellipsis so a heredoc cannot hide its second line.
 
-Three buttons, in `modals.js`:
+Three buttons, in `js/reviews.js`:
 
 1. **Allow once**
 2. **Always allow** — the modal shows the exact rule text, and the file it goes to, before it is written to `settings.local.json`

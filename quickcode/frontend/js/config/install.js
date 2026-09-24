@@ -14,7 +14,7 @@
 // request QuickCode makes on its own, so it describes it in full.
 
 import { esc, relTime } from "../util.js";
-import { MODES } from "../modals.js";
+import { MODES } from "../modes.js";
 import {
   renderAppearancePage, renderGeneralPage, renderModelsPage,
 } from "../settings/general.js";

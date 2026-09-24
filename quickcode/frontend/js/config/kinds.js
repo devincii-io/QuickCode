@@ -11,7 +11,7 @@
 // css/app.css:133 already records that ▸ collapses to a dot in several of the
 // mono stacks we fall back to; nothing here can suffer that.
 
-import { esc } from "../util.js";
+import { esc, fmtCount as num } from "../util.js";
 
 export const KINDS = {
   tool:           { label: "tool",     sigil: "fn", part: "tools" },
@@ -135,8 +135,6 @@ export function duplicateRefusal(plugin) {
 function setting(plugin, key) {
   return (plugin.settings || []).find((s) => s.key === key);
 }
-
-function num(n) { return Number(n || 0).toLocaleString(); }
 
 function flagsHtml(plugin) {
   const ro = plugin.metadata?.read_only;

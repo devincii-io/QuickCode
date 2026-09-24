@@ -13,10 +13,8 @@
 // caused it. So every section that did *not* render is listed with the reason,
 // struck through, under the prompt it is missing from.
 
-import { esc } from "../util.js";
+import { esc, fmtCount as num } from "../util.js";
 import { highlightJson } from "../settings/ui.js";
-
-const num = (n) => Number(n || 0).toLocaleString();
 
 // Python's offsets count code points; a JS string counts UTF-16 units. Slicing
 // the raw string would drift by one per astral character — and the prompt does
