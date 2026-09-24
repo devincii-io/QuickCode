@@ -134,7 +134,7 @@ quickcode/
     store.py              # JSONL transcripts + conversation registry
     recorder.py           # TranscriptRecorder: what a session log contains
     wire.py               # AgentEvent → wire JSON, LOGGED_TYPES, register_event
-    assemble.py           # build_session: the one way a session is put together, app and -p
+    assemble.py           # build_session / rebuild_session: how a session is put together, opened or switched
   subagents/
     definitions.py runner.py jobs.py artifacts.py
   providers/
@@ -189,7 +189,10 @@ session records the composition it started with and keeps it on resume: the
 conversation was already told what tools it had. Switching one mid-session is
 an explicit act (`/composition`), refused while a turn is running, re-renders
 the system prompt, and is logged as `composition_changed` so the trajectory
-shows that the conversation had two different agents in it.
+shows that the conversation had two different agents in it. A switch runs the
+composition steps a session is opened with (`session/assemble.py::compose`,
+then `rebuild_session` on the live agent), so the session it leaves is the one
+a new session on that composition would have been.
 
 ## Async model
 

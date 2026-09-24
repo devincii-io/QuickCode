@@ -362,6 +362,41 @@ def test_a_switch_records_the_composition_and_resume_restores_it(tmp_path):
     assert "write" not in reopened.agent.registry.tools
 
 
+def test_a_switched_session_is_the_session_that_composition_would_open(tmp_path):
+    """Switching re-runs the steps opening does (session/assemble.py), so the
+    session a switch leaves behind -- tools, gating specs, mode under the new
+    ceiling, prompt, what a later spawn resolves against -- is the one a new
+    session on that composition would have been."""
+    readonly = {"presets": {"readonly": {
+        "title": "Read only",
+        "orchestrator": {"tools": ["read", "glob", "grep"], "ceiling": "plan"},
+    }}}
+    write_settings(tmp_path, readonly)
+    manager = make_manager(tmp_path)
+    with make_client(manager) as client:
+        conv_id = client.post("/api/conversations", json={}).json()["conv_id"]
+        conv = manager.get(conv_id)
+        assert conv.agent.mode.value == "ask"
+        res = client.post(f"/api/kernel/conversations/{conv_id}/composition",
+                          json={"preset": "readonly"})
+        assert res.status_code == 200, res.text
+
+        write_settings(tmp_path, {**readonly, "active_preset": "readonly"})
+        fresh = manager.get(client.post("/api/conversations", json={}).json()["conv_id"])
+
+    switched = conv.agent
+    assert switched.mode.value == "plan"
+    assert "mode_changed" in [e.get("type") for e in conv.store.replay_events()]
+    assert list(switched.registry.tools) == list(fresh.agent.registry.tools)
+    assert switched.permissions.specs == fresh.agent.permissions.specs
+    assert switched.limits == fresh.agent.limits
+    assert switched.history.system_prompt == fresh.agent.history.system_prompt
+    deps, fresh_deps = switched.ctx.extra["subagent"], fresh.agent.ctx.extra["subagent"]
+    assert deps.parent.digest() == fresh_deps.parent.digest() == conv.resolved.digest()
+    assert deps.preset.id == "readonly"
+    assert [t.name for t in deps.pool] == [t.name for t in fresh_deps.pool]
+
+
 def test_switching_to_the_composition_already_running_is_refused(tmp_path):
     manager = make_manager(tmp_path)
     with make_client(manager) as client:
