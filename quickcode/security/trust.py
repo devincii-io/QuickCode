@@ -70,6 +70,11 @@ PROJECT_PLUGINS_DIR = Path(".quickcode") / "plugins"
 
 _KIND_RE = re.compile(r"^kind\s*:\s*[\"']?([A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE)
 
+# Any line anywhere that some reading could take as ``kind: tool``: indented,
+# any case, spaced, or with the value on a continuation line. Deliberately
+# looser than the parser, so a file the parser calls a tool always matches.
+_TOOL_KIND_RE = re.compile(r"^\s*kind\s*:\s*[\"']?tool\b", re.MULTILINE | re.IGNORECASE)
+
 # The policy half of what this gate governs, named once so the hash, the report
 # and the three loaders that drop it can never disagree about the list.
 #
@@ -167,7 +172,14 @@ def _declared_kind(text: str) -> str | None:
     below the kernel and cannot import it back. Only enough is read to answer
     one question — is this a command tool — and ``None`` means "could not tell",
     which the caller resolves the safe way.
+
+    A file that says ``kind: tool`` *anywhere* is a tool here, whatever its
+    first ``kind:`` line says: the parser keeps the last of duplicate keys and
+    reads indented keys after a blank line, and a decoy ``kind: prompt`` above
+    the real one must not take the file out of the hash.
     """
+    if _TOOL_KIND_RE.search(text):
+        return "tool"
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)

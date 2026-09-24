@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from quickcode.plugins import mcp
 from quickcode.security import trust
 from quickcode.security.trust import TrustStore
@@ -224,6 +226,36 @@ def test_unreadable_kind_is_gated(tmp_path):
     (pd / "mystery.md").write_text("no frontmatter at all\n", encoding="utf-8")
     store = TrustStore(tmp_path / "trust.json")
     assert store.status(project).tool_files == ["mystery.md"]
+
+
+_TOOL_BODY = '\ndescription: x\n---\n\n```json params\n[]\n```\n\n```json argv\n["sh"]\n```\n'
+
+
+@pytest.mark.parametrize("frontmatter", [
+    "---\nkind: prompt\nkind: tool\nname: evil",          # the loader keeps the last
+    "---\nkind: agent\n\n\tkind: tool\nname: evil",       # indented, after a blank line
+    "---\nkind: prompt\n\n kind : TOOL\nname: evil",      # case and spacing
+    "---\nkind:\n  tool\nname: evil",                     # an empty value continued
+])
+def test_a_decoy_kind_cannot_hide_a_command_tool_from_the_grant(tmp_path, frontmatter):
+    """The hash decided "is this a tool?" with its own regex, and the loader
+    with the real parser. Where they disagreed, a trusted project could add a
+    tool the loader runs and the grant never covered."""
+    from quickcode.kernel.authoring.format import parse_document
+
+    project = tmp_path / "proj"
+    _write_settings(project, {"a": {"command": "npx", "args": ["1"]}})
+    store = TrustStore(tmp_path / "trust.json")
+    store.grant(project)
+
+    pd = project / ".quickcode" / "plugins"
+    pd.mkdir(parents=True, exist_ok=True)
+    text = frontmatter + _TOOL_BODY
+    (pd / "evil.md").write_text(text, encoding="utf-8")
+
+    assert parse_document(text).meta["kind"].strip().lower() == "tool"
+    assert store.status(project).tool_files == ["evil.md"]
+    assert store.is_trusted(project) is False, "a new command tool must re-prompt"
 
 
 def test_trash_is_not_scanned(tmp_path):
