@@ -213,6 +213,31 @@ async def test_agent_result_can_wait_for_a_job_the_parent_now_needs(tmp_path):
     await _drain(tasks)
 
 
+async def test_interrupting_a_wait_on_a_job_is_not_swallowed(tmp_path):
+    """``asyncio.wait`` never raises the awaited task's exception, so the only
+    ``CancelledError`` that can arrive during the wait is the collector's own
+    -- the loop cancelling the round on Esc, or a nested agent's turn being
+    torn down. Suppressing it turned the cancel into an ordinary "still
+    running" result: the round recorded that instead of ``[interrupted]``, and
+    whatever was cancelling the call was told it had finished normally."""
+    provider = GatedProvider()
+    deps, tasks = _deps(provider, cwd=tmp_path)
+    await _start(deps, tmp_path)
+    await provider.started.wait()
+
+    waiting = asyncio.ensure_future(AgentResultTool().run(
+        AgentResultInput(agent_id="explore-1", wait_s=60), _ctx(deps, tmp_path)
+    ))
+    await asyncio.sleep(0.01)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    # The job is the conversation's, not the collector's: it keeps running.
+    assert deps.jobs["explore-1"].running
+    provider.gate.set()
+    await _drain(tasks)
+
+
 async def test_agent_result_names_the_jobs_it_knows_when_the_id_is_wrong(tmp_path):
     provider = GatedProvider()
     deps, tasks = _deps(provider, cwd=tmp_path)

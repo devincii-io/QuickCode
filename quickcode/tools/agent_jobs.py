@@ -16,7 +16,6 @@ finishing path, so collecting one here is exactly as safe as reading the
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 from pydantic import BaseModel, Field
 
@@ -150,9 +149,10 @@ class AgentResultTool(Tool[AgentResultInput]):
             # ``asyncio.wait`` returns on timeout instead of raising, and does
             # not re-raise the task's own exception into this coroutine -- both
             # of which are what a collector wants: the JobRecord already holds
-            # whatever happened.
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.wait({job.task}, timeout=wait)
+            # whatever happened. The one ``CancelledError`` that can arrive
+            # here is therefore the collector's own (an interrupt, a close),
+            # and it has to propagate; the job itself is not cancelled by it.
+            await asyncio.wait({job.task}, timeout=wait)
 
         if job.running:
             return ToolResult(
