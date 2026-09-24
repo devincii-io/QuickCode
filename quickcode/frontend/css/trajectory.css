@@ -9,6 +9,15 @@
  * app.css and shell.css simply no longer match anything.
  */
 
+/* A subagent's own tool call: the tool colour, pulled towards the agent that
+   made it. Derived, so both themes get it from their own two chips. */
+:root { --chip-subtool: color-mix(in srgb, var(--chip-agent) 55%, var(--chip-tool)); }
+.chip-SUBTOOL { background: var(--chip-subtool); }
+
+/* Pooled nodes are hidden, not removed; some of them are flex boxes. */
+.tj-rows > [hidden], .tj-lane > [hidden], .tj-axis > [hidden], .tj-bands > [hidden],
+.tj-band > b[hidden] { display: none; }
+
 .tj-timeline {
   --tj-gutter: 58px;
   --tj-lane-h: 20px;
@@ -56,6 +65,13 @@
   color: var(--primary); border-color: color-mix(in srgb, var(--primary) 45%, transparent);
   background: color-mix(in srgb, var(--primary) 12%, var(--surface));
 }
+/* The crosshair's clock: opaque and on top, since it slides over the others. */
+.tj-tick.is-cursor { z-index: 2; }
+.tj-tick.is-cursor::before { background: color-mix(in srgb, var(--fg) 45%, transparent); height: 100%; }
+.tj-tick.is-cursor b {
+  color: var(--fg); background: var(--surface);
+  border-color: color-mix(in srgb, var(--fg) 30%, transparent);
+}
 
 /* ---------- lanes ---------- */
 
@@ -89,8 +105,10 @@
 
 /* ---------- bars ---------- */
 
+/* Horizontal and vertical placement are inline: parallel work stacks into
+   tracks inside a lane (trajectory/windowing.js trackBox). */
 .tj-bar {
-  position: absolute; top: 4px; bottom: 4px; border-radius: 2px;
+  position: absolute; border-radius: 2px;
   background: var(--chip-meta); opacity: .82; pointer-events: none;
   min-width: 3px;
 }
@@ -101,10 +119,11 @@
 .tj-bar.r-TOOL { background: var(--chip-tool); }
 .tj-bar.r-REVIEW { background: var(--chip-review); }
 .tj-bar.r-AGENT { background: var(--chip-agent); }
+.tj-bar.r-SUBTOOL { background: var(--chip-subtool); }
 .tj-bar.r-ERROR, .tj-bar.is-err { background: var(--chip-error); opacity: 1; }
 .tj-bar.r-META { background: var(--chip-meta); opacity: .6; }
 .tj-bar.is-sel {
-  opacity: 1; top: 2px; bottom: 2px;
+  opacity: 1;
   box-shadow: 0 0 0 1.5px var(--fg), 0 0 8px color-mix(in srgb, var(--fg) 40%, transparent);
 }
 .tj-bar.is-newest { opacity: 1; box-shadow: 0 0 0 1.5px var(--primary); }
