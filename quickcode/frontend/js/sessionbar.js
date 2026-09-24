@@ -130,4 +130,3 @@ export function initSessionBar(opts) {
     if (kind === "event" && ev.type === "user_message") bumpSessionBar();
   });
 }
-
